@@ -33,7 +33,7 @@
 #include "folly/container/F14Set.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/BufferedInput.h"
-#include "velox/dwio/common/MetricsLog.h"
+
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/DecodedVector.h"
@@ -2146,6 +2146,79 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
         i, i % 10 == 0 ? 1'000'000 + i : i % 100);
     longVals->asFlatVector<int64_t>()->set(
         i, i % 10 == 0 ? 9'000'000'000LL + i : i * 60);
+  }
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{intVals, longVals});
+
+  auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserializerOptions()};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    ASSERT_TRUE(vectorEquals(output, input, i))
+        << "Content mismatch at index " << i;
+  }
+}
+
+// Columnar reader-level round-trip for SimdForBitpackEncoding. Forces
+// SimdForBitpack via EncodingLayoutTree on integer columns and verifies data
+// integrity through the full Serializer → Deserializer path.
+TEST_P(SerializationTest, simdForBitpackColumnarRoundTrip) {
+  auto type = velox::ROW({
+      {"int_val", velox::INTEGER()},
+      {"long_val", velox::BIGINT()},
+  });
+
+  EncodingLayoutTree layoutTree{
+      Kind::Row,
+      {},
+      "",
+      {
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::SimdForBitpack,
+                 {},
+                 CompressionType::Uncompressed}}},
+           ""},
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::SimdForBitpack,
+                 {},
+                 CompressionType::Uncompressed}}},
+           ""},
+      }};
+
+  SerializerOptions options{
+      .version = version(),
+      .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
+  };
+
+  Serializer serializer{options, type, pool_.get()};
+
+  const velox::vector_size_t numRows = 100;
+  auto intVals =
+      velox::BaseVector::create(velox::INTEGER(), numRows, pool_.get());
+  auto longVals =
+      velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    intVals->asFlatVector<int32_t>()->set(i, 1000 + i % 50);
+    longVals->asFlatVector<int64_t>()->set(i, 5000LL + i * 3);
   }
 
   auto input = std::make_shared<velox::RowVector>(

@@ -32,6 +32,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -170,6 +171,26 @@ class DeltaFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(DeltaFuzzerTest, DeltaTypes);
 
 TYPED_TEST(DeltaFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// SimdForBitpack: unsigned integer types
+using SimdForBitpackTypes = ::testing::Types<
+    SimdForBitpackEncoding<uint8_t>,
+    SimdForBitpackEncoding<uint16_t>,
+    SimdForBitpackEncoding<uint32_t>,
+    SimdForBitpackEncoding<uint64_t>>;
+
+template <typename E>
+class SimdForBitpackFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(SimdForBitpackFuzzerTest, SimdForBitpackTypes);
+
+TYPED_TEST(SimdForBitpackFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,

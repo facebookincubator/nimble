@@ -34,6 +34,7 @@ target_link_libraries(
   nimble_compression
   nimble_common
   velox_common_base
+  velox_fastpforlib
   Folly::folly
   absl::flat_hash_map
   protobuf::libprotobuf

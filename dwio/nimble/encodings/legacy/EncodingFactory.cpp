@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
 #include "dwio/nimble/encodings/legacy/DictionaryEncoding.h"
@@ -251,6 +252,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::PFOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
+    }
+    case EncodingType::SimdForBitpack: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(
+          ::facebook::nimble::SimdForBitpackEncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(

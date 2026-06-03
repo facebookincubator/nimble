@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -131,6 +132,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<PFOREncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::SimdForBitpack:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<SimdForBitpackEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
