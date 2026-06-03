@@ -196,6 +196,21 @@ void TabletWriter::close() {
   // write stripes
   MetadataSection stripes = writeStripes(stripeCount);
 
+  // When stripeCount > 0, stripe data has already been written to the file,
+  // so file_->size() must be > 0 when writeStripes records the offset.
+  // An offset of 0 means the footer would point to stripe data instead of the
+  // stripes FlatBuffer, producing a corrupt file that crashes readers.
+  if (stripeCount > 0) {
+    NIMBLE_CHECK(
+        stripes.offset() > 0,
+        "Stripes metadata offset is 0 but stripeCount is {}. "
+        "WriteFile::size() returned 0 before writing stripes metadata. "
+        "Current file size: {}, stripes section size: {}.",
+        stripeCount,
+        file_->size(),
+        stripes.size());
+  }
+
   const uint64_t totalRows = std::accumulate(
       stripeRowCounts_.begin(), stripeRowCounts_.end(), uint64_t{0});
 
