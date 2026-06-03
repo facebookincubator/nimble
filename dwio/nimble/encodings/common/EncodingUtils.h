@@ -25,7 +25,11 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+<<<<<<< HEAD
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
+=======
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
+>>>>>>> fd23d0e ([encodings/PFOR-SubInt utils + size] fix rebasing cases)
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
@@ -140,6 +144,12 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         return f(static_cast<SimdForBitpackEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::SubIntSplit:
+      if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
+        return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
