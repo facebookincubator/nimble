@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -257,6 +258,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
+    case EncodingType::SubIntSplit: {
+      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
+    }
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -390,6 +394,7 @@ std::string_view EncodingFactory::encode(
             toString(TypeTraits<T>::dataType));
       }
     }
+<<<<<<< HEAD:dwio/nimble/encodings/common/EncodingFactory.cpp
     case EncodingType::ALP: {
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
@@ -403,6 +408,7 @@ std::string_view EncodingFactory::encode(
             toString(TypeTraits<T>::dataType));
       }
     }
+<<<<<<< HEAD
     case EncodingType::SimdForBitpack: {
       if constexpr (isIntegralType<physicalType>()) {
         return SimdForBitpackEncoding<T>::encode(
@@ -411,6 +417,19 @@ std::string_view EncodingFactory::encode(
         NIMBLE_INCOMPATIBLE_ENCODING(
             "SimdForBitpack encoding only supports integral data types, got {}.",
             TypeTraits<T>::dataType);
+=======
+=======
+    case EncodingType::SubIntSplit: {
+      if constexpr (
+          isNumericType<physicalType>() &&
+          (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
+        return SubIntSplitEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
+>>>>>>> 15de29c ([encodings/factory] Register SubIntSplit in EncodingFactory create and encode):dwio/nimble/encodings/EncodingFactory.cpp
+>>>>>>> e9369ad ([encodings/factories] fix merge overlapping for PFOR and SubInt cases)
       }
     }
     default: {
