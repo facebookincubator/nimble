@@ -104,7 +104,6 @@ enum class EncodingType {
   // shared across consecutive entries to reduce storage. Supports seek
   // operations for efficient random access.
   Prefix = 11,
-<<<<<<< HEAD
   // Adaptive Lossless floating-Point compression for numeric types.
   ALP = 12,
   // SIMD Frame-of-Reference bitpacking. Subtracts baseline (global min),
@@ -118,12 +117,6 @@ enum class EncodingType {
   // independently. Optimal splits are chosen via a sample-driven DP algorithm.
   // Only supported for 32- and 64-bit numeric types.
   SubIntSplit = 16,
-=======
-  // Decomposes each value into bit-range sub-streams and encodes each
-  // independently. Optimal splits are chosen via a sample-driven DP algorithm.
-  // Only supported for 32- and 64-bit numeric types.
-  SubIntSplit = 12,
->>>>>>> feat(encoding): Subint Split Encoding (#697)
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
