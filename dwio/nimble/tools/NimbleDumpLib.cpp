@@ -24,9 +24,11 @@
 
 #include <zstd.h>
 #include "dwio/nimble/common/FixedBitArray.h"
+#include "dwio/nimble/common/EncodingPrimitives.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
@@ -59,6 +61,122 @@ namespace facebook::nimble::tools {
 namespace {
 
 constexpr uint32_t kBufferSize = 1000;
+constexpr int kRowCountOffset = 2;
+constexpr int kPrefixSize = 6;
+constexpr int kCompressionTypeSize = 1;
+
+uint64_t getRawDataSize(
+    velox::memory::MemoryPool& memoryPool,
+    std::string_view encodingStr) {
+  std::vector<velox::BufferPtr> newStringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    auto& buffer = newStringBuffers.emplace_back(
+        velox::AlignedBuffer::allocate<char>(totalLength, &memoryPool));
+    return buffer->asMutable<void>();
+  };
+
+  auto encoding =
+      EncodingFactory().create(memoryPool, encodingStr, stringBufferFactory);
+  EncodingType encodingType = encoding->encodingType();
+  DataType dataType = encoding->dataType();
+  uint32_t rowCount = encoding->rowCount();
+
+  if (encodingType == EncodingType::Sentinel) {
+    NIMBLE_UNSUPPORTED("Sentinel encoding is not supported");
+  }
+
+  if (encodingType == EncodingType::Nullable) {
+    auto pos = encodingStr.data() + kPrefixSize;
+    auto nonNullsSize = encoding::readUint32(pos);
+    // Sum of the null count and size of the non-null child encoding.
+    return getRawDataSize(memoryPool, {pos, nonNullsSize}) + rowCount;
+  }
+
+  if (dataType != DataType::String) {
+    auto typeSize = nimble::detail::dataTypeSize(dataType);
+    return typeSize * rowCount;
+  }
+
+  auto pos = encodingStr.data() + kPrefixSize; // Skip the prefix.
+  uint64_t result = 0;
+
+  switch (encodingType) {
+    case EncodingType::Trivial: {
+      pos += kCompressionTypeSize;
+      auto lengthsSize = encoding::readUint32(pos);
+      auto lengths = EncodingFactory().create(
+          memoryPool, {pos, lengthsSize}, stringBufferFactory);
+      std::vector<uint32_t> buffer(rowCount);
+      lengths->materialize(rowCount, buffer.data());
+      result += std::accumulate(buffer.begin(), buffer.end(), 0u);
+      break;
+    }
+
+    case EncodingType::Constant: {
+      auto valueSize = encoding::readUint32(pos);
+      result += rowCount * valueSize;
+      break;
+    }
+
+    case EncodingType::MainlyConstant: {
+      auto isCommonSize = encoding::readUint32(pos);
+      pos += isCommonSize;
+      auto otherValuesSize = encoding::readUint32(pos);
+      auto otherValuesOffset = pos;
+      auto otherValuesCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
+      pos += otherValuesSize;
+      auto constantValueSize = encoding::readUint32(pos);
+      result += (rowCount - otherValuesCount) * constantValueSize;
+      result += getRawDataSize(memoryPool, {otherValuesOffset, otherValuesSize});
+      break;
+    }
+
+    case EncodingType::Dictionary: {
+      auto alphabetSize = encoding::readUint32(pos);
+      auto alphabetCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
+      auto alphabet = EncodingFactory().create(
+          memoryPool, {pos, alphabetSize}, stringBufferFactory);
+      std::vector<std::string_view> alphabetBuffer(alphabetCount);
+      alphabet->materialize(alphabetCount, alphabetBuffer.data());
+
+      pos += alphabetSize;
+      auto indicesSize = encodingStr.length() - (pos - encodingStr.data());
+      auto indices = EncodingFactory().create(
+          memoryPool, {pos, indicesSize}, stringBufferFactory);
+      std::vector<uint32_t> indicesBuffer(rowCount);
+      indices->materialize(rowCount, indicesBuffer.data());
+      for (int i = 0; i < rowCount; ++i) {
+        result += alphabetBuffer[indicesBuffer[i]].size();
+      }
+      break;
+    }
+
+    case EncodingType::RLE: {
+      auto runLengthsSize = encoding::readUint32(pos);
+      auto runLengthsCount = encoding::peek<uint32_t>(pos + kRowCountOffset);
+      auto runLengths = EncodingFactory().create(
+          memoryPool, {pos, runLengthsSize}, stringBufferFactory);
+      std::vector<uint32_t> runLengthsBuffer(runLengthsCount);
+      runLengths->materialize(runLengthsCount, runLengthsBuffer.data());
+
+      pos += runLengthsSize;
+      auto runValuesSize = encodingStr.length() - (pos - encodingStr.data());
+      auto runValues = EncodingFactory().create(
+          memoryPool, {pos, runValuesSize}, stringBufferFactory);
+      std::vector<std::string_view> runValuesBuffer(runLengthsCount);
+      runValues->materialize(runLengthsCount, runValuesBuffer.data());
+
+      for (int i = 0; i < runLengthsCount; ++i) {
+        result += runLengthsBuffer[i] * runValuesBuffer[i].size();
+      }
+      break;
+    }
+
+    default:
+      NIMBLE_UNSUPPORTED("Encoding type does not support strings.");
+  }
+  return result;
+}
 
 struct GroupingKey {
   EncodingType encodingType;
@@ -585,8 +703,7 @@ void NimbleDumpLib::emitStreams(
           auto chunk = stream.nextChunk();
           itemCount += *reinterpret_cast<const uint32_t*>(chunk.data() + 2);
           if (showStreamRawSize) {
-            rawStreamSize +=
-                nimble::test::TestUtils::getRawDataSize(*pool_, chunk);
+            rawStreamSize += getRawDataSize(*pool_, chunk);
           }
         }
 
