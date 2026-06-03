@@ -182,20 +182,27 @@ std::string encodingTypeName(nimble::EncodingType type) {
 }
 
 std::optional<nimble::EncodingType> parseEncodingType(const std::string& name) {
-  if (name == "Trivial")
+  if (name == "Trivial") {
     return nimble::EncodingType::Trivial;
-  if (name == "FBW")
+  }
+  if (name == "FBW") {
     return nimble::EncodingType::FixedBitWidth;
-  if (name == "Dict" || name == "Dictionary")
+  }
+  if (name == "Dict" || name == "Dictionary") {
     return nimble::EncodingType::Dictionary;
-  if (name == "RLE")
+  }
+  if (name == "RLE") {
     return nimble::EncodingType::RLE;
-  if (name == "Varint")
+  }
+  if (name == "Varint") {
     return nimble::EncodingType::Varint;
-  if (name == "Constant")
+  }
+  if (name == "Constant") {
     return nimble::EncodingType::Constant;
-  if (name == "MainlyConstant")
+  }
+  if (name == "MainlyConstant") {
     return nimble::EncodingType::MainlyConstant;
+  }
   return std::nullopt;
 }
 
@@ -523,8 +530,9 @@ int main(int argc, char** argv) {
                                        : parseEncodingSpecs(FLAGS_encodings);
   std::cout << "Encodings: ";
   for (size_t i = 0; i < specs.size(); ++i) {
-    if (i > 0)
+    if (i > 0) {
       std::cout << ", ";
+    }
     std::cout << specs[i].name;
   }
   std::cout << ", AutoSelect" << std::endl;
