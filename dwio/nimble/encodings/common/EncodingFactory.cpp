@@ -255,13 +255,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::PFOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
-<<<<<<< HEAD
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
-=======
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
->>>>>>> 8e5f488 (feat(encoding): Experimental - Enable/Disable SubIntSplit encoding in both write and read paths)
     case EncodingType::SubIntSplit: {
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }

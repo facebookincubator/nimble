@@ -25,11 +25,7 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
-<<<<<<< HEAD
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
-=======
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
->>>>>>> fd23d0e ([encodings/PFOR-SubInt utils + size] fix rebasing cases)
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
