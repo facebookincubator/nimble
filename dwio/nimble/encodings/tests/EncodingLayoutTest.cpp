@@ -1,7 +1,6 @@
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -15,8 +14,15 @@
  */
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include <gtest/gtest.h>
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#include "dwio/nimble/tools/EncodingUtilities.h"
+#include "velox/common/memory/Memory.h"
+
+#include <unordered_map>
 
 using namespace facebook;
 
@@ -72,6 +78,35 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
   auto actual = nimble::EncodingLayoutCapture::capture(encoding);
   verifyEncodingLayout(expected, actual);
 }
+
+template <typename T>
+class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
+  using physicalType = typename nimble::TypeTraits<T>::physicalType;
+
+ public:
+  nimble::EncodingSelectionResult select(
+      std::span<const physicalType> /* values */,
+      const nimble::Statistics<physicalType>& /* statistics */) override {
+    return {.encodingType = nimble::EncodingType::SubIntSplit};
+  }
+
+  nimble::EncodingSelectionResult selectNullable(
+      std::span<const physicalType> /* values */,
+      std::span<const bool> /* nulls */,
+      const nimble::Statistics<physicalType>& /* statistics */) override {
+    return {.encodingType = nimble::EncodingType::Nullable};
+  }
+
+  std::unique_ptr<nimble::EncodingSelectionPolicyBase> createImpl(
+      nimble::EncodingType /* encodingType */,
+      nimble::NestedEncodingIdentifier /* identifier */,
+      nimble::DataType type) override {
+    nimble::ManualEncodingSelectionPolicyFactory factory{
+        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+        std::nullopt};
+    return factory.createPolicy(type);
+  }
+};
 
 } // namespace
 
@@ -324,6 +359,212 @@ TEST(EncodingLayoutTests, Nullable) {
       expected.child(nimble::EncodingIdentifiers::Nullable::Data),
       actual.first);
 }
+
+// SubIntSplitEncoding layout tests -------------------------------------------
+
+// Verify that an EncodingLayout tree with a SubIntSplit root and two named
+// child sections can be serialized and deserialized correctly.
+TEST(EncodingLayoutTests, SubIntSplitSerialization) {
+  nimble::EncodingLayout layout{
+      nimble::EncodingType::SubIntSplit,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          // section 0: lower bits — typically FixedBitWidth or Trivial
+          nimble::EncodingLayout{
+              nimble::EncodingType::FixedBitWidth,
+              {},
+              nimble::CompressionType::Uncompressed},
+          // section 1: upper bits — often Constant for structured IDs
+          nimble::EncodingLayout{
+              nimble::EncodingType::Constant,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+
+  testSerialization(layout);
+
+  // Three sections
+  nimble::EncodingLayout layout3{
+      nimble::EncodingType::SubIntSplit,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+          nimble::EncodingLayout{
+              nimble::EncodingType::Dictionary,
+              {},
+              nimble::CompressionType::Uncompressed,
+              {
+                  nimble::EncodingLayout{
+                      nimble::EncodingType::Trivial,
+                      {},
+                      nimble::CompressionType::Uncompressed},
+                  nimble::EncodingLayout{
+                      nimble::EncodingType::FixedBitWidth,
+                      {},
+                      nimble::CompressionType::Uncompressed},
+              }},
+          nimble::EncodingLayout{
+              nimble::EncodingType::Constant,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+
+  testSerialization(layout3);
+}
+
+// Verify that EncodingLayoutCapture correctly reads the SubIntSplit binary
+// format and that the captured tree round-trips through serialize/deserialize.
+TEST(EncodingLayoutTests, SubIntSplitCapture) {
+  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
+          nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto defaultPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*defaultPool};
+
+  // Structured int64 values: upper 40 bits are a fixed datacenter/timestamp
+  // prefix; lower 24 bits are a monotone counter. This should trigger
+  // SubIntSplit selection (range << typeWidth) and produce a multi-section
+  // encoding where the upper section is Constant or FixedBitWidth with small
+  // range and the lower section is FixedBitWidth or Trivial.
+  std::vector<int64_t> data;
+  data.reserve(300);
+  for (int64_t i = 0; i < 300; ++i) {
+    data.push_back(static_cast<int64_t>(0x1234567890000000LL) | i);
+  }
+
+  auto encoding = nimble::EncodingFactory::encode<int64_t>(
+      std::make_unique<ForceSubIntSplitPolicy<int64_t>>(),
+      data,
+      buffer);
+
+  // Capture must succeed and not throw.
+  auto captured = nimble::EncodingLayoutCapture::capture(encoding);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
+  ASSERT_GT(captured.childrenCount(), 0u);
+    EXPECT_EQ(
+      captured.config().get(std::string(nimble::detail::subintsplit::kSplitModeConfigKey)),
+      nimble::detail::subintsplit::kSplitModePreserve);
+    ASSERT_TRUE(captured.config().get(
+      std::string(nimble::detail::subintsplit::kSplitBoundariesConfigKey)).has_value());
+
+  // The encoded stream must round-trip through the encoding factory.
+  auto decoded = nimble::EncodingFactory().create(
+      *defaultPool,
+      encoding,
+      [](uint32_t) { return nullptr; });
+  nimble::Vector<int64_t> decodedValues{defaultPool.get()};
+  decodedValues.resize(data.size());
+  decoded->materialize(data.size(), decodedValues.data());
+  for (size_t i = 0; i < data.size(); ++i) {
+    EXPECT_EQ(data[i], decodedValues[i]) << i;
+  }
+
+  std::vector<nimble::EncodingType> traversedTypes;
+  nimble::tools::traverseEncodings(
+      encoding,
+      [&](nimble::EncodingType encodingType,
+          nimble::DataType dataType,
+          uint32_t level,
+          uint32_t /* index */,
+          std::string nestedEncodingName,
+          std::unordered_map<
+              nimble::tools::EncodingPropertyType,
+              nimble::tools::EncodingProperty> /* properties */) {
+        if (level == 0) {
+          EXPECT_EQ(encodingType, nimble::EncodingType::SubIntSplit);
+          EXPECT_EQ(dataType, nimble::DataType::Int64);
+          EXPECT_TRUE(nestedEncodingName.empty());
+        }
+        traversedTypes.push_back(encodingType);
+        return true;
+      });
+  ASSERT_GE(traversedTypes.size(), 2u);
+
+  // The captured layout must round-trip through serialize → deserialize.
+  std::string output(4096, '\0');
+  const auto serializedSize = captured.serialize(output);
+  ASSERT_GT(serializedSize, 0);
+  auto [deserialized, bytesRead] = nimble::EncodingLayout::create(
+      {output.data(), static_cast<size_t>(serializedSize)});
+  verifyEncodingLayout(captured, deserialized);
+  auto preserveMode = deserialized.config().get(
+      std::string(nimble::detail::subintsplit::kSplitModeConfigKey));
+  ASSERT_TRUE(preserveMode.has_value());
+  EXPECT_EQ(*preserveMode, nimble::detail::subintsplit::kSplitModePreserve);
+
+  auto deserializedBoundaries = deserialized.config().get(
+      std::string(nimble::detail::subintsplit::kSplitBoundariesConfigKey));
+  auto capturedBoundaries = captured.config().get(
+      std::string(nimble::detail::subintsplit::kSplitBoundariesConfigKey));
+  ASSERT_TRUE(deserializedBoundaries.has_value());
+  ASSERT_TRUE(capturedBoundaries.has_value());
+  EXPECT_EQ(*deserializedBoundaries, *capturedBoundaries);
+
+  // Each child must be non-nullopt (all sections were encoded).
+  for (nimble::NestedEncodingIdentifier id = 0;
+       id < captured.childrenCount();
+       ++id) {
+    EXPECT_TRUE(captured.child(id).has_value());
+  }
+}
+
+TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
+  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+      [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
+        nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return encodingFactory.createPolicy(dataType);
+  };
+
+  auto defaultPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*defaultPool};
+
+  std::vector<int64_t> data;
+  data.reserve(300);
+  for (int64_t i = 0; i < 300; ++i) {
+    data.push_back(static_cast<int64_t>(0x1234567890000000LL) | i);
+  }
+
+  const std::string preserveBoundaries = "0-15;16-47;48-63";
+  nimble::EncodingLayout preserveLayout{
+      nimble::EncodingType::SubIntSplit,
+      nimble::EncodingLayout::Config{
+          {{std::string(nimble::detail::subintsplit::kSplitModeConfigKey),
+            std::string(nimble::detail::subintsplit::kSplitModePreserve)},
+           {std::string(nimble::detail::subintsplit::kSplitBoundariesConfigKey),
+            preserveBoundaries}}},
+      nimble::CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt, std::nullopt}};
+
+  auto encoding = nimble::EncodingFactory::encode<int64_t>(
+      std::make_unique<nimble::ReplayedEncodingSelectionPolicy<int64_t>>(
+          preserveLayout,
+          std::nullopt,
+          encodingSelectionPolicyFactory),
+      data,
+      buffer);
+
+  auto captured = nimble::EncodingLayoutCapture::capture(encoding);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
+  auto replayedMode = captured.config().get(
+      std::string(nimble::detail::subintsplit::kSplitModeConfigKey));
+  auto replayedBoundaries = captured.config().get(
+      std::string(nimble::detail::subintsplit::kSplitBoundariesConfigKey));
+  ASSERT_TRUE(replayedMode.has_value());
+  ASSERT_TRUE(replayedBoundaries.has_value());
+  EXPECT_EQ(*replayedMode, nimble::detail::subintsplit::kSplitModePreserve);
+  EXPECT_EQ(*replayedBoundaries,
+      preserveBoundaries);
+  }
 
 TEST(EncodingLayoutTests, SizeTooSmall) {
   {
