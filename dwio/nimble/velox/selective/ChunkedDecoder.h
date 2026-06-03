@@ -525,6 +525,14 @@ class ChunkedDecoder {
         visitor.setRows(velox::RowSet(visitor.rows(), endRowIndex));
         if (numNonNulls > 0) {
           EncodingTrait::callReadWithVisitor(*encoding_, visitor, params);
+          // Some encodings (e.g., Constant via readWithVisitorSlow) do not
+          // update numValues when DropValues (filter-only) is used. Sync
+          // numValues with outputRows so that subsequent chunks whose
+          // encodings (e.g., RLE bulkScan) use numValues as a base for
+          // setNumRows do not truncate outputRows.
+          if constexpr (V::kFilterOnly) {
+            visitor.reader().setNumValues(visitor.reader().outputRows().size());
+          }
         } else if (!visitor.allowNulls()) {
           visitor.setRowIndex(endRowIndex);
         } else {

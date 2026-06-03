@@ -1534,6 +1534,101 @@ TEST_P(StringColumnReaderTest, constantDictionaryWithNulls) {
       pool());
 }
 
+// Regression test for filter-only (DropValues) columns spanning multiple
+// chunks where the first chunk's encoding does not call addNumValues.
+//
+// The "key" column is filtered with projectOut=false (DropValues). The first
+// chunk is forced to Constant encoding, whose readWithVisitorSlow does not
+// update numValues for DropValues. The second chunk has mixed values, so the
+// Constant layout does not apply and the writer falls back to an encoding
+// whose bulkScan calls addNumValues -> setNumRows. Without the fix, the stale
+// numValues from the Constant chunk causes setNumRows to truncate outputRows,
+// silently dropping rows that passed the filter in the first chunk.
+TEST_P(StringColumnReaderTest, filterOnlyMultiChunkNumValuesSync) {
+  const bool stringDecoderZeroCopy = GetParam();
+  const std::string targetValue = "MATCH";
+
+  // Chunk 1: all rows match the filter -> Constant encoding.
+  constexpr int kChunk1Rows = 300;
+  auto chunk1 = makeRowVector(
+      {"key", "value"},
+      {makeFlatVector<StringView>(
+           kChunk1Rows, [&](auto) { return StringView(targetValue); }),
+       makeFlatVector<int64_t>(kChunk1Rows, [](auto i) { return i; })});
+
+  // Chunk 2: runs of matching / non-matching values -> RLE encoding (has
+  // bulkScan). Half the rows match.
+  constexpr int kChunk2Rows = 300;
+  constexpr int kRunLength = 10;
+  const StringView matchView(targetValue);
+  const StringView otherView("OTHER");
+  auto chunk2 = makeRowVector(
+      {"key", "value"},
+      {makeFlatVector<StringView>(
+           kChunk2Rows,
+           [&](auto i) {
+             return (i / kRunLength) % 2 == 0 ? matchView : otherView;
+           }),
+       makeFlatVector<int64_t>(
+           kChunk2Rows, [](auto i) { return kChunk1Rows + i; })});
+
+  // Force the key column to Constant encoding. Chunk 1 (all identical) uses it;
+  // chunk 2 (mixed) cannot, so the writer falls back to a bulkScan encoding.
+  EncodingLayout constantLayout{
+      EncodingType::Constant, {}, CompressionType::Uncompressed};
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  // Force one chunk per write() so the two vectors land in separate chunks
+  // within a single stripe. A single filter-only read then spans the chunk
+  // boundary, which is what triggers the numValues desync bug.
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{
+              Kind::Scalar, {{0, std::move(constantLayout)}}, "key"},
+          EncodingLayoutTree{Kind::Scalar, {}, "value"}});
+
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      {chunk1, chunk2},
+      writerOptions,
+      /*flushAfterWrite=*/false);
+
+  auto type = asRowType(chunk1->type());
+
+  auto readRows = [&](bool projectOut) -> int64_t {
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*type);
+    auto* keySpec = scanSpec->childByName("key");
+    keySpec->setFilter(
+        std::make_unique<common::BytesValues>(
+            std::vector<std::string>{targetValue}, false));
+    keySpec->setProjectOut(projectOut);
+    auto readers = makeReaders(chunk1, file, scanSpec, stringDecoderZeroCopy);
+    auto result = BaseVector::create(type, 0, pool());
+    int64_t totalRows = 0;
+    // Large batch so a single next() spans the chunk boundary.
+    while (readers.rowReader->next(100000, result) > 0) {
+      totalRows += result->size();
+    }
+    return totalRows;
+  };
+
+  // All of chunk 1 matches plus half of chunk 2.
+  const int64_t expected = kChunk1Rows + kChunk2Rows / 2;
+  ASSERT_EQ(readRows(/*projectOut=*/true), expected);
+  ASSERT_EQ(readRows(/*projectOut=*/false), expected);
+}
+
 INSTANTIATE_TEST_CASE_P(
     StringColumnReaderTestSuite,
     StringColumnReaderTest,
