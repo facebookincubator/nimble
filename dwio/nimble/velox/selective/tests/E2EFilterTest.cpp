@@ -1065,6 +1065,7 @@ TEST_P(E2EFilterTest, integerBiasedDelta) {
   verifyColumnEncodingsOnDisk(EncodingType::Delta);
 }
 
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Biased variant that forces SubIntSplit encoding selection.
 // SubIntSplit only applies to 32- and 64-bit types; smallint is excluded.
 TEST_P(E2EFilterTest, integerBiasedSubIntSplit) {
@@ -1148,6 +1149,7 @@ TEST_P(E2EFilterTest, floatBiasedSubIntSplit) {
       /*withRecursiveNulls=*/true,
       biasedEncodingFactors(EncodingType::SubIntSplit));
 }
+#endif  // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Forces SubIntSplit via EncodingLayoutTree and verifies the on-disk encoding
