@@ -777,6 +777,10 @@ void Deserializer::deserialize(
   // (parent nulls/lengths are read and translated to child counts). Avoids
   // the over-fetch CPU entirely.
   uint32_t rowOffset{0};
+  const auto isValueStreamPresent = [&](offset_size offset) {
+    return offset <= maxStreamOffset && inMapPresentOffsets_[offset];
+  };
+
   serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
     const auto batchRows = reader.initialize(sv);
@@ -805,9 +809,7 @@ void Deserializer::deserialize(
     // Detect present in-map streams: in-map skipped + value streams present.
     for (const auto& [inMapOffset, childType] : inMapChildTypes_) {
       if (!inMapPresentOffsets_[inMapOffset] &&
-          hasValueStreams(*childType, [&](offset_size offset) {
-            return offset <= maxStreamOffset && inMapPresentOffsets_[offset];
-          })) {
+          hasValueStreams(*childType, isValueStreamPresent)) {
         DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
             ->addPresentInMapSegment(rowOffset, batchRows);
       }
