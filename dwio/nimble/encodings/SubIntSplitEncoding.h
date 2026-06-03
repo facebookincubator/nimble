@@ -24,15 +24,15 @@
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingIdentifier.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #include "dwio/nimble/encodings/SubIntSplitSampler.h"
 #include "dwio/nimble/encodings/SubIntSplitSelector.h"
@@ -535,37 +535,34 @@ std::string_view SubIntSplitEncoding<T>::encode(
 
   constexpr int kBits = static_cast<int>(sizeof(physicalType) * 8);
 
-    std::vector<detail::subintsplit::SegmentPlan> segments;
-    const auto modeConfig = selection.getConfig(
+  std::vector<detail::subintsplit::SegmentPlan> segments;
+  const auto modeConfig = selection.getConfig(
       std::string(detail::subintsplit::kSplitModeConfigKey));
-    if (modeConfig.has_value() &&
+  if (modeConfig.has_value() &&
       *modeConfig == detail::subintsplit::kSplitModePreserve) {
     const auto boundaryConfig = selection.getConfig(
-      std::string(detail::subintsplit::kSplitBoundariesConfigKey));
+        std::string(detail::subintsplit::kSplitBoundariesConfigKey));
     NIMBLE_CHECK(
-      boundaryConfig.has_value(),
-      "SubIntSplit preserve mode requires boundaries config.");
-    auto parsed = detail::subintsplit::parseSplitBoundaries(*boundaryConfig, kBits);
-    NIMBLE_CHECK(
-      parsed.has_value(),
-      "Invalid SubIntSplit boundaries config.");
+        boundaryConfig.has_value(),
+        "SubIntSplit preserve mode requires boundaries config.");
+    auto parsed =
+        detail::subintsplit::parseSplitBoundaries(*boundaryConfig, kBits);
+    NIMBLE_CHECK(parsed.has_value(), "Invalid SubIntSplit boundaries config.");
     segments = std::move(parsed.value());
-    } else {
+  } else {
     // Default behavior: recompute the split boundaries from the sampled data.
     std::vector<uint64_t> sampleBuf;
     detail::subintsplit::sampleIntoU64<physicalType>(
-      values,
-      sampleBuf,
-      detail::subintsplit::defaultSamplerConfig());
+        values, sampleBuf, detail::subintsplit::defaultSamplerConfig());
 
     auto selectorResult = detail::subintsplit::selectSplits(
-      sampleBuf,
-      kBits,
-      valueCount,
-      detail::subintsplit::defaultSelectorConfig());
+        sampleBuf,
+        kBits,
+        valueCount,
+        detail::subintsplit::defaultSelectorConfig());
 
     segments = std::move(selectorResult.segments);
-    }
+  }
 
   NIMBLE_CHECK(
       !segments.empty(), "SubIntSplitEncoding: selector returned no segments");

@@ -22,12 +22,12 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingType.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingLayout.h"
-#include "dwio/nimble/encodings/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace facebook;
@@ -159,13 +159,14 @@ template <typename T>
 std::unique_ptr<nimble::Encoding> decodeEncoding(
     std::string_view encoded,
     velox::memory::MemoryPool& pool) {
-  return nimble::EncodingFactory().create(pool, encoded, [](uint32_t) {
-    return nullptr;
-  });
+  return nimble::EncodingFactory().create(
+      pool, encoded, [](uint32_t) { return nullptr; });
 }
 
 template <typename T>
-std::vector<T> decodeAll(std::string_view encoded, velox::memory::MemoryPool& pool) {
+std::vector<T> decodeAll(
+    std::string_view encoded,
+    velox::memory::MemoryPool& pool) {
   auto encoding = decodeEncoding<T>(encoded, pool);
   std::vector<T> result(encoding->rowCount());
   encoding->materialize(encoding->rowCount(), result.data());
@@ -173,7 +174,9 @@ std::vector<T> decodeAll(std::string_view encoded, velox::memory::MemoryPool& po
 }
 
 template <typename T>
-void expectBitwiseEqual(const std::vector<T>& expected, const std::vector<T>& actual) {
+void expectBitwiseEqual(
+    const std::vector<T>& expected,
+    const std::vector<T>& actual) {
   ASSERT_EQ(expected.size(), actual.size());
   for (size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(
@@ -213,10 +216,12 @@ void expectSameLayout(
   EXPECT_EQ(expected.compressionType(), actual.compressionType());
   EXPECT_EQ(expected.config().values(), actual.config().values());
   ASSERT_EQ(expected.childrenCount(), actual.childrenCount());
-  for (nimble::NestedEncodingIdentifier i = 0; i < expected.childrenCount(); ++i) {
+  for (nimble::NestedEncodingIdentifier i = 0; i < expected.childrenCount();
+       ++i) {
     const auto& expectedChild = expected.child(i);
     const auto& actualChild = actual.child(i);
-    ASSERT_EQ(expectedChild.has_value(), actualChild.has_value()) << "child " << i;
+    ASSERT_EQ(expectedChild.has_value(), actualChild.has_value())
+        << "child " << i;
     if (expectedChild.has_value()) {
       expectSameLayout(*expectedChild, *actualChild);
     }
@@ -231,15 +236,17 @@ TEST(SubIntSplitConfigTests, BoundarySerializationAndParsing) {
       {.bitStart = 8, .bitEnd = 15},
       {.bitStart = 16, .bitEnd = 31}};
 
-  const auto serialized = nimble::detail::subintsplit::serializeSplitBoundaries(
-      segments);
+  const auto serialized =
+      nimble::detail::subintsplit::serializeSplitBoundaries(segments);
   EXPECT_EQ(serialized, "0-7;8-15;16-31");
 
-  auto parsed = nimble::detail::subintsplit::parseSplitBoundaries(serialized, 32);
+  auto parsed =
+      nimble::detail::subintsplit::parseSplitBoundaries(serialized, 32);
   ASSERT_TRUE(parsed.has_value());
   expectSegmentsEqual(segments, *parsed);
 
-  EXPECT_FALSE(nimble::detail::subintsplit::parseSplitBoundaries("", 32).has_value());
+  EXPECT_FALSE(
+      nimble::detail::subintsplit::parseSplitBoundaries("", 32).has_value());
   EXPECT_FALSE(
       nimble::detail::subintsplit::parseSplitBoundaries("0-7;9-15", 16)
           .has_value());

@@ -20,6 +20,7 @@
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 
@@ -115,6 +116,75 @@ EncodingLayout::Config deserializeConfig(std::string_view extraData) {
   return EncodingLayout::Config{std::move(configs)};
 }
 }
+
+void serializeConfig(const EncodingLayout::Config& config, char*& pos) {
+  std::vector<std::pair<std::string_view, std::string_view>> entries;
+  entries.reserve(config.values().size());
+  for (const auto& [key, value] : config.values()) {
+    entries.emplace_back(key, value);
+  }
+  std::sort(
+      entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+        return left.first < right.first;
+      });
+
+  encoding::write<uint16_t>(static_cast<uint16_t>(entries.size()), pos);
+  for (const auto& [key, value] : entries) {
+    encoding::write<uint16_t>(static_cast<uint16_t>(key.size()), pos);
+    encoding::writeBytes(key, pos);
+    encoding::write<uint16_t>(static_cast<uint16_t>(value.size()), pos);
+    encoding::writeBytes(value, pos);
+  }
+}
+
+EncodingLayout::Config deserializeConfig(std::string_view extraData) {
+  if (extraData.empty()) {
+    return {};
+  }
+
+  const char* pos = extraData.data();
+  const char* const end = extraData.data() + extraData.size();
+  std::unordered_map<std::string, std::string> configs;
+
+  NIMBLE_CHECK_LE(
+      static_cast<size_t>(end - pos),
+      extraData.size(),
+      "Invalid encoding layout config.");
+  const uint16_t configCount = encoding::read<uint16_t>(pos);
+  configs.reserve(configCount);
+
+  for (uint16_t i = 0; i < configCount; ++i) {
+    NIMBLE_CHECK_LE(
+        sizeof(uint16_t),
+        static_cast<size_t>(end - pos),
+        "Invalid encoding layout config.");
+    const uint16_t keySize = encoding::read<uint16_t>(pos);
+    NIMBLE_CHECK_LE(
+        keySize,
+        static_cast<size_t>(end - pos),
+        "Invalid encoding layout config.");
+    std::string key(pos, keySize);
+    pos += keySize;
+
+    NIMBLE_CHECK_LE(
+        sizeof(uint16_t),
+        static_cast<size_t>(end - pos),
+        "Invalid encoding layout config.");
+    const uint16_t valueSize = encoding::read<uint16_t>(pos);
+    NIMBLE_CHECK_LE(
+        valueSize,
+        static_cast<size_t>(end - pos),
+        "Invalid encoding layout config.");
+    std::string value(pos, valueSize);
+    pos += valueSize;
+
+    configs.emplace(std::move(key), std::move(value));
+  }
+
+  NIMBLE_CHECK_EQ(pos, end, "Invalid encoding layout config length.");
+  return EncodingLayout::Config{std::move(configs)};
+}
+} // namespace
 
 std::optional<std::string> EncodingLayout::Config::get(
     const std::string& key) const {

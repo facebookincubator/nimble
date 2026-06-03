@@ -28,8 +28,6 @@
 #include "dwio/nimble/encodings/SubIntSplitMetrics.h"
 
 // DP-based bit-range split selector for SubIntSplitEncoding.
-//
-// Adapted from EncodingsPlayground/Source/encoders/selectors/IDSubStreamEncodingSelector.hpp.
 // Evaluates a grid of bit ranges [l..r] on a sample of uint64_t values,
 // runs dynamic programming over bit positions 0..kBits to find the minimum-cost
 // partition, and returns a list of SegmentPlan entries.

@@ -25,7 +25,6 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -97,12 +96,6 @@ template <typename T>
 struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::Varint;
-};
-
-template <typename T>
-struct EncodingTypeTraits<nimble::SubIntSplitEncoding<T>> {
-  static constexpr inline nimble::EncodingType encodingType =
-      nimble::EncodingType::SubIntSplit;
 };
 
 template <typename T>

@@ -52,6 +52,7 @@ void extractCompressionType(
     case EncodingType::ALP:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
+    case EncodingType::SubIntSplit:
       break;
   }
 }
