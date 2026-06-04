@@ -50,19 +50,20 @@ void RLEEncoding<bool>::materializeBoolsAsBits(
     uint64_t* buffer,
     int begin) {
   auto rowsLeft = rowCount;
-  while (rowsLeft) {
+  while (rowsLeft > 0) {
+    if (copiesRemaining_ == 0) {
+      advanceRun();
+    }
     if (rowsLeft < copiesRemaining_) {
       velox::bits::fillBits(buffer, begin, begin + rowsLeft, currentValue_);
       copiesRemaining_ -= rowsLeft;
       return;
-    } else {
-      velox::bits::fillBits(
-          buffer, begin, begin + copiesRemaining_, currentValue_);
-      begin += copiesRemaining_;
-      rowsLeft -= copiesRemaining_;
-      copiesRemaining_ = materializedRunLengths_.nextValue();
-      currentValue_ = nextValue();
     }
+    velox::bits::fillBits(
+        buffer, begin, begin + copiesRemaining_, currentValue_);
+    begin += copiesRemaining_;
+    rowsLeft -= copiesRemaining_;
+    copiesRemaining_ = 0;
   }
 }
 
