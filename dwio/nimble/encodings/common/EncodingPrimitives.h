@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include "folly/io/IOBuf.h"
+#include "velox/common/base/BitUtil.h"
 
 // Primitives for reading and writing to a stream of bytes.
 

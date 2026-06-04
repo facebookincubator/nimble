@@ -19,6 +19,7 @@
 #include <span>
 #include <unordered_map>
 
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/CompressionPolicy.h"
@@ -76,6 +77,7 @@ struct EncodingSelectionResult {
   EncodingLayout::Config encodingConfig;
   std::function<std::unique_ptr<CompressionPolicy>()> compressionPolicyFactory =
       []() { return std::make_unique<NoCompressionPolicy>(); };
+  uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 };
 
 /// The EncodingSelection class is passed in to the encode() method of each
@@ -103,6 +105,10 @@ class EncodingSelection {
   std::unique_ptr<CompressionPolicy> compressionPolicy() const noexcept {
     auto policy = selectionResult_.compressionPolicyFactory();
     return policy;
+  }
+
+  uint16_t blockBitPackingBlockSize() const noexcept {
+    return selectionResult_.blockBitPackingBlockSize;
   }
 
   /// Returns a config value for the given key, or std::nullopt if not found.

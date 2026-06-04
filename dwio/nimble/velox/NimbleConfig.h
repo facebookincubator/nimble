@@ -80,6 +80,8 @@ class Config : public velox::config::ConfigBase {
   /// Valid values: "prefix" (default), "trivial".
   static Entry<std::string> INDEX_ENCODING_TYPE;
 
+  static Entry<uint16_t> BLOCK_BIT_PACKING_BLOCK_SIZE;
+
   /// Enable column statistics collection during writing.
   static Entry<bool> ENABLE_STATS_COLLECTION;
 

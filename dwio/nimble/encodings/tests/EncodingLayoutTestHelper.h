@@ -54,6 +54,10 @@ struct SparseBoolEnc {
   operator EncodingLayout() const;
 };
 
+struct BlockBitPackingEnc {
+  operator EncodingLayout() const;
+};
+
 struct DeltaEnc {
   EncodingLayout deltas = TrivialEnc{};
   EncodingLayout restatements = TrivialEnc{};

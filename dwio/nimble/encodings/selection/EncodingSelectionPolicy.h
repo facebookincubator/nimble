@@ -131,10 +131,12 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   ManualEncodingSelectionPolicy(
       std::vector<std::pair<EncodingType, float>> readFactors,
       std::optional<CompressionOptions> compressionOptions,
-      std::optional<NestedEncodingIdentifier> identifier)
+      std::optional<NestedEncodingIdentifier> identifier,
+      uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize)
       : readFactors_{std::move(readFactors)},
         compressionOptions_{std::move(compressionOptions)},
-        identifier_{identifier} {}
+        identifier_{identifier},
+        blockBitPackingBlockSize_{blockBitPackingBlockSize} {}
 
   std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
       EncodingType encodingType,
@@ -163,7 +165,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         COMMA FixedByteWidth,
         std::move(filteredReadFactors),
         compressionOptions_,
-        identifier);
+        identifier,
+        blockBitPackingBlockSize_);
   }
 
   EncodingSelectionResult select(
@@ -309,16 +312,19 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
                 ? "..."
                 : ""));
     if (!compressionOptions_.has_value()) {
-      return {.encodingType = selectedEncoding};
+      return {
+          .encodingType = selectedEncoding,
+          .blockBitPackingBlockSize = blockBitPackingBlockSize_};
     }
     return {
         .encodingType = selectedEncoding,
-        .compressionPolicyFactory = [compressionOptions =
-                                         compressionOptions_.value(),
-                                     selectedEncoding]() {
-          return std::make_unique<AlwaysCompressPolicy>(
-              compressionOptions, selectedEncoding);
-        }};
+        .compressionPolicyFactory =
+            [compressionOptions = compressionOptions_.value(),
+             selectedEncoding]() {
+              return std::make_unique<AlwaysCompressPolicy>(
+                  compressionOptions, selectedEncoding);
+            },
+        .blockBitPackingBlockSize = blockBitPackingBlockSize_};
   }
 
   EncodingSelectionResult selectNullable(
@@ -346,6 +352,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   // policies created from it.
   const std::optional<CompressionOptions> compressionOptions_;
   const std::optional<NestedEncodingIdentifier> identifier_;
+  const uint16_t blockBitPackingBlockSize_;
 };
 
 // This model is trained offline and parameters are updated here.
@@ -375,9 +382,11 @@ class ManualEncodingSelectionPolicyFactory {
       std::vector<std::pair<EncodingType, float>> readFactors =
           defaultReadFactors(),
       std::optional<CompressionOptions> compressionOptions =
-          CompressionOptions{})
+          CompressionOptions{},
+      uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize)
       : readFactors_{std::move(readFactors)},
-        compressionOptions_{std::move(compressionOptions)} {}
+        compressionOptions_{std::move(compressionOptions)},
+        blockBitPackingBlockSize_{blockBitPackingBlockSize} {}
 
   std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
       DataType dataType) const {
@@ -386,7 +395,8 @@ class ManualEncodingSelectionPolicyFactory {
         ManualEncodingSelectionPolicy,
         readFactors_,
         compressionOptions_,
-        std::nullopt);
+        std::nullopt,
+        blockBitPackingBlockSize_);
   }
 
   // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
@@ -474,6 +484,7 @@ class ManualEncodingSelectionPolicyFactory {
  private:
   const std::vector<std::pair<EncodingType, float>> readFactors_;
   const std::optional<CompressionOptions> compressionOptions_;
+  const uint16_t blockBitPackingBlockSize_;
 };
 
 // This is a learned encoding selection implementation.

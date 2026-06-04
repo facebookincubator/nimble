@@ -29,7 +29,8 @@ void extractCompressionType(
     // Compression type is the byte right after the encoding header for both
     // encodings.
     case EncodingType::Trivial:
-    case EncodingType::FixedBitWidth: {
+    case EncodingType::FixedBitWidth:
+    case EncodingType::BlockBitPacking: {
       auto pos = stream.data() + kEncodingPrefixSize;
       properties.insert(
           {EncodingPropertyType::Compression,
@@ -106,6 +107,7 @@ void traverseEncodings(
     case EncodingType::Constant:
     case EncodingType::Prefix:
     case EncodingType::ALP:
+    case EncodingType::BlockBitPacking:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack: {
       // don't have any nested encoding

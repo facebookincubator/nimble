@@ -39,6 +39,7 @@ TEST(TypesTest, EncodingTypeToString) {
   EXPECT_EQ(toString(EncodingType::MainlyConstant), "MainlyConstant");
   EXPECT_EQ(toString(EncodingType::Prefix), "Prefix");
   EXPECT_EQ(toString(EncodingType::ALP), "ALP");
+  EXPECT_EQ(toString(EncodingType::BlockBitPacking), "BlockBitPacking");
 }
 
 TEST(TypesTest, EncodingTypeToStringUnknown) {
