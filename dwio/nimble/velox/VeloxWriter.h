@@ -22,6 +22,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/dwio/common/TypeWithId.h"
@@ -64,36 +65,26 @@ class VeloxWriter {
     uint32_t stripeCount;
     /// Uncompressed size of data written to the file.
     uint64_t inputBytes;
-    // TODO: Remove rowsPerStripe — replaced by nimble.rowsPerStripe runtime
-    // stat (RuntimeMetric with count/min/max/avg).
-    std::vector<uint64_t> rowsPerStripe;
     /// CPU time spent in tabletWriter write in nanoseconds.
     uint64_t writeCpuTimeNs;
     /// Wall clock time spent in tabletWriter write in nanoseconds.
     uint64_t writeWallTimeNs;
     /// CPU time spent ingesting vectors into field writer buffers in
-    /// nanoseconds.
+    /// nanoseconds. Sequential — no wall time needed.
     uint64_t ingestionCpuTimeNs;
-    /// Wall clock time spent ingesting vectors into field writer buffers in
-    /// nanoseconds.
-    uint64_t ingestionWallTimeNs;
     /// CPU time spent on encoding and compression in nanoseconds.
     // TODO: Separate encoding and compression costs.
     uint64_t encodingCpuTimeNs;
     /// Wall clock time spent on encoding and compression in nanoseconds.
+    /// Encoding is parallelized via encodingExecutor, so wall < CPU.
     uint64_t encodingWallTimeNs;
     /// CPU time spent on encoding selection in nanoseconds. Subset of
-    /// encoding timing.
+    /// encoding timing. Sequential — no wall time needed.
     uint64_t encodingSelectionCpuTimeNs;
-    /// Wall clock time spent on encoding selection in nanoseconds. Subset of
-    /// encoding timing.
-    uint64_t encodingSelectionWallTimeNs;
-    // TODO: Remove inputBufferReallocCount and inputBufferReallocItemCount.
-    uint64_t inputBufferReallocCount;
-    uint64_t inputBufferReallocItemCount;
-    /// Cumulative encoded size distribution across all chunks written under
-    /// memory pressure. Empty when chunking is not triggered.
-    folly::StreamingStats<uint64_t> chunkSizeStats;
+    /// Rows per stripe distribution (count/sum/min/max).
+    velox::RuntimeMetric rowsPerStripe;
+    /// Encoded chunk size distribution in bytes (count/sum/min/max).
+    velox::RuntimeMetric chunkSizeBytes;
     /// Per-column statistics. Only available at file close.
     /// NOTE: expected to be exposed as a view, for merging with base stats
     /// objects. User needs to explicitly copy.

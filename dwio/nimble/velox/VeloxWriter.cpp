@@ -36,6 +36,7 @@
 #include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/time/CpuWallTimer.h"
+#include "velox/common/time/Timer.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble {
@@ -74,22 +75,6 @@ class WriterContext : public FieldWriterContext {
 
   const VeloxWriterOptions& options() const {
     return options_;
-  }
-
-  velox::CpuWallTiming& totalFlushTiming() {
-    return totalFlushTiming_;
-  }
-
-  const velox::CpuWallTiming& totalFlushTiming() const {
-    return totalFlushTiming_;
-  }
-
-  const velox::CpuWallTiming& stripeFlushTiming() const {
-    return stripeFlushTiming_;
-  }
-
-  void addStripeFlushTiming(const velox::CpuWallTiming& timing) {
-    stripeFlushTiming_.add(timing);
   }
 
   velox::CpuWallTiming& encodingTiming() {
@@ -202,8 +187,6 @@ class WriterContext : public FieldWriterContext {
   }
 
   void nextStripe() {
-    totalFlushTiming_.add(stripeFlushTiming_);
-    stripeFlushTiming_.clear();
     rowsPerStripe_.push_back(rowsInStripe_);
     memoryUsed_ = 0;
     rowsInStripe_ = 0;
@@ -218,8 +201,6 @@ class WriterContext : public FieldWriterContext {
 
  private:
   const VeloxWriterOptions options_;
-  velox::CpuWallTiming totalFlushTiming_;
-  velox::CpuWallTiming stripeFlushTiming_;
   velox::CpuWallTiming encodingTiming_;
   velox::CpuWallTiming writeTiming_;
   velox::CpuWallTiming ingestionTiming_;
@@ -239,6 +220,14 @@ class WriterContext : public FieldWriterContext {
 } // namespace detail
 
 namespace {
+
+velox::RuntimeMetric toRuntimeMetric(const std::vector<uint64_t>& values) {
+  velox::RuntimeMetric metric;
+  for (auto value : values) {
+    metric.addValue(value);
+  }
+  return metric;
+}
 
 constexpr uint32_t kInitialSchemaSectionSize = 1 << 20; // 1MB
 
@@ -1027,8 +1016,8 @@ void VeloxWriter::close() {
           .rowCount = context_->rowsInFile(),
           .stripeCount = context_->getStripeIndex(),
           .fileSize = context_->bytesWritten(),
-          .totalFlushCpuUsec = stats.encodingCpuTimeNs / 1'000,
-          .totalFlushWallTimeUsec = stats.encodingWallTimeNs / 1'000};
+          .encodingCpuNs = stats.encodingCpuTimeNs,
+          .encodingWallNs = stats.encodingWallTimeNs};
       context_->logger()->logFileClose(metrics);
       file_ = nullptr;
     } catch (const std::exception& e) {
@@ -1090,10 +1079,11 @@ void VeloxWriter::resetFieldWriter() {
 
 void VeloxWriter::writeStreams() {
   std::atomic_uint64_t chunkSize{0};
-  velox::CpuWallTiming flushTiming;
+  std::atomic_uint64_t encodingCpuNanos{0};
+  uint64_t encodingWallNanos{0};
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{flushTiming};
+    velox::NanosecondTimer wallTimer{&encodingWallNanos};
 
     ensureWriteStreams();
 
@@ -1104,11 +1094,15 @@ void VeloxWriter::writeStreams() {
         barrier.add([&,
                      statsCollector = context_->getStatsCollector(nodeId),
                      _streamData = streamData.get()]() {
+          uint64_t startCpuNs = velox::process::threadCpuNanos();
           uint64_t streamSize{0};
           processStream(*_streamData, streamSize, chunkSize);
           if (statsCollector) {
             statsCollector->addPhysicalSize(streamSize);
           }
+          encodingCpuNanos.fetch_add(
+              velox::process::threadCpuNanos() - startCpuNs,
+              std::memory_order_relaxed);
         });
       }
 
@@ -1117,19 +1111,26 @@ void VeloxWriter::writeStreams() {
       const auto& streams = context_->streams();
       for (auto& [nodeId, streamData] : streams) {
         auto statsCollector = context_->getStatsCollector(nodeId);
+        uint64_t startCpuNs = velox::process::threadCpuNanos();
         uint64_t streamSize{0};
         processStream(*streamData, streamSize, chunkSize);
         if (statsCollector) {
           statsCollector->addPhysicalSize(streamSize);
         }
+        encodingCpuNanos.fetch_add(
+            velox::process::threadCpuNanos() - startCpuNs,
+            std::memory_order_relaxed);
       }
     }
     resetFieldWriter();
   }
 
-  context_->addStripeFlushTiming(flushTiming);
-  context_->encodingTiming().add(flushTiming);
-  VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
+  velox::CpuWallTiming encodingTiming;
+  encodingTiming.cpuNanos = encodingCpuNanos.load(std::memory_order_relaxed);
+  encodingTiming.wallNanos = encodingWallNanos;
+  context_->encodingTiming().add(encodingTiming);
+  VLOG(1) << "writeChunk cpu: " << velox::succinctNanos(encodingTiming.cpuNanos)
+          << ", wall: " << velox::succinctNanos(encodingWallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkSize);
 }
 
@@ -1248,10 +1249,11 @@ bool VeloxWriter::writeChunks(
   std::atomic_uint64_t chunkBytes{0};
   std::atomic_uint64_t logicalBytes{0};
   std::atomic_bool writtenChunk{false};
-  velox::CpuWallTiming flushTiming;
+  std::atomic_uint64_t encodingCpuNanos{0};
+  uint64_t encodingWallNanos{0};
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{flushTiming};
+    velox::NanosecondTimer wallTimer{&encodingWallNanos};
     const auto& options = context_->options();
     const auto minChunkSize = lastChunk ? 0 : options.minStreamChunkRawSize;
     const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
@@ -1271,6 +1273,7 @@ bool VeloxWriter::writeChunks(
         barrier.add([&,
                      streamData = streamData.get(),
                      statsCollector = context_->getStatsCollector(nodeId)] {
+          uint64_t startCpuNs = velox::process::threadCpuNanos();
           uint64_t streamSize = 0;
           if (encodeStreamChunk(
                   *streamData,
@@ -1286,6 +1289,9 @@ bool VeloxWriter::writeChunks(
           if (statsCollector) {
             statsCollector->addPhysicalSize(streamSize);
           }
+          encodingCpuNanos.fetch_add(
+              velox::process::threadCpuNanos() - startCpuNs,
+              std::memory_order_relaxed);
         });
       }
 
@@ -1294,8 +1300,9 @@ bool VeloxWriter::writeChunks(
       for (auto streamIndex : streamIndices) {
         auto& [nodeId, streamData] = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
-        uint64_t streamSize = 0;
         auto statsCollector = context_->getStatsCollector(nodeId);
+        uint64_t startCpuNs = velox::process::threadCpuNanos();
+        uint64_t streamSize = 0;
         if (encodeStreamChunk(
                 *streamData,
                 minChunkSize,
@@ -1310,6 +1317,9 @@ bool VeloxWriter::writeChunks(
         if (statsCollector) {
           statsCollector->addPhysicalSize(streamSize);
         }
+        encodingCpuNanos.fetch_add(
+            velox::process::threadCpuNanos() - startCpuNs,
+            std::memory_order_relaxed);
       }
     }
 
@@ -1322,12 +1332,15 @@ bool VeloxWriter::writeChunks(
     context_->updateMemoryUsed(-logicalBytes);
   }
 
-  context_->addStripeFlushTiming(flushTiming);
-  context_->encodingTiming().add(flushTiming);
+  velox::CpuWallTiming encodingTiming;
+  encodingTiming.cpuNanos = encodingCpuNanos.load(std::memory_order_relaxed);
+  encodingTiming.wallNanos = encodingWallNanos;
+  context_->encodingTiming().add(encodingTiming);
   if (writtenChunk) {
     context_->recordChunkSize(chunkBytes);
   }
-  VLOG(1) << "writeChunk time: " << velox::succinctNanos(flushTiming.wallNanos)
+  VLOG(1) << "writeChunk cpu: " << velox::succinctNanos(encodingTiming.cpuNanos)
+          << ", wall: " << velox::succinctNanos(encodingWallNanos)
           << ", chunk size: " << velox::succinctBytes(chunkBytes);
   return writtenChunk;
 }
@@ -1367,10 +1380,8 @@ bool VeloxWriter::writeStripe() {
   }
 
   uint64_t stripeSize{0};
-  velox::CpuWallTiming flushTiming;
   {
     LoggingScope scope{*context_->logger()};
-    velox::CpuWallTimer veloxTimer{flushTiming};
 
     size_t nonEmptyCount{0};
     for (auto i = 0; i < encodedStreams_.size(); ++i) {
@@ -1403,10 +1414,7 @@ bool VeloxWriter::writeStripe() {
       std::numeric_limits<uint32_t>::max(),
       "unexpected stripe size");
 
-  // Consider getting this from flush timing.
-  context_->addStripeFlushTiming(flushTiming);
-  VLOG(1) << "writeStripe time: " << velox::succinctNanos(flushTiming.wallNanos)
-          << ", on disk stripe size: " << velox::succinctBytes(stripeSize);
+  VLOG(1) << "on disk stripe size: " << velox::succinctBytes(stripeSize);
 
   StripeFlushMetrics metrics{
       .inputSize = context_->stripeEncodedPhysicalSize(),
@@ -1476,21 +1484,15 @@ VeloxWriter::Stats VeloxWriter::stats() const {
       .writtenBytes = context_->bytesWritten(),
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),
       .inputBytes = context_->fileRawSize(),
-      .rowsPerStripe = context_->rowsPerStripe(),
       .writeCpuTimeNs = context_->writeTiming().cpuNanos,
       .writeWallTimeNs = context_->writeTiming().wallNanos,
       .ingestionCpuTimeNs = context_->ingestionTiming().cpuNanos,
-      .ingestionWallTimeNs = context_->ingestionTiming().wallNanos,
       .encodingCpuTimeNs = context_->encodingTiming().cpuNanos,
       .encodingWallTimeNs = context_->encodingTiming().wallNanos,
       .encodingSelectionCpuTimeNs =
           context_->encodingSelectionTiming().cpuNanos,
-      .encodingSelectionWallTimeNs =
-          context_->encodingSelectionTiming().wallNanos,
-      .inputBufferReallocCount = context_->inputBufferGrowthStats().count,
-      .inputBufferReallocItemCount =
-          context_->inputBufferGrowthStats().itemCount,
-      .chunkSizeStats = context_->chunkSizeStats(),
+      .rowsPerStripe = toRuntimeMetric(context_->rowsPerStripe()),
+      .chunkSizeBytes = context_->chunkSizeStats(),
       .columnStats = context_->columnStats(),
   };
 }

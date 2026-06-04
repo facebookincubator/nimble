@@ -79,8 +79,8 @@ TEST(MetricsLoggerTest, FileCloseMetricsSerialize) {
       .inputSize = 500000,
       .stripeCount = 5,
       .fileSize = 300000,
-      .totalFlushCpuUsec = 2000,
-      .totalFlushWallTimeUsec = 3000,
+      .encodingCpuNs = 2000000,
+      .encodingWallNs = 3000000,
   };
 
   auto obj = metrics.serialize();
@@ -88,8 +88,8 @@ TEST(MetricsLoggerTest, FileCloseMetricsSerialize) {
   EXPECT_EQ(obj["inputSize"].asInt(), 500000);
   EXPECT_EQ(obj["stripeCount"].asInt(), 5);
   EXPECT_EQ(obj["fileSize"].asInt(), 300000);
-  EXPECT_EQ(obj["totalFlushCpuUsec"].asInt(), 2000);
-  EXPECT_EQ(obj["totalFlushWallTimeUsec"].asInt(), 3000);
+  EXPECT_EQ(obj["encodingCpuNs"].asInt(), 2000000);
+  EXPECT_EQ(obj["encodingWallNs"].asInt(), 3000000);
 }
 
 // --- LoggingScope ---

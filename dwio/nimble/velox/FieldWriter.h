@@ -29,7 +29,7 @@
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 #include "folly/container/F14Map.h"
-#include "folly/stats/StreamingStats.h"
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/DecodedVector.h"
 
@@ -282,10 +282,10 @@ class FieldWriterContext {
   }
 
   inline void recordChunkSize(uint64_t encodedBytes) {
-    chunkSizeStats_.add(encodedBytes);
+    chunkSizeStats_.addValue(encodedBytes);
   }
 
-  inline const folly::StreamingStats<uint64_t>& chunkSizeStats() const {
+  inline const velox::RuntimeMetric& chunkSizeStats() const {
     return chunkSizeStats_;
   }
 
@@ -494,7 +494,7 @@ class FieldWriterContext {
   std::unique_ptr<InputBufferGrowthPolicy> inputBufferGrowthPolicy_;
   std::unique_ptr<InputBufferGrowthPolicy> stringBufferGrowthPolicy_;
   InputBufferGrowthStats inputBufferGrowthStats_;
-  folly::StreamingStats<uint64_t> chunkSizeStats_;
+  velox::RuntimeMetric chunkSizeStats_;
 
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler_;

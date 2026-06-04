@@ -66,8 +66,8 @@ struct FileCloseMetrics {
   uint64_t fileSize;
 
   // Perf stats.
-  uint64_t totalFlushCpuUsec;
-  uint64_t totalFlushWallTimeUsec;
+  uint64_t encodingCpuNs;
+  uint64_t encodingWallNs;
   // Add IOStatistics when we have finished WS api consolidations.
 
   folly::dynamic serialize() const;
