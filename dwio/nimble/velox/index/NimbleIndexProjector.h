@@ -23,14 +23,14 @@
 #include <vector>
 
 #include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/tablet/DataInput.h"
+#include "dwio/nimble/tablet/TabletReader.h"
+#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
-#include "dwio/nimble/velox/selective/ReaderBase.h"
-#include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/time/CpuWallTimer.h"
-#include "velox/dwio/common/BufferedInput.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/type/Subfield.h"
 
@@ -75,23 +75,11 @@ using Subfield = velox::common::Subfield;
 /// own instance.
 class NimbleIndexProjector {
  public:
-  /// Creates a NimbleIndexProjector with appropriate BufferedInput based on
-  /// whether a cache is provided. Uses CachedBufferedInput when cache is
-  /// non-null, DirectBufferedInput otherwise.
   // TODO: projectedSubfields currently must match file schema column names.
   // Add table-to-file column name mapping for schema evolution support.
   static std::unique_ptr<NimbleIndexProjector> create(
-      const velox::FileHandle& fileHandle,
-      velox::cache::AsyncDataCache* cache,
-      const std::vector<Subfield>& projectedSubfields,
-      const velox::dwio::common::ReaderOptions& options);
-
-  /// Creates a NimbleIndexProjector sharing a TabletReader from the
-  /// provided TabletReaderCache.
-  static std::unique_ptr<NimbleIndexProjector> create(
       TabletReaderCache& tabletReaderCache,
       const velox::FileHandle& fileHandle,
-      velox::cache::AsyncDataCache* cache,
       const std::vector<Subfield>& projectedSubfields,
       const velox::dwio::common::ReaderOptions& options);
 
@@ -193,9 +181,13 @@ class NimbleIndexProjector {
 
  private:
   NimbleIndexProjector(
-      std::shared_ptr<ReaderBase> readerBase,
+      std::shared_ptr<TabletReader> tablet,
+      std::shared_ptr<const Type> nimbleSchema,
+      std::shared_ptr<velox::ReadFile> file,
+      std::unique_ptr<DataInput> dataInput,
       const std::vector<Subfield>& projectedSubfields,
-      const velox::dwio::common::ReaderOptions& options);
+      velox::memory::MemoryPool* pool,
+      std::shared_ptr<velox::io::IoStatistics> ioStats);
 
   // A request index paired with its stripe-relative row range.
   struct StripeRange {
@@ -243,9 +235,6 @@ class NimbleIndexProjector {
   // Populates ctx_.stripeRanges.
   void lookupStripes();
 
-  using InputStreams =
-      std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>;
-
   // Per-stripe plan produced by prepareStripes(). Contains the stripe's
   // projected stream locations (for IO) and the per-request row ranges
   // (for result building).
@@ -253,11 +242,13 @@ class NimbleIndexProjector {
     uint32_t stripeIndex{};
     // Total rows in this stripe.
     uint32_t numRows{0};
+    // Number of projected streams present in this stripe.
+    uint32_t numStreams{0};
     // Total bytes across all projected streams in this stripe.
     uint64_t projectedBytes{0};
-    // Stream locations for projected columns. Indexed by projected stream
+    // Stream regions for projected columns. Indexed by projected stream
     // offset; nullopt for streams absent in this stripe.
-    std::vector<std::optional<StreamLocation>> projectedStreams;
+    std::vector<std::optional<velox::common::Region>> projectedStreams;
     // Per-request row ranges intersected with this stripe, after pruning
     // saturated requests.
     std::vector<StripeRange> stripeRanges;
@@ -284,19 +275,17 @@ class NimbleIndexProjector {
   // metadata for selected stripes, and populates ctx_.plan.
   void prepareStripes();
 
-  // Enqueues all projected streams from ctx_.plan into BufferedInput
-  // and issues a single coalesced load() call. Populates ctx_.loadedStripes.
+  // Enqueues all projected streams from ctx_.plan into DataInput
+  // and issues a single coalesced load() call.
   void loadStripes();
 
   // Serializes each stripe's loaded streams, builds per-request results,
   // and finalizes the result.
   Result processStripes();
 
-  // Stitches loaded raw stream bytes into the shared kTablet body+trailer
-  // (stream data + trailer) without decode/re-encode.
-  folly::IOBuf serializeStripe(
-      uint32_t stripeIndex,
-      InputStreams& inputStreams);
+  // Zero-copy serialization using DataInput BufferRefs. Wraps each stream's
+  // loaded data directly into an IOBuf chain without copying.
+  folly::IOBuf packStripe(size_t stripeOffset);
 
   // If ctx_.plan.truncated, sets resume keys on requests that have data in the
   // next unprocessed stripe.
@@ -309,16 +298,18 @@ class NimbleIndexProjector {
   void buildResult(Result& result);
 
   inline uint32_t stripeRowCount(uint32_t stripe) const {
-    return static_cast<uint32_t>(readerBase_->tablet().stripeRowCount(stripe));
+    return static_cast<uint32_t>(tablet_->stripeRowCount(stripe));
   }
 
   // Computes the stripe-relative row range by intersecting the file-level
   // rowRangeLimit with the stripe boundaries.
   RowRange stripeRowRange(uint32_t stripe, const RowRange& rowRangeLimit) const;
 
-  const std::shared_ptr<ReaderBase> readerBase_;
+  const std::shared_ptr<velox::ReadFile> file_;
+  const std::shared_ptr<TabletReader> tablet_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
   velox::memory::MemoryPool* const pool_;
+  std::unique_ptr<DataInput> dataInput_;
   const ClusterIndex* const clusterIndex_;
   const uint32_t numStripes_{0};
 
@@ -326,8 +317,6 @@ class NimbleIndexProjector {
   // encoding-specific types (ArrayWithOffsets, SlidingWindowMap, FlatMap).
   std::shared_ptr<const Type> projectedNimbleType_;
   std::vector<uint32_t> projectedStreamOffsets_;
-
-  StripeStreams streams_;
 
   // Per-project() call state. Set by initRequest(), populated through the
   // pipeline (lookupStripes → prepareStripes → loadStripes → processStripes),
@@ -344,8 +333,12 @@ class NimbleIndexProjector {
     // Per-request flag: true if the request has ranges in any StripePlan.
     // Set by prepareStripes(), used by setResumeKeys().
     std::vector<bool> hasStripeRanges;
-    // Populated by loadStripes(), consumed during processStripes().
-    std::vector<InputStreams> loadedStripes;
+    // Flat array of enqueue indices, logically
+    // [stripeOffset * numProjectedStreams + streamIndex]. nullopt for absent
+    // streams. Populated by loadStripes().
+    std::vector<std::optional<uint32_t>> dataInputIndices;
+    // Handle keeping loaded data alive for zero-copy BufferRefs.
+    DataInput::Handle dataHandle;
     // Serialized stripe bodies, one per StripePlan. Populated by
     // processStripes(), consumed during buildResult().
     std::vector<folly::IOBuf> stripeBodies;

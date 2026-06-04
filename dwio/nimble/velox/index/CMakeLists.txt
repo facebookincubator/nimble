@@ -14,11 +14,13 @@
 add_library(nimble_index_projector NimbleIndexProjector.cpp)
 target_link_libraries(
   nimble_index_projector
+  nimble_data_input
   nimble_index
   nimble_serializer_impl
+  nimble_tablet_reader
   nimble_tablet_reader_cache
   nimble_velox_common
-  nimble_velox_selective
+  velox_caching
   velox_time
   velox_key_encoder
   velox_type

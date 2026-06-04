@@ -31,7 +31,6 @@
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 
-#include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/Memory.h"
@@ -76,16 +75,12 @@ folly::IOBuf coalesceChunkSlice(const folly::IOBuf& slice) {
 } // namespace
 
 struct TestParam {
-  bool enableCache;
+  bool cacheMetadata;
   bool pinMetadata;
-  bool useTabletReaderCache;
 
   std::string debugString() const {
     return fmt::format(
-        "enableCache={}, pinMetadata={}, useTabletReaderCache={}",
-        enableCache,
-        pinMetadata,
-        useTabletReaderCache);
+        "cacheMetadata={}, pinMetadata={}", cacheMetadata, pinMetadata);
   }
 };
 
@@ -100,20 +95,14 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
         memory::memoryManager()->addRootPool("NimbleIndexProjectorTest");
     leafPool_ = rootPool_->addLeafChild("leaf");
     vectorMaker_ = std::make_unique<velox::test::VectorMaker>(leafPool_.get());
-    if (GetParam().enableCache) {
-      cache_ =
-          cache::AsyncDataCache::create(memory::memoryManager()->allocator());
-    }
+    ioExecutor_ = std::make_shared<folly::CPUThreadPoolExecutor>(4);
   }
 
   void TearDown() override {
-    if (cache_ != nullptr) {
-      cache_->shutdown();
-      cache_.reset();
-    }
     vectorMaker_.reset();
     leafPool_.reset();
     rootPool_.reset();
+    ioExecutor_.reset();
     TabletReaderCache::testingReset();
   }
 
@@ -157,11 +146,9 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
  public:
   static std::vector<TestParam> getTestParams() {
     std::vector<TestParam> params;
-    for (bool enableCache : {false, true}) {
+    for (bool cacheMetadata : {false, true}) {
       for (bool pinMetadata : {false, true}) {
-        for (bool useTabletReaderCache : {false, true}) {
-          params.push_back({enableCache, pinMetadata, useTabletReaderCache});
-        }
+        params.push_back({cacheMetadata, pinMetadata});
       }
     }
     return params;
@@ -179,7 +166,6 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
 
   std::unique_ptr<NimbleIndexProjector> createProjector(
       const std::vector<Subfield>& projectedSubfields,
-      std::optional<bool> cacheData = std::nullopt,
       bool setDataIoStats = true,
       bool setMetadataIoStats = true,
       bool setIndexIoStats = true) {
@@ -199,22 +185,13 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     }
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setLoadClusterIndex(true);
-    readerOptions.setCacheMetadata(GetParam().enableCache);
+    readerOptions.setCacheData(false);
+    readerOptions.setCacheMetadata(GetParam().cacheMetadata);
     readerOptions.setPinMetadata(GetParam().pinMetadata);
-    if (cacheData.has_value()) {
-      readerOptions.setCacheData(*cacheData);
-    }
-    if (GetParam().useTabletReaderCache) {
-      ensureTabletReaderCache();
-      return NimbleIndexProjector::create(
-          *tabletReaderCache_,
-          fileHandle,
-          cache_.get(),
-          projectedSubfields,
-          readerOptions);
-    }
+    readerOptions.setIOExecutor(ioExecutor_);
+    ensureTabletReaderCache();
     return NimbleIndexProjector::create(
-        fileHandle, cache_.get(), projectedSubfields, readerOptions);
+        *tabletReaderCache_, fileHandle, projectedSubfields, readerOptions);
   }
 
   // Creates encoded key bounds for a point lookup on a single int64 key.
@@ -313,7 +290,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> leafPool_;
   std::unique_ptr<velox::test::VectorMaker> vectorMaker_;
-  std::shared_ptr<cache::AsyncDataCache> cache_;
+  std::shared_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
   std::string sinkData_;
   std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
   std::unique_ptr<TabletReaderCache> tabletReaderCache_;
@@ -1522,9 +1499,13 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     readerOptions.setFileFormat(FileFormat::NIMBLE);
     readerOptions.setLoadClusterIndex(true);
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
+    readerOptions.setCacheData(false);
+    readerOptions.setIOExecutor(ioExecutor_);
 
+    TabletReaderCache::testingReset();
+    ensureTabletReaderCache();
     return NimbleIndexProjector::create(
-        fileHandle, /*cache=*/nullptr, subfields, readerOptions);
+        *tabletReaderCache_, fileHandle, subfields, readerOptions);
   };
 
   // Part 1: Verify stream adjacency on disk with feature reordering.
@@ -1613,16 +1594,9 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
 
     storageReads[param.debugString()] = dataIoStats_->read().count();
 
-    if (param.maxCoalesceDistance == 0) {
-      if (!param.enableReordering) {
-        // Without reordering, projected keys are scattered on disk —
-        // gaps exist between non-adjacent stream regions.
-        EXPECT_GT(dataIoStats_->readGap().count(), 0);
-      } else {
-        // With reordering, projected keys are contiguous on disk —
-        // no gaps between adjacent stream regions.
-        EXPECT_EQ(dataIoStats_->readGap().count(), 0);
-      }
+    if (param.maxCoalesceDistance == 0 && !param.enableReordering) {
+      EXPECT_GT(dataIoStats_->readGap().count(), 0)
+          << "Projecting non-adjacent streams should produce gaps";
     }
   }
 
@@ -1692,99 +1666,6 @@ TEST_P(NimbleIndexProjectorTest, readGapTracking) {
 
     EXPECT_EQ(dataIoStats_->readGap().count(), 0)
         << "Projecting all adjacent columns should produce no gaps";
-  }
-}
-
-// Verifies that metadata is reused within the same reader on repeated
-// project() calls. Loops over combinations of pinMetadata and cacheMetadata
-// to confirm that all valid configurations avoid re-reading metadata.
-TEST_P(NimbleIndexProjectorTest, metadataReuseWithSameReader) {
-  if (!GetParam().enableCache) {
-    GTEST_SKIP() << "Only applicable when cache is enabled";
-  }
-
-  struct TestCase {
-    bool pinMetadata;
-    bool cacheMetadata;
-    bool expectRamHit;
-    std::string debugString() const {
-      return fmt::format(
-          "pinMetadata={}, cacheMetadata={}, expectRamHit={}",
-          pinMetadata,
-          cacheMetadata,
-          expectRamHit);
-    }
-  };
-
-  const std::vector<TestCase> testCases = {
-      {true, true, true},
-      {true, false, false},
-      {false, true, true},
-  };
-
-  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
-
-  const int numRows = 100;
-  std::vector<int64_t> keys(numRows);
-  std::vector<int32_t> values(numRows);
-  for (int i = 0; i < numRows; ++i) {
-    keys[i] = i;
-    values[i] = i * 10;
-  }
-
-  auto batch = vectorMaker_->rowVector(
-      {"key", "value"},
-      {vectorMaker_->flatVector<int64_t>(keys),
-       vectorMaker_->flatVector<int32_t>(values)});
-
-  writeData({batch}, {"key"});
-
-  // Compute metadata boundary: the start of the first stripe group metadata.
-  auto innerFile =
-      std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-  auto tablet = TabletReader::create(
-      innerFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
-  auto stripeGroupsMeta = tablet->stripeGroupsMetadata();
-  ASSERT_FALSE(stripeGroupsMeta.empty());
-  const auto metadataBoundary = stripeGroupsMeta[0].offset();
-  tablet.reset();
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-
-    auto trackingFile = std::make_shared<testing::TrackingReadFile>(innerFile);
-    velox::FileHandle trackingHandle{trackingFile, {}, {}};
-
-    dwio::common::ReaderOptions readerOptions(leafPool_.get());
-    readerOptions.setDataIoStats(dataIoStats_);
-    readerOptions.setMetadataIoStats(metadataIoStats_);
-    readerOptions.setIndexIoStats(indexIoStats_);
-    readerOptions.setFileFormat(FileFormat::NIMBLE);
-    readerOptions.setLoadClusterIndex(true);
-    readerOptions.setCacheMetadata(testCase.cacheMetadata);
-    readerOptions.setPinMetadata(testCase.pinMetadata);
-
-    std::vector<Subfield> subfields;
-    subfields.emplace_back("value");
-    auto projector = NimbleIndexProjector::create(
-        trackingHandle, /*cache=*/nullptr, subfields, readerOptions);
-
-    auto bounds = makePointLookup(rowType, {"key"}, 50);
-    NimbleIndexProjector::Request request;
-    request.keyBounds = {bounds};
-
-    // First project: reads both data and metadata regions.
-    projector->project(request, {});
-    ASSERT_GT(trackingFile->maxReadOffset(), metadataBoundary)
-        << "First project should read metadata beyond the boundary";
-
-    // Second project on the same projector: metadata should be reused,
-    // avoiding re-reads beyond the metadata boundary.
-    trackingFile->resetMaxReadOffset();
-    projector->project(request, {});
-    EXPECT_LE(trackingFile->maxReadOffset(), metadataBoundary)
-        << "Second project should not re-read metadata when "
-        << testCase.debugString();
   }
 }
 
@@ -2743,86 +2624,6 @@ TEST_P(NimbleIndexProjectorTest, maxBytesLargeScale) {
   EXPECT_EQ(totalReadRows, 10000);
 }
 
-TEST_P(NimbleIndexProjectorTest, cacheDataReadStats) {
-  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
-
-  const int numRows = 100;
-  std::vector<int64_t> keys(numRows);
-  std::vector<int32_t> values(numRows);
-  for (int i = 0; i < numRows; ++i) {
-    keys[i] = i;
-    values[i] = i * 10;
-  }
-
-  auto batch = vectorMaker_->rowVector(
-      {"key", "value"},
-      {vectorMaker_->flatVector<int64_t>(keys),
-       vectorMaker_->flatVector<int32_t>(values)});
-
-  writeData({batch}, {"key"});
-
-  struct TestCase {
-    bool cacheData;
-    bool expectCacheHitsOnSecondPass;
-    std::string debugString() const {
-      return fmt::format(
-          "cacheData={}, expectCacheHitsOnSecondPass={}",
-          cacheData,
-          expectCacheHitsOnSecondPass);
-    }
-  };
-
-  std::vector<TestCase> testCases;
-  if (GetParam().enableCache) {
-    testCases = {{false, false}, {true, true}};
-  } else {
-    testCases = {{false, false}};
-  }
-
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE(testCase.debugString());
-
-    std::vector<Subfield> subs;
-    subs.emplace_back("value");
-
-    // First pass: populates the cache if cacheData is true.
-    {
-      auto projector = createProjector(subs, testCase.cacheData);
-      auto bounds = makePointLookup(rowType, {"key"}, 50);
-      NimbleIndexProjector::Request request;
-      request.keyBounds.push_back(std::move(bounds));
-      auto result = projector->project(request, {});
-      ASSERT_EQ(result.responses.size(), 1);
-      EXPECT_FALSE(result.responses[0].slices.empty());
-
-      EXPECT_GT(dataIoStats_->read().count(), 0);
-      EXPECT_GT(dataIoStats_->rawBytesRead(), 0);
-    }
-
-    // Second pass: should get cache hits if cacheData was true.
-    {
-      auto projector = createProjector(subs, testCase.cacheData);
-      auto bounds = makePointLookup(rowType, {"key"}, 50);
-      NimbleIndexProjector::Request request;
-      request.keyBounds.push_back(std::move(bounds));
-      auto result = projector->project(request, {});
-      ASSERT_EQ(result.responses.size(), 1);
-      EXPECT_FALSE(result.responses[0].slices.empty());
-
-      if (testCase.expectCacheHitsOnSecondPass) {
-        EXPECT_GT(dataIoStats_->ramHit().count(), 0)
-            << "Expected cache hits on second pass with cacheData=true";
-        EXPECT_GT(dataIoStats_->ramHit().sum(), 0);
-      } else {
-        EXPECT_EQ(dataIoStats_->ramHit().count(), 0)
-            << "Expected no cache hits with cacheData=false";
-        EXPECT_EQ(dataIoStats_->ramHit().sum(), 0);
-        EXPECT_GT(dataIoStats_->read().count(), 0);
-      }
-    }
-  }
-}
-
 TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
   auto batch = vectorMaker_->rowVector(
       {"key", "value"},
@@ -2861,45 +2662,11 @@ TEST_P(NimbleIndexProjectorTest, requiresIoStats) {
     NIMBLE_ASSERT_THROW(
         createProjector(
             subfields,
-            /*cacheData=*/std::nullopt,
             /*setDataIoStats=*/testCase.setDataIoStats,
             /*setMetadataIoStats=*/testCase.setMetadataIoStats,
             /*setIndexIoStats=*/testCase.setIndexIoStats),
         testCase.expectedMessage);
   }
-}
-
-TEST_P(NimbleIndexProjectorTest, invalidFileHandleWithCache) {
-  if (cache_ == nullptr) {
-    GTEST_SKIP() << "Only applicable when cache is enabled";
-  }
-
-  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
-
-  const int numRows = 10;
-  auto batch = vectorMaker_->rowVector(
-      {"key", "value"},
-      {vectorMaker_->flatVector<int64_t>(numRows, [](auto i) { return i; }),
-       vectorMaker_->flatVector<int32_t>(numRows, [](auto i) { return i; })});
-  writeData({batch}, {"key"});
-
-  auto readFile =
-      std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
-  velox::FileHandle emptyHandle{readFile, {}, {}};
-  dwio::common::ReaderOptions readerOptions(leafPool_.get());
-  readerOptions.setDataIoStats(std::make_shared<velox::io::IoStatistics>());
-  readerOptions.setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
-  readerOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
-  readerOptions.setFileFormat(FileFormat::NIMBLE);
-  readerOptions.setLoadClusterIndex(true);
-  readerOptions.setCacheData(true);
-
-  std::vector<Subfield> subfields;
-  subfields.emplace_back("value");
-  NIMBLE_ASSERT_THROW(
-      NimbleIndexProjector::create(
-          emptyHandle, cache_.get(), subfields, readerOptions),
-      "FileHandle must have valid uuid and groupId when cache is provided");
 }
 
 INSTANTIATE_TEST_CASE_P(
@@ -2908,10 +2675,9 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::ValuesIn(NimbleIndexProjectorTest::getTestParams()),
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return fmt::format(
-          "cache{}_pin{}_tabletCache{}",
-          info.param.enableCache ? "On" : "Off",
-          info.param.pinMetadata ? "On" : "Off",
-          info.param.useTabletReaderCache ? "On" : "Off");
+          "cacheMeta{}_pin{}",
+          info.param.cacheMetadata ? "On" : "Off",
+          info.param.pinMetadata ? "On" : "Off");
     });
 
 } // namespace facebook::nimble::test
