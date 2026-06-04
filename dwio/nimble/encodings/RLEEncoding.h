@@ -101,40 +101,37 @@ class RLEEncodingBase
   void reset() override {
     materializedRunLengths_.reset();
     derived().resetValues();
-    copiesRemaining_ = materializedRunLengths_.nextValue();
-    currentValue_ = nextValue();
+    copiesRemaining_ = 0;
   }
 
   void skip(uint32_t rowCount) override {
     uint32_t rowsLeft = rowCount;
-    // TODO: We should have skip blocks.
-    while (rowsLeft) {
-      if (rowsLeft < copiesRemaining_) {
+    while (rowsLeft > 0) {
+      if (rowsLeft <= copiesRemaining_) {
         copiesRemaining_ -= rowsLeft;
         return;
-      } else {
-        rowsLeft -= copiesRemaining_;
-        copiesRemaining_ = materializedRunLengths_.nextValue();
-        currentValue_ = nextValue();
       }
+      rowsLeft -= copiesRemaining_;
+      advanceRun();
     }
   }
 
   void materialize(uint32_t rowCount, void* buffer) override {
     uint32_t rowsLeft = rowCount;
     physicalType* output = static_cast<physicalType*>(buffer);
-    while (rowsLeft) {
+    while (rowsLeft > 0) {
+      if (copiesRemaining_ == 0) {
+        advanceRun();
+      }
       if (rowsLeft < copiesRemaining_) {
         velox::simd::simdFill(output, currentValue_, rowsLeft);
         copiesRemaining_ -= rowsLeft;
         return;
-      } else {
-        velox::simd::simdFill(output, currentValue_, copiesRemaining_);
-        output += copiesRemaining_;
-        rowsLeft -= copiesRemaining_;
-        copiesRemaining_ = materializedRunLengths_.nextValue();
-        currentValue_ = nextValue();
       }
+      velox::simd::simdFill(output, currentValue_, copiesRemaining_);
+      output += copiesRemaining_;
+      rowsLeft -= copiesRemaining_;
+      copiesRemaining_ = 0;
     }
   }
 
@@ -146,8 +143,7 @@ class RLEEncodingBase
         [&](auto toSkip) { skip(toSkip); },
         [&] {
           if (copiesRemaining_ == 0) {
-            copiesRemaining_ = materializedRunLengths_.nextValue();
-            currentValue_ = nextValue();
+            advanceRun();
           }
           --copiesRemaining_;
           return currentValue_;
@@ -201,6 +197,21 @@ class RLEEncodingBase
   physicalType nextValue() {
     return derived().nextValue();
   }
+
+  void advanceRunLength() {
+    copiesRemaining_ = materializedRunLengths_.nextValue();
+  }
+
+  void advanceRunValue() {
+    currentValue_ = nextValue();
+  }
+
+  // Advances to the next run by loading both the run length and value.
+  void advanceRun() {
+    advanceRunLength();
+    advanceRunValue();
+  }
+
   static std::string_view getSerializedRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
@@ -365,9 +376,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   }
 
  private:
-  void advanceRunLength() {
-    this->copiesRemaining_ = this->materializedRunLengths_.nextValue();
-  }
+  using internal::RLEEncodingBase<T, RLEEncoding<T>>::advanceRunLength;
 
   void advanceRunValue();
 
@@ -488,35 +497,21 @@ void RLEEncoding<T>::advanceRunValue() {
 
 template <typename T>
 void RLEEncoding<T>::reset() {
-  this->materializedRunLengths_.reset();
-  this->resetValues();
-  if (dictValues_ != nullptr) {
-    // In dict mode, don't consume the first run — materializeIndices
-    // manages its own run traversal starting from copiesRemaining_ == 0.
-    this->copiesRemaining_ = 0;
-  } else {
-    advanceRunLength();
-    advanceRunValue();
-  }
+  // Delegate to base — copiesRemaining_ starts at 0. The first call to
+  // materialize/readWithVisitor/bulkScan/materializeIndices will load
+  // the first run on demand.
+  internal::RLEEncodingBase<T, RLEEncoding<T>>::reset();
 }
 
 template <typename T>
 void RLEEncoding<T>::skip(uint32_t rowCount) {
   uint32_t rowsLeft = rowCount;
   while (rowsLeft > 0) {
-    if (rowsLeft < this->copiesRemaining_) {
+    if (rowsLeft <= this->copiesRemaining_) {
       this->copiesRemaining_ -= rowsLeft;
       return;
     }
     rowsLeft -= this->copiesRemaining_;
-    // In dict mode, avoid consuming the next run when we've exactly
-    // exhausted the current one — materializeIndices uses a local runIndex
-    // that would go stale if advanceRunIndex() fires here. Non-dict mode
-    // keeps the eager advance so currentValue_ is always primed.
-    if (rowsLeft == 0 && dictValues_ != nullptr) {
-      this->copiesRemaining_ = 0;
-      return;
-    }
     advanceRunLength();
     if (dictValues_ != nullptr) {
       advanceRunIndex();
@@ -531,6 +526,9 @@ void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   uint32_t rowsLeft = rowCount;
   auto* output = static_cast<physicalType*>(buffer);
   while (rowsLeft > 0) {
+    if (this->copiesRemaining_ == 0) {
+      this->advanceRun();
+    }
     if (rowsLeft < this->copiesRemaining_) {
       velox::simd::simdFill(output, this->currentValue_, rowsLeft);
       this->copiesRemaining_ -= rowsLeft;
@@ -539,8 +537,7 @@ void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     velox::simd::simdFill(output, this->currentValue_, this->copiesRemaining_);
     output += this->copiesRemaining_;
     rowsLeft -= this->copiesRemaining_;
-    advanceRunLength();
-    advanceRunValue();
+    this->copiesRemaining_ = 0;
   }
 }
 

@@ -588,6 +588,38 @@ TEST_F(SparseBoolZeroRowTest, materializeZeroRowsSparseValueFalse) {
   }
 }
 
+// Verifies materializeBoolsAsBits after skipping to an exact run boundary
+// in RLE<bool>. The lazy pattern means copiesRemaining_==0 after the skip,
+// and materializeBoolsAsBits must load the next run on demand.
+TEST_F(SparseBoolZeroRowTest, rleBoolMaterializeAfterSkip) {
+  // 3 runs: [true x 5] [false x 3] [true x 4]
+  nimble::Vector<bool> values{pool_.get()};
+  for (int i = 0; i < 5; ++i) {
+    values.push_back(true);
+  }
+  for (int i = 0; i < 3; ++i) {
+    values.push_back(false);
+  }
+  for (int i = 0; i < 4; ++i) {
+    values.push_back(true);
+  }
+
+  auto encoding =
+      nimble::test::Encoder<nimble::RLEEncoding<bool>>::createEncoding(
+          *buffer_, values, makeStringBufferFactory());
+
+  // Skip exactly past run 1 (5 rows).
+  encoding->skip(5);
+
+  // materializeBoolsAsBits for runs 2+3 (7 rows).
+  const auto remaining = values.size() - 5;
+  uint64_t bits = 0;
+  encoding->materializeBoolsAsBits(remaining, &bits, 0);
+  for (size_t i = 0; i < remaining; ++i) {
+    EXPECT_EQ(velox::bits::isBitSet(&bits, i), values[5 + i]) << "bit " << i;
+  }
+}
+
 TYPED_TEST(EncodingTest, materialize) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;
@@ -2316,6 +2348,122 @@ TYPED_TEST(DictionaryApiTypedTest, rleMaterializeAfterSkip) {
     SCOPED_TRACE(fmt::format("row {}", i));
     EXPECT_EQ(
         materialized[i], reinterpret_cast<const PhysicalType&>(data[5 + i]));
+  }
+}
+
+// Verifies that back-to-back materialize calls that each exactly exhaust
+// a run produce correct values. With the lazy pattern, each call ends with
+// copiesRemaining_==0 and the next call must load the next run on demand.
+TYPED_TEST(DictionaryApiTypedTest, rleMaterializeExactRunBoundaries) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  // 3 runs: [A x 5] [B x 3] [C x 4]
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(30));
+    }
+  }
+
+  auto serialized = this->serializeRleDictionary(data, *this->buffer_);
+  auto encoding = this->decodeEncoding(serialized);
+
+  // Materialize exactly run 1 (5 rows).
+  std::vector<PhysicalType> mat1(5);
+  encoding->materialize(5, mat1.data());
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_EQ(mat1[i], reinterpret_cast<const PhysicalType&>(data[i]));
+  }
+
+  // Materialize exactly run 2 (3 rows).
+  std::vector<PhysicalType> mat2(3);
+  encoding->materialize(3, mat2.data());
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(mat2[i], reinterpret_cast<const PhysicalType&>(data[5 + i]));
+  }
+
+  // Materialize exactly run 3 (4 rows).
+  std::vector<PhysicalType> mat3(4);
+  encoding->materialize(4, mat3.data());
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_EQ(mat3[i], reinterpret_cast<const PhysicalType&>(data[8 + i]));
+  }
+}
+
+// Verifies skip to exact run boundary followed by materialize across
+// multiple skip+materialize cycles. Each skip lands exactly at a run
+// boundary (copiesRemaining_==0), and the subsequent materialize must
+// load the next run on demand.
+TYPED_TEST(DictionaryApiTypedTest, rleSkipAndMaterializeAlternating) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  // 4 runs: [A x 3] [B x 4] [C x 2] [D x 5]
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie", "delta"};
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 2; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[3]));
+    }
+  } else {
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 2; ++i) {
+      data.push_back(T(30));
+    }
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(40));
+    }
+  }
+
+  auto serialized = this->serializeRleDictionary(data, *this->buffer_);
+  auto encoding = this->decodeEncoding(serialized);
+
+  // Skip run 1 (3 rows), materialize run 2 (4 rows).
+  encoding->skip(3);
+  std::vector<PhysicalType> mat1(4);
+  encoding->materialize(4, mat1.data());
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_EQ(mat1[i], reinterpret_cast<const PhysicalType&>(data[3 + i]));
+  }
+
+  // Skip run 3 (2 rows), materialize run 4 (5 rows).
+  encoding->skip(2);
+  std::vector<PhysicalType> mat2(5);
+  encoding->materialize(5, mat2.data());
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_EQ(mat2[i], reinterpret_cast<const PhysicalType&>(data[9 + i]));
   }
 }
 
