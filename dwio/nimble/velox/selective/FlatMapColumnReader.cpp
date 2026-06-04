@@ -229,7 +229,12 @@ class FlatMapColumnReader
       const std::shared_ptr<const dwio::common::TypeWithId>& fileType,
       NimbleParams& params,
       common::ScanSpec& scanSpec)
-      : SelectiveFlatMapColumnReader(requestedType, fileType, params, scanSpec),
+      : SelectiveFlatMapColumnReader(
+            dwio::common::ColumnReaderOptions{},
+            requestedType,
+            fileType,
+            params,
+            scanSpec),
         keyNodes_(
             makeKeyNodes<T>(
                 requestedType,
