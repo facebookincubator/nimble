@@ -134,7 +134,8 @@ Vector<T> makeBitStructuredData(
     [[maybe_unused]] Buffer* buffer) {
   Vector<T> data(&pool);
   data.reserve(rowCount);
-  if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+  if constexpr (
+  std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
     using UintType = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
     UintType prefix{};
     if constexpr (sizeof(T) == 4) {
