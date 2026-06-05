@@ -2660,7 +2660,8 @@ TEST_P(SerializationTest, encodingLayoutTreeMapForFlatMap) {
 TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
   // Test that serializer skips constant in-map boolean streams: both all-false
   // (key absent from a batch) and all-true (key present in every row). The
-  // deserializer uses hasValueStreams() to distinguish the two cases.
+  // deserializer uses visitValueStreamLeaves() to enumerate per-key value-
+  // stream anchors and probes a presence bitmap to distinguish the two cases.
   auto type = velox::ROW({
       {"id", velox::BIGINT()},
       {"flat_map", velox::MAP(velox::VARCHAR(), velox::DOUBLE())},

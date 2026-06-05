@@ -126,9 +126,7 @@ std::vector<KeyNode<T>> makeKeyNodes(
       // Missing in-map stream: either the writer skipped it because all rows
       // are in-map (value streams exist), or the key has no data in this
       // stripe (value streams also absent). Check value streams to distinguish.
-      // For FlatMap value types, iterate children since individual keys are
-      // independent and the first child may not have data.
-      if (!hasValueStreams(
+      if (!visitValueStreamLeaves(
               *nimbleType.childAt(i),
               [&streams = params.streams()](offset_size offset) {
                 return streams.hasStream(offset);

@@ -737,6 +737,24 @@ void Deserializer::createDeserializersForType(
           options_.bufferPoolCapacity,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
+      // Precompute the value-stream offsets that the per-batch in-map
+      // detection in deserialize() will probe. Built once here so the hot
+      // path is a flat bitmap scan instead of a recursive schema walk.
+      //
+      // Visits ALL value-stream offsets in the child subtree (Row recurses
+      // all children; FlatMap recurses all children). Relies on
+      // RowFieldWriter writing every field over the same OrderedRanges, so
+      // sibling Row children populate in lockstep — if any sibling's value
+      // stream is present in a batch, all are. If a future writer ever made
+      // Row children conditionally absent, the in-map inference below would
+      // over-attribute presence to keys whose first child was absent but a
+      // sibling was present.
+      auto& valueOffsets = inMapValueStreamOffsets_[inMapOffset];
+      visitValueStreamLeaves(
+          *flatMap.childAt(i), [&valueOffsets](offset_size offset) {
+            valueOffsets.push_back(offset);
+            return false;
+          });
     }
   }
 }
@@ -779,7 +797,7 @@ void Deserializer::deserialize(
   uint32_t rowOffset{0};
   serde::StreamDataReader reader{pool_, options_};
   for (auto sv : data) {
-    const auto batchRows = reader.initialize(sv);
+    const auto numRows = reader.initialize(sv);
     const auto version = reader.version();
     // Reset present tracking from previous batch.
     if (hasInMapChildren && !inMapPresentOffsetsList_.empty()) {
@@ -788,12 +806,19 @@ void Deserializer::deserialize(
       }
       inMapPresentOffsetsList_.clear();
     }
+    // iterateStreams() is a templated callback walker; the lambda body
+    // inlines into the loop, eliminating std::function dispatch on the
+    // per-batch flatmap deserialization hot path.
     reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
       if (offset <= maxStreamOffset) {
         if (hasInMapChildren) {
           inMapPresentOffsets_[offset] = true;
-          inMapPresentOffsetsList_.push_back(offset);
+          inMapPresentOffsetsList_.emplace_back(offset);
         }
+        // Null is possible: deserializers_ is sized to maxOffset+1 but only
+        // populated for offsets in deserializerMap_. Some serialized stream
+        // offsets (e.g., TimestampMicroNano's nanosDescriptor) are not in
+        // the map, so their slot stays null; skip them here.
         auto* decoder = deserializers_[offset];
         if (decoder != nullptr) {
           DeserializerImpl::toDecoderImpl(decoder)->addBatch(
@@ -802,18 +827,24 @@ void Deserializer::deserialize(
       }
     });
 
-    // Detect present in-map streams: in-map skipped + value streams present.
-    for (const auto& [inMapOffset, childType] : inMapChildTypes_) {
-      if (!inMapPresentOffsets_[inMapOffset] &&
-          hasValueStreams(*childType, [&](offset_size offset) {
-            return offset <= maxStreamOffset && inMapPresentOffsets_[offset];
-          })) {
-        DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
-            ->addPresentInMapSegment(rowOffset, batchRows);
+    // Detect present in-map streams using the precomputed value-stream
+    // offsets table (built once in createDeserializersForType). Per-batch
+    // hot path is a flat bitmap scan; no recursive schema walk and no
+    // callback dispatch.
+    for (const auto& [inMapOffset, valueOffsets] : inMapValueStreamOffsets_) {
+      if (inMapPresentOffsets_[inMapOffset]) {
+        continue;
+      }
+      for (const auto offset : valueOffsets) {
+        if (offset <= maxStreamOffset && inMapPresentOffsets_[offset]) {
+          DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
+              ->addPresentInMapSegment(rowOffset, numRows);
+          break;
+        }
       }
     }
 
-    rowOffset += batchRows;
+    rowOffset += numRows;
   }
 
   // Set total top-level rows so deserializers can fill missing FlatMap data.
