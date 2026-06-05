@@ -17,119 +17,134 @@
 
 #include "velox/common/base/BitUtil.h"
 
-// Packs integers into a fixed number (1-64) of bits and retrieves them.
-// The 'bulk' API provided is particularly efficient at setting/getting
-// ranges of values with small bit widths.
-//
-// Typical usage:
-//   std::vector<uint32_t> data = ...
-//   int bitsRequired = BitsRequired(*maxElement(data.begin(), data.end());
-//   auto buffer = std::make_unique<char[]>(
-//        FixedBitArray::BufferSize(data.size(), bitsRequired));
-//   FixedBitArray fixedBitArray(buffer.get(), bitsRequired);
-//   fixedBitArray.bulkSet32(0, data.size(), data.data());
-//
-// And then you'd store the buffer somewhere, and later read the values back,
-// recovering the info stored in data. Note that the FBA does not own
-// any data.
+/// Packs integers into a fixed number (1-64) of bits and retrieves them.
+/// The 'bulk' API provided is particularly efficient at setting/getting
+/// ranges of values with small bit widths.
+///
+/// Typical usage:
+///   std::vector<uint32_t> data = ...
+///   int bitsRequired = BitsRequired(*maxElement(data.begin(), data.end());
+///   auto buffer = std::make_unique<char[]>(
+///        FixedBitArray::BufferSize(data.size(), bitsRequired));
+///   FixedBitArray fixedBitArray(buffer.get(), bitsRequired);
+///   fixedBitArray.bulkSet32(0, data.size(), data.data());
+///
+/// And then you'd store the buffer somewhere, and later read the values back,
+/// recovering the info stored in data. Note that the FBA does not own
+/// any data.
 
 namespace facebook::nimble {
 
 class FixedBitArray {
  public:
-  // Computes the buffer size needed to hold |elementCount| values with the
-  // specified |bitWidth|. Note that we allocate a few bytes of 'slop' space
-  // beyond what is mathematically required to speed things up.
+  /// Computes the buffer size needed to hold |elementCount| values with the
+  /// specified |bitWidth|. Note that we allocate a few bytes of 'slop' space
+  /// beyond what is mathematically required to speed things up.
   static uint64_t bufferSize(uint64_t elementCount, int bitWidth);
 
-  // Not legal to use; included so we can default construct on the stack.
+  /// Not legal to use; included so we can default construct on the stack.
   FixedBitArray() = default;
 
-  // Creates a fixed bit array stored at buffer whose elements can lie within
-  // the range [0, 2^|bitWidth|). The |buffer| must already be preallocated to
-  // the appropriate size, as given by BufferSize.
+  /// Creates a fixed bit array stored at buffer whose elements can lie within
+  /// the range [0, 2^|bitWidth|). The |buffer| must already be preallocated to
+  /// the appropriate size, as given by BufferSize.
   FixedBitArray(char* buffer, int bitWidth);
 
-  // Convenience constructor for reading read-only data. Note that you are NOT
-  // prevented by the code from using the non-const calls on a FBA constructed
-  // via this method, but to do so is undefined behavior.
+  /// Convenience constructor for reading read-only data. Note that you are NOT
+  /// prevented by the code from using the non-const calls on a FBA constructed
+  /// via this method, but to do so is undefined behavior.
   FixedBitArray(std::string_view buffer, int bitWidth)
       : FixedBitArray(const_cast<char*>(buffer.data()), bitWidth) {}
 
-  // Sets the |index|'th slot to the given |value|. If value
-  // is >= 2^|bitWidth| behavior is undefined.
-  //
-  // IMPORTANT NOTE: this does NOT function as normal assignment.
-  // We do NOT first 0 out the slot, i.e. we use or semantics.
-  // If you need to first 0 it out, use ZeroAndSet.
+  /// Sets the |index|'th slot to the given |value|. If value
+  /// is >= 2^|bitWidth| behavior is undefined.
+  ///
+  /// IMPORTANT NOTE: this does NOT function as normal assignment.
+  /// We do NOT first 0 out the slot, i.e. we use or semantics.
+  /// If you need to first 0 it out, use ZeroAndSet.
   void set(uint64_t index, uint64_t value);
 
-  // Zeroes a slot and then sets it (like normal assignment).
+  /// Zeroes a slot and then sets it (like normal assignment).
   void zeroAndSet(uint64_t index, uint64_t value);
 
-  // Gets the |index|'th value.
+  /// Gets the |index|'th value.
   uint64_t get(uint64_t index) const;
 
-  // Versions of set/get that only work with bitWidth <= 32, but are slightly
-  // faster. Same assignment caveat applies to set32 as to set.
+  /// Versions of set/get that only work with bitWidth <= 32, but are slightly
+  /// faster. Same assignment caveat applies to set32 as to set.
   void set32(uint64_t index, uint32_t value);
+
   uint32_t get32(uint64_t index) const;
 
-  // Retrieves a contiguous subarray from slots [start, start + length).
-  // Considerably faster than looping a get call. Only callable when
-  // bit width <= 32.
+  /// Retrieves a contiguous subarray from slots [start, start + length).
+  /// Considerably faster than looping a get call. Only callable when
+  /// bit width <= 32.
   void bulkGet32(uint64_t start, uint64_t length, uint32_t* values) const;
 
-  // Same as above, but outputs into 8-bytes values. Still requires that bit
-  // width <= 32.
+  /// Same as above, but outputs into 8-bytes values. Still requires that bit
+  /// width <= 32.
   void bulkGet32Into64(uint64_t start, uint64_t length, uint64_t* values) const;
 
-  // Same as above. Add baseline to every value.
+  /// Same as above. Add baseline to every value.
   void bulkGetWithBaseline32(
       uint64_t start,
       uint64_t length,
       uint32_t* values,
       uint32_t baseline) const;
 
-  // Same as above. Add baseline to every value.
+  /// Same as above. Add baseline to every value.
   void bulkGetWithBaseline32Into64(
       uint64_t start,
       uint64_t length,
       uint64_t* values,
       uint64_t baseline) const;
 
-  // Retrieves a contiguous subarray from slots [start, start + length) into
-  // 64-bit output values, adding baseline to each. Supports any bit width
-  // up to 64. For bitWidth <= 32, delegates to the optimized bulkGet32 path.
-  // For bitWidth 33-57, uses branchless byte-aligned loads (single 64-bit
-  // load per value). For bitWidth > 57, handles cross-word boundary overflow.
+  /// Retrieves a contiguous subarray from slots [start, start + length) into
+  /// 64-bit output values, adding baseline to each. Supports any bit width
+  /// up to 64. For bitWidth <= 32, delegates to the optimized bulkGet32 path.
+  /// For bitWidth 33-57, uses branchless byte-aligned loads (single 64-bit
+  /// load per value). For bitWidth > 57, handles cross-word boundary overflow.
   void bulkGet64WithBaseline(
       uint64_t start,
       uint64_t length,
       uint64_t* values,
       uint64_t baseline) const;
 
-  // Sets a contiguous subarray of slots from [start, start + length).
-  // Considerably faster than looping/ a get call. Only callable when bitWidth
-  // <= 32. Same semantics as set -- see the warning there.
+  /// Sets a contiguous subarray of slots from [start, start + length).
+  /// Considerably faster than looping set calls. Only callable when bitWidth
+  /// <= 32. Same semantics as set -- see the warning there.
   void bulkSet32(uint64_t start, uint64_t length, const uint32_t* values);
 
-  // Same as above. Subtracts baseline from every value.
+  /// Same as above. Subtracts baseline from every value.
   void bulkSet32WithBaseline(
       uint64_t start,
       uint64_t length,
       const uint32_t* values,
       uint32_t baseline);
 
-  // Fills in the bit-packed |bitVector| with whether each value in
-  // [start, start + length) equals |value|. Should be faster than
-  // doing bulkGet32 and then doing your own equality check + bitpack.
-  //
-  // bitVector must point to a buffer of at least size BufferSize(length, 1);
-  //
-  // REQUIRES: start is a multiple of 64. If you need to run equals on
-  // a range where that isn't true, you'll have to manually do the part
-  // up to the first multiple of 64 yourself + adjust the results accordingly.
+  /// Sets a contiguous subarray of slots from [start, start + length),
+  /// subtracting baseline from each 64-bit value before packing. Supports any
+  /// value where values[i] >= baseline and values[i] - baseline fits in the
+  /// bit width up to 64. For bitWidth < 32, delegates to the optimized
+  /// bulkSet32 path. For byte-aligned bit widths 32, 40, 48, 56, and 64, uses
+  /// direct stores. Other bit widths up to 58 use a single 64-bit OR per
+  /// value. For bitWidth 59-63, handles cross-word boundary overflow.
+  /// Requires the same zeroed-buffer precondition as set.
+  void bulkSet64WithBaseline(
+      uint64_t start,
+      uint64_t length,
+      const uint64_t* values,
+      uint64_t baseline);
+
+  /// Fills in the bit-packed |bitVector| with whether each value in
+  /// [start, start + length) equals |value|. Should be faster than
+  /// doing bulkGet32 and then doing your own equality check + bitpack.
+  ///
+  /// bitVector must point to a buffer of at least size BufferSize(length, 1);
+  ///
+  /// REQUIRES: start is a multiple of 64. If you need to run equals on
+  /// a range where that isn't true, you'll have to manually do the part
+  /// up to the first multiple of 64 yourself + adjust the results accordingly.
   void equals32(
       uint64_t start,
       uint64_t length,
