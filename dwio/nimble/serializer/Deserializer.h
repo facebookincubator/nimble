@@ -72,6 +72,14 @@ class Deserializer {
   // the serializer). Only populated for top-level FlatMap types (depth 1).
   folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
 
+  // Precomputed value-stream offsets per top-level FlatMap child, keyed by
+  // the child's inMap stream offset. Populated alongside inMapChildTypes_
+  // via visitValueStreamLeaves(). Used by the per-batch in-map detection in
+  // deserialize() to check whether any of a child's value streams were
+  // present, without re-walking the schema on the hot path.
+  folly::F14FastMap<uint32_t, std::vector<offset_size>>
+      inMapValueStreamOffsets_;
+
   // Flat boolean vector indexed by stream offset for tracking which streams
   // are present in the current batch. Replaces F14FastSet for O(1) access.
   // Only used when inMapChildTypes_ is non-empty.

@@ -111,7 +111,8 @@ void Serializer::serialize(
   for (auto& [_, streamData] : context_.streams()) {
     // Skip constant in-map boolean streams. When all-false (no row has this
     // key) or all-true (every row has this key), omit the stream. The
-    // deserializer uses hasValueStreams() to distinguish the two cases.
+    // deserializer uses the precomputed value-stream anchor list (built via
+    // visitValueStreamLeaves) to distinguish the two cases.
     if (!inMapStreamOffsets_.empty()) {
       const auto streamOffset = streamData->descriptor().offset();
       if (inMapStreamOffsets_.contains(streamOffset)) {

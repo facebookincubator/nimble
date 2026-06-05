@@ -256,16 +256,89 @@ std::ostream& operator<<(
     std::ostream& out,
     const std::shared_ptr<const Type>& root);
 
-/// Checks if a value type has data streams in the current stripe.
+/// Visits every value-stream anchor offset in the subtree of `type`, calling
+/// `visit(offset)` at each anchor leaf. Returns `true` iff any invocation of
+/// `visit` returned `true`; visitor returning `true` short-circuits the walk.
 ///
-/// For most types, probes a single stream that is guaranteed to exist when the
-/// type has data (e.g., scalar data stream, array lengths stream). For Row and
-/// FlatMap types whose nulls stream may be omitted, recurses into children.
+/// "Anchor leaves" are streams whose presence reliably proves the subtree
+/// contains data in the current stripe (e.g. Scalar data stream, Array
+/// lengths stream, Map lengths stream). Stream-bearing containers whose
+/// top-level stream may be omitted by the writer (Row's nulls, FlatMap's
+/// nulls) are NOT visited directly — instead the walk recurses into ALL
+/// their children, since any populated child proves the container has data.
 ///
-/// For FlatMap types, iterates all children because individual keys are
-/// independent — one child may have no data while another does.
-bool hasValueStreams(
-    const Type& type,
-    const std::function<bool(offset_size)>& hasStream);
+/// NOTE: Row recurses into ALL children, not just the first. This is a
+/// deliberate change from the legacy `hasValueStreams` walker, which
+/// short-circuited at Row's first child as an optimization that exploited
+/// Nimble's per-row "all-Row-fields-populate-together" writer invariant.
+/// Predicate-style callers may therefore probe additional siblings before
+/// the visitor returns true, which is harmless given the same writer
+/// invariant; collect-style callers receive every leaf, not just the
+/// first.
+///
+/// This is the single primitive for "tell me about this subtree's anchor
+/// streams"; callers compose it with whatever leaf action they need:
+///   - "does any anchor pass a predicate?"  → predicate returns true to stop.
+///   - "collect all anchor offsets"         → visitor pushes to a sink, returns
+///   false.
+///   - "mark each anchor in a bitmap"       → visitor sets a bit, returns
+///   false.
+///
+/// PERFORMANCE: This is a function template (not a function taking
+/// `std::function`/`folly::FunctionRef`) on purpose. The visitor's call type
+/// is concrete at the call site, so `visit(offset)` becomes a direct call
+/// the compiler can inline. Earlier `std::function`-based variants paid an
+/// indirect-call (`_Function_handler::_M_invoke`) per leaf, which showed up
+/// as a hotspot in the Deserializer's per-batch flatmap in-map detection
+/// over hundreds of keys. Concrete-typed callables remove that dispatch
+/// without forcing every caller to materialize an intermediate offset list.
+template <typename Visitor>
+bool visitValueStreamLeaves(const Type& type, Visitor&& visit) {
+  switch (type.kind()) {
+    case Kind::Scalar:
+      return visit(type.asScalar().scalarDescriptor().offset());
+    case Kind::TimestampMicroNano:
+      return visit(type.asTimestampMicroNano().microsDescriptor().offset());
+    case Kind::Array:
+      return visit(type.asArray().lengthsDescriptor().offset());
+    case Kind::ArrayWithOffsets:
+      return visit(type.asArrayWithOffsets().offsetsDescriptor().offset());
+    case Kind::Map:
+      return visit(type.asMap().lengthsDescriptor().offset());
+    case Kind::SlidingWindowMap:
+      return visit(type.asSlidingWindowMap().offsetsDescriptor().offset());
+    case Kind::Row: {
+      const auto& row = type.asRow();
+      NIMBLE_CHECK_GT(
+          row.childrenCount(), 0, "Row type must have at least one child");
+      // Recurse into ALL children. Row's own nulls stream may be omitted by
+      // the writer, so it is not a reliable anchor; children are. The
+      // visitor's return value short-circuits the walk on the first hit.
+      for (size_t i = 0; i < row.childrenCount(); ++i) {
+        if (visitValueStreamLeaves(*row.childAt(i), visit)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    case Kind::FlatMap: {
+      const auto& flatMap = type.asFlatMap();
+      NIMBLE_CHECK_GT(
+          flatMap.childrenCount(),
+          0,
+          "FlatMap type must have at least one child");
+      // FlatMap children are independent keys; each may or may not carry
+      // data in the current stripe, so all must be visited.
+      for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+        if (visitValueStreamLeaves(*flatMap.childAt(i), visit)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    default:
+      NIMBLE_UNREACHABLE("Unsupported type kind: {}", type.kind());
+  }
+}
 
 } // namespace facebook::nimble

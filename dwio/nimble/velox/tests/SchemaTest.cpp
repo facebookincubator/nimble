@@ -713,7 +713,7 @@ TEST(SchemaTests, flatMapTypeFindChild) {
   EXPECT_FALSE(empty.has_value());
 }
 
-TEST(SchemaTests, hasValueStreamsScalar) {
+TEST(SchemaTests, visitValueStreamLeavesScalar) {
   nimble::SchemaBuilder builder;
   NIMBLE_SCHEMA(builder, NIMBLE_BIGINT());
 
@@ -723,18 +723,18 @@ TEST(SchemaTests, hasValueStreamsScalar) {
   for (bool streamExists : {true, false}) {
     SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
       return streamExists;
     };
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), streamExists);
     ASSERT_EQ(queriedOffsets.size(), 1);
     EXPECT_EQ(queriedOffsets[0], expectedOffset);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsArray) {
+TEST(SchemaTests, visitValueStreamLeavesArray) {
   nimble::SchemaBuilder builder;
   NIMBLE_SCHEMA(builder, NIMBLE_ARRAY(NIMBLE_BIGINT()));
 
@@ -744,18 +744,18 @@ TEST(SchemaTests, hasValueStreamsArray) {
   for (bool streamExists : {true, false}) {
     SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
       return streamExists;
     };
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), streamExists);
     ASSERT_EQ(queriedOffsets.size(), 1);
     EXPECT_EQ(queriedOffsets[0], expectedOffset);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsMap) {
+TEST(SchemaTests, visitValueStreamLeavesMap) {
   nimble::SchemaBuilder builder;
   NIMBLE_SCHEMA(builder, NIMBLE_MAP(NIMBLE_STRING(), NIMBLE_BIGINT()));
 
@@ -765,18 +765,18 @@ TEST(SchemaTests, hasValueStreamsMap) {
   for (bool streamExists : {true, false}) {
     SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
       return streamExists;
     };
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), streamExists);
     ASSERT_EQ(queriedOffsets.size(), 1);
     EXPECT_EQ(queriedOffsets[0], expectedOffset);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsRowRecursesToFirstChild) {
+TEST(SchemaTests, visitValueStreamLeavesRowRecursesAllChildren) {
   nimble::SchemaBuilder builder;
   NIMBLE_SCHEMA(
       builder,
@@ -786,25 +786,51 @@ TEST(SchemaTests, hasValueStreamsRowRecursesToFirstChild) {
       }));
 
   auto schema = nimble::SchemaReader::getSchema(builder.schemaNodes());
-  const auto expectedOffset =
-      schema->asRow().childAt(0)->asScalar().scalarDescriptor().offset();
+  const std::vector<nimble::offset_size> childOffsets = {
+      schema->asRow().childAt(0)->asScalar().scalarDescriptor().offset(),
+      schema->asRow().childAt(1)->asScalar().scalarDescriptor().offset(),
+  };
 
-  for (bool streamExists : {true, false}) {
-    SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
+  // Visitor never returns true -> walks ALL children of the Row.
+  {
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
-      return streamExists;
+      return false;
     };
+    EXPECT_FALSE(nimble::visitValueStreamLeaves(*schema, visit));
+    EXPECT_EQ(queriedOffsets, childOffsets);
+  }
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
-    // Row recurses to first child (c1 - BIGINT).
+  // First-child visitor returns true -> short-circuits after one query.
+  {
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto visit = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return true;
+    };
+    EXPECT_TRUE(nimble::visitValueStreamLeaves(*schema, visit));
     ASSERT_EQ(queriedOffsets.size(), 1);
-    EXPECT_EQ(queriedOffsets[0], expectedOffset);
+    EXPECT_EQ(queriedOffsets[0], childOffsets[0]);
+  }
+
+  // Visitor returns true only on the SECOND child -> the walker must visit
+  // c1 first, observe its `false`, then continue to c2 and stop. This pins
+  // the new walk-all-children semantics: a regression to the legacy
+  // first-child-only short-circuit would return false here and visit only
+  // c1, failing both assertions below.
+  {
+    std::vector<nimble::offset_size> queriedOffsets;
+    auto visit = [&](nimble::offset_size offset) {
+      queriedOffsets.push_back(offset);
+      return offset == childOffsets[1];
+    };
+    EXPECT_TRUE(nimble::visitValueStreamLeaves(*schema, visit));
+    EXPECT_EQ(queriedOffsets, childOffsets);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsFlatMap) {
+TEST(SchemaTests, visitValueStreamLeavesFlatMap) {
   nimble::SchemaBuilder builder;
   nimble::test::FlatMapChildAdder fm;
   NIMBLE_SCHEMA(builder, NIMBLE_FLATMAP(String, NIMBLE_BIGINT(), fm));
@@ -817,19 +843,19 @@ TEST(SchemaTests, hasValueStreamsFlatMap) {
   for (bool streamExists : {true, false}) {
     SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
       return streamExists;
     };
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
-    // FlatMap iterates children until one has stream.
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), streamExists);
+    // FlatMap iterates children until one returns true (or all consumed).
     ASSERT_EQ(queriedOffsets.size(), 1);
     EXPECT_EQ(queriedOffsets[0], expectedOffset);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsFlatMapIteratesAllChildren) {
+TEST(SchemaTests, visitValueStreamLeavesFlatMapIteratesAllChildren) {
   nimble::SchemaBuilder builder;
   nimble::test::FlatMapChildAdder fm;
   NIMBLE_SCHEMA(
@@ -849,52 +875,54 @@ TEST(SchemaTests, hasValueStreamsFlatMapIteratesAllChildren) {
   const auto& flatMap = schema->asFlatMap();
   ASSERT_EQ(flatMap.childrenCount(), 3);
 
-  // Collect expected offsets for each key's Row's first child.
-  std::vector<nimble::offset_size> expectedOffsets;
-  expectedOffsets.reserve(flatMap.childrenCount());
+  // For each key, the value type is Row{f1: BIGINT, f2: STRING}; Row now
+  // recurses into ALL children, so the per-key visit sequence is (f1, f2).
+  std::vector<std::array<nimble::offset_size, 2>> perKeyOffsets;
+  perKeyOffsets.reserve(flatMap.childrenCount());
   for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
-    expectedOffsets.push_back(flatMap.childAt(i)
-                                  ->asRow()
-                                  .childAt(0)
-                                  ->asScalar()
-                                  .scalarDescriptor()
-                                  .offset());
+    const auto& row = flatMap.childAt(i)->asRow();
+    perKeyOffsets.push_back(
+        {row.childAt(0)->asScalar().scalarDescriptor().offset(),
+         row.childAt(1)->asScalar().scalarDescriptor().offset()});
   }
 
-  // All 3 children exist in the schema (have valid offsets). Test that when
-  // hasStream returns false for some children, the search continues until
-  // finding one where hasStream returns true.
-  // childWithStream=-1: hasStream returns false for all -> queries all 3,
-  // returns false childWithStream=0: hasStream returns true for key1 -> queries
-  // 1, returns true childWithStream=1: hasStream returns false for key1, true
-  // for key2 -> queries 2, returns true childWithStream=2: hasStream returns
-  // false for key1/key2, true for key3 -> queries 3, returns true
-  for (int childWithStream = -1; childWithStream < 3; ++childWithStream) {
-    SCOPED_TRACE(fmt::format("childWithStream={}", childWithStream));
+  // hitKey == -1: visitor never returns true; walks every leaf of every key.
+  // hitKey >=  0: visitor returns true on f1 of the chosen key (short-circuits
+  //               the rest of that key's leaves AND all subsequent keys).
+  for (int hitKey = -1; hitKey < 3; ++hitKey) {
+    SCOPED_TRACE(fmt::format("hitKey={}", hitKey));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
-      if (childWithStream < 0) {
+      if (hitKey < 0) {
         return false;
       }
-      return offset == expectedOffsets[childWithStream];
+      return offset == perKeyOffsets[hitKey][0];
     };
 
-    const bool expectedResult = childWithStream >= 0;
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), expectedResult);
-    // When no stream exists, checks all children.
-    // When stream exists at position N, checks N+1 children (0..N).
-    const size_t expectedQueries =
-        childWithStream < 0 ? 3 : childWithStream + 1;
-    EXPECT_EQ(queriedOffsets.size(), expectedQueries);
-    // Verify queries are in order and match expected offsets.
-    for (size_t i = 0; i < queriedOffsets.size(); ++i) {
-      EXPECT_EQ(queriedOffsets[i], expectedOffsets[i]);
+    const bool expectedResult = hitKey >= 0;
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), expectedResult);
+
+    std::vector<nimble::offset_size> expectedQueries;
+    if (hitKey < 0) {
+      // All keys fully walked: (f1, f2) per key.
+      for (const auto& off : perKeyOffsets) {
+        expectedQueries.push_back(off[0]);
+        expectedQueries.push_back(off[1]);
+      }
+    } else {
+      // Walk full (f1, f2) for keys before hitKey, then f1 of hitKey only.
+      for (int k = 0; k < hitKey; ++k) {
+        expectedQueries.push_back(perKeyOffsets[k][0]);
+        expectedQueries.push_back(perKeyOffsets[k][1]);
+      }
+      expectedQueries.push_back(perKeyOffsets[hitKey][0]);
     }
+    EXPECT_EQ(queriedOffsets, expectedQueries);
   }
 }
 
-TEST(SchemaTests, hasValueStreamsNestedRow) {
+TEST(SchemaTests, visitValueStreamLeavesNestedRow) {
   nimble::SchemaBuilder builder;
   NIMBLE_SCHEMA(
       builder,
@@ -917,13 +945,14 @@ TEST(SchemaTests, hasValueStreamsNestedRow) {
   for (bool streamExists : {true, false}) {
     SCOPED_TRACE(fmt::format("streamExists={}", streamExists));
     std::vector<nimble::offset_size> queriedOffsets;
-    auto hasStream = [&](nimble::offset_size offset) {
+    auto visit = [&](nimble::offset_size offset) {
       queriedOffsets.push_back(offset);
       return streamExists;
     };
 
-    EXPECT_EQ(nimble::hasValueStreams(*schema, hasStream), streamExists);
-    // Should recurse: outer Row -> inner Row -> BIGINT scalar.
+    EXPECT_EQ(nimble::visitValueStreamLeaves(*schema, visit), streamExists);
+    // Single-child outer/inner rows, so the recursion still reaches exactly
+    // one leaf (the BIGINT scalar).
     ASSERT_EQ(queriedOffsets.size(), 1);
     EXPECT_EQ(queriedOffsets[0], expectedOffset);
   }
