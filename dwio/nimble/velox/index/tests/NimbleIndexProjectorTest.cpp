@@ -112,13 +112,15 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
       const std::vector<std::string>& indexColumns,
       const folly::F14FastMap<std::string, std::set<std::string>>&
           flatMapColumns = {},
-      uint64_t stripeSize = 4 << 10 /* 4KB */) {
+      uint64_t stripeSize = 4 << 10 /* 4KB */,
+      bool enableStreamDeduplication = true) {
     sinkData_.clear();
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
 
     VeloxWriterOptions options;
     options.enableChunking = true;
     options.flatMapColumns = flatMapColumns;
+    options.enableStreamDeduplication = enableStreamDeduplication;
     ClusterIndexConfig clusterIndexConfig;
     clusterIndexConfig.columns = indexColumns;
     clusterIndexConfig.sortOrders = std::vector<SortOrder>(
@@ -534,6 +536,50 @@ TEST_P(NimbleIndexProjectorTest, overlappingRequestsShareBody) {
   // refcount-shared.
   EXPECT_GT(slice0.computeChainDataLength(), slice0.length());
   EXPECT_GT(slice0.prev()->length(), 0u);
+}
+
+TEST_P(NimbleIndexProjectorTest, deduplicatedProjectedStreamsReadOnce) {
+  auto rowType =
+      ROW({"key", "dup_a", "dup_b"}, {BIGINT(), INTEGER(), INTEGER()});
+
+  constexpr int numRows = 1'024;
+  std::vector<int64_t> keys(numRows);
+  std::vector<int32_t> values(numRows);
+  for (int i = 0; i < numRows; ++i) {
+    keys[i] = i;
+    values[i] = i % 17;
+  }
+
+  auto batch = vectorMaker_->rowVector(
+      {"key", "dup_a", "dup_b"},
+      {vectorMaker_->flatVector<int64_t>(keys),
+       vectorMaker_->flatVector<int32_t>(values),
+       vectorMaker_->flatVector<int32_t>(values)});
+
+  writeData(
+      {batch},
+      {"key"},
+      {},
+      /*stripeSize=*/1 << 20,
+      /*enableStreamDeduplication=*/true);
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("dup_a");
+  subfields.emplace_back("dup_b");
+  auto projector = createProjector(subfields);
+
+  auto bounds = makeRangeLookup(rowType, {"key"}, 0, numRows);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds};
+  auto result = projector->project(request, {});
+
+  ASSERT_EQ(result.responses.size(), 1);
+  ASSERT_EQ(result.responses[0].slices.size(), 1);
+  EXPECT_EQ(projector->stats().numReadStripes, 1);
+  EXPECT_EQ(dataIoStats_->read().count(), 1);
+  EXPECT_LE(dataIoStats_->rawBytesRead() * 2, projector->stats().numOutputBytes)
+      << "The physical payload should be one deduplicated stream while the "
+         "projected output still contains both logical streams";
 }
 
 // Round-trips a single-batch deserialize over a key range. The Deserializer
