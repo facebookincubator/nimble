@@ -41,8 +41,8 @@ folly::dynamic FileCloseMetrics::serialize() const {
   obj["inputSize"] = inputSize;
   obj["stripeCount"] = stripeCount;
   obj["fileSize"] = fileSize;
-  obj["totalFlushCpuUsec"] = totalFlushCpuUsec;
-  obj["totalFlushWallTimeUsec"] = totalFlushWallTimeUsec;
+  obj["encodingCpuNs"] = encodingCpuNs;
+  obj["encodingWallNs"] = encodingWallNs;
   return obj;
 }
 
