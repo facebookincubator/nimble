@@ -266,8 +266,8 @@ TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
 
   // Test all three code paths:
   // - bitWidth <= 32: delegates to bulkGetWithBaseline32Into64
-  // - bitWidth 33-56: branchless byte-aligned loads
-  // - bitWidth > 56: per-element get() fallback
+  // - bitWidth 33-58: branchless byte-aligned loads
+  // - bitWidth > 58: inline cross-word boundary handling
   for (int bitWidth = 1; bitWidth <= 64; ++bitWidth) {
     SCOPED_TRACE(fmt::format("bitWidth={}", bitWidth));
     const uint64_t maxElement = bitWidth == 64
@@ -278,13 +278,10 @@ TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
 
     for (int test = 0; test < kNumTestsPerBitWidth; ++test) {
       const int elementCount = folly::Random::rand32(rng) % kMaxElements;
-      auto buffer = std::make_unique<char[]>(
-          nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
-      // Zero-initialize buffer since set() uses OR semantics.
-      std::memset(
-          buffer.get(),
-          0,
-          nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+      const auto bufferBytes =
+          nimble::FixedBitArray::bufferSize(elementCount, bitWidth);
+      auto buffer = std::make_unique<char[]>(bufferBytes);
+      std::memset(buffer.get(), 0, bufferBytes);
       nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
 
       std::vector<uint64_t> randomValues(elementCount);
@@ -334,18 +331,16 @@ TEST(FixedBitArrayTests, bulkGet64WithBaselineZeroBaseline) {
   LOG(INFO) << "seed: " << seed;
   std::mt19937 rng(seed);
 
-  for (int bitWidth : {1, 8, 16, 32, 40, 48, 56, 60, 64}) {
+  for (int bitWidth : {1, 8, 16, 32, 33, 40, 48, 56, 57, 58, 60, 64}) {
     SCOPED_TRACE(fmt::format("bitWidth={}", bitWidth));
     const int elementCount = 100 + folly::Random::rand32(rng) % 200;
     const uint64_t maxElement = bitWidth == 64
         ? std::numeric_limits<uint64_t>::max()
         : (1ULL << bitWidth) - 1;
-    auto buffer = std::make_unique<char[]>(
-        nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
-    std::memset(
-        buffer.get(),
-        0,
-        nimble::FixedBitArray::bufferSize(elementCount, bitWidth));
+    const auto bufferBytes =
+        nimble::FixedBitArray::bufferSize(elementCount, bitWidth);
+    auto buffer = std::make_unique<char[]>(bufferBytes);
+    std::memset(buffer.get(), 0, bufferBytes);
     nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
 
     for (int i = 0; i < elementCount; ++i) {
@@ -459,6 +454,28 @@ TEST(FixedBitArrayTests, Equals32Random) {
       }
     }
   }
+}
+
+TEST(FixedBitArrayTests, bulkGet64WithBaselineBitWidth58Boundary) {
+  constexpr int bitWidth = 58;
+  constexpr int elementCount = 5;
+  constexpr int start = 3;
+  constexpr uint64_t baseline = 17;
+  constexpr uint64_t maxElement = (1ULL << bitWidth) - 1;
+
+  const auto bufferBytes =
+      nimble::FixedBitArray::bufferSize(elementCount, bitWidth);
+  auto buffer = std::make_unique<char[]>(bufferBytes);
+  std::memset(buffer.get(), 0, bufferBytes);
+  nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
+
+  // start * bitWidth leaves a bit remainder of 6. For bitWidth 58 this is the
+  // highest possible remainder, and 58 + 6 exactly fills one 64-bit load.
+  fixedBitArray.set(start, maxElement);
+
+  uint64_t value = 0;
+  fixedBitArray.bulkGet64WithBaseline(start, 1, &value, baseline);
+  ASSERT_EQ(value, maxElement + baseline);
 }
 
 TEST(FixedBitArrayTests, bulkSet64WithBaseline) {

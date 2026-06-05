@@ -324,6 +324,44 @@ void bulkGet32Internal(
 }
 
 template <int byteWidth>
+inline uint64_t loadByteAlignedResidual(const char* next) {
+  static_assert(byteWidth >= 4 && byteWidth <= 8);
+  if constexpr (byteWidth == 4) {
+    return *reinterpret_cast<const uint32_t*>(next);
+  } else if constexpr (byteWidth == 5) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(static_cast<unsigned char>(next[4])) << 32);
+  } else if constexpr (byteWidth == 6) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
+         << 32);
+  } else if constexpr (byteWidth == 7) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
+         << 32) |
+        (static_cast<uint64_t>(static_cast<unsigned char>(next[6])) << 48);
+  } else {
+    static_assert(byteWidth == 8);
+    return *reinterpret_cast<const uint64_t*>(next);
+  }
+}
+
+template <int byteWidth>
+inline void bulkGetByteAlignedWithBaseline(
+    const char* buffer,
+    uint64_t start,
+    uint64_t length,
+    uint64_t* values,
+    uint64_t baseline) {
+  const char* next = buffer + start * byteWidth;
+  uint64_t* nextValue = values;
+  for (uint64_t i = 0; i < length; ++i) {
+    *nextValue++ = loadByteAlignedResidual<byteWidth>(next) + baseline;
+    next += byteWidth;
+  }
+}
+
+template <int byteWidth>
 inline void bulkSetByteAlignedWithBaseline(
     char* buffer,
     uint64_t start,
@@ -394,28 +432,82 @@ void FixedBitArray::bulkGet64WithBaseline(
     uint64_t length,
     uint64_t* values,
     uint64_t baseline) const {
-  if (bitWidth_ <= 32) {
+  const int bitWidth = bitWidth_;
+  if (bitWidth < 32) {
     // Delegate to the optimized template-unrolled 32-bit path.
     bulkGetWithBaseline32Into64(start, length, values, baseline);
     return;
   }
-  if (bitWidth_ <= 57) {
-    // Branchless byte-aligned loads: since the sub-byte offset is at most 7,
-    // bitWidth + remainder <= 57 + 7 = 64, so each value fits in a single
-    // 64-bit load — no cross-word boundary branch needed.
+
+  switch (bitWidth) {
+    case 32: {
+      bulkGetByteAlignedWithBaseline<4>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 40: {
+      bulkGetByteAlignedWithBaseline<5>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 48: {
+      bulkGetByteAlignedWithBaseline<6>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 56: {
+      bulkGetByteAlignedWithBaseline<7>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 64: {
+      bulkGetByteAlignedWithBaseline<8>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    default:
+      break;
+  }
+
+  // Hoist members to prevent reload on every iteration -- the compiler
+  // cannot prove that writes to values[] don't alias this->buffer_ etc.
+  const char* const buffer = buffer_;
+  const uint64_t mask = mask_;
+  // Absolute bit offset of the next value from the beginning of the packed
+  // buffer.
+  uint64_t bitsOffset = start * static_cast<uint64_t>(bitWidth);
+  // A single 64-bit load is safe when bitWidth + bitsRemainder <= 64. For
+  // bitWidth 58, bitsRemainder is always even because bitsOffset advances by
+  // 58 bits, so the maximum possible bitsRemainder is 6, not 7.
+  if (bitWidth <= 58) {
     for (uint64_t i = 0; i < length; ++i) {
-      const uint64_t bits = (start + i) * bitWidth_;
-      const uint64_t offset = bits >> 3;
-      const uint64_t remainder = bits & 7;
+      const uint64_t byteOffset = bitsOffset >> 3;
+      const uint64_t bitsRemainder = bitsOffset & 7;
       const uint64_t word =
-          *reinterpret_cast<const uint64_t*>(buffer_ + offset);
-      values[i] = ((word >> remainder) & mask_) + baseline;
+          *reinterpret_cast<const uint64_t*>(buffer + byteOffset);
+      values[i] = ((word >> bitsRemainder) & mask) + baseline;
+      bitsOffset += bitWidth;
     }
-  } else {
-    // Wide bit widths (> 57): need cross-word boundary handling.
-    for (uint64_t i = 0; i < length; ++i) {
-      values[i] = get(start + i) + baseline;
+    return;
+  }
+
+  for (uint64_t i = 0; i < length; ++i) {
+    const uint64_t byteOffset = bitsOffset >> 3;
+    const uint64_t bitsRemainder = bitsOffset & 7;
+    const uint64_t word =
+        *reinterpret_cast<const uint64_t*>(buffer + byteOffset);
+    const int overflow = bitWidth + static_cast<int>(bitsRemainder) - 64;
+    if (overflow > 0) {
+      const uint64_t nextWord =
+          *reinterpret_cast<const uint64_t*>(buffer + byteOffset + 8);
+      values[i] =
+          (((word >> bitsRemainder) | (nextWord << (bitWidth - overflow))) &
+           mask) +
+          baseline;
+    } else {
+      values[i] = ((word >> bitsRemainder) & mask) + baseline;
     }
+    bitsOffset += bitWidth;
   }
 }
 
@@ -682,16 +774,18 @@ void FixedBitArray::bulkSet64WithBaseline(
   }
 
   char* const buffer = buffer_;
-  uint64_t bits = start * static_cast<uint64_t>(bitWidth);
+  // Absolute bit offset of the next value from the beginning of the packed
+  // buffer.
+  uint64_t bitsOffset = start * static_cast<uint64_t>(bitWidth);
   if (bitWidth <= 58) {
     const uint64_t* nextValue = values;
     for (uint64_t i = 0; i < length; ++i) {
-      const uint64_t residual = *nextValue++ - baseline;
-      const uint64_t offset = bits >> 3;
-      const uint64_t remainder = bits & 7;
-      uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + offset);
-      word |= residual << remainder;
-      bits += bitWidth;
+      const uint64_t residualValue = *nextValue++ - baseline;
+      const uint64_t byteOffset = bitsOffset >> 3;
+      const uint64_t bitsRemainder = bitsOffset & 7;
+      uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + byteOffset);
+      word |= residualValue << bitsRemainder;
+      bitsOffset += bitWidth;
     }
     return;
   }
@@ -701,17 +795,18 @@ void FixedBitArray::bulkSet64WithBaseline(
   // current word and spill the remaining high bits into the next word.
   const uint64_t* nextValue = values;
   for (uint64_t i = 0; i < length; ++i) {
-    const uint64_t residual = *nextValue++ - baseline;
-    const uint64_t offset = bits >> 3;
-    const uint64_t remainder = bits & 7;
-    uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + offset);
-    word |= residual << remainder;
-    const int overflow = bitWidth + static_cast<int>(remainder) - 64;
+    const uint64_t residualValue = *nextValue++ - baseline;
+    const uint64_t byteOffset = bitsOffset >> 3;
+    const uint64_t bitsRemainder = bitsOffset & 7;
+    uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + byteOffset);
+    word |= residualValue << bitsRemainder;
+    const int overflow = bitWidth + static_cast<int>(bitsRemainder) - 64;
     if (overflow > 0) {
-      uint64_t& nextWord = *reinterpret_cast<uint64_t*>(buffer + offset + 8);
-      nextWord |= residual >> (bitWidth - overflow);
+      uint64_t& nextWord =
+          *reinterpret_cast<uint64_t*>(buffer + byteOffset + 8);
+      nextWord |= residualValue >> (bitWidth - overflow);
     }
-    bits += bitWidth;
+    bitsOffset += bitWidth;
   }
 }
 

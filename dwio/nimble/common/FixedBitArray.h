@@ -101,9 +101,10 @@ class FixedBitArray {
 
   /// Retrieves a contiguous subarray from slots [start, start + length) into
   /// 64-bit output values, adding baseline to each. Supports any bit width
-  /// up to 64. For bitWidth <= 32, delegates to the optimized bulkGet32 path.
-  /// For bitWidth 33-57, uses branchless byte-aligned loads (single 64-bit
-  /// load per value). For bitWidth > 57, handles cross-word boundary overflow.
+  /// up to 64. For bitWidth < 32, delegates to the optimized bulkGet32 path.
+  /// For byte-aligned bit widths 32, 40, 48, 56, and 64, uses direct loads.
+  /// Other bit widths up to 58 use a single 64-bit load per value. For
+  /// bitWidth 59-63, handles cross-word boundary overflow.
   void bulkGet64WithBaseline(
       uint64_t start,
       uint64_t length,

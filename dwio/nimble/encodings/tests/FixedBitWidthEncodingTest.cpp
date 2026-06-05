@@ -345,6 +345,66 @@ TYPED_TEST(FixedBitWidthEncodingTest, wideRange) {
   }
 }
 
+TYPED_TEST(FixedBitWidthEncodingTest, uint64MaterializeWideBitWidths) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  auto roundTripAfterSkip = [&](const std::vector<uint64_t>& values) {
+    nimble::Vector<uint64_t> nimbleValues{
+        this->pool_.get(), values.begin(), values.end()};
+    auto encoding = nimble::test::
+        Encoder<nimble::FixedBitWidthEncoding<uint64_t>>::createEncoding(
+            *this->buffer_,
+            nimbleValues,
+            this->stringBufferFactory(),
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    constexpr uint32_t skipCount = 3;
+    encoding->skip(skipCount);
+
+    std::vector<uint64_t> result(values.size() - skipCount);
+    encoding->materialize(static_cast<uint32_t>(result.size()), result.data());
+
+    const std::vector<uint64_t> expected{
+        values.begin() + skipCount, values.end()};
+    EXPECT_EQ(result, expected);
+  };
+
+  roundTripAfterSkip(
+      {100,
+       101,
+       102,
+       103,
+       100 + (uint64_t{1} << 40) - 1,
+       100 + (uint64_t{1} << 39),
+       100 + 17});
+  roundTripAfterSkip(
+      {17,
+       18,
+       19,
+       20,
+       17 + (uint64_t{1} << 58) - 1,
+       17 + (uint64_t{1} << 57),
+       17 + 42});
+  roundTripAfterSkip(
+      {29,
+       30,
+       31,
+       32,
+       29 + (uint64_t{1} << 60) - 1,
+       29 + (uint64_t{1} << 59),
+       29 + 99});
+  roundTripAfterSkip(
+      {0,
+       1,
+       2,
+       3,
+       std::numeric_limits<uint64_t>::max(),
+       uint64_t{1} << 63,
+       42});
+}
+
 TYPED_TEST(FixedBitWidthEncodingTest, skipToEnd) {
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
