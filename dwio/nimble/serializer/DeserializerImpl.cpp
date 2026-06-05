@@ -25,7 +25,6 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/SerializationHeader.h"
-#include "dwio/nimble/serializer/SerializerImpl.h"
 
 namespace facebook::nimble::serde {
 
@@ -263,46 +262,6 @@ uint32_t StreamDataReader::initialize(std::string_view data) {
   version_ = header.version;
   rowRange_ = header.rowRange;
   return header.rowCount;
-}
-
-void StreamDataReader::iterateStreams(
-    const std::function<void(uint32_t offset, std::string_view data)>&
-        callback) {
-  if (nonLegacyFormat(version_)) {
-    // kCompactRaw/kTablet format: read stream sizes from trailer.
-    const auto streamSizes = detail::readTrailerStreamSizes(end_);
-    const bool isTablet = isTabletVersion(version_);
-
-    for (uint32_t i = 0; i < streamSizes.size(); ++i) {
-      std::string_view streamData(pos_, streamSizes[i]);
-      pos_ += streamSizes[i];
-      if (!streamData.empty()) {
-        if (isTablet) {
-          // kTablet: stream data includes tablet chunk headers:
-          // [chunkSize:u32][compressionType:1B][encoded_data...]
-          // Strip headers and decompress if needed before passing to callback.
-          callback(i, stripChunkHeaders(streamData));
-        } else {
-          callback(i, streamData);
-        }
-      }
-    }
-    pos_ = end_; // Skip past trailer.
-  } else {
-    // kLegacy format: streams in order with inline u32 sizes.
-    uint32_t offset = 0;
-    while (pos_ < end_) {
-      uint32_t size = encoding::readUint32(pos_);
-      std::string_view streamData(pos_, size);
-      pos_ += size;
-      if (!streamData.empty()) {
-        callback(offset, streamData);
-      }
-      ++offset;
-    }
-  }
-
-  NIMBLE_CHECK_EQ(pos_, end_, "Unexpected trailing data");
 }
 
 std::string_view StreamDataReader::stripChunkHeaders(
