@@ -16,6 +16,7 @@
 #pragma once
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -181,6 +182,12 @@ class Encoder {
   struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
     static constexpr inline nimble::EncodingType encodingType =
         nimble::EncodingType::Nullable;
+  };
+
+  template <>
+  struct EncodingTypeTraits<nimble::BlockBitPackingEncoding<T>> {
+    static constexpr inline nimble::EncodingType encodingType =
+        nimble::EncodingType::BlockBitPacking;
   };
 
   template <>
