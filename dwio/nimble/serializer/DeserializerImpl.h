@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <functional>
 #include <optional>
 
 #include <zstd.h>
@@ -199,9 +198,60 @@ class StreamDataReader {
   /// first (`folly::IOBuf::cloneCoalescedAsValue()`).
   uint32_t initialize(std::string_view data);
 
-  void iterateStreams(
-      const std::function<void(uint32_t offset, std::string_view data)>&
-          callback);
+  /// Walks every non-empty stream in the current blob, invoking
+  /// `callback(offset, data)` per stream. For kTablet, `data` is the
+  /// chunk-stripped (and decompressed, if needed) payload; for kCompactRaw
+  /// and kLegacy it is the raw stream bytes. Empty streams are skipped.
+  /// Must be called at most once per `initialize()` (consumes the per-blob
+  /// cursor).
+  ///
+  /// PERFORMANCE: This is a function template (rather than a function taking
+  /// `std::function`/`folly::FunctionRef`) on purpose. The callback's call
+  /// type is concrete at the call site, so `callback(offset, data)` becomes
+  /// a direct call the compiler can inline into the loop body. The earlier
+  /// `std::function`-based variant paid an indirect-call dispatch
+  /// (`_Function_handler::_M_invoke`) per stream — measurable on per-batch
+  /// hot paths with many streams (the Deserializer's flatmap deserialization
+  /// over hundreds of keys).
+  template <typename Callback>
+  void iterateStreams(Callback&& callback) {
+    if (nonLegacyFormat(version_)) {
+      // kCompactRaw/kTablet: stream sizes are packed into a trailer at the
+      // end of the blob.
+      const auto streamSizes = detail::readTrailerStreamSizes(end_);
+      const bool isTablet = isTabletVersion(version_);
+
+      for (uint32_t i = 0; i < streamSizes.size(); ++i) {
+        std::string_view streamData(pos_, streamSizes[i]);
+        pos_ += streamSizes[i];
+        if (!streamData.empty()) {
+          if (isTablet) {
+            // kTablet: stream data includes tablet chunk headers:
+            // [chunkSize:u32][compressionType:1B][encoded_data...]
+            // Strip headers and decompress if needed before handing off.
+            callback(i, stripChunkHeaders(streamData));
+          } else {
+            callback(i, streamData);
+          }
+        }
+      }
+      pos_ = end_; // Skip past trailer.
+    } else {
+      // kLegacy: streams in order with inline u32 sizes.
+      uint32_t offset = 0;
+      while (pos_ < end_) {
+        uint32_t size = encoding::readUint32(pos_);
+        std::string_view streamData(pos_, size);
+        pos_ += size;
+        if (!streamData.empty()) {
+          callback(offset, streamData);
+        }
+        ++offset;
+      }
+    }
+
+    NIMBLE_CHECK_EQ(pos_, end_, "Unexpected trailing data");
+  }
 
   /// Returns the auto-detected serialization version.
   /// Only valid after initialize() has been called.

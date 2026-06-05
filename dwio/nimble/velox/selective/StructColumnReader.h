@@ -33,6 +33,7 @@ class StructColumnReaderBase
       velox::common::ScanSpec& scanSpec,
       bool isRoot)
       : SelectiveStructColumnReaderBase(
+            velox::dwio::common::ColumnReaderOptions{},
             requestedType,
             fileType,
             params,

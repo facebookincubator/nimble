@@ -2929,7 +2929,7 @@ class FlatMapFieldReaderFactoryBase : public FieldReaderFactory {
             valueTypes_.size(),
             "currentIdx out of range for valueTypes_");
         if (decoder != nullptr ||
-            hasValueStreams(
+            visitValueStreamLeaves(
                 *valueTypes_[currentIdx], [&decoders](offset_size offset) {
                   return hasDecoderStream(offset, decoders);
                 })) {

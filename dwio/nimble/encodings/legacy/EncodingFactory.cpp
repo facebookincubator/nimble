@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
@@ -249,6 +250,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
 #endif
+    case EncodingType::BlockBitPacking: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(
+          facebook::nimble::BlockBitPackingEncoding, dataType);
+    }
     case EncodingType::Prefix: {
       NIMBLE_CHECK_EQ(
           dataType,

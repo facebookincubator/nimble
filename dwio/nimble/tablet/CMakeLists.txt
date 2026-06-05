@@ -129,10 +129,21 @@ target_link_libraries(
   Folly::folly
 )
 
+add_library(nimble_data_input DataInput.cpp)
+target_link_libraries(
+  nimble_data_input
+  nimble_common
+  velox_memory
+  velox_file
+  velox_time
+  Folly::folly
+)
+
 add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
 target_link_libraries(
   nimble_tablet_reader
   PUBLIC
+    nimble_index
     nimble_tablet_common
     nimble_cluster_index_fb
     nimble_chunk_index_fb

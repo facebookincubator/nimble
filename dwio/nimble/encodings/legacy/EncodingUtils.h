@@ -110,6 +110,9 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    case EncodingType::BlockBitPacking:
+      return f(
+          static_cast<facebook::nimble::BlockBitPackingEncoding<T>&>(encoding));
     // New Encoding has no legacy-specialised class; legacy reads dispatch into
     // the modern Encoding classes
     case EncodingType::PFOR:

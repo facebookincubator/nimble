@@ -20,12 +20,9 @@
 
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
-#include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
-#include "velox/dwio/common/CachedBufferedInput.h"
-#include "velox/dwio/common/DirectBufferedInput.h"
 
 namespace facebook::nimble {
 
@@ -62,86 +59,66 @@ std::string NimbleIndexProjector::Stats::toString() const {
 }
 
 namespace {
-std::unique_ptr<velox::dwio::common::BufferedInput> createBufferedInput(
-    const velox::FileHandle& fileHandle,
-    velox::cache::AsyncDataCache* cache,
-    const velox::dwio::common::ReaderOptions& options) {
-  if (cache != nullptr && options.cacheData()) {
-    NIMBLE_CHECK(
-        fileHandle.uuid.hasValue() && fileHandle.groupId.hasValue(),
-        "FileHandle must have valid uuid and groupId when cache is provided");
-    return std::make_unique<velox::dwio::common::CachedBufferedInput>(
-        fileHandle.file,
-        velox::dwio::common::MetricsLog::voidLog(),
-        fileHandle.uuid,
-        cache,
-        /*tracker=*/nullptr,
-        fileHandle.groupId,
-        options.dataIoStats(),
-        /*ioStats=*/nullptr,
-        /*executor=*/nullptr,
-        options);
-  }
-  return std::make_unique<velox::dwio::common::DirectBufferedInput>(
-      fileHandle.file,
-      velox::dwio::common::MetricsLog::voidLog(),
-      fileHandle.uuid,
-      /*tracker=*/nullptr,
-      fileHandle.groupId,
-      options.dataIoStats(),
-      /*ioStats=*/nullptr,
-      /*executor=*/nullptr,
-      options);
-}
-} // namespace
 
-std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+std::unique_ptr<DataInput> createDataInput(
     const velox::FileHandle& fileHandle,
-    velox::cache::AsyncDataCache* cache,
-    const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options) {
-  validateReaderOptions(options);
-  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
-  return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
-      ReaderBase::create(std::move(bufferedInput), options),
-      projectedSubfields,
-      options));
+  DirectDataInput::Options dataInputOptions;
+  dataInputOptions.pool = &options.memoryPool();
+  dataInputOptions.ioStats = options.dataIoStats();
+  dataInputOptions.executor = options.ioExecutor().get();
+  return std::make_unique<DirectDataInput>(
+      fileHandle.file.get(), dataInputOptions);
 }
+
+void freeDataHandle(void* /*buf*/, void* userData) {
+  delete static_cast<DataInput::Handle*>(userData);
+}
+
+} // namespace
 
 std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
     TabletReaderCache& tabletReaderCache,
     const velox::FileHandle& fileHandle,
-    velox::cache::AsyncDataCache* cache,
     const std::vector<Subfield>& projectedSubfields,
     const velox::dwio::common::ReaderOptions& options) {
   validateReaderOptions(options);
+  NIMBLE_CHECK(
+      !options.cacheData(),
+      "NimbleIndexProjector does not support data caching");
   auto cached = tabletReaderCache.get(
       fileHandle.file, TabletReader::configureOptions(options));
-  auto bufferedInput = createBufferedInput(fileHandle, cache, options);
   return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
-      ReaderBase::create(std::move(bufferedInput), std::move(cached), options),
+      std::move(cached.tablet),
+      std::move(cached.nimbleSchema),
+      fileHandle.file,
+      createDataInput(fileHandle, options),
       projectedSubfields,
-      options));
+      &options.memoryPool(),
+      options.dataIoStats()));
 }
 
 NimbleIndexProjector::NimbleIndexProjector(
-    std::shared_ptr<ReaderBase> readerBase,
+    std::shared_ptr<TabletReader> tablet,
+    std::shared_ptr<const Type> nimbleSchema,
+    std::shared_ptr<velox::ReadFile> file,
+    std::unique_ptr<DataInput> dataInput,
     const std::vector<Subfield>& projectedSubfields,
-    const velox::dwio::common::ReaderOptions& options)
-    : readerBase_{std::move(readerBase)},
-      ioStats_{options.dataIoStats()},
-      pool_{readerBase_->pool()},
-      clusterIndex_{readerBase_->tablet().clusterIndex()},
-      numStripes_{readerBase_->tablet().stripeCount()},
-      streams_{readerBase_} {
+    velox::memory::MemoryPool* pool,
+    std::shared_ptr<velox::io::IoStatistics> ioStats)
+    : file_{std::move(file)},
+      tablet_{std::move(tablet)},
+      ioStats_{std::move(ioStats)},
+      pool_{pool},
+      dataInput_{std::move(dataInput)},
+      clusterIndex_{tablet_->clusterIndex()},
+      numStripes_{tablet_->stripeCount()} {
   NIMBLE_CHECK_NOT_NULL(
       clusterIndex_, "NimbleIndexProjector requires a tablet with an index");
   NIMBLE_CHECK_GT(numStripes_, 0, "NimbleIndexProjector requires stripes");
 
   projectedNimbleType_ = buildProjectedNimbleType(
-      readerBase_->nimbleSchema().get(),
-      projectedSubfields,
-      projectedStreamOffsets_);
+      nimbleSchema.get(), projectedSubfields, projectedStreamOffsets_);
 }
 
 NimbleIndexProjector::Result NimbleIndexProjector::project(
@@ -242,15 +219,17 @@ void NimbleIndexProjector::clearRequest() {
   ctx_.plan.stripePlans.clear();
   ctx_.plan.truncated = false;
   ctx_.hasStripeRanges.clear();
-  ctx_.loadedStripes.clear();
+  ctx_.dataInputIndices.clear();
+  ctx_.dataHandle.reset();
   ctx_.stripeBodies.clear();
+  dataInput_->clear();
 }
 
 RowRange NimbleIndexProjector::stripeRowRange(
     uint32_t stripe,
     const RowRange& rowRangeLimit) const {
   const auto stripeStart =
-      static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripe));
+      static_cast<uint32_t>(tablet_->stripeStartRow(stripe));
   const auto stripeEnd = stripeStart + stripeRowCount(stripe);
   const auto startRow = std::max(rowRangeLimit.startRow, stripeStart);
   const auto endRow = std::min(rowRangeLimit.endRow, stripeEnd);
@@ -277,7 +256,6 @@ void NimbleIndexProjector::lookupStripes() {
   uint32_t maxStripe = 0;
   std::vector<ResolvedRequest> resolvedRequests;
   resolvedRequests.reserve(ctx_.numRequests);
-  const auto& tablet = readerBase_->tablet();
   for (uint32_t requestIndex = 0; requestIndex < ctx_.numRequests;
        ++requestIndex) {
     const auto& ranges = result[requestIndex];
@@ -288,8 +266,8 @@ void NimbleIndexProjector::lookupStripes() {
     const auto& range = ranges[0];
     NIMBLE_CHECK(!range.empty());
 
-    const uint32_t startStripe = tablet.rowToStripe(range.startRow);
-    const uint32_t endStripe = tablet.rowToStripe(range.endRow - 1) + 1;
+    const uint32_t startStripe = tablet_->rowToStripe(range.startRow);
+    const uint32_t endStripe = tablet_->rowToStripe(range.endRow - 1) + 1;
     NIMBLE_CHECK_LE(endStripe, numStripes_);
     NIMBLE_CHECK_LT(startStripe, endStripe);
 
@@ -333,25 +311,33 @@ void NimbleIndexProjector::lookupStripes() {
 
 void NimbleIndexProjector::loadStripes() {
   const auto& stripePlans = ctx_.plan.stripePlans;
+  if (stripePlans.empty()) {
+    return;
+  }
   velox::CpuWallTimer timer(stats_.scanTiming);
 
-  ctx_.loadedStripes.resize(stripePlans.size());
+  uint32_t totalStreams = 0;
+  for (const auto& plan : stripePlans) {
+    totalStreams += plan.numStreams;
+  }
+  dataInput_->reserve(totalStreams);
+
+  const auto numProjectedStreams = projectedStreamOffsets_.size();
+  ctx_.dataInputIndices.resize(stripePlans.size() * numProjectedStreams);
   for (size_t stripeOffset = 0; stripeOffset < stripePlans.size();
        ++stripeOffset) {
-    ctx_.loadedStripes[stripeOffset].resize(projectedStreamOffsets_.size());
+    dataInput_->startGroup();
+    const auto base = stripeOffset * numProjectedStreams;
     const auto& streams = stripePlans[stripeOffset].projectedStreams;
     for (size_t streamIndex = 0; streamIndex < streams.size(); ++streamIndex) {
       const auto& stream = streams[streamIndex];
       if (!stream.has_value()) {
         continue;
       }
-      dwio::common::StreamIdentifier sid(stream->streamId);
-      ctx_.loadedStripes[stripeOffset][streamIndex] =
-          readerBase_->input().enqueue(stream->region, &sid);
+      ctx_.dataInputIndices[base + streamIndex] = dataInput_->enqueue(*stream);
     }
   }
-
-  readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
+  ctx_.dataHandle = dataInput_->load();
 }
 
 NimbleIndexProjector::Result NimbleIndexProjector::processStripes() {
@@ -360,10 +346,8 @@ NimbleIndexProjector::Result NimbleIndexProjector::processStripes() {
   result.responses.resize(ctx_.numRequests);
   ctx_.stripeBodies.resize(ctx_.plan.stripePlans.size());
   for (size_t i = 0; i < ctx_.plan.stripePlans.size(); ++i) {
-    const auto& stripePlan = ctx_.plan.stripePlans[i];
     ++stats_.numReadStripes;
-    ctx_.stripeBodies[i] =
-        serializeStripe(stripePlan.stripeIndex, ctx_.loadedStripes[i]);
+    ctx_.stripeBodies[i] = packStripe(i);
   }
   setResumeKeys(result);
   buildResult(result);
@@ -375,62 +359,72 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
       stripePlan.projectedStreams.empty() && stripePlan.projectedBytes == 0,
       "StripePlan already has located streams");
   stripePlan.numRows = stripeRowCount(stripePlan.stripeIndex);
-  streams_.setStripe(stripePlan.stripeIndex);
-  stripePlan.projectedStreams = streams_.locateStreams(projectedStreamOffsets_);
-  for (const auto& stream : stripePlan.projectedStreams) {
-    if (stream.has_value()) {
-      stripePlan.projectedBytes += stream->region.length;
+
+  const auto stripeId = tablet_->stripeIdentifier(stripePlan.stripeIndex);
+  const auto streamCount = tablet_->streamCount(stripeId);
+  const auto stripeOffset = tablet_->stripeOffset(stripePlan.stripeIndex);
+  const auto& streamOffsets = tablet_->streamOffsets(stripeId);
+  const auto& streamSizes = tablet_->streamSizes(stripeId);
+
+  stripePlan.projectedStreams.resize(projectedStreamOffsets_.size());
+  for (size_t i = 0; i < projectedStreamOffsets_.size(); ++i) {
+    const auto streamId = projectedStreamOffsets_[i];
+    if (streamId >= streamCount || streamSizes[streamId] == 0) {
+      continue;
     }
+    stripePlan.projectedStreams[i] = velox::common::Region{
+        stripeOffset + streamOffsets[streamId], streamSizes[streamId]};
+    ++stripePlan.numStreams;
+    stripePlan.projectedBytes += streamSizes[streamId];
   }
 }
 
-folly::IOBuf NimbleIndexProjector::serializeStripe(
-    uint32_t stripeIndex,
-    InputStreams& inputStreams) {
-  const auto numRows = stripeRowCount(stripeIndex);
+folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
+  const auto& stripePlan = ctx_.plan.stripePlans[stripeOffset];
+  const auto numRows = stripeRowCount(stripePlan.stripeIndex);
+  const auto numProjectedStreams = projectedStreamOffsets_.size();
+  const auto base = stripeOffset * numProjectedStreams;
 
-  // Build the shared body+trailer for this stripe:
-  //   [stream_data...][encodingType][stream_sizes][trailer_size:u32].
-  // The version/rowCount/row-range/resume-key header is per-slice and is
-  // built later by buildResult().
+  // Build stream sizes from the precomputed projected regions.
+  std::vector<uint32_t> streamSizes(numProjectedStreams, 0);
+  for (size_t i = 0; i < numProjectedStreams; ++i) {
+    if (stripePlan.projectedStreams[i].has_value()) {
+      streamSizes[i] =
+          static_cast<uint32_t>(stripePlan.projectedStreams[i]->length);
+    }
+  }
 
-  // Collect raw stream segments without copying. Sizes are needed for the
-  // trailer.
-  std::vector<uint32_t> streamSizes(projectedStreamOffsets_.size(), 0);
-  std::vector<std::pair<const void*, int>> segments;
-  uint32_t totalStreamBytes = 0;
-  for (size_t i = 0; i < inputStreams.size(); ++i) {
-    if (inputStreams[i] == nullptr) {
+  // First stream IOBuf holds the DataInput::Handle via takeOwnership,
+  // keeping the loaded data alive. Subsequent streams use wrapBuffer
+  // (no ownership) since the chain is always cloned/destroyed as a unit.
+  std::unique_ptr<folly::IOBuf> chain;
+  for (size_t i = 0; i < numProjectedStreams; ++i) {
+    if (!ctx_.dataInputIndices[base + i].has_value()) {
       continue;
     }
-    const void* data;
-    int size;
-    while (inputStreams[i]->Next(&data, &size)) {
-      segments.emplace_back(data, size);
-      streamSizes[i] += static_cast<uint32_t>(size);
-      totalStreamBytes += static_cast<uint32_t>(size);
+    const auto& ref = dataInput_->bufferRef(*ctx_.dataInputIndices[base + i]);
+    if (chain == nullptr) {
+      chain = folly::IOBuf::takeOwnership(
+          const_cast<char*>(ref.data),
+          ref.length,
+          freeDataHandle,
+          new DataInput::Handle(ctx_.dataHandle));
+    } else {
+      chain->appendToChain(folly::IOBuf::wrapBuffer(ref.data, ref.length));
     }
   }
 
   std::string trailerBuf;
   serde::detail::writeTrailer(streamSizes, EncodingType::Trivial, trailerBuf);
 
-  // Single allocation for stream data + trailer.
-  const size_t bodySize = totalStreamBytes + trailerBuf.size();
-  auto body = folly::IOBuf::create(bodySize);
-  auto* dest = body->writableData();
+  NIMBLE_CHECK_NOT_NULL(chain);
+  auto trailer = folly::IOBuf::copyBuffer(trailerBuf);
+  chain->appendToChain(std::move(trailer));
 
-  for (const auto& [data, size] : segments) {
-    std::memcpy(dest, data, size);
-    dest += size;
-  }
-
-  std::memcpy(dest, trailerBuf.data(), trailerBuf.size());
-  body->append(bodySize);
-
+  const size_t bodySize = stripePlan.projectedBytes + trailerBuf.size();
   stats_.numReadRows += numRows;
   stats_.numOutputBytes += bodySize;
-  return std::move(*body);
+  return std::move(*chain);
 }
 
 void NimbleIndexProjector::setResumeKeys(Result& result) {
@@ -450,9 +444,9 @@ void NimbleIndexProjector::setResumeKeys(Result& result) {
 
   // No next stripe in the file — all requests are fully satisfied.
   const auto stripeStartRow =
-      static_cast<uint32_t>(readerBase_->tablet().stripeStartRow(stripeIndex));
+      static_cast<uint32_t>(tablet_->stripeStartRow(stripeIndex));
   const auto nextStripeStartRow = stripeStartRow + stripeRowCount(stripeIndex);
-  if (nextStripeStartRow >= readerBase_->tablet().tabletRowCount()) {
+  if (nextStripeStartRow >= tablet_->tabletRowCount()) {
     return;
   }
 
@@ -539,7 +533,7 @@ void NimbleIndexProjector::buildResult(Result& result) {
       response.slices.emplace_back(assembleStripeSlice(
           stripePlan.numRows,
           range.rowRange,
-          stripeBody.cloneOneAsValue(),
+          stripeBody.cloneAsValue(),
           isLastSlice ? response.resumeKey : std::nullopt));
     }
   }

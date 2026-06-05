@@ -46,4 +46,7 @@ constexpr uint64_t kChunkingWriterMaxChunkSize{20 << 20}; // 20MB
 /// Used in place of kChunkingWriterMaxChunkSize for tables with large schemas.
 constexpr uint64_t kChunkingWriterWideSchemaMaxChunkSize{2 << 20}; // 2MB
 
+/// Default block size for BlockBitPacking encoding and its statistics.
+constexpr uint16_t kBlockBitPackingBlockSize{1024};
+
 } // namespace facebook::nimble

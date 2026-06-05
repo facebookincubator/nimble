@@ -26,6 +26,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -281,6 +282,32 @@ class MainlyConstantFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(MainlyConstantFuzzerTest, MainlyConstantTypes);
 
 TYPED_TEST(MainlyConstantFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// BlockBitPacking: all numeric types
+using BlockBitPackingTypes = ::testing::Types<
+    BlockBitPackingEncoding<int8_t>,
+    BlockBitPackingEncoding<uint8_t>,
+    BlockBitPackingEncoding<int16_t>,
+    BlockBitPackingEncoding<uint16_t>,
+    BlockBitPackingEncoding<int32_t>,
+    BlockBitPackingEncoding<uint32_t>,
+    BlockBitPackingEncoding<int64_t>,
+    BlockBitPackingEncoding<uint64_t>,
+    BlockBitPackingEncoding<float>,
+    BlockBitPackingEncoding<double>>;
+
+template <typename E>
+class BlockBitPackingFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(BlockBitPackingFuzzerTest, BlockBitPackingTypes);
+
+TYPED_TEST(BlockBitPackingFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,

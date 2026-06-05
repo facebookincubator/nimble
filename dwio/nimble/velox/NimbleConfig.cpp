@@ -339,6 +339,10 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.index.encoding_type",
     "prefix");
 
+/* static */ Config::Entry<uint16_t> Config::BLOCK_BIT_PACKING_BLOCK_SIZE(
+    "nimble.blockbitpacking.block.size",
+    kBlockBitPackingBlockSize);
+
 /* static */ Config::Entry<bool> Config::ENABLE_STATS_COLLECTION(
     "nimble.stats.enable",
     true);

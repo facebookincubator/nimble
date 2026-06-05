@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -252,6 +253,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       // is implemented. ALP only supports float and double.
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
     }
+    case EncodingType::BlockBitPacking: {
+      RETURN_ENCODING_BY_NUMERIC_TYPE(BlockBitPackingEncoding, dataType);
+    }
     case EncodingType::PFOR: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(PFOREncoding, dataType);
     }
@@ -398,6 +402,15 @@ std::string_view EncodingFactory::encode(
     }
     case EncodingType::ALP: {
       NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    }
+    case EncodingType::BlockBitPacking: {
+      if constexpr (isNumericType<physicalType>()) {
+        return BlockBitPackingEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "BlockBitPacking encoding should not be selected for non-numeric data types.");
+      }
     }
     case EncodingType::PFOR: {
       if constexpr (isIntegralType<physicalType>()) {

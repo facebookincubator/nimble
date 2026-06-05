@@ -130,6 +130,9 @@ struct VeloxWriterOptions {
   // Compression settings to be used when encoding and compressing data streams
   CompressionOptions compressionOptions;
 
+  // Block size for BlockBitPacking encoding.
+  uint16_t blockBitPackingBlockSize{kBlockBitPackingBlockSize};
+
   // In low-memory mode, the writer is trying to perform smaller (and more
   // precise) buffer allocations. This means that overall, the writer will
   // consume less memory, but will come with an additional cost, of more

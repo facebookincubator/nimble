@@ -3058,8 +3058,6 @@ INSTANTIATE_TEST_CASE_P(
 TEST_F(VeloxWriterTest, chunkSizeStatsPopulatedWhenChunkingTriggered) {
   const auto type = velox::ROW({{"c0", velox::BIGINT()}});
 
-  // Use ChunkFlushPolicy with low thresholds and enough data to guarantee
-  // chunking fires (mirrors ChunkFlushPolicyIntegration test setup).
   nimble::VeloxWriterOptions options{
       .minStreamChunkRawSize = 100,
       .maxStreamChunkRawSize = 128 << 10,
@@ -3088,9 +3086,9 @@ TEST_F(VeloxWriterTest, chunkSizeStatsPopulatedWhenChunkingTriggered) {
   writer.close();
 
   const auto stats = writer.stats();
-  EXPECT_GT(stats.chunkSizeStats.count(), 0);
-  EXPECT_GT(stats.chunkSizeStats.mean(), 0);
-  EXPECT_LE(stats.chunkSizeStats.minimum(), stats.chunkSizeStats.maximum());
+  EXPECT_GT(stats.chunkSizeBytes.count, 0);
+  EXPECT_GT(stats.chunkSizeBytes.sum, 0);
+  EXPECT_LE(stats.chunkSizeBytes.min, stats.chunkSizeBytes.max);
 }
 
 TEST_F(VeloxWriterTest, chunkSizeStatsEmptyWhenChunkingNotTriggered) {
@@ -3098,8 +3096,7 @@ TEST_F(VeloxWriterTest, chunkSizeStatsEmptyWhenChunkingNotTriggered) {
 
   nimble::VeloxWriterOptions options{
       .flushPolicyFactory = []() -> std::unique_ptr<nimble::FlushPolicy> {
-        return std::make_unique<nimble::StripeRawSizeFlushPolicy>(
-            256ULL << 20); // 256MB — will never flush in this test
+        return std::make_unique<nimble::StripeRawSizeFlushPolicy>(256ULL << 20);
       },
       .enableChunking = false,
   };
@@ -3114,7 +3111,7 @@ TEST_F(VeloxWriterTest, chunkSizeStatsEmptyWhenChunkingNotTriggered) {
       {"c0"}, {vectorMaker.flatVector<int64_t>({1, 2, 3, 4, 5})}));
   writer.close();
 
-  EXPECT_EQ(writer.stats().chunkSizeStats.count(), 0);
+  EXPECT_EQ(writer.stats().chunkSizeBytes.count, 0);
 }
 
 // Parameterized test fixture for index tests.
