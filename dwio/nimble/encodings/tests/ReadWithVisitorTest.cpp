@@ -1746,11 +1746,11 @@ TEST_P(
 // ---------------------------------------------------------------------------
 // 13. FixedBitWidthEncoding<int32_t> + AlwaysTrue + dense + FAST PATH
 //     The FixedBitWidth fast path (bulkScan) requires:
-//       - isFourByteIntegralType (int32_t/uint32_t only, NOT int64_t)
+//       - 4-byte or 8-byte integral physical type
 //       - No filter (!kHasFilter → AlwaysTrue)
 //       - No hook (!kHasHook → ExtractToReader)
 //       - kExtractToReader && (kSameType || kIsWidening)
-//     This test uses int32_t data to satisfy all conditions.
+//     This test uses int32_t data to exercise the 4-byte path.
 // ---------------------------------------------------------------------------
 TEST_P(
     ReadWithVisitorTest,
@@ -1811,6 +1811,84 @@ TEST_P(
   auto values = getValues<int32_t>(reader);
   for (int i = 0; i < kRows; ++i) {
     EXPECT_EQ(values[i], i % 16) << "row " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 13a. FixedBitWidthEncoding<int64_t> + AlwaysTrue + dense + FAST PATH
+//      Exercises the 8-byte bulkScan path, which decodes through
+//      FixedBitArray::bulkGet64WithBaseline.
+// ---------------------------------------------------------------------------
+TEST_P(
+    ReadWithVisitorTest,
+    encodingLevelFixedBitWidthAlwaysTrueDenseInt64FastPath) {
+  constexpr int kRows = 500;
+  constexpr int64_t kBaseline = 1000;
+  constexpr int64_t kLargeResidual = (int64_t{1} << 60) - 1;
+
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    int64_t residual = 0;
+    switch (i % 4) {
+      case 0:
+        residual = 0;
+        break;
+      case 1:
+        residual = 17;
+        break;
+      case 2:
+        residual = int64_t{1} << 59;
+        break;
+      default:
+        residual = kLargeResidual - (i % 17);
+        break;
+    }
+    data[i] = kBaseline + residual;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [&data](auto i) { return data[i]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = createFromCustomLayout<int64_t>(
+      FixedBitWidthEnc{}, data, *pool(), buffer);
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int64_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  dispatchCallReadWithVisitor(*encoding, visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], data[i]) << "row " << i;
   }
 }
 

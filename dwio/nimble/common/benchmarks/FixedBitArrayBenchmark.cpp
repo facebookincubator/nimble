@@ -100,6 +100,57 @@ void observeWrittenBuffer(
       }                                                                        \
       observeWrittenBuffer(buffer.get(), kNumElements, bitWidth);              \
     }                                                                          \
+  }                                                                            \
+  BENCHMARK(BulkGet64WithBaseline_##bitWidth, iters) {                         \
+    std::vector<uint64_t> values;                                              \
+    std::unique_ptr<char[]> buffer;                                            \
+    std::vector<uint64_t> output;                                              \
+    BENCHMARK_SUSPEND {                                                        \
+      values = makeValues(bitWidth);                                           \
+      const uint64_t bufferBytes =                                             \
+          nimble::FixedBitArray::bufferSize(kNumElements, bitWidth);           \
+      buffer = std::make_unique<char[]>(bufferBytes);                          \
+      clearBuffer(buffer.get(), bufferBytes);                                  \
+      output.resize(kNumElements);                                             \
+      nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);             \
+      const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                \
+      fixedBitArray.bulkSet64WithBaseline(                                     \
+          0, kNumElements, values.data(), baseline);                           \
+    }                                                                          \
+    nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);               \
+    const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                  \
+    while (iters--) {                                                          \
+      fixedBitArray.bulkGet64WithBaseline(                                     \
+          0, kNumElements, output.data(), baseline);                           \
+      folly::doNotOptimizeAway(*(output.data() + kNumElements - 1));           \
+    }                                                                          \
+  }                                                                            \
+  BENCHMARK_RELATIVE(ScalarGetWithBaseline_##bitWidth, iters) {                \
+    std::vector<uint64_t> values;                                              \
+    std::unique_ptr<char[]> buffer;                                            \
+    std::vector<uint64_t> output;                                              \
+    BENCHMARK_SUSPEND {                                                        \
+      values = makeValues(bitWidth);                                           \
+      const uint64_t bufferBytes =                                             \
+          nimble::FixedBitArray::bufferSize(kNumElements, bitWidth);           \
+      buffer = std::make_unique<char[]>(bufferBytes);                          \
+      clearBuffer(buffer.get(), bufferBytes);                                  \
+      output.resize(kNumElements);                                             \
+      nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);             \
+      const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                \
+      fixedBitArray.bulkSet64WithBaseline(                                     \
+          0, kNumElements, values.data(), baseline);                           \
+    }                                                                          \
+    nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);               \
+    const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                  \
+    while (iters--) {                                                          \
+      uint64_t* nextOutput = output.data();                                    \
+      for (uint64_t i = 0; i < kNumElements; ++i) {                            \
+        *nextOutput = fixedBitArray.get(i) + baseline;                         \
+        ++nextOutput;                                                          \
+      }                                                                        \
+      folly::doNotOptimizeAway(*(output.data() + kNumElements - 1));           \
+    }                                                                          \
   }
 
 #define FIXED_BIT_ARRAY_OFFSET_SET_BENCHMARKS(bitWidth)               \
