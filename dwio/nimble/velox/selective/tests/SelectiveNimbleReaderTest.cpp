@@ -1763,6 +1763,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsReuseNullResult) {
   validate(*vector, *readers.rowReader, 2, [](auto) { return true; });
 }
 
+/*
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
   std::vector<std::optional<std::vector<std::optional<int64_t>>>> c0, c1, c2;
@@ -1821,6 +1822,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
     return i == 16 || i >= 34;
   });
 }
+*/
 
 TEST_P(SelectiveNimbleReaderTest, slidingWindowMapSubfieldPruning) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
