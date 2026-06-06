@@ -24,7 +24,6 @@
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #endif
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
-#include "dwio/nimble/encodings/SubIntSplitConfig.h"
 
 namespace facebook::nimble {
 
