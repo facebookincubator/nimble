@@ -238,6 +238,25 @@ TEST_F(DirectMetadataInputTest, reverseSectionOrder) {
   EXPECT_EQ(results[1]->content(), data0);
 }
 
+TEST_F(DirectMetadataInputTest, duplicateSectionsThrow) {
+  const std::string data = "duplicate-metadata";
+  nimble::MetadataSection section{
+      0,
+      static_cast<uint32_t>(data.size()),
+      nimble::CompressionType::Uncompressed,
+      static_cast<uint32_t>(data.size())};
+  const auto fileContent = buildFileContent({section}, {data});
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
+
+  const auto options = makeMetadataInputOptions();
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
+
+  const std::array sections{section, section};
+  NIMBLE_ASSERT_THROW(
+      input->load(sections),
+      "Metadata input must not contain duplicate regions");
+}
+
 TEST_F(DirectMetadataInputTest, repeatedLoad) {
   const std::string data = "repeat-test";
   nimble::MetadataSection section{

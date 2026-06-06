@@ -82,6 +82,11 @@ class TabletWriter {
     CloseCallback closeCallback;
   };
 
+  struct Stats {
+    uint64_t duplicateStreamCount{0};
+    uint64_t duplicateStreamBytes{0};
+  };
+
   static std::unique_ptr<TabletWriter> create(
       velox::WriteFile* file,
       velox::memory::MemoryPool& pool,
@@ -121,6 +126,10 @@ class TabletWriter {
   /// The number of bytes written so far.
   uint64_t size() const {
     return file_->size();
+  }
+
+  Stats stats() const {
+    return stats_;
   }
 
  private:
@@ -213,6 +222,7 @@ class TabletWriter {
   std::vector<MetadataSection> stripeGroups_;
   // Optional sections
   std::unordered_map<std::string, MetadataSection> optionalSections_;
+  Stats stats_;
 
   // Writer state.
   State state_{State::kActive};

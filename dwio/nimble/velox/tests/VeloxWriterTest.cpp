@@ -17,6 +17,7 @@
 #include <folly/system/HardwareConcurrency.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <map>
 #include <set>
 
 #include "velox/common/testutil/TestValue.h"
@@ -3444,6 +3445,34 @@ class VeloxWriterIndexTest
     }
   }
 
+  nimble::TabletWriter::Stats duplicateStreamStatsFromLayout(
+      const nimble::TabletReader& tablet) {
+    nimble::TabletWriter::Stats stats;
+    for (uint32_t stripeIndex = 0; stripeIndex < tablet.stripeCount();
+         ++stripeIndex) {
+      const auto stripeIdentifier = tablet.stripeIdentifier(stripeIndex);
+      const auto offsets = tablet.streamOffsets(stripeIdentifier);
+      const auto sizes = tablet.streamSizes(stripeIdentifier);
+
+      std::map<std::pair<uint32_t, uint32_t>, uint64_t> duplicateGroups;
+      for (size_t streamIndex = 0; streamIndex < sizes.size(); ++streamIndex) {
+        if (sizes[streamIndex] == 0) {
+          continue;
+        }
+        ++duplicateGroups[{offsets[streamIndex], sizes[streamIndex]}];
+      }
+
+      for (const auto& [offsetAndSize, count] : duplicateGroups) {
+        if (count > 1) {
+          const auto duplicateCount = count - 1;
+          stats.duplicateStreamCount += duplicateCount;
+          stats.duplicateStreamBytes += offsetAndSize.second * duplicateCount;
+        }
+      }
+    }
+    return stats;
+  }
+
   // Verifies that the value index correctly maps each key to its row
   // position. For each row in the input batches:
   // 1. Encodes the key using KeyEncoder
@@ -4217,7 +4246,11 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   // writer. We create batches where string_col1 and string_col2 reference the
   // same underlying vector, which should result in identical stream content
   // that gets deduplicated.
-  auto type = defaultType();
+  auto type = velox::ROW({
+      {"key_col", velox::BIGINT()},
+      {"string_col1", velox::VARCHAR()},
+      {"string_col2", velox::VARCHAR()},
+  });
 
   nimble::ClusterIndexConfig clusterIndexConfig =
       createIndexConfig({"key_col"});
@@ -4227,7 +4260,6 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
 
   constexpr int kNumBatches = 5;
   constexpr int kBatchSize = 100;
-  constexpr uint32_t kSeed = 42;
 
   nimble::VeloxWriter writer(
       type,
@@ -4241,15 +4273,6 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
 
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
-  // Configure fuzzer for generating non-string columns
-  velox::VectorFuzzer::Options fuzzerOpts;
-  fuzzerOpts.vectorSize = kBatchSize;
-  fuzzerOpts.nullRatio = 0.1;
-  fuzzerOpts.containerLength = 5;
-  fuzzerOpts.stringLength = 20;
-  fuzzerOpts.containerVariableLength = true;
-  velox::VectorFuzzer fuzzer(fuzzerOpts, leafPool_.get(), kSeed);
-
   // Generate pre-sorted batches where string_col1 and string_col2 share the
   // same underlying vector (to trigger stream deduplication)
   std::vector<velox::RowVectorPtr> batches;
@@ -4262,28 +4285,16 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
     }
 
     // Create the shared string vector that will be used for both string
-    // columns
-    auto sharedStringVector = fuzzer.fuzz(velox::VARCHAR());
+    // columns.
+    auto sharedStringVector =
+        vectorMaker.flatVector<std::string>(kBatchSize, [batch](auto row) {
+          return fmt::format("batch-{}-row-{}", batch, row);
+        });
 
-    // Build children: key column, fuzzed scalar columns, shared string
-    // columns, then fuzzed complex columns
     std::vector<velox::VectorPtr> children;
-    // Column 0: key_col
     children.push_back(vectorMaker.flatVector<int64_t>(keyValues));
-    // Column 1: int_col
-    children.push_back(fuzzer.fuzz(type->childAt(1)));
-    // Column 2: double_col
-    children.push_back(fuzzer.fuzz(type->childAt(2)));
-    // Column 3: string_col1 - use the shared string vector
     children.push_back(sharedStringVector);
-    // Column 4: string_col2 - use the SAME shared string vector
     children.push_back(sharedStringVector);
-    // Column 5: bool_col
-    children.push_back(fuzzer.fuzz(type->childAt(5)));
-    // Columns 6-8: complex types
-    for (size_t colIdx = 6; colIdx < type->size(); ++colIdx) {
-      children.push_back(fuzzer.fuzz(type->childAt(colIdx)));
-    }
 
     auto batchVec = std::make_shared<velox::RowVector>(
         leafPool_.get(),
@@ -4301,6 +4312,13 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   auto tabletOptions = makeTestTabletOptions(leafPool_.get());
   auto tablet =
       nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
+  const auto expectedStats = duplicateStreamStatsFromLayout(*tablet);
+  EXPECT_EQ(
+      writer.stats().duplicateStreamCount, expectedStats.duplicateStreamCount);
+  EXPECT_EQ(
+      writer.stats().duplicateStreamBytes, expectedStats.duplicateStreamBytes);
+  EXPECT_EQ(expectedStats.duplicateStreamCount, kNumBatches);
+  EXPECT_GT(expectedStats.duplicateStreamBytes, 0);
 
   // Verify index exists
   const auto* index = tablet->clusterIndex();
@@ -4342,6 +4360,75 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
   verifyPositionIndex(*tablet);
 
   // Verify value index maps each key to correct row position
+  verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
+}
+
+TEST_P(VeloxWriterIndexTest, streamStatsNoDuplicates) {
+  auto type = velox::ROW({
+      {"key_col", velox::BIGINT()},
+      {"string_col1", velox::VARCHAR()},
+      {"string_col2", velox::VARCHAR()},
+  });
+
+  nimble::ClusterIndexConfig clusterIndexConfig =
+      createIndexConfig({"key_col"});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  constexpr int kNumBatches = 5;
+  constexpr int kBatchSize = 100;
+
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      createWriterOptions(clusterIndexConfig, []() {
+        return std::make_unique<nimble::LambdaFlushPolicy>(
+            [](auto) { return true; }, [](auto) { return false; });
+      }));
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  std::vector<velox::RowVectorPtr> batches;
+  int64_t keyVal = 0;
+  for (int batch = 0; batch < kNumBatches; ++batch) {
+    std::vector<int64_t> keyValues;
+    keyValues.reserve(kBatchSize);
+    for (int i = 0; i < kBatchSize; ++i) {
+      keyValues.push_back(keyVal++);
+    }
+
+    std::vector<velox::VectorPtr> children;
+    children.push_back(vectorMaker.flatVector<int64_t>(keyValues));
+    children.push_back(vectorMaker.flatVector<std::string>(
+        kBatchSize,
+        [batch](auto row) { return fmt::format("left-{}-{}", batch, row); }));
+    children.push_back(vectorMaker.flatVector<std::string>(
+        kBatchSize,
+        [batch](auto row) { return fmt::format("right-{}-{}", batch, row); }));
+
+    auto batchVec = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        type,
+        nullptr, // no nulls at top level
+        kBatchSize,
+        std::move(children));
+    batches.push_back(batchVec);
+    writer.write(batchVec);
+  }
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  const auto expectedStats = duplicateStreamStatsFromLayout(*tablet);
+  EXPECT_EQ(writer.stats().duplicateStreamCount, 0);
+  EXPECT_EQ(writer.stats().duplicateStreamBytes, 0);
+  EXPECT_EQ(expectedStats.duplicateStreamCount, 0);
+  EXPECT_EQ(expectedStats.duplicateStreamBytes, 0);
+
+  verifyFileData(file, type, batches);
+  verifyPositionIndex(*tablet);
   verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
 }
 
