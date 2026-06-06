@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/container/F14Set.h>
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
@@ -67,7 +68,9 @@ class FlatMapColumnReaderTest : public ::testing::TestWithParam<bool>,
       const RowVectorPtr& expected,
       const std::string& file,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
-      bool preserveFlatMapsInMemory = false) {
+      bool preserveFlatMapsInMemory = false,
+      bool lazyColumnIo = false,
+      const folly::F14FastSet<std::string>& remainingFilterColumns = {}) {
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
@@ -84,6 +87,10 @@ class FlatMapColumnReaderTest : public ::testing::TestWithParam<bool>,
     rowOptions.setScanSpec(scanSpec);
     rowOptions.setRequestedType(type);
     rowOptions.setPreserveFlatMapsInMemory(preserveFlatMapsInMemory);
+    rowOptions.setLazyColumnIo(lazyColumnIo);
+    if (!remainingFilterColumns.empty()) {
+      rowOptions.setRemainingFilterColumns(remainingFilterColumns);
+    }
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -527,6 +534,632 @@ TEST_P(FlatMapColumnReaderTest, nativeWithNulls) {
       makeReaders(input, file, scanSpec, /*preserveFlatMapsInMemory=*/true);
   auto expected = makeRowVector({flatMap->toMapVector(), flatMap});
   validate(*expected, *readers.rowReader, 3);
+}
+
+// ----- Lazy I/O tests -----
+
+TEST_P(FlatMapColumnReaderTest, lazyIOFilterOnScalar) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIOFilterDropsAll) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}},
+          {{2, 200}},
+          {{3, 300}},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(999, 1000, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 0);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIOFilterOnScalarAsStruct) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto outType =
+      ROW({"c0", "c1"},
+          {BIGINT(), ROW({"1", "2", "3"}, {BIGINT(), BIGINT(), BIGINT()})});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outType);
+  scanSpec->childByName("c1")->setFlatMapAsStruct(true);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  readers.rowReader->next(100, batch);
+  ASSERT_EQ(batch->size(), 2);
+  batch->validate();
+  auto expected = makeRowVector(
+      {"c0", "c1"},
+      {makeFlatVector<int64_t>({30, 40}),
+       makeRowVector(
+           {"1", "2", "3"},
+           {
+               makeNullableFlatVector<int64_t>({std::nullopt, 600}),
+               makeNullableFlatVector<int64_t>({400, 700}),
+               makeNullableFlatVector<int64_t>({500, 800}),
+           })});
+  velox::test::assertEqualVectors(expected, batch);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIOMultiBatch) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(
+          50, [](auto i) { return static_cast<int64_t>(i); }),
+      makeMapVector<int32_t, int64_t>(
+          50,
+          [](auto i) { return 1 + i % 3; },
+          [](auto j) { return static_cast<int32_t>(1 + j % 3); },
+          [](auto j) { return static_cast<int64_t>(j * 10); }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  // Keep rows where c0 >= 25 (25 of 50 rows survive).
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(25, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  auto result = BaseVector::create(asRowType(input->type()), 0, pool());
+  int totalOutput = 0;
+  int totalScanned = 0;
+  while (totalScanned < 50) {
+    auto n = readers.rowReader->next(7, result);
+    if (n == 0) {
+      break;
+    }
+    result->validate();
+    totalOutput += result->size();
+    totalScanned += n;
+  }
+  ASSERT_EQ(totalScanned, 50);
+  ASSERT_EQ(totalOutput, 25);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIOMultipleComplexColumns) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+      makeMapVector<int32_t, int32_t>({
+          {{10, 1}},
+          {{20, 2}, {30, 3}},
+          {{10, 4}},
+          {{20, 5}},
+          {{10, 6}, {30, 7}},
+      }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c1", {}}, {"c2", {}}};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+      makeMapVector<int32_t, int32_t>({
+          {{10, 4}},
+          {{20, 5}},
+          {{10, 6}, {30, 7}},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+TEST_P(FlatMapColumnReaderTest, noLazyIOByDefault) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(input, file, scanSpec);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+// Remaining filter column should NOT be lazy — reads same data as eager.
+TEST_P(FlatMapColumnReaderTest, lazyIORemainingFilterStaysEager) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true,
+      /*remainingFilterColumns=*/{"c1"});
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+// No filter at all — hasFilterChild is false, nothing should be lazy.
+TEST_P(FlatMapColumnReaderTest, lazyIONoFilter) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  // No filter set on any column.
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  velox::test::assertEqualVectors(input, result);
+}
+
+// Remaining filter only — no pushdown filter on any column. c0 should be
+// lazy, c1 should stay eager (in remainingFilterColumns).
+TEST_P(FlatMapColumnReaderTest, lazyIORemainingFilterOnly) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  // No pushdown filter on any column. c1 is in remainingFilterColumns.
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true,
+      /*remainingFilterColumns=*/{"c1"});
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 5);
+  velox::test::assertEqualVectors(input, result);
+}
+
+// Only scalar columns — c1 (no filter) is lazy.
+TEST_P(FlatMapColumnReaderTest, lazyIOScalarOnly) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeFlatVector<int32_t>({1, 2, 3, 4, 5}),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeFlatVector<int32_t>({3, 4, 5}),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+// Mixed scalar + FlatMap: scalar filter, scalar projected, FlatMap lazy.
+// Verifies interleaved lazy/non-lazy children work correctly.
+TEST_P(FlatMapColumnReaderTest, lazyIOMixedScalarAndFlatMap) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeFlatVector<int32_t>({1, 2, 3, 4, 5}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}},
+          {{2, 200}},
+          {{3, 300}},
+          {{1, 400}},
+          {{2, 500}},
+      }),
+      makeFlatVector<double>({1.1, 2.2, 3.3, 4.4, 5.5}),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c2", {}}};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeFlatVector<int32_t>({3, 4, 5}),
+      makeMapVector<int32_t, int64_t>({
+          {{3, 300}},
+          {{1, 400}},
+          {{2, 500}},
+      }),
+      makeFlatVector<double>({3.3, 4.4, 5.5}),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+// FlatMap key selection is the only filter in the scan. hasFilterInSubtree()
+// detects it and enables lazy I/O; hasFilter() ignores it so the FlatMap
+// itself is still lazy. The scalar column c0 has no filter and should
+// also be lazy.
+TEST_P(FlatMapColumnReaderTest, lazyIOFlatMapKeySelectionAsOnlyFilter) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}, {3, 300}},
+          {{1, 400}, {2, 500}},
+          {{1, 600}, {3, 700}},
+          {{2, 800}, {3, 900}},
+          {{1, 1000}},
+      }),
+  });
+  auto file = writeFlatMapFile(input, "c1");
+  auto outType =
+      ROW({"c0", "c1"}, {BIGINT(), ROW({"1", "2"}, {BIGINT(), BIGINT()})});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outType);
+  scanSpec->childByName("c1")->setFlatMapAsStruct(true);
+  // No filter on c0 — the only filter is implicit key selection on c1.
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr batch = BaseVector::create(outType, 0, pool());
+  readers.rowReader->next(100, batch);
+  ASSERT_EQ(batch->size(), 5);
+  batch->validate();
+  auto expected = makeRowVector(
+      {"c0", "c1"},
+      {makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+       makeRowVector(
+           {"1", "2"},
+           {
+               makeNullableFlatVector<int64_t>(
+                   {100, 400, 600, std::nullopt, 1000}),
+               makeNullableFlatVector<int64_t>(
+                   {200, 500, std::nullopt, 800, std::nullopt}),
+           })});
+  velox::test::assertEqualVectors(expected, batch);
+}
+
+// Nested ROW column with a pushdown filter on a nested child. The parent
+// column should NOT be lazy because hasFilter() recurses into non-map
+// children and detects the nested filter.
+TEST_P(FlatMapColumnReaderTest, lazyIONestedRowWithFilter) {
+  auto rowType = ROW({"a", "b"}, {BIGINT(), BIGINT()});
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeRowVector(
+          {"a", "b"},
+          {
+              makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+              makeFlatVector<int64_t>({100, 200, 300, 400, 500}),
+          }),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 10}},
+          {{2, 20}},
+          {{3, 30}},
+          {{1, 40}},
+          {{2, 50}},
+      }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c2", {}}};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  // Filter on nested field c1.a — parent c1 should NOT be lazy.
+  scanSpec->childByName("c1")->childByName("a")->setFilter(
+      std::make_unique<common::BigintRange>(3, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeRowVector(
+          {"a", "b"},
+          {
+              makeFlatVector<int64_t>({3, 4, 5}),
+              makeFlatVector<int64_t>({300, 400, 500}),
+          }),
+      makeMapVector<int32_t, int64_t>({
+          {{3, 30}},
+          {{1, 40}},
+          {{2, 50}},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+// Nested ROW column with no filter — should use lazy I/O when a sibling has a
+// pushdown filter. Exercises the makeChildParams() path: the nested
+// StructColumnReader must not create LazyInput (guarded by NIMBLE_CHECK).
+TEST_P(FlatMapColumnReaderTest, lazyIONestedRowNoFilter) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeRowVector(
+          {"a", "b"},
+          {
+              makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+              makeFlatVector<int64_t>({100, 200, 300, 400, 500}),
+          }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeRowVector(
+          {"a", "b"},
+          {
+              makeFlatVector<int64_t>({3, 4, 5}),
+              makeFlatVector<int64_t>({300, 400, 500}),
+          }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIOTransformColumnStaysEager) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
+      makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto outType =
+      ROW({"c0", "c1", "c2"}, {BIGINT(), BIGINT(), input->type()->childAt(2)});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(30, 100, false));
+  scanSpec->childByName("c1")->setTransform(
+      [](const VectorPtr& v, memory::MemoryPool* pool) -> VectorPtr {
+        auto flat = v->asFlatVector<int64_t>();
+        auto result = BaseVector::create(BIGINT(), flat->size(), pool);
+        auto* out = result->asFlatVector<int64_t>();
+        for (auto i = 0; i < flat->size(); ++i) {
+          out->set(i, flat->valueAt(i) * 10);
+        }
+        return result;
+      },
+      BIGINT());
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(outType, 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeFlatVector<int64_t>({30, 40, 50}),
+      makeMapVector<int32_t, int64_t>({
+          {{2, 400}, {3, 500}},
+          {{1, 600}, {2, 700}, {3, 800}},
+          {},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
+}
+
+TEST_P(FlatMapColumnReaderTest, lazyIORegularMapColumn) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{3, 300}},
+          {{4, 400}, {5, 500}},
+          {{6, 600}},
+      }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(20, 100, false));
+  auto readers = makeReaders(
+      input,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  readers.rowReader->next(100, result);
+  ASSERT_EQ(result->size(), 3);
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({20, 30, 40}),
+      makeMapVector<int32_t, int64_t>({
+          {{3, 300}},
+          {{4, 400}, {5, 500}},
+          {{6, 600}},
+      }),
+  });
+  velox::test::assertEqualVectors(expected, result);
 }
 
 INSTANTIATE_TEST_SUITE_P(

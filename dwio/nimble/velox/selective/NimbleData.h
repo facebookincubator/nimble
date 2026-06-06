@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <folly/container/F14Set.h>
+
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -34,7 +36,8 @@ class NimbleData : public velox::dwio::common::FormatData {
       ChunkedDecoder* inMapDecoder,
       const EncodingFactory& encodingFactory,
       bool stringDecoderZeroCopy,
-      bool nimblePreserveDictionaryEncoding = false);
+      bool nimblePreserveDictionaryEncoding = false,
+      bool lazyColumnIo = false);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -114,6 +117,7 @@ class NimbleData : public velox::dwio::common::FormatData {
   velox::BufferPtr inMap_;
   const EncodingFactory* const encodingFactory_;
   bool nimblePreserveDictionaryEncoding_{false};
+  bool lazyColumnIo_{false};
 };
 
 class NimbleParams : public velox::dwio::common::FormatParams {
@@ -127,13 +131,17 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       const EncodingFactory& encodingFactory,
       bool stringDecoderZeroCopy = false,
       bool preserveFlatMapsInMemory = false,
-      bool nimblePreserveDictionaryEncoding = false)
+      bool nimblePreserveDictionaryEncoding = false,
+      const folly::F14FastSet<std::string>* lazyIoColumns = nullptr,
+      bool lazyColumnIo = false)
       : FormatParams(pool, stats),
         nimbleType_(nimbleType),
         streams_(&streams),
         rowSizeTracker_(rowSizeTracker),
         preserveFlatMapsInMemory_(preserveFlatMapsInMemory),
+        lazyIoColumns_(lazyIoColumns),
         encodingFactory_(&encodingFactory),
+        lazyColumnIo_(lazyColumnIo),
         stringDecoderZeroCopy_{stringDecoderZeroCopy},
         nimblePreserveDictionaryEncoding_{nimblePreserveDictionaryEncoding} {}
 
@@ -151,7 +159,9 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         *encodingFactory_,
         stringDecoderZeroCopy_,
         preserveFlatMapsInMemory_,
-        nimblePreserveDictionaryEncoding_);
+        nimblePreserveDictionaryEncoding_,
+        /*lazyIoColumns=*/nullptr,
+        lazyColumnIo_);
   }
 
   const std::shared_ptr<const Type>& nimbleType() const {
@@ -162,12 +172,39 @@ class NimbleParams : public velox::dwio::common::FormatParams {
     return *streams_;
   }
 
+  /// Marks this column for lazy I/O routing. Called by StructColumnReader
+  /// for top-level columns eligible for lazy I/O.
+  void setLazyColumnIo(bool lazyColumnIo) {
+    lazyColumnIo_ = lazyColumnIo;
+  }
+
+  /// Returns true if this column's streams should be routed to the lazy
+  /// input clone instead of the main (eager) input.
+  bool lazyColumnIo() const {
+    return lazyColumnIo_;
+  }
+
   void setInMapDecoder(ChunkedDecoder* decoder) {
     inMapDecoder_ = decoder;
   }
 
   bool preserveFlatMapsInMemory() const {
     return preserveFlatMapsInMemory_;
+  }
+
+  /// Returns true if any top-level columns are marked for lazy I/O.
+  bool hasLazyIoColumns() const {
+    return lazyIoColumns_ != nullptr;
+  }
+
+  /// Returns true if the top-level column 'name' should use lazy I/O.
+  bool lazyIoColumn(const std::string& name) const {
+    return lazyIoColumns_ != nullptr && lazyIoColumns_->count(name) > 0;
+  }
+
+  /// Returns the lazy I/O columns set.
+  const folly::F14FastSet<std::string>* lazyIoColumnsSet() const {
+    return lazyIoColumns_;
   }
 
   RowSizeTracker* rowSizeTracker() const {
@@ -183,7 +220,12 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   StripeStreams* const streams_{nullptr};
   RowSizeTracker* const rowSizeTracker_{nullptr};
   const bool preserveFlatMapsInMemory_{false};
+  const folly::F14FastSet<std::string>* const lazyIoColumns_{nullptr};
   const EncodingFactory* const encodingFactory_;
+  // When true, enqueue() routes to the lazy input clone instead of the
+  // main eager input. Set for lazy columns; propagated to children via
+  // makeChildParams() so nested streams inherit the parent's routing.
+  bool lazyColumnIo_{false};
   ChunkedDecoder* inMapDecoder_{nullptr};
   bool stringDecoderZeroCopy_{false};
   bool nimblePreserveDictionaryEncoding_{false};

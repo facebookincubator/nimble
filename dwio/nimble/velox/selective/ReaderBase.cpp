@@ -121,6 +121,19 @@ ReaderBase::ReaderBase(
         return fileStats->toColumnStatistics(fileSchema_, nimbleSchema_);
       }()} {}
 
+void LazyInput::load() {
+  if (!loaded_) {
+    input_->load(velox::dwio::common::LogType::STREAM_BUNDLE);
+    loaded_ = true;
+  }
+}
+
+LazyInput* StripeStreams::createLazyInput() {
+  NIMBLE_CHECK_NULL(lazyInput_);
+  lazyInput_ = std::make_unique<LazyInput>(readerBase_->input().clone());
+  return lazyInput_.get();
+}
+
 std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
   const auto& tablet = readerBase_->tablet();
@@ -139,13 +152,16 @@ std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
 }
 
 std::unique_ptr<dwio::common::SeekableInputStream> StripeStreams::enqueue(
-    int streamId) {
+    int streamId,
+    bool lazyColumnIo) {
   const auto region = streamRegion(streamId);
   if (!region.has_value()) {
     return nullptr;
   }
   dwio::common::StreamIdentifier sid(streamId);
-  return readerBase_->input().enqueue(*region, &sid);
+  auto& input =
+      lazyColumnIo ? *lazyInput_->bufferedInput() : readerBase_->input();
+  return input.enqueue(*region, &sid);
 }
 
 std::vector<std::optional<StreamLocation>> StripeStreams::locateStreams(

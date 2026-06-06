@@ -15,6 +15,7 @@
  */
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
+#include <folly/container/F14Set.h>
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
@@ -118,7 +119,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   SelectiveNimbleRowReader(
       const std::shared_ptr<ReaderBase>& readerBase,
       const dwio::common::RowReaderOptions& options)
-      : readerBase_{readerBase},
+      : lazyIoColumns_{computeLazyIoColumns(options)},
+        readerBase_{readerBase},
         options_{options},
         encodingFactory_(
             options.stringDecoderZeroCopy()
@@ -201,6 +203,16 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // statistics. Only counts columns in the scan spec. Sets statsBasedRowSize_
   // if stats are available.
   void computeStatsBasedRowSize() const;
+
+  // Computes which top-level columns should use lazy I/O based on the scan
+  // spec and remaining filter columns. Returns a const set used for the
+  // lifetime of this reader.
+  static folly::F14FastSet<std::string> computeLazyIoColumns(
+      const dwio::common::RowReaderOptions& options);
+
+  // Precomputed set of top-level column names that should use lazy I/O.
+  // Const after construction — computed once per split.
+  const folly::F14FastSet<std::string> lazyIoColumns_;
 
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::RowReaderOptions options_;
@@ -401,6 +413,38 @@ void SelectiveNimbleRowReader::initReadRange() {
   rowInCurrentStripe_ = 0;
 }
 
+// Computes the set of top-level columns eligible for lazy I/O. A column
+// qualifies if it has no pushdown filter, is not referenced by the remaining
+// filter, has no extraction transform, and is projected in the output.
+// Returns empty set when lazy I/O is disabled.
+folly::F14FastSet<std::string> SelectiveNimbleRowReader::computeLazyIoColumns(
+    const dwio::common::RowReaderOptions& options) {
+  folly::F14FastSet<std::string> lazyIoColumns;
+  if (!options.lazyColumnIo()) {
+    return lazyIoColumns;
+  }
+  auto* scanSpec = options.scanSpec().get();
+  VELOX_CHECK_NOT_NULL(scanSpec);
+  const auto& remainingFilterColumns = options.remainingFilterColumns();
+  for (auto* childSpec : scanSpec->stableChildren()) {
+    if (childSpec->isConstant() || !childSpec->readFromFile()) {
+      continue;
+    }
+    const auto& name = childSpec->fieldName();
+    NIMBLE_DCHECK(
+        childSpec->hasFilter() || childSpec->projectOut(),
+        "Column with no filter should be projected");
+    // A column is eligible for lazy I/O if it has no pushdown filter, is not
+    // referenced by the remaining filter (must be eager for filter eval), has
+    // no extraction transform, and is projected in the output.
+    if (!childSpec->hasFilter() && remainingFilterColumns.count(name) == 0 &&
+        !childSpec->hasTransform() && childSpec->projectOut()) {
+      lazyIoColumns.insert(name);
+    }
+  }
+  return lazyIoColumns;
+}
+
 void SelectiveNimbleRowReader::loadCurrentStripe() {
   addThreadLocalRuntimeStat(kNumStripeLoads, velox::RuntimeCounter(1));
 
@@ -414,7 +458,8 @@ void SelectiveNimbleRowReader::loadCurrentStripe() {
       *encodingFactory_,
       options_.stringDecoderZeroCopy(),
       options_.preserveFlatMapsInMemory(),
-      options_.nimblePreserveDictionaryEncoding());
+      options_.nimblePreserveDictionaryEncoding(),
+      lazyIoColumns_.empty() ? nullptr : &lazyIoColumns_);
 
   columnReader_ = buildColumnReader(
       options_.requestedType() ? options_.requestedType()

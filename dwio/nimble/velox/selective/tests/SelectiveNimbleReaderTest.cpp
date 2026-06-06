@@ -31,7 +31,6 @@
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
@@ -140,7 +139,8 @@ class SelectiveNimbleReaderTest
       const std::string& file,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
       bool stringDecoderZeroCopy,
-      bool preserveFlatMapsInMemory = false) {
+      bool preserveFlatMapsInMemory = false,
+      bool lazyColumnIo = false) {
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
@@ -193,6 +193,7 @@ class SelectiveNimbleReaderTest
     rowOptions.setRequestedType(type);
     rowOptions.setPreserveFlatMapsInMemory(preserveFlatMapsInMemory);
     rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
+    rowOptions.setLazyColumnIo(lazyColumnIo);
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -287,7 +288,7 @@ class SelectiveNimbleReaderTest
       int batchSize,
       ValidationFilter&& validationFilter,
       bool stringDecoderZeroCopy,
-      std::function<VectorPtr(bool)> makeExpectedData = nullptr) {
+      const std::function<VectorPtr(bool)>& makeExpectedData = nullptr) {
     for (bool hasNulls : {false, true}) {
       auto data = makeData(hasNulls);
       auto input = makeRowVector({data, data});
@@ -1384,6 +1385,220 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNoStats) {
   // The fallback may or may not return a value depending on whether
   // estimateMaterializedSize succeeds, but it should not crash.
   ASSERT_NO_THROW(readers.rowReader->estimatedRowSize());
+}
+
+// Lazy FlatMap child uses stream-based estimate, not RowSizeTracker
+// fallback.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyColumn) {
+  const bool passStringBuffersFromDecoder = GetParam().stringDecoderZeroCopy;
+  constexpr int kSize = 200;
+
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeMapVector<int32_t, int32_t>(
+          kSize,
+          [](auto) { return 10; }, // 10 keys per row
+          [](auto i) { return i; },
+          [](auto i) { return i * 100; }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c1", {}}};
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(0, kSize, false));
+
+  auto readers = makeReaders(
+      input,
+      fileContent,
+      scanSpec,
+      passStringBuffersFromDecoder,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+
+  auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+  // With lazy columns, estimateMaterializedSize returns false and the
+  // fallback (1MB default or tracked row size) is used.
+  ASSERT_TRUE(estimatedRowSize.has_value());
+
+  validate(*input, *readers.rowReader, kSize, [](auto) { return true; });
+}
+
+// Map-key-only filter must not cause all children to be lazy.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeMapKeyFilterOnly) {
+  const bool passStringBuffersFromDecoder = GetParam().stringDecoderZeroCopy;
+  constexpr int kSize = 200;
+
+  auto input = makeRowVector({
+      makeMapVector<int32_t, int32_t>(
+          kSize,
+          [](auto) { return 5; },
+          [](auto i) { return i; },
+          [](auto i) { return i * 10; }),
+      makeMapVector<int32_t, int32_t>(
+          kSize,
+          [](auto) { return 3; },
+          [](auto i) { return i + 100; },
+          [](auto i) { return i * 20; }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c0", {}}, {"c1", {}}};
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")
+      ->childByName(common::ScanSpec::kMapKeysFieldName)
+      ->setFilter(std::make_unique<common::BigintRange>(0, 2, false));
+
+  auto readers = makeReaders(
+      input,
+      fileContent,
+      scanSpec,
+      passStringBuffersFromDecoder,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+
+  auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+  // Both FlatMap columns are lazy (map-key filters are invisible to
+  // hasFilter()). estimateMaterializedSize returns false (no eager children),
+  // falling through to RowSizeTracker.
+  ASSERT_TRUE(estimatedRowSize.has_value());
+  ASSERT_GT(*estimatedRowSize, 0);
+}
+
+// Lazy VARCHAR MAP column: estimate doesn't crash on string decoder,
+// laziness is preserved (data reads correctly after estimate).
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyStringColumn) {
+  const bool passStringBuffersFromDecoder = GetParam().stringDecoderZeroCopy;
+  constexpr int kSize = 200;
+
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeMapVector<StringView, StringView>(
+          kSize,
+          [](auto) { return 5; },
+          [](auto i) {
+            return StringView::makeInline(fmt::format("key_{}", i));
+          },
+          [](auto i) {
+            return StringView::makeInline(fmt::format("val_{}", i));
+          }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c1", {}}};
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(0, kSize, false));
+
+  auto readers = makeReaders(
+      input,
+      fileContent,
+      scanSpec,
+      passStringBuffersFromDecoder,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+
+  auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+  // With lazy columns, estimateMaterializedSize returns false and the
+  // fallback (1MB default or tracked row size) is used.
+  ASSERT_TRUE(estimatedRowSize.has_value());
+
+  validate(*input, *readers.rowReader, kSize, [](auto) { return true; });
+}
+
+// All columns lazy (no scalar projected): estimateMaterializedSize returns
+// false gracefully when rowCount=0, doesn't crash.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeAllLazy) {
+  const bool passStringBuffersFromDecoder = GetParam().stringDecoderZeroCopy;
+  constexpr int kSize = 200;
+
+  auto input = makeRowVector({
+      makeMapVector<int32_t, int32_t>(
+          kSize,
+          [](auto) { return 5; },
+          [](auto i) { return i; },
+          [](auto i) { return i * 10; }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c0", {}}};
+  writerOptions.enableVectorizedStats = false;
+  auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  auto readers = makeReaders(
+      input,
+      fileContent,
+      scanSpec,
+      passStringBuffersFromDecoder,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+
+  // Should not crash even though all columns are lazy and rowCount=0.
+  ASSERT_NO_THROW(readers.rowReader->estimatedRowSize());
+
+  validate(*input, *readers.rowReader, kSize, [](auto) { return true; });
+}
+
+// Lazy VARCHAR MAP with vectorized stats enabled and disabled.
+TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyStringWithStats) {
+  const bool passStringBuffersFromDecoder = GetParam().stringDecoderZeroCopy;
+  constexpr int kSize = 200;
+
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(kSize, folly::identity),
+      makeMapVector<StringView, StringView>(
+          kSize,
+          [](auto) { return 5; },
+          [](auto i) {
+            return StringView::makeInline(fmt::format("key_{}", i));
+          },
+          [](auto i) {
+            return StringView::makeInline(fmt::format("val_{}", i));
+          }),
+  });
+
+  for (bool enableStats : {false, true}) {
+    SCOPED_TRACE(fmt::format("enableVectorizedStats={}", enableStats));
+    VeloxWriterOptions writerOptions;
+    writerOptions.flatMapColumns = {{"c1", {}}};
+    writerOptions.enableVectorizedStats = enableStats;
+    auto fileContent =
+        test::createNimbleFile(*rootPool(), input, writerOptions);
+
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BigintRange>(0, kSize, false));
+
+    auto readers = makeReaders(
+        input,
+        fileContent,
+        scanSpec,
+        passStringBuffersFromDecoder,
+        /*preserveFlatMapsInMemory=*/false,
+        /*lazyColumnIo=*/true);
+
+    auto estimatedRowSize = readers.rowReader->estimatedRowSize();
+    ASSERT_TRUE(estimatedRowSize.has_value());
+    ASSERT_GT(*estimatedRowSize, 0);
+
+    validate(*input, *readers.rowReader, kSize, [](auto) { return true; });
+  }
 }
 
 TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRunFilteredOut) {
