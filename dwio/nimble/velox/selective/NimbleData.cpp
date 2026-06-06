@@ -30,12 +30,14 @@ NimbleData::NimbleData(
     ChunkedDecoder* inMapDecoder,
     const EncodingFactory& encodingFactory,
     bool stringDecoderZeroCopy,
-    bool nimblePreserveDictionaryEncoding)
+    bool nimblePreserveDictionaryEncoding,
+    bool lazyColumnIo)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
       inMapDecoder_(inMapDecoder),
-      encodingFactory_(&encodingFactory) {
+      encodingFactory_(&encodingFactory),
+      lazyColumnIo_(lazyColumnIo) {
   switch (nimbleType->kind()) {
     case Kind::Scalar:
       // Nulls in scalar types will be decoded along with values.
@@ -163,7 +165,7 @@ uint64_t NimbleData::skipNulls(uint64_t numValues, bool /*nullsOnly*/) {
 ChunkedDecoder NimbleData::makeScalarDecoder() {
   const auto streamId = nimbleType_->asScalar().scalarDescriptor().offset();
   return ChunkedDecoder(
-      streams_->enqueue(streamId),
+      streams_->enqueue(streamId, lazyColumnIo_),
       streams_->streamIndex(streamId),
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
@@ -176,7 +178,7 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
   const auto streamId =
       nimbleType_->asTimestampMicroNano().microsDescriptor().offset();
   return ChunkedDecoder(
-      streams_->enqueue(streamId),
+      streams_->enqueue(streamId, lazyColumnIo_),
       streams_->streamIndex(streamId),
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
@@ -189,7 +191,7 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
   const auto streamId =
       nimbleType_->asTimestampMicroNano().nanosDescriptor().offset();
   return ChunkedDecoder(
-      streams_->enqueue(streamId),
+      streams_->enqueue(streamId, lazyColumnIo_),
       streams_->streamIndex(streamId),
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
@@ -214,7 +216,7 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
 std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
     const StreamDescriptor& descriptor,
     bool decodeValuesWithNulls) {
-  auto input = streams_->enqueue(descriptor.offset());
+  auto input = streams_->enqueue(descriptor.offset(), lazyColumnIo_);
   if (!input) {
     return nullptr;
   }
@@ -237,7 +239,8 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       inMapDecoder_,
       *encodingFactory_,
       stringDecoderZeroCopy_,
-      nimblePreserveDictionaryEncoding_);
+      nimblePreserveDictionaryEncoding_,
+      lazyColumnIo_);
 }
 
 } // namespace facebook::nimble

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <folly/container/F14Set.h>
 #include "dwio/nimble/velox/selective/ColumnLoader.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -55,10 +56,8 @@ class StructColumnReaderBase
     // decoders.
   }
 
-  virtual std::unique_ptr<velox::dwio::common::ColumnLoader> makeColumnLoader(
+  std::unique_ptr<velox::dwio::common::ColumnLoader> makeColumnLoader(
       velox::vector_size_t index) override {
-    // Check if the child at this index has a transform with kNone extraction.
-    // If so, return a TransformColumnLoader to apply the transform lazily.
     for (const auto& childSpec : scanSpec_->children()) {
       if (childSpec->subscript() == index && childSpec->hasTransform() &&
           childSpec->extractionType() ==
@@ -87,12 +86,35 @@ class StructColumnReader : public StructColumnReaderBase {
   bool estimateMaterializedSize(size_t& byteSize, size_t& rowCount) const final;
 
  private:
+  // Creates a column loader for lazy I/O columns. Lazy columns get a
+  // TrackedColumnLoader that triggers LazyInput::load() on first access;
+  // non-lazy columns fall through to the base class loader.
+  std::unique_ptr<velox::dwio::common::ColumnLoader> makeColumnLoader(
+      velox::vector_size_t index) override {
+    if (lazyInput_ != nullptr) {
+      for (const auto& childSpec : scanSpec_->children()) {
+        if (childSpec->subscript() == index &&
+            lazyIoColumns_->count(childSpec->fieldName()) > 0) {
+          return std::make_unique<nimble::TrackedColumnLoader>(
+              this, children_[index], numReads_, rowSizeTracker_, lazyInput_);
+        }
+      }
+    }
+    return StructColumnReaderBase::makeColumnLoader(index);
+  }
+
   void addChild(std::unique_ptr<SelectiveColumnReader> child) {
     children_.push_back(child.get());
     childrenOwned_.push_back(std::move(child));
   }
 
   std::vector<std::unique_ptr<SelectiveColumnReader>> childrenOwned_;
+  // Lazy input for all lazy I/O columns in this stripe. Null when
+  // no columns use lazy I/O. Owned by StripeStreams.
+  LazyInput* lazyInput_{nullptr};
+  // Set of top-level column names eligible for lazy I/O. Pointer to the
+  // const set owned by SelectiveNimbleRowReader.
+  const folly::F14FastSet<std::string>* lazyIoColumns_{nullptr};
 };
 
 } // namespace facebook::nimble

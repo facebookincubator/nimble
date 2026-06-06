@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/dwio/common/ColumnLoader.h"
 #include "velox/dwio/common/SelectiveStructColumnReader.h"
@@ -28,10 +29,12 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       velox::dwio::common::SelectiveStructColumnReaderBase* structReader,
       velox::dwio::common::SelectiveColumnReader* fieldReader,
       uint64_t version,
-      RowSizeTracker* rowSizeTracker = nullptr)
+      RowSizeTracker* rowSizeTracker = nullptr,
+      LazyInput* lazyInput = nullptr)
       : velox::dwio::common::ColumnLoader{structReader, fieldReader, version},
         typeWithId_{fieldReader->fileType()},
-        rowSizeTracker_{rowSizeTracker} {}
+        rowSizeTracker_{rowSizeTracker},
+        lazyInput_{lazyInput} {}
 
  private:
   void loadInternal(
@@ -39,6 +42,13 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       velox::ValueHook* hook,
       velox::vector_size_t resultSize,
       velox::VectorPtr* result) override {
+    if (lazyInput_ != nullptr) {
+      VELOX_CHECK_EQ(
+          version_,
+          structReader_->numReads(),
+          "Loading LazyVector after the enclosing reader has moved");
+      lazyInput_->load();
+    }
     velox::dwio::common::ColumnLoader::loadInternal(
         rows, hook, resultSize, result);
     if (result && rowSizeTracker_) {
@@ -197,7 +207,10 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
   }
 
   const velox::dwio::common::TypeWithId& typeWithId_;
-  RowSizeTracker* rowSizeTracker_;
+  RowSizeTracker* const rowSizeTracker_;
+  // Non-null when this column uses lazy I/O. Triggers load() on first
+  // lazy access to fetch the column's streams from WarmStorage.
+  LazyInput* const lazyInput_{nullptr};
 };
 
 } // namespace facebook::nimble
