@@ -51,12 +51,12 @@ std::string toString(EncodingType encodingType) {
       return "Prefix";
     case EncodingType::ALP:
       return "ALP";
-    case EncodingType::BlockBitPacking:
-      return "BlockBitPacking";
     case EncodingType::PFOR:
       return "PFOR";
     case EncodingType::SimdForBitpack:
       return "SimdForBitpack";
+    case EncodingType::BlockBitPacking:
+      return "BlockBitPacking";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));

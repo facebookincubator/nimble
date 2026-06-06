@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -84,6 +85,41 @@ class DictionaryEncoding
       std::span<const physicalType> values,
       Buffer& buffer,
       const Encoding::Options& options = {});
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<physicalType>& statistics,
+      bool fixedByteWidth) {
+    // Assumptions:
+    // Alphabet stored trivially.
+    // Indices are stored bit-packed, with bit width needed to store max
+    // dictionary index.
+    const auto& uniqueCounts = statistics.uniqueCounts().value();
+    const uint64_t uniqueCount = uniqueCounts.size();
+    const uint64_t indicesEncodingSize =
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            rowCount,
+            /*minValue=*/0,
+            uniqueCount == 0 ? 0 : uniqueCount - 1,
+            fixedByteWidth);
+
+    uint64_t alphabetEncodingSize{};
+    if constexpr (isStringType<physicalType>()) {
+      // Get the total blob size for all (unique) strings.
+      alphabetEncodingSize = TrivialEncoding<std::string_view>::estimateSize(
+          uniqueCount,
+          uniqueCounts.uniqueStringBytes(),
+          statistics.min().size(),
+          statistics.max().size(),
+          fixedByteWidth);
+    } else {
+      alphabetEncodingSize =
+          TrivialEncoding<physicalType>::estimateSize(uniqueCount);
+    }
+    const uint64_t outerEncodingSize =
+        EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
+    return outerEncodingSize + alphabetEncodingSize + indicesEncodingSize;
+  }
 
   std::string debugString(int offset) const final;
 
