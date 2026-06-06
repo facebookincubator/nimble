@@ -442,9 +442,9 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectRunLength) {
 
   if constexpr (
       nimble::isFloatingPointType<T>() || std::is_same_v<int32_t, T> ||
-      sizeof(T) > 4) {
-    // Floating point types and big types prefer storing the run values as
-    // dictionary
+      std::is_same_v<uint32_t, T> || sizeof(T) > 4) {
+    // Floating point, 32-bit range-spanning, and wider types prefer storing the
+    // run values as dictionary.
     test<T>(
         values,
         {

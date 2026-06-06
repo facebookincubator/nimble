@@ -88,6 +88,15 @@ class UniqueValueCounts {
     return uniqueCounts_.size();
   }
 
+  uint64_t uniqueStringBytes() const noexcept {
+    static_assert(nimble::isStringType<T>());
+    uint64_t totalBytes = 0;
+    for (const auto& unique : uniqueCounts_) {
+      totalBytes += unique.first.size();
+    }
+    return totalBytes;
+  }
+
   const_iterator begin() const noexcept {
     return Iterator{uniqueCounts_.cbegin()};
   }

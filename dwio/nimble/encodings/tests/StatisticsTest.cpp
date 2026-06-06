@@ -221,6 +221,8 @@ void verifyString(
   EXPECT_EQ(totalLength, statistics.totalStringsLength());
   EXPECT_EQ(totalRepeatLength, statistics.totalStringsRepeatLength());
   EXPECT_EQ(
+      totalRepeatLength, statistics.uniqueCounts().value().uniqueStringBytes());
+  EXPECT_EQ(
       std::string(uniqueStrings, 'a' + uniqueStrings - 1), statistics.max());
   EXPECT_EQ(std::string(1, 'a'), statistics.min());
 
@@ -279,6 +281,8 @@ TYPED_TEST(StatisticsStringTests, Create) {
   EXPECT_EQ(uniqueStrings, statistics.consecutiveRepeatCount());
   EXPECT_EQ(totalLength, statistics.totalStringsLength());
   EXPECT_EQ(totalRepeatLength, statistics.totalStringsRepeatLength());
+  EXPECT_EQ(
+      totalRepeatLength, statistics.uniqueCounts().value().uniqueStringBytes());
   EXPECT_EQ(
       std::string(uniqueStrings, 'a' + uniqueStrings - 1), statistics.max());
   EXPECT_EQ(std::string(1, 'a'), statistics.min());

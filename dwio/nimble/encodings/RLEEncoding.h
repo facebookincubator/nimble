@@ -15,13 +15,14 @@
  */
 #pragma once
 
-#include <array>
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/BufferedEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -31,8 +32,15 @@
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/SimdUtil.h"
 
-// Holds data in RLE format. Run lengths are bit packed, and the run values
-// are stored trivially.
+// Holds data in RLE format. Consecutive equal values are collapsed into runs:
+//
+//   input:       A A A B B C
+//   run lengths: 3 2 1
+//   run values:  A B C
+//
+// Run lengths and run values are encoded as nested streams. This makes RLE a
+// good fit for sorted or clustered data where long repeated runs reduce the
+// number of values that need to be encoded.
 //
 // Note: we might want to recursively use the encoding factory to encode the
 // run values. This recursive use can lead to great compression, but also
@@ -240,7 +248,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   explicit RLEEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      std::function<void*(uint32_t)> stringBufferFactory,
+      const std::function<void*(uint32_t)>& stringBufferFactory,
       const Encoding::Options& options = {});
 
   ~RLEEncoding() override {
@@ -375,6 +383,44 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
         rawIndices);
   }
 
+  static uint64_t estimateSize(
+      uint64_t /*rowCount*/,
+      const Statistics<physicalType>& statistics,
+      bool fixedByteWidth) {
+    // Estimate the two nested streams produced by RLE:
+    //
+    //   run lengths: one length per consecutive run, estimated as
+    //     FixedBitWidth<uint32_t> over [minRepeat, maxRepeat].
+    //   run values: one value per consecutive run. Numeric values are
+    //     estimated as FixedBitWidth over the original value range. String
+    //     values are estimated as Dictionary over the run values.
+    const uint64_t runCount = statistics.consecutiveRepeatCount();
+    // Run lengths are encoded as a FixedBitWidth child.
+    const uint64_t runLengthsEncodingSize =
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            runCount,
+            statistics.minRepeat(),
+            statistics.maxRepeat(),
+            fixedByteWidth);
+
+    uint64_t runValuesEncodingSize{0};
+    if constexpr (isStringType<physicalType>()) {
+      // String run values often repeat across non-adjacent runs, so estimate
+      // them as Dictionary: unique strings in the alphabet plus one index per
+      // run.
+      runValuesEncodingSize =
+          DictionaryEncoding<std::string_view>::estimateSize(
+              runCount, statistics, fixedByteWidth);
+    } else {
+      // Run values are encoded as a FixedBitWidth child.
+      runValuesEncodingSize = FixedBitWidthEncoding<physicalType>::estimateSize(
+          runCount, statistics, fixedByteWidth);
+    }
+    const uint64_t outerEncodingSize =
+        EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
+    return outerEncodingSize + runValuesEncodingSize + runLengthsEncodingSize;
+  }
+
  private:
   using internal::RLEEncodingBase<T, RLEEncoding<T>>::advanceRunLength;
 
@@ -439,20 +485,41 @@ class RLEEncoding<bool> final
   void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
       final;
 
+  static uint64_t estimateSize(
+      uint64_t /*rowCount*/,
+      const Statistics<bool>& statistics,
+      bool fixedByteWidth) {
+    // Assumptions:
+    // Run lengths are stored using bit-packing (with bit width
+    // needed to store max repetition count).
+    const uint64_t runCount = statistics.consecutiveRepeatCount();
+    const uint64_t initialValueSize = sizeof(bool);
+    // Run lengths are encoded as a FixedBitWidth child.
+    const uint64_t runLengthsEncodingSize =
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            runCount,
+            statistics.minRepeat(),
+            statistics.maxRepeat(),
+            fixedByteWidth);
+    const uint64_t outerEncodingSize =
+        EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
+    return outerEncodingSize + initialValueSize + runLengthsEncodingSize;
+  }
+
  private:
   bool initialValue_;
   bool value_;
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>
 RLEEncoding<T>::RLEEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory,
+    const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : internal::RLEEncodingBase<T, RLEEncoding<T>>(
           pool,

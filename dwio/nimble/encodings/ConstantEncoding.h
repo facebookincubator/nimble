@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <optional>
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
@@ -43,6 +44,21 @@ class ConstantEncodingBase
       std::string_view data,
       const Encoding::Options& options = {})
       : TypedEncoding<T, physicalType>(pool, data, options) {}
+
+  static std::optional<uint64_t> estimateSize(
+      const Statistics<physicalType>& statistics) {
+    if (statistics.uniqueCounts().value().size() != 1) {
+      return std::nullopt;
+    }
+    const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize;
+    if constexpr (isStringType<physicalType>()) {
+      const uint64_t valueSize = statistics.max().size() + sizeof(uint32_t);
+      return outerEncodingSize + valueSize;
+    } else {
+      const uint64_t valueSize = sizeof(physicalType);
+      return outerEncodingSize + valueSize;
+    }
+  }
 
   void reset() final {}
 

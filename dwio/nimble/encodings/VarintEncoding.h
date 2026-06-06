@@ -45,8 +45,6 @@ class VarintEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  static constexpr int kPrefixSize = sizeof(T);
-
   VarintEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
@@ -66,14 +64,31 @@ class VarintEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static uint64_t estimateSize(const Statistics<physicalType>& statistics) {
+    // First (7 bit) bucket produces 1 byte number.
+    // Second bucket produce 2 byte number and so forth.
+    size_t byteWidth{0};
+    const uint64_t payloadSize = std::accumulate(
+        statistics.bucketCounts().cbegin(),
+        statistics.bucketCounts().cend(),
+        uint64_t{0},
+        [&byteWidth](uint64_t sum, uint64_t bucketSize) {
+          return sum + bucketSize * (++byteWidth);
+        });
+
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize + payloadSize;
+  }
+
  private:
+  static constexpr int kPrefixSize = sizeof(T);
+
   const physicalType baseValue_;
   uint32_t row_{0};
   const char* pos_;
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>

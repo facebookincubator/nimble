@@ -116,6 +116,16 @@ TEST(VarintTests, varintSize64) {
   }
 }
 
+TEST(VarintTests, maxVarintSizeForBitWidth) {
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(0), 0);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(1), 1);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(7), 1);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(8), 2);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(63), 9);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(64), 10);
+  EXPECT_EQ(nimble::varint::maxVarintSizeForBitWidth(65), 10);
+}
+
 TEST(VarintTests, WriteRead32) {
   auto seed = folly::Random::rand32();
   LOG(INFO) << "seed: " << seed;

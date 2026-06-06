@@ -26,6 +26,9 @@
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/Statistics.h"
+#include "velox/common/base/BitUtil.h"
 #include "velox/dwio/common/DecoderUtil.h"
 
 // The FixedBitWidthEncoding stores integer data in a fixed number of
@@ -48,8 +51,6 @@ class FixedBitWidthEncoding final
  public:
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
-
-  static const int kPrefixSize = 2 + sizeof(T);
 
   FixedBitWidthEncoding(
       velox::memory::MemoryPool& pool,
@@ -86,9 +87,45 @@ class FixedBitWidthEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<physicalType>& statistics,
+      bool fixedByteWidth) {
+    return estimateSize(
+        rowCount, statistics.min(), statistics.max(), fixedByteWidth);
+  }
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      uint64_t minValue,
+      uint64_t maxValue,
+      bool fixedByteWidth) {
+    const uint64_t outerEncodingSize =
+        EncodingPrefix::kFixedPrefixSize + kPrefixSize;
+    const uint64_t payloadSize =
+        bitPackedBytes(minValue, maxValue, rowCount, fixedByteWidth);
+    return outerEncodingSize + payloadSize;
+  }
+
   std::string debugString(int offset) const final;
 
  private:
+  static constexpr int kPrefixSize = 2 + sizeof(T);
+
+  static uint64_t bitPackedBytes(
+      uint64_t minValue,
+      uint64_t maxValue,
+      uint64_t count,
+      bool fixedByteWidth) {
+    const auto bitWidth = velox::bits::bitsRequired(maxValue - minValue);
+    if (fixedByteWidth) {
+      // Match FixedByteWidth encoding mode, which rounds bit width to the next
+      // byte boundary to mitigate compression issues on non-rounded bit widths.
+      return velox::bits::nbytes(((bitWidth + 7) & ~7) * count);
+    }
+    return velox::bits::nbytes(bitWidth * count);
+  }
+
   int bitWidth_;
   physicalType baseline_;
   FixedBitArray fixedBitArray_;
@@ -98,7 +135,7 @@ class FixedBitWidthEncoding final
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>

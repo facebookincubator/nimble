@@ -75,24 +75,38 @@ class SimdForBitpackEncoding final
 
   std::string debugString(int offset) const final;
 
+  /// Return the fixed-prefix encoded size estimate used by encoding selection.
+  static uint64_t
+  estimateSize(uint64_t rowCount, physicalType min, physicalType max) {
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize +
+        packedDataSize(rowCount, bitWidth(min, max));
+  }
+
+ private:
+  static constexpr int kPrefixSize = sizeof(physicalType) + sizeof(uint8_t);
+
   static constexpr uint32_t kGroupSize =
       facebook::velox::fastpforlib::BITPACKING_ALGORITHM_GROUP_SIZE;
 
-  /// Return the number of FastPFor groups needed to cover `rowCount` values.
+  // Return the number of FastPFor groups needed to cover `rowCount` values.
   static constexpr uint64_t numGroups(uint64_t rowCount) {
     return velox::bits::divRoundUp(rowCount, kGroupSize);
   }
 
-  /// Return the total packed data size in bytes.
-  /// FastPFor emits `bitWidth` uint32_t words per 32-value group.
+  // Return the total packed data size in bytes.
+  // FastPFor emits `bitWidth` uint32_t words per 32-value group.
   static constexpr uint64_t packedDataSize(
       uint64_t rowCount,
       uint8_t bitWidth) {
     return numGroups(rowCount) * bitWidth * sizeof(uint32_t);
   }
 
- private:
-  static constexpr int kPrefixSize = sizeof(physicalType) + 1;
+  static uint8_t bitWidth(physicalType min, physicalType max) {
+    const physicalType fullRange = static_cast<physicalType>(max - min);
+    return fullRange == 0
+        ? uint8_t{0}
+        : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+  }
 
   // Unpack a single group at the given group index into `output`.
   // `output` must have room for kGroupSize elements.
@@ -116,7 +130,7 @@ class SimdForBitpackEncoding final
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>

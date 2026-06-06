@@ -106,10 +106,6 @@ enum class EncodingType {
   Prefix = 11,
   // Adaptive Lossless floating-Point compression for numeric types.
   ALP = 12,
-  // Stores integer data in fixed-size chunks (default 1024 rows), each with
-  // its own baseline and bit width. Adapts per-chunk variable bit widths for
-  // better compression on data with locally narrow value ranges.
-  BlockBitPacking = 15,
   // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.
@@ -117,6 +113,10 @@ enum class EncodingType {
   // SIMD Frame-of-Reference bitpacking. Subtracts baseline (global min),
   // packs residuals in groups of 32 via Lemire FastPFor SIMD bitpacking.
   SimdForBitpack = 14,
+  // Stores integer data in fixed-size chunks (default 1024 rows), each with
+  // its own baseline and bit width. Adapts per-chunk variable bit widths for
+  // better compression on data with locally narrow value ranges.
+  BlockBitPacking = 15,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

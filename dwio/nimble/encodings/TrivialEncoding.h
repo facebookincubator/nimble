@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
@@ -46,8 +47,6 @@ class TrivialEncoding final
  public:
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
-
-  static constexpr int kPrefixSize = 1;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -80,7 +79,16 @@ class TrivialEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static uint64_t estimateSize(uint64_t rowCount) {
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize +
+        rowCount * sizeof(physicalType);
+  }
+
  private:
+  // Numeric trivial stores one byte after the common encoding prefix for the
+  // payload compression type.
+  static constexpr int kPrefixSize = sizeof(uint8_t);
+
   uint32_t row_;
   const T* values_;
   velox::BufferPtr uncompressed_;
@@ -98,7 +106,9 @@ class TrivialEncoding<std::string_view> final
  public:
   using cppDataType = std::string_view;
 
-  static constexpr int kPrefixSize = 5;
+  // String trivial exposes this wire-layout offset because selective chunked
+  // decoding uses it to ensure the length stream and blob header are available.
+  static constexpr int kPrefixSize = sizeof(uint8_t) + sizeof(uint32_t);
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -121,6 +131,32 @@ class TrivialEncoding<std::string_view> final
       std::span<const std::string_view> values,
       Buffer& buffer,
       const Encoding::Options& options = {});
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<std::string_view>& statistics,
+      bool fixedByteWidth) {
+    return estimateSize(
+        rowCount,
+        statistics.totalStringsLength(),
+        statistics.min().size(),
+        statistics.max().size(),
+        fixedByteWidth);
+  }
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      uint64_t totalStringsLength,
+      uint64_t minLength,
+      uint64_t maxLength,
+      bool fixedByteWidth) {
+    // String lengths are encoded as a FixedBitWidth child.
+    const uint64_t lengthsEncodingSize =
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            rowCount, minLength, maxLength, fixedByteWidth);
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize + totalStringsLength +
+        lengthsEncodingSize;
+  }
 
  private:
   uint32_t row_;
@@ -145,8 +181,6 @@ template <>
 class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
  public:
   using cppDataType = bool;
-
-  static constexpr int kPrefixSize = 1;
 
   TrivialEncoding(
       velox::memory::MemoryPool& pool,
@@ -174,14 +208,23 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static uint64_t estimateSize(uint64_t rowCount) {
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize +
+        FixedBitArray::bufferSize(rowCount, 1);
+  }
+
  private:
+  // Bool trivial stores one byte after the common encoding prefix for the
+  // bitmap compression type.
+  static constexpr int kPrefixSize = sizeof(uint8_t);
+
   uint32_t row_{0};
   const char* bitmap_;
   velox::BufferPtr uncompressed_;
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>
