@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <span>
 
 #include <folly/CPortability.h>
@@ -24,6 +25,9 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
@@ -80,6 +84,84 @@ class MainlyConstantEncodingBase
         isCommonBuffer_(this->template getVectorBuffer<bool>()),
         otherValuesBuffer_(this->template getVectorBuffer<physicalType>()),
         dictionaryAlphabet_(&pool) {}
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<physicalType>& statistics,
+      bool fixedByteWidth) {
+    // Assumptions:
+    // We store one entry for the common value.
+    // Number of uncommon values is total item count minus the max unique
+    // count (the common value count).
+    // For each uncommon value we store its value. We assume they will
+    // be stored bit-packed.
+    // We also store a bitmap for all rows (is-common bitmap). This bitmap
+    // will most likely be stored as SparseBool. Therefore, for each
+    // uncommon value there will be an index. These indices will most likely
+    // be stored bit-packed, with bit width of max(rowCount).
+
+    // Find most common item count
+    const auto& uniqueCounts = statistics.uniqueCounts().value();
+    const auto maxUniqueCount = std::max_element(
+        uniqueCounts.cbegin(),
+        uniqueCounts.cend(),
+        [](const auto& left, const auto& right) {
+          return left.second < right.second;
+        });
+    // Deduce uncommon values count
+    const uint64_t uncommonCount = rowCount - maxUniqueCount->second;
+    // Uncommon values (sparse bool) bitmap will have index per value,
+    // stored bit packed.
+    const uint64_t isCommonEncodingSize = SparseBoolEncoding::estimateSize(
+        rowCount, uncommonCount, fixedByteWidth);
+
+    if constexpr (isStringType<physicalType>()) {
+      const uint64_t commonValueSize = maxUniqueCount->first.size();
+      uint64_t uncommonMinLength = 0;
+      uint64_t uncommonMaxLength = 0;
+      bool hasUncommonValue{false};
+      for (const auto& uniqueCount : uniqueCounts) {
+        if (uniqueCount.first == maxUniqueCount->first) {
+          continue;
+        }
+
+        const uint64_t length = uniqueCount.first.size();
+        if (!hasUncommonValue) {
+          uncommonMinLength = length;
+          uncommonMaxLength = length;
+          hasUncommonValue = true;
+          continue;
+        }
+
+        uncommonMinLength = std::min(uncommonMinLength, length);
+        uncommonMaxLength = std::max(uncommonMaxLength, length);
+      }
+      // Other values are encoded as a Trivial string child with FixedBitWidth
+      // lengths.
+      const uint64_t otherValuesSize =
+          TrivialEncoding<std::string_view>::estimateSize(
+              uniqueCounts.size() - 1,
+              uniqueCounts.uniqueStringBytes() - commonValueSize,
+              uncommonMinLength,
+              uncommonMaxLength,
+              fixedByteWidth);
+      const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
+          2 * sizeof(uint32_t) + commonValueSize + sizeof(uint32_t);
+      return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
+    } else {
+      const uint64_t commonValueSize = sizeof(physicalType);
+      // Other values are encoded as a FixedBitWidth child.
+      const uint64_t otherValuesSize =
+          FixedBitWidthEncoding<physicalType>::estimateSize(
+              uncommonCount,
+              statistics.min(),
+              statistics.max(),
+              fixedByteWidth);
+      const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
+          2 * sizeof(uint32_t) + commonValueSize;
+      return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
+    }
+  }
 
   ~MainlyConstantEncodingBase() override {
     this->releaseVectorBuffer(isCommonBuffer_);

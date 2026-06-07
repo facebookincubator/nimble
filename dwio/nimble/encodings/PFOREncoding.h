@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
@@ -87,14 +88,40 @@ class PFOREncoding final
 
   std::string debugString(int offset) const final;
 
-  /// Selects the base bit width from the bucket histogram, targeting 90%
-  /// coverage. Returns {baseBitWidth, numExceptions}.
-  /// Shared by encode() and EncodingSizeEstimation to keep the two in sync.
-  ///
-  /// Note: buckets have 7-bit granularity, so the selected baseBitWidth may
-  /// overestimate by up to 6 bits. This is deliberate — the encode() path
-  /// uses the exact bitsRequired() on each residual, so the actual wire
-  /// format is tight. The overestimate only affects size estimation.
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<physicalType>& statistics) {
+    const auto fullRange =
+        static_cast<physicalType>(statistics.max() - statistics.min());
+    const uint8_t maxBitWidth =
+        static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+    const auto [baseBitWidth, numExceptions] = selectBaseBitWidth(
+        statistics.bucketCounts(),
+        static_cast<uint32_t>(rowCount),
+        maxBitWidth);
+    const uint64_t baseValuesSize = baseBitWidth == 0
+        ? 0
+        : FixedBitArray::bufferSize(rowCount, baseBitWidth);
+    const uint64_t valueVarintBytes =
+        varint::maxVarintSizeForBitWidth(maxBitWidth);
+    const uint64_t positionVarintBytes =
+        varint::maxVarintSizeForBitWidth(std::numeric_limits<uint32_t>::digits);
+    const uint64_t exceptionsSize =
+        numExceptions * (positionVarintBytes + valueVarintBytes);
+    const uint64_t outerEncodingSize =
+        EncodingPrefix::kFixedPrefixSize + kPrefixSize;
+    return outerEncodingSize + baseValuesSize + exceptionsSize;
+  }
+
+ private:
+  // Selects the base bit width from the bucket histogram, targeting 90%
+  // coverage. Returns {baseBitWidth, numExceptions}.
+  // Shared by encode() and EncodingSizeEstimation to keep the two in sync.
+  //
+  // Note: buckets have 7-bit granularity, so the selected baseBitWidth may
+  // overestimate by up to 6 bits. This is deliberate — the encode() path
+  // uses the exact bitsRequired() on each residual, so the actual wire
+  // format is tight. The overestimate only affects size estimation.
   template <typename BucketArray>
   static std::pair<uint8_t, uint64_t> selectBaseBitWidth(
       const BucketArray& bucketCounts,
@@ -119,10 +146,9 @@ class PFOREncoding final
     return {maxBitWidth, 0};
   }
 
- private:
-  /// Fixed-size header: baseline + baseBitWidth(1) + numExceptions(4).
+  /// Fixed-size header: baseline + baseBitWidth(1 byte) + numExceptions(4).
   static constexpr int kPrefixSize =
-      sizeof(physicalType) + 1 + sizeof(uint32_t);
+      sizeof(physicalType) + sizeof(uint8_t) + sizeof(uint32_t);
   // Patches any exceptions whose absolute position falls inside
   // [row_, row_ + count) onto `output`, where output[k] corresponds to
   // absolute position row_ + k. Advances exceptionCursor_ past consumed
@@ -158,7 +184,7 @@ class PFOREncoding final
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
 
 template <typename T>

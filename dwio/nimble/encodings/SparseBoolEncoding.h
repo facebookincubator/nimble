@@ -18,6 +18,7 @@
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/common/BufferedEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -48,8 +49,6 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
  public:
   using cppDataType = bool;
 
-  static constexpr int kPrefixSize = 1;
-
   SparseBoolEncoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
@@ -72,7 +71,42 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      const Statistics<bool>& statistics,
+      bool fixedByteWidth) {
+    // Assumptions:
+    // Uncommon indices are stored bit-packed (with bit width capable of
+    // representing max entry count).
+
+    const auto exceptionCount = std::min(
+        statistics.uniqueCounts().value().at(true),
+        statistics.uniqueCounts().value().at(false));
+    return estimateSize(rowCount, exceptionCount, fixedByteWidth);
+  }
+
+  static uint64_t estimateSize(
+      uint64_t rowCount,
+      uint64_t exceptionCount,
+      bool fixedByteWidth) {
+    // Sparse indices are encoded as a FixedBitWidth child.
+    // A rowCount sentinel is appended after the real sparse positions so the
+    // decoder can stop without storing an explicit index count.
+    const uint64_t indicesEncodingSize =
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            exceptionCount + 1,
+            /*minValue=*/0,
+            /*maxValue=*/rowCount,
+            fixedByteWidth);
+
+    return EncodingPrefix::kFixedPrefixSize + kPrefixSize + indicesEncodingSize;
+  }
+
  private:
+  // SparseBool stores one byte after the common encoding prefix to indicate
+  // whether the sparse indices refer to set bits or unset bits.
+  static constexpr int kPrefixSize = sizeof(uint8_t);
+
   // If true, then indices give the position of the set bits; if false they give
   // the positions of the unset bits.
   const bool sparseValue_;

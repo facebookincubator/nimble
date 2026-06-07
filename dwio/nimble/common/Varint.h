@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 
@@ -57,6 +58,12 @@ inline constexpr uint32_t varintSize(T val) noexcept {
     uint32_t bitsNeeded = 64 - __builtin_clzll(static_cast<uint64_t>(val) | 1);
     return (bitsNeeded + 6) / 7;
   }
+}
+
+/// Returns the maximum number of bytes needed to varint-encode any value that
+/// fits in `bitWidth` bits.
+inline constexpr uint32_t maxVarintSizeForBitWidth(uint32_t bitWidth) noexcept {
+  return (std::min(bitWidth, 64u) + 6) / 7;
 }
 
 template <typename T>

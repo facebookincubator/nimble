@@ -59,8 +59,15 @@ StructColumnReader::StructColumnReader(
           params,
           scanSpec,
           isRoot) {
+  NIMBLE_CHECK(
+      !params.hasLazyIoColumns() || isRoot,
+      "Lazy I/O columns should only be set at root level");
   const auto& rowType = params.nimbleType()->asRow();
   const auto& fileRowType = fileType_->type()->asRow();
+  if (params.hasLazyIoColumns()) {
+    lazyInput_ = params.streams().createLazyInput();
+    lazyIoColumns_ = params.lazyIoColumnsSet();
+  }
   for (auto* childSpec : scanSpec.stableChildren()) {
     if (childSpec->isConstant() || isChildMissing(*childSpec)) {
       childSpec->setSubscript(kConstantChildSpecSubscript);
@@ -74,6 +81,9 @@ StructColumnReader::StructColumnReader(
     const auto& childRequestedType =
         requestedType_->asRow().findChild(childSpec->fieldName());
     auto childParams = params.makeChildParams(rowType.childAt(childIdx));
+    if (params.lazyIoColumn(childSpec->fieldName())) {
+      childParams.setLazyColumnIo(true);
+    }
     addChild(buildColumnReader(
         childRequestedType, childFileType, childParams, *childSpec, false));
     childSpec->setSubscript(children_.size() - 1);
@@ -92,6 +102,13 @@ bool StructColumnReader::estimateMaterializedSize(
     rowCount = *nullsRowCount;
   } else {
     rowCount = 0;
+  }
+  // When lazy columns exist, return false to fall through to RowSizeTracker.
+  // A partial estimate from eager columns only would underestimate row size
+  // (lazy columns are often large FlatMaps), causing oversized batches.
+  // RowSizeTracker learns the actual row size after the first batch.
+  if (lazyInput_ != nullptr) {
+    return false;
   }
   size_t rowSize{0};
   for (const auto& child : children_) {

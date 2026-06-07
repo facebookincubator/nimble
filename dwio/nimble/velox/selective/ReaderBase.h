@@ -150,6 +150,30 @@ struct StreamLocation {
   velox::common::Region region;
 };
 
+/// Cloned BufferedInput for lazy I/O columns, loaded on first lazy access.
+/// All lazy columns in a stripe share a single LazyInput so their
+/// streams are coalesced into one WS read instead of N separate reads.
+///
+/// NOTE: this object is not thread-safe.
+class LazyInput {
+ public:
+  explicit LazyInput(std::unique_ptr<velox::dwio::common::BufferedInput> input)
+      : input_(std::move(input)) {}
+
+  /// Triggers WS I/O to load all enqueued lazy streams. Idempotent —
+  /// only the first call fetches data; subsequent calls are no-ops.
+  void load();
+
+  /// Returns the underlying BufferedInput for stream routing.
+  velox::dwio::common::BufferedInput* bufferedInput() const {
+    return input_.get();
+  }
+
+ private:
+  std::unique_ptr<velox::dwio::common::BufferedInput> input_;
+  bool loaded_{false};
+};
+
 class StripeStreams {
  public:
   explicit StripeStreams(const std::shared_ptr<ReaderBase>& readerBase)
@@ -157,6 +181,7 @@ class StripeStreams {
 
   void setStripe(int stripe) {
     stripe_ = stripe;
+    lazyInput_.reset();
     // Keep previous stripe's shared_ptrs (StripeGroup, ChunkIndexGroup)
     // alive while loading the new stripe. This prevents the weak-pointer
     // cache entries from expiring when consecutive stripes share the same
@@ -169,8 +194,11 @@ class StripeStreams {
     return streamRegion(streamId).has_value();
   }
 
+  /// Enqueue a stream for loading. When lazyColumnIo is true, routes to the
+  /// lazy input clone; otherwise to the main (eager) input.
   std::unique_ptr<velox::dwio::common::SeekableInputStream> enqueue(
-      int streamId);
+      int streamId,
+      bool lazyColumnIo = false);
 
   /// Returns the physical file location of each requested stream in the
   /// current stripe. Streams that do not exist or have zero size return
@@ -181,6 +209,10 @@ class StripeStreams {
   void load() {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
   }
+
+  /// Create a lazy input clone for lazy column I/O. Ownership is held
+  /// by StripeStreams; the clone is valid until the next setStripe() call.
+  LazyInput* createLazyInput();
 
   int32_t stripeIndex() const {
     return stripe_;
@@ -197,7 +229,11 @@ class StripeStreams {
 
   const std::shared_ptr<ReaderBase> readerBase_;
 
-  int stripe_;
+  int stripe_{};
+  // Owns the lazy input clone for the current stripe. Reset on
+  // setStripe(). StructColumnReader holds a raw LazyInput* pointer,
+  // guarded by the numReads_ version check.
+  std::unique_ptr<LazyInput> lazyInput_;
   std::optional<StripeIdentifier> stripeIdentifier_;
 };
 

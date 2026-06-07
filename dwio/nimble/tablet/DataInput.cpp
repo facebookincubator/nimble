@@ -99,11 +99,45 @@ uint32_t DirectDataInput::enqueue(Region region) {
   for (auto& group : ioGroups) {
     group.bufferOffset = readBytes;
     readBytes += group.readSize;
-    for (const auto& enqueued : group.regions) {
-      payloadBytes += enqueued.region.length;
-    }
+    payloadBytes += group.payloadSize;
   }
   return {readBytes, payloadBytes};
+}
+
+/*static*/ std::pair<uint64_t, uint64_t> DirectDataInput::computePayloadSize(
+    std::span<const EnqueuedRegion> sortedRegions) {
+  NIMBLE_CHECK(!sortedRegions.empty(), "IO group must contain a region");
+
+  const auto& firstRegion = sortedRegions.front().region;
+  uint64_t prevRegionEnd{firstRegion.offset + firstRegion.length};
+  uint64_t payloadSize{firstRegion.length};
+  for (size_t i = 1; i < sortedRegions.size(); ++i) {
+    const auto& region = sortedRegions[i].region;
+    const auto regionEnd = region.offset + region.length;
+    if (regionEnd == prevRegionEnd) {
+      const auto& prevRegion = sortedRegions[i - 1].region;
+      // coalesceIo only keeps exact duplicate ranges in the same IO group so
+      // they can share the physical read. Contained and partially overlapping
+      // ranges are emitted as separate groups.
+      NIMBLE_CHECK_EQ(
+          region.offset,
+          prevRegion.offset,
+          "Only exact duplicate ranges can end at the previous range end");
+      NIMBLE_CHECK_EQ(
+          region.length,
+          prevRegion.length,
+          "Only exact duplicate ranges can end at the previous range end");
+      continue;
+    }
+
+    NIMBLE_CHECK_GE(
+        region.offset,
+        prevRegionEnd,
+        "IO group cannot contain overlapping ranges");
+    payloadSize += region.length;
+    prevRegionEnd = regionEnd;
+  }
+  return {payloadSize, prevRegionEnd};
 }
 
 std::vector<DirectDataInput::IoGroup> DirectDataInput::computeIoGroups(
@@ -112,62 +146,57 @@ std::vector<DirectDataInput::IoGroup> DirectDataInput::computeIoGroups(
   std::iota(items.begin(), items.end(), 0);
 
   int64_t coalescedBytes = 0;
-  std::vector<int32_t> groupEnds;
+  std::vector<IoGroup> ioGroups;
+  ioGroups.reserve(sortedRegions.size());
 
-  const auto coalesceStats = velox::coalesceIo<int32_t, char>(
-      items,
-      /*maxGap=*/maxCoalesceDistance_,
-      /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
-      /*offsetFunc=*/
-      [&](int32_t i) -> uint64_t { return sortedRegions[i].region.offset; },
-      /*sizeFunc=*/
-      [&](int32_t i) -> int32_t {
-        return static_cast<int32_t>(sortedRegions[i].region.length);
-      },
-      /*numRanges=*/
-      [&](int32_t i) -> int32_t {
-        const auto size = static_cast<int64_t>(sortedRegions[i].region.length);
-        if (coalescedBytes + size > maxCoalesceBytes_) {
-          coalescedBytes = 0;
-          return velox::kNoCoalesce;
-        }
-        coalescedBytes += size;
-        return 1;
-      },
-      /*addRanges=*/
-      [](const int32_t& /*i*/, std::vector<char>& ranges) {
-        ranges.push_back(0);
-      },
-      /*skipRange=*/
-      [](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
-      /*ioFunc=*/
-      [&](const std::vector<int32_t>& /*items*/,
-          int32_t /*begin*/,
-          int32_t end,
-          uint64_t /*offset*/,
-          const std::vector<char>& /*ranges*/) {
-        coalescedBytes = 0;
-        groupEnds.push_back(end);
-      });
+  const auto coalesceStats =
+      velox::coalesceIo<int32_t, char, /*coalesceDuplicateRanges=*/true>(
+          items,
+          /*maxGap=*/maxCoalesceDistance_,
+          /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
+          /*offsetFunc=*/
+          [&](int32_t i) -> uint64_t { return sortedRegions[i].region.offset; },
+          /*sizeFunc=*/
+          [&](int32_t i) -> int32_t {
+            return static_cast<int32_t>(sortedRegions[i].region.length);
+          },
+          /*numRanges=*/
+          [&](int32_t i) -> int32_t {
+            const auto size =
+                static_cast<int64_t>(sortedRegions[i].region.length);
+            if (coalescedBytes + size > maxCoalesceBytes_) {
+              coalescedBytes = 0;
+              return velox::kNoCoalesce;
+            }
+            coalescedBytes += size;
+            return 1;
+          },
+          /*addRanges=*/
+          [](const int32_t& /*i*/, std::vector<char>& ranges) {
+            ranges.push_back(0);
+          },
+          /*skipRange=*/
+          [](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
+          /*ioFunc=*/
+          [&](const std::vector<int32_t>& /*items*/,
+              int32_t begin,
+              int32_t end,
+              uint64_t /*offset*/,
+              const std::vector<char>& /*ranges*/) {
+            coalescedBytes = 0;
+            IoGroup group;
+            const auto groupRegions = std::span<const EnqueuedRegion>(
+                &sortedRegions[begin], static_cast<size_t>(end - begin));
+            const auto [payloadSize, lastEnd] =
+                computePayloadSize(groupRegions);
+            group.readOffset = alignDown(sortedRegions[begin].region.offset);
+            group.readSize = alignUp(lastEnd) - group.readOffset;
+            group.payloadSize = payloadSize;
+            group.regions = groupRegions;
+            ioGroups.emplace_back(group);
+          });
 
   ioStats_->readGap().merge(coalesceStats.gaps);
-
-  std::vector<IoGroup> ioGroups;
-  ioGroups.reserve(groupEnds.size());
-  int32_t groupStart = 0;
-  for (const auto groupEnd : groupEnds) {
-    IoGroup group;
-    const auto firstOffset = sortedRegions[groupStart].region.offset;
-    const auto& lastRegion = sortedRegions[groupEnd - 1].region;
-    const auto lastEnd = lastRegion.offset + lastRegion.length;
-    group.readOffset = alignDown(firstOffset);
-    group.readSize = alignUp(lastEnd) - group.readOffset;
-    group.regions = {
-        &sortedRegions[groupStart], static_cast<size_t>(groupEnd - groupStart)};
-
-    ioGroups.emplace_back(group);
-    groupStart = groupEnd;
-  }
   return ioGroups;
 }
 
@@ -186,6 +215,8 @@ void DirectDataInput::populateBufferRefs(
 
 std::pair<char*, DataInput::Handle> DirectDataInput::allocateBuffer(
     uint64_t bytes) {
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::DirectDataInput::allocateBuffer", &bytes);
   auto* buffer = static_cast<char*>(
       pool_->allocateAligned(static_cast<int64_t>(bytes), allocAlignment_));
   NIMBLE_DCHECK(
@@ -255,20 +286,33 @@ DataInput::Handle DirectDataInput::load() {
   NIMBLE_CHECK(!bufferRefs_.empty(), "No regions enqueued");
   state_ = State::kLoaded;
 
-  // Sort within each group segment in-place, then the flat vector is
-  // globally sorted (groups are already in relative file order).
+  // Sort within each group segment in-place. Groups are expected to be
+  // enqueued in non-overlapping file order, so boundary checks ensure the
+  // flat vector remains globally sorted without sorting across groups.
   const auto numGroups = groupOffsets_.size();
+  uint64_t prevGroupEnd{0};
   for (size_t i = 0; i < numGroups; ++i) {
     const auto start = groupOffsets_[i];
     const auto end = (i + 1 < numGroups)
         ? groupOffsets_[i + 1]
         : static_cast<uint32_t>(regions_.size());
+    NIMBLE_CHECK_LT(start, end, "Read group must contain a region");
     std::sort(
         regions_.begin() + start,
         regions_.begin() + end,
         [](const EnqueuedRegion& a, const EnqueuedRegion& b) {
           return a.region.offset < b.region.offset;
         });
+
+    if (i > 0) {
+      NIMBLE_CHECK_GE(
+          regions_[start].region.offset,
+          prevGroupEnd,
+          "Read groups must be sorted and non-overlapping by file offset");
+    }
+
+    const auto& lastRegion = regions_[end - 1].region;
+    prevGroupEnd = lastRegion.offset + lastRegion.length;
   }
 
   auto ioGroups = computeIoGroups(regions_);
@@ -286,13 +330,9 @@ DataInput::Handle DirectDataInput::load() {
   }
 
   for (const auto& group : ioGroups) {
-    uint64_t groupPayload = 0;
-    for (const auto& region : group.regions) {
-      groupPayload += region.region.length;
-    }
     ioStats_->read().increment(group.readSize);
-    ioStats_->incRawBytesRead(groupPayload);
-    ioStats_->incRawOverreadBytes(group.readSize - groupPayload);
+    ioStats_->incRawBytesRead(group.payloadSize);
+    ioStats_->incRawOverreadBytes(group.readSize - group.payloadSize);
   }
   ioStats_->storageReadLatencyUs().increment(ioUs);
   ioStats_->incTotalScanTimeNs(ioUs * 1'000);

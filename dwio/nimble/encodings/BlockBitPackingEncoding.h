@@ -80,6 +80,12 @@ class BlockBitPackingEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  /// Estimates the uncompressed encoded size using the same per-block packing
+  /// decisions as encode().
+  static uint64_t estimateSize(
+      std::span<const physicalType> values,
+      uint16_t blockSize = kBlockBitPackingBlockSize);
+
   /// Returns the metadata overhead in bytes for the encoding header.
   /// Shared by encode() and EncodingSizeEstimation to keep the two in sync.
   static uint32_t encodingOverhead(uint32_t numBlocks) {
@@ -92,41 +98,57 @@ class BlockBitPackingEncoding final
   std::string debugString(int offset) const final;
 
  private:
-  /// Per-block metadata stored in the header: baseline (minimum) value,
-  /// bit width for the packed representation, and whether this block
-  /// falls back to storing raw uncompressed values.
+  // Per-block metadata stored in the header: baseline (minimum) value,
+  // bit width for the packed representation, and whether this block
+  // falls back to storing raw uncompressed values.
   struct BlockMeta {
-    /// Minimum value in the block; packed values are stored as
-    /// (value - baseline).
+    // Minimum value in the block; packed values are stored as
+    // (value - baseline).
     physicalType baseline;
-    /// Number of bits per packed value (0 when all values equal the baseline).
+    // Number of bits per packed value (0 when all values equal the baseline).
     uint8_t bitWidth;
-    /// When true, this block stores raw values (packing was not beneficial).
+    // When true, this block stores raw values (packing was not beneficial).
     bool skipEncoding;
   };
 
-  /// Reads a single decoded value at the given absolute row index.
+  // Per-block encoding plan used while serializing and estimating size.
+  struct BlockInfo {
+    physicalType baseline;
+    uint8_t bitWidth;
+    uint32_t packedSize;
+    uint32_t start;
+    uint32_t count;
+    bool skipEncoding;
+  };
+
+  // Reads a single decoded value at the given absolute row index.
   physicalType readSingleValue(uint32_t row) const;
 
-  /// Decodes a contiguous range within one block into 'output'.
+  // Decodes a contiguous range within one block into 'output'.
   void materializeBlockRange(
       uint32_t blockIndex,
       uint32_t blockValueOffset,
       uint32_t blockValueCount,
       physicalType* output) const;
 
-  /// Returns the number of rows in the given block (may be less than
-  /// blockSize_ for the last block).
+  // Returns the number of rows in the given block (may be less than
+  // blockSize_ for the last block).
   uint32_t blockRowCount(uint32_t blockIndex) const;
 
-  /// Unpacks 'numRows' bit-packed values in fixed-size groups, falling
-  /// back to FixedBitArray for any trailing remainder.
+  // Unpacks 'numRows' bit-packed values in fixed-size groups, falling
+  // back to FixedBitArray for any trailing remainder.
   static void fullUnpack(
       const uint8_t* input,
       physicalType* output,
       uint32_t numRows,
       uint8_t bitWidth,
       physicalType baseline);
+
+  // Builds the encoding plan for a single block.
+  static BlockInfo makeBlockInfo(
+      std::span<const physicalType> values,
+      uint32_t start,
+      uint32_t count);
 
   uint16_t blockSize_;
   uint16_t numBlocks_;
@@ -139,8 +161,61 @@ class BlockBitPackingEncoding final
 };
 
 //
-// End of public API. Implementations follow.
+// End of class declaration. Implementations follow.
 //
+
+template <typename T>
+uint64_t BlockBitPackingEncoding<T>::estimateSize(
+    std::span<const physicalType> values,
+    uint16_t blockSize) {
+  const auto rowCount = static_cast<uint32_t>(values.size());
+  const uint32_t numBlocks = velox::bits::divRoundUp(rowCount, blockSize);
+  uint64_t packedSize = 0;
+  for (uint32_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
+    const auto start = blockIndex * blockSize;
+    const auto end = std::min<uint32_t>(start + blockSize, rowCount);
+    packedSize += makeBlockInfo(values, start, end - start).packedSize;
+  }
+  return EncodingPrefix::kFixedPrefixSize + encodingOverhead(numBlocks) +
+      packedSize;
+}
+
+template <typename T>
+typename BlockBitPackingEncoding<T>::BlockInfo
+BlockBitPackingEncoding<T>::makeBlockInfo(
+    std::span<const physicalType> values,
+    uint32_t start,
+    uint32_t count) {
+  auto blockValues = values.subspan(start, count);
+  auto [minValue, maxValue] =
+      std::minmax_element(blockValues.begin(), blockValues.end());
+  const auto range = *maxValue - *minValue;
+  const auto rawSize = count * sizeof(physicalType);
+
+  const auto bitsRequired = range == 0 ? 0 : velox::bits::bitsRequired(range);
+  NIMBLE_DCHECK_LE(
+      bitsRequired,
+      sizeof(physicalType) * 8,
+      "bitsRequired cannot exceed type width.");
+  if (bitsRequired == sizeof(physicalType) * 8) {
+    return {0, 0, static_cast<uint32_t>(rawSize), start, count, true};
+  }
+
+  // Skip encoding when packing doesn't reduce size.
+  const auto packedSize =
+      static_cast<uint32_t>(FixedBitArray::bufferSize(count, bitsRequired));
+  if (packedSize >= rawSize) {
+    return {0, 0, static_cast<uint32_t>(rawSize), start, count, true};
+  }
+
+  return {
+      *minValue,
+      static_cast<uint8_t>(bitsRequired),
+      packedSize,
+      start,
+      count,
+      false};
+}
 
 template <typename T>
 BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
@@ -543,20 +618,11 @@ std::string_view BlockBitPackingEncoding<T>::encode(
 
   const uint16_t blockSize = selection.blockBitPackingBlockSize();
   const auto rowCount = static_cast<uint32_t>(values.size());
-  const uint32_t numBlocks = (rowCount + blockSize - 1) / blockSize;
+  const uint32_t numBlocks = velox::bits::divRoundUp(rowCount, blockSize);
   NIMBLE_CHECK_LE(
       numBlocks,
       std::numeric_limits<uint16_t>::max(),
       "Row count too large for BlockBitPacking encoding.");
-
-  struct BlockInfo {
-    physicalType baseline;
-    uint8_t bitWidth;
-    uint32_t packedSize;
-    uint32_t start;
-    uint32_t count;
-    bool skipEncoding;
-  };
 
   Vector<BlockInfo> blocks{&buffer.getMemoryPool()};
   blocks.resize(numBlocks);
@@ -565,45 +631,7 @@ std::string_view BlockBitPackingEncoding<T>::encode(
   for (uint16_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
     const auto start = static_cast<uint32_t>(blockIndex) * blockSize;
     const auto end = std::min(start + blockSize, rowCount);
-    const auto count = end - start;
-
-    auto blockValues = values.subspan(start, count);
-    auto [minIt, maxIt] =
-        std::minmax_element(blockValues.begin(), blockValues.end());
-    const auto minVal = *minIt;
-    const auto maxVal = *maxIt;
-
-    const auto range = maxVal - minVal;
-    const auto rawSize = count * sizeof(physicalType);
-
-    const auto bitsRequired =
-        (range == 0) ? 0 : velox::bits::bitsRequired(range);
-    NIMBLE_DCHECK_LE(
-        bitsRequired,
-        sizeof(physicalType) * 8,
-        "bitsRequired cannot exceed type width.");
-    if (bitsRequired == sizeof(physicalType) * 8) {
-      blocks[blockIndex] = {
-          0, 0, static_cast<uint32_t>(rawSize), start, count, true};
-      totalPackedSize += blocks[blockIndex].packedSize;
-      continue;
-    }
-
-    // Skip encoding when packing doesn't reduce size.
-    const auto packedSize =
-        static_cast<uint32_t>(FixedBitArray::bufferSize(count, bitsRequired));
-    if (packedSize >= rawSize) {
-      blocks[blockIndex] = {
-          0, 0, static_cast<uint32_t>(rawSize), start, count, true};
-    } else {
-      blocks[blockIndex] = {
-          minVal,
-          static_cast<uint8_t>(bitsRequired),
-          packedSize,
-          start,
-          count,
-          false};
-    }
+    blocks[blockIndex] = makeBlockInfo(values, start, end - start);
     totalPackedSize += blocks[blockIndex].packedSize;
   }
 

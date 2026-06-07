@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/common/FixedBitArray.h"
+
 #include <glog/logging.h>
 
 namespace facebook::nimble {
@@ -21,8 +22,8 @@ namespace facebook::nimble {
 // Warning: do not change this function or lots of horrible data corruption
 // will probably happen.
 uint64_t FixedBitArray::bufferSize(uint64_t elementCount, int bitWidth) {
-  // We may read up to 7 bytes beyond the last theoretically needed byte,
-  // as we access whole machine words.
+  // We may read or write up to 7 bytes beyond the last theoretically needed
+  // byte, as we access whole machine words.
   constexpr int kSlopSize = 7;
   return velox::bits::nbytes(elementCount * bitWidth) + kSlopSize;
 }
@@ -105,7 +106,7 @@ void FixedBitArray::zeroAndSet(uint64_t index, uint64_t value) {
   word |= value << remainder;
 }
 
-namespace internal {
+namespace {
 
 // T is the output data types, namely uint32_t or uint64_t.
 template <typename T, int bitWidth, int loopPosition, bool withBaseline>
@@ -322,20 +323,90 @@ void bulkGet32Internal(
   return;
 }
 
-} // namespace internal
+template <int byteWidth>
+inline uint64_t loadByteAlignedResidual(const char* next) {
+  static_assert(byteWidth >= 4 && byteWidth <= 8);
+  if constexpr (byteWidth == 4) {
+    return *reinterpret_cast<const uint32_t*>(next);
+  } else if constexpr (byteWidth == 5) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(static_cast<unsigned char>(next[4])) << 32);
+  } else if constexpr (byteWidth == 6) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
+         << 32);
+  } else if constexpr (byteWidth == 7) {
+    return *reinterpret_cast<const uint32_t*>(next) |
+        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
+         << 32) |
+        (static_cast<uint64_t>(static_cast<unsigned char>(next[6])) << 48);
+  } else {
+    static_assert(byteWidth == 8);
+    return *reinterpret_cast<const uint64_t*>(next);
+  }
+}
+
+template <int byteWidth>
+inline void bulkGetByteAlignedWithBaseline(
+    const char* buffer,
+    uint64_t start,
+    uint64_t length,
+    uint64_t* values,
+    uint64_t baseline) {
+  const char* next = buffer + start * byteWidth;
+  uint64_t* nextValue = values;
+  for (uint64_t i = 0; i < length; ++i) {
+    *nextValue++ = loadByteAlignedResidual<byteWidth>(next) + baseline;
+    next += byteWidth;
+  }
+}
+
+template <int byteWidth>
+inline void bulkSetByteAlignedWithBaseline(
+    char* buffer,
+    uint64_t start,
+    uint64_t length,
+    const uint64_t* values,
+    uint64_t baseline) {
+  static_assert(byteWidth >= 4 && byteWidth <= 8);
+  char* next = buffer + start * byteWidth;
+  const uint64_t* nextValue = values;
+  for (uint64_t i = 0; i < length; ++i) {
+    const uint64_t residual{*nextValue++ - baseline};
+    if constexpr (byteWidth == 4) {
+      *reinterpret_cast<uint32_t*>(next) = static_cast<uint32_t>(residual);
+    } else if constexpr (byteWidth == 5) {
+      *reinterpret_cast<uint32_t*>(next) = static_cast<uint32_t>(residual);
+      next[4] = static_cast<char>(residual >> 32);
+    } else if constexpr (byteWidth == 6) {
+      *reinterpret_cast<uint32_t*>(next) = static_cast<uint32_t>(residual);
+      *reinterpret_cast<uint16_t*>(next + 4) =
+          static_cast<uint16_t>(residual >> 32);
+    } else if constexpr (byteWidth == 7) {
+      *reinterpret_cast<uint32_t*>(next) = static_cast<uint32_t>(residual);
+      *reinterpret_cast<uint16_t*>(next + 4) =
+          static_cast<uint16_t>(residual >> 32);
+      next[6] = static_cast<char>(residual >> 48);
+    } else {
+      static_assert(byteWidth == 8);
+      *reinterpret_cast<uint64_t*>(next) = residual;
+    }
+    next += byteWidth;
+  }
+}
+
+} // namespace
 
 void FixedBitArray::bulkGet32(uint64_t start, uint64_t length, uint32_t* values)
     const {
-  internal::bulkGet32Internal<uint32_t, false>(
-      *this, buffer_, start, length, values, 0);
+  bulkGet32Internal<uint32_t, false>(*this, buffer_, start, length, values, 0);
 }
 
 void FixedBitArray::bulkGet32Into64(
     uint64_t start,
     uint64_t length,
     uint64_t* values) const {
-  internal::bulkGet32Internal<uint64_t, false>(
-      *this, buffer_, start, length, values, 0);
+  bulkGet32Internal<uint64_t, false>(*this, buffer_, start, length, values, 0);
 }
 
 void FixedBitArray::bulkGetWithBaseline32(
@@ -343,7 +414,7 @@ void FixedBitArray::bulkGetWithBaseline32(
     uint64_t length,
     uint32_t* values,
     uint32_t baseline) const {
-  internal::bulkGet32Internal<uint32_t, true>(
+  bulkGet32Internal<uint32_t, true>(
       *this, buffer_, start, length, values, baseline);
 }
 
@@ -352,7 +423,7 @@ void FixedBitArray::bulkGetWithBaseline32Into64(
     uint64_t length,
     uint64_t* values,
     uint64_t baseline) const {
-  internal::bulkGet32Internal<uint64_t, true>(
+  bulkGet32Internal<uint64_t, true>(
       *this, buffer_, start, length, values, baseline);
 }
 
@@ -361,36 +432,96 @@ void FixedBitArray::bulkGet64WithBaseline(
     uint64_t length,
     uint64_t* values,
     uint64_t baseline) const {
-  if (bitWidth_ <= 32) {
+  const int bitWidth = bitWidth_;
+  if (bitWidth < 32) {
     // Delegate to the optimized template-unrolled 32-bit path.
     bulkGetWithBaseline32Into64(start, length, values, baseline);
     return;
   }
-  if (bitWidth_ <= 57) {
-    // Branchless byte-aligned loads: since the sub-byte offset is at most 7,
-    // bitWidth + remainder <= 57 + 7 = 64, so each value fits in a single
-    // 64-bit load — no cross-word boundary branch needed.
+
+  switch (bitWidth) {
+    case 32: {
+      bulkGetByteAlignedWithBaseline<4>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 40: {
+      bulkGetByteAlignedWithBaseline<5>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 48: {
+      bulkGetByteAlignedWithBaseline<6>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 56: {
+      bulkGetByteAlignedWithBaseline<7>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 64: {
+      bulkGetByteAlignedWithBaseline<8>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    default:
+      break;
+  }
+
+  // Hoist members to prevent reload on every iteration -- the compiler
+  // cannot prove that writes to values[] don't alias this->buffer_ etc.
+  const char* const buffer = buffer_;
+  const uint64_t mask = mask_;
+  // Absolute bit offset of the next value from the beginning of the packed
+  // buffer.
+  uint64_t bitsOffset = start * static_cast<uint64_t>(bitWidth);
+  // A single 64-bit load is safe when bitWidth + bitsRemainder <= 64. For
+  // bitWidth 58, bitsRemainder is always even because bitsOffset advances by
+  // 58 bits, so the maximum possible bitsRemainder is 6, not 7.
+  if (bitWidth <= 58) {
     for (uint64_t i = 0; i < length; ++i) {
-      const uint64_t bits = (start + i) * bitWidth_;
-      const uint64_t offset = bits >> 3;
-      const uint64_t remainder = bits & 7;
+      const uint64_t byteOffset = bitsOffset >> 3;
+      const uint64_t bitsRemainder = bitsOffset & 7;
       const uint64_t word =
-          *reinterpret_cast<const uint64_t*>(buffer_ + offset);
-      values[i] = ((word >> remainder) & mask_) + baseline;
+          *reinterpret_cast<const uint64_t*>(buffer + byteOffset);
+      values[i] = ((word >> bitsRemainder) & mask) + baseline;
+      bitsOffset += bitWidth;
     }
-  } else {
-    // Wide bit widths (> 57): need cross-word boundary handling.
-    for (uint64_t i = 0; i < length; ++i) {
-      values[i] = get(start + i) + baseline;
+    return;
+  }
+
+  for (uint64_t i = 0; i < length; ++i) {
+    const uint64_t byteOffset = bitsOffset >> 3;
+    const uint64_t bitsRemainder = bitsOffset & 7;
+    const uint64_t word =
+        *reinterpret_cast<const uint64_t*>(buffer + byteOffset);
+    const int overflow = bitWidth + static_cast<int>(bitsRemainder) - 64;
+    if (overflow > 0) {
+      const uint64_t nextWord =
+          *reinterpret_cast<const uint64_t*>(buffer + byteOffset + 8);
+      values[i] =
+          (((word >> bitsRemainder) | (nextWord << (bitWidth - overflow))) &
+           mask) +
+          baseline;
+    } else {
+      values[i] = ((word >> bitsRemainder) & mask) + baseline;
     }
+    bitsOffset += bitWidth;
   }
 }
 
-template <int bitWidth, int loopPosition, bool withBaseline>
+namespace {
+
+template <
+    int bitWidth,
+    int loopPosition,
+    bool withBaseline,
+    typename InputT = uint32_t>
 void bulkSet32Loop(
     uint64_t** nextWord,
-    const uint32_t** values,
-    uint32_t baseline) {
+    const InputT** values,
+    InputT baseline) {
   // Some bits for the next value may need to put be in the current word.
   constexpr int spillover = (loopPosition * bitWidth) % 64 == 0
       ? 0
@@ -427,19 +558,26 @@ void bulkSet32Loop(
     ++(*values);
   }
   constexpr int nextLoopPosition = loopPosition + valueCount + (spillover > 0);
-  bulkSet32Loop<bitWidth, nextLoopPosition, withBaseline>(
+  bulkSet32Loop<bitWidth, nextLoopPosition, withBaseline, InputT>(
       nextWord, values, baseline);
 }
 
 // Unfortunately we cannot partially specialize the template for the
 // terminal case of loopPosition = 64 so we must explicitly specify them.
+// Only the (uint32_t, false/true) and (uint64_t, true) cases are
+// instantiated; bulkSet64WithBaseline always uses withBaseline=true, so
+// the (uint64_t, false) case is intentionally omitted to avoid unused
+// function lints.
 #define BULK_SET32_LOOP_TERMINAL_CASE(bitWidth)                           \
   template <>                                                             \
-  void bulkSet32Loop<bitWidth, 64, false>(                                \
+  void bulkSet32Loop<bitWidth, 64, false, uint32_t>(                      \
       uint64_t** nextWord, const uint32_t** values, uint32_t baseline) {} \
   template <>                                                             \
-  void bulkSet32Loop<bitWidth, 64, true>(                                 \
-      uint64_t** nextWord, const uint32_t** values, uint32_t baseline) {}
+  void bulkSet32Loop<bitWidth, 64, true, uint32_t>(                       \
+      uint64_t** nextWord, const uint32_t** values, uint32_t baseline) {} \
+  template <>                                                             \
+  void bulkSet32Loop<bitWidth, 64, true, uint64_t>(                       \
+      uint64_t** nextWord, const uint64_t** values, uint64_t baseline) {}
 
 BULK_SET32_LOOP_TERMINAL_CASE(1)
 BULK_SET32_LOOP_TERMINAL_CASE(2)
@@ -476,55 +614,56 @@ BULK_SET32_LOOP_TERMINAL_CASE(32)
 
 #undef BULK_SET32_LOOP_TERMINAL_CASE
 
-template <bool withBaseline>
+template <bool withBaseline, typename InputT = uint32_t>
 void bulkSetInternal32(
     FixedBitArray& fixedBitArray,
     char* buffer,
     uint64_t start,
     uint64_t length,
-    const uint32_t* values,
-    uint32_t baseline) {
+    const InputT* values,
+    InputT baseline) {
   // Same general logic as BulkGet32. See the comments there.
   switch (fixedBitArray.bitWidth()) {
-#define BULK_SET32_SWITCH_CASE(bitWidth)                                      \
-  case bitWidth: {                                                            \
-    const uint64_t alignedStart = velox::bits::divRoundUp(start, 64) << 6;    \
-    if (start + length < alignedStart) {                                      \
-      for (uint64_t i = start; i < start + length; ++i) {                     \
-        if constexpr (withBaseline) {                                         \
-          fixedBitArray.set32(i, (*values) - baseline);                       \
-        } else {                                                              \
-          fixedBitArray.set32(i, *values);                                    \
-        }                                                                     \
-        ++values;                                                             \
-      }                                                                       \
-      return;                                                                 \
-    }                                                                         \
-    for (uint64_t i = start; i < alignedStart; ++i) {                         \
-      if constexpr (withBaseline) {                                           \
-        fixedBitArray.set32(i, (*values) - baseline);                         \
-      } else {                                                                \
-        fixedBitArray.set32(i, *values);                                      \
-      }                                                                       \
-      ++values;                                                               \
-    }                                                                         \
-    const uint64_t loopCount = (length - (alignedStart - start)) >> 6;        \
-    uint64_t* nextWord = reinterpret_cast<uint64_t*>(                         \
-        buffer + ((alignedStart * bitWidth) >> 3) - 8);                       \
-    for (uint64_t i = 0; i < loopCount; ++i) {                                \
-      bulkSet32Loop<bitWidth, 0, withBaseline>(&nextWord, &values, baseline); \
-    }                                                                         \
-    const uint64_t remainderStart = alignedStart + (loopCount << 6);          \
-    const uint64_t remainderEnd = start + length;                             \
-    for (uint64_t i = remainderStart; i < remainderEnd; ++i) {                \
-      if constexpr (withBaseline) {                                           \
-        fixedBitArray.set32(i, (*values) - baseline);                         \
-      } else {                                                                \
-        fixedBitArray.set32(i, *values);                                      \
-      }                                                                       \
-      ++values;                                                               \
-    }                                                                         \
-    return;                                                                   \
+#define BULK_SET32_SWITCH_CASE(bitWidth)                                     \
+  case bitWidth: {                                                           \
+    const uint64_t alignedStart = velox::bits::divRoundUp(start, 64) << 6;   \
+    if (start + length < alignedStart) {                                     \
+      for (uint64_t i = start; i < start + length; ++i) {                    \
+        if constexpr (withBaseline) {                                        \
+          fixedBitArray.set32(i, static_cast<uint32_t>(*values - baseline)); \
+        } else {                                                             \
+          fixedBitArray.set32(i, static_cast<uint32_t>(*values));            \
+        }                                                                    \
+        ++values;                                                            \
+      }                                                                      \
+      return;                                                                \
+    }                                                                        \
+    for (uint64_t i = start; i < alignedStart; ++i) {                        \
+      if constexpr (withBaseline) {                                          \
+        fixedBitArray.set32(i, static_cast<uint32_t>(*values - baseline));   \
+      } else {                                                               \
+        fixedBitArray.set32(i, static_cast<uint32_t>(*values));              \
+      }                                                                      \
+      ++values;                                                              \
+    }                                                                        \
+    const uint64_t loopCount = (length - (alignedStart - start)) >> 6;       \
+    uint64_t* nextWord = reinterpret_cast<uint64_t*>(                        \
+        buffer + ((alignedStart * bitWidth) >> 3) - 8);                      \
+    for (uint64_t i = 0; i < loopCount; ++i) {                               \
+      bulkSet32Loop<bitWidth, 0, withBaseline, InputT>(                      \
+          &nextWord, &values, baseline);                                     \
+    }                                                                        \
+    const uint64_t remainderStart = alignedStart + (loopCount << 6);         \
+    const uint64_t remainderEnd = start + length;                            \
+    for (uint64_t i = remainderStart; i < remainderEnd; ++i) {               \
+      if constexpr (withBaseline) {                                          \
+        fixedBitArray.set32(i, static_cast<uint32_t>(*values - baseline));   \
+      } else {                                                               \
+        fixedBitArray.set32(i, static_cast<uint32_t>(*values));              \
+      }                                                                      \
+      ++values;                                                              \
+    }                                                                        \
+    return;                                                                  \
   }
 
     BULK_SET32_SWITCH_CASE(1)
@@ -568,11 +707,13 @@ void bulkSetInternal32(
   }
 }
 
+} // namespace
+
 void FixedBitArray::bulkSet32(
     uint64_t start,
     uint64_t length,
     const uint32_t* values) {
-  bulkSetInternal32<false>(*this, buffer_, start, length, values, 0);
+  bulkSetInternal32<false, uint32_t>(*this, buffer_, start, length, values, 0);
 }
 
 void FixedBitArray::bulkSet32WithBaseline(
@@ -582,6 +723,94 @@ void FixedBitArray::bulkSet32WithBaseline(
     uint32_t baseline) {
   bulkSetInternal32<true>(*this, buffer_, start, length, values, baseline);
 }
+
+void FixedBitArray::bulkSet64WithBaseline(
+    uint64_t start,
+    uint64_t length,
+    const uint64_t* values,
+    uint64_t baseline) {
+  const int bitWidth = bitWidth_;
+  if (bitWidth < 32) {
+    bulkSetInternal32<true, uint64_t>(
+        *this, buffer_, start, length, values, baseline);
+    return;
+  }
+
+  switch (bitWidth) {
+    case 32: {
+      bulkSetByteAlignedWithBaseline<4>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 40: {
+      bulkSetByteAlignedWithBaseline<5>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 48: {
+      bulkSetByteAlignedWithBaseline<6>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 56: {
+      bulkSetByteAlignedWithBaseline<7>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    case 64: {
+      if (baseline == 0) {
+        std::memcpy(
+            buffer_ + start * sizeof(uint64_t),
+            values,
+            length * sizeof(uint64_t));
+        return;
+      }
+      bulkSetByteAlignedWithBaseline<8>(
+          buffer_, start, length, values, baseline);
+      return;
+    }
+    default:
+      break;
+  }
+
+  char* const buffer = buffer_;
+  // Absolute bit offset of the next value from the beginning of the packed
+  // buffer.
+  uint64_t bitsOffset = start * static_cast<uint64_t>(bitWidth);
+  if (bitWidth <= 58) {
+    const uint64_t* nextValue = values;
+    for (uint64_t i = 0; i < length; ++i) {
+      const uint64_t residualValue = *nextValue++ - baseline;
+      const uint64_t byteOffset = bitsOffset >> 3;
+      const uint64_t bitsRemainder = bitsOffset & 7;
+      uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + byteOffset);
+      word |= residualValue << bitsRemainder;
+      bitsOffset += bitWidth;
+    }
+    return;
+  }
+
+  // For wide values, the residual can straddle two 64-bit words when the
+  // starting bit offset is not byte/word aligned. Write the low bits into the
+  // current word and spill the remaining high bits into the next word.
+  const uint64_t* nextValue = values;
+  for (uint64_t i = 0; i < length; ++i) {
+    const uint64_t residualValue = *nextValue++ - baseline;
+    const uint64_t byteOffset = bitsOffset >> 3;
+    const uint64_t bitsRemainder = bitsOffset & 7;
+    uint64_t& word = *reinterpret_cast<uint64_t*>(buffer + byteOffset);
+    word |= residualValue << bitsRemainder;
+    const int overflow = bitWidth + static_cast<int>(bitsRemainder) - 64;
+    if (overflow > 0) {
+      uint64_t& nextWord =
+          *reinterpret_cast<uint64_t*>(buffer + byteOffset + 8);
+      nextWord |= residualValue >> (bitWidth - overflow);
+    }
+    bitsOffset += bitWidth;
+  }
+}
+
+namespace {
 
 template <int bitWidth, int loopPosition>
 void equals32Loop(
@@ -665,6 +894,8 @@ EQUALS32_TERMINAL_CASE(31)
 EQUALS32_TERMINAL_CASE(32)
 
 #undef EQUALS32_TERMINAL_CASE
+
+} // namespace
 
 void FixedBitArray::equals32(
     uint64_t start,

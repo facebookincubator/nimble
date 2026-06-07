@@ -140,24 +140,41 @@ class DirectDataInput : public DataInput {
     // Aligned file offset and size for the coalesced read.
     uint64_t readOffset{0};
     uint64_t readSize{0};
+    // Unique physical bytes requested by the logical regions, excluding
+    // exact duplicate ranges and alignment/coalescing overread.
+    uint64_t payloadSize{0};
     // Byte offset within the shared read buffer.
     uint64_t bufferOffset{0};
     std::span<const EnqueuedRegion> regions;
   };
 
+  // Coalesces sorted regions into physical IO groups. Exact duplicate ranges
+  // can share one physical read when the caller maps them to the same bytes.
   std::vector<IoGroup> computeIoGroups(
       const std::vector<EnqueuedRegion>& sortedRegions);
 
-  // Returns {totalBytes, payloadBytes}.
+  // Computes the unique payload size for a sorted span of regions. Exact
+  // duplicate ranges do not add payload bytes. Returns {payloadSize, lastEnd}
+  // where lastEnd is the end offset of the last accepted range.
+  static std::pair<uint64_t, uint64_t> computePayloadSize(
+      std::span<const EnqueuedRegion> sortedRegions);
+
+  // Computes total read and payload bytes, and sets each group's buffer offset
+  // in the shared read buffer. Returns {readBytes, payloadBytes}.
   static std::pair<uint64_t, uint64_t> computeIoSizes(
       std::vector<IoGroup>& ioGroups);
 
+  // Points each logical buffer ref at its slice inside the shared read buffer.
   void populateBufferRefs(
       const std::vector<IoGroup>& ioGroups,
       const char* buffer);
 
+  // Allocates the shared aligned read buffer and returns a handle that frees
+  // it.
   std::pair<char*, Handle> allocateBuffer(uint64_t bytes);
 
+  // Executes all physical IO groups, batching executor tasks to reduce
+  // scheduling overhead.
   void executeIoGroups(std::vector<IoGroup>& ioGroups, char* buffer);
 
   uint64_t alignDown(uint64_t value) const {

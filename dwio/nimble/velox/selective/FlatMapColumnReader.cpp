@@ -113,8 +113,8 @@ std::vector<KeyNode<T>> makeKeyNodes(
       }
       childSpecs[node.key] = childSpec = valuesSpec;
     }
-    auto inMapInput =
-        params.streams().enqueue(nimbleType.inMapDescriptorAt(i).offset());
+    auto inMapInput = params.streams().enqueue(
+        nimbleType.inMapDescriptorAt(i).offset(), params.lazyColumnIo());
     if (inMapInput != nullptr) {
       node.inMap = std::make_unique<ChunkedDecoder>(
           std::move(inMapInput),

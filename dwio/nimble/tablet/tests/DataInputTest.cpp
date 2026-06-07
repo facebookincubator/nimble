@@ -16,6 +16,7 @@
 #include "dwio/nimble/tablet/DataInput.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <random>
 
 #include "dwio/nimble/common/Exceptions.h"
@@ -161,7 +162,7 @@ TEST_P(DataInputParamTest, multipleGroups) {
       {{{500, 100}, {100, 200}, {800, 50}},
        {{50'500, 300}, {50'000, 400}, {60'000, 100}}},
       {{{100, 50}}, {{200, 50}}, {{300, 50}}},
-      {{{500, 50}, {100, 50}}, {{150, 50}, {600, 50}}},
+      {{{500, 50}, {100, 50}}, {{550, 50}, {600, 50}}},
       {{{0, 100}}, {{98'000, 100}}},
   };
 
@@ -245,15 +246,18 @@ TEST_P(DataInputParamTest, fuzz) {
     const int numGroups = 1 + rng() % 5;
     uint32_t totalRegions = 0;
     std::vector<std::vector<std::pair<uint64_t, uint64_t>>> groups(numGroups);
+    uint64_t nextOffset = rng() % 100;
     for (int group = 0; group < numGroups; ++group) {
       const int numRegions = 1 + rng() % 10;
+      uint64_t offset = nextOffset;
       for (int region = 0; region < numRegions; ++region) {
-        const auto maxOffset = fileSize - 4'096;
-        const auto offset = rng() % maxOffset;
-        const auto maxLen = std::min<uint64_t>(4'096, fileSize - offset);
+        const auto maxLen = std::min<uint64_t>(512, fileSize - offset);
         const auto length = 1 + rng() % maxLen;
         groups[group].emplace_back(offset, length);
+        offset += length + rng() % 128;
       }
+      std::shuffle(groups[group].begin(), groups[group].end(), rng);
+      nextOffset = offset + 4'096;
       totalRegions += groups[group].size();
     }
 
@@ -446,6 +450,40 @@ TEST_F(DataInputTest, intraGroupCoalescing) {
   }
 }
 
+DEBUG_ONLY_TEST_F(DataInputTest, coalescesDuplicateRegions) {
+  std::string data(1'000, '\0');
+  for (int i = 0; i < 1'000; ++i) {
+    data[i] = static_cast<char>(i % 256);
+  }
+  auto file = createFile(data);
+
+  DirectDataInput input(file.get(), makeOptions(/*alignment=*/1));
+  input.reserve(4);
+  input.startGroup();
+  const auto duplicate0 = input.enqueue({100, 50});
+  const auto duplicate1 = input.enqueue({100, 50});
+  const auto adjacent0 = input.enqueue({150, 50});
+  const auto adjacent1 = input.enqueue({200, 25});
+
+  uint64_t allocatedBytes = 0;
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::DirectDataInput::allocateBuffer",
+      std::function<void(uint64_t*)>(
+          [&](uint64_t* bytes) { allocatedBytes = *bytes; }));
+  auto handle = input.load();
+  EXPECT_EQ(allocatedBytes, 125);
+
+  EXPECT_EQ(refData(input.bufferRef(duplicate0)), data.substr(100, 50));
+  EXPECT_EQ(refData(input.bufferRef(duplicate1)), data.substr(100, 50));
+  EXPECT_EQ(refData(input.bufferRef(adjacent0)), data.substr(150, 50));
+  EXPECT_EQ(refData(input.bufferRef(adjacent1)), data.substr(200, 25));
+  EXPECT_EQ(input.bufferRef(duplicate0).data, input.bufferRef(duplicate1).data);
+  EXPECT_EQ(ioStats_->read().count(), 1);
+  EXPECT_EQ(ioStats_->read().sum(), 125);
+  EXPECT_EQ(ioStats_->rawBytesRead(), 125);
+  EXPECT_EQ(ioStats_->rawOverreadBytes(), 0);
+}
+
 TEST_F(DataInputTest, crossGroupCoalescing) {
   std::string data(10'000, '\0');
   for (int i = 0; i < 10'000; ++i) {
@@ -477,13 +515,6 @@ TEST_F(DataInputTest, crossGroupCoalescing) {
       // Groups in file order but far apart → 2 reads.
       {.groups = {{{100, 50}}, {{5'000, 50}}},
        .maxCoalesceDistance = 100,
-       .expectedReadCount = 2},
-
-      // Groups with interleaved offsets: after intra-group sort,
-      // concatenation is [100, 500, 150, 600] — not globally sorted.
-      // 500→150 goes backward so coalescing breaks → 2+ reads.
-      {.groups = {{{500, 50}, {100, 50}}, {{150, 50}, {600, 50}}},
-       .maxCoalesceDistance = 1'000,
        .expectedReadCount = 2},
 
       // Three groups, all nearby → 1 read.
@@ -527,6 +558,46 @@ TEST_F(DataInputTest, crossGroupCoalescing) {
           data.substr(region.first, region.second));
     }
     EXPECT_EQ(stats->read().count(), testData.expectedReadCount);
+  }
+}
+
+TEST_F(DataInputTest, rejectsInvalidGroupBoundaries) {
+  std::string data(10'000, '\0');
+  auto file = createFile(data);
+
+  using Groups = std::vector<std::vector<std::pair<uint64_t, uint64_t>>>;
+  struct TestParam {
+    std::string name;
+    Groups groups;
+  };
+  std::vector<TestParam> testSettings = {
+      {"interleavedGroups", {{{500, 50}, {100, 50}}, {{150, 50}, {600, 50}}}},
+      {"overlappingGroups", {{{100, 100}}, {{150, 50}}}},
+      {"backwardGroups", {{{500, 50}}, {{100, 50}}}},
+  };
+
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.name);
+    DirectDataInput input(
+        file.get(),
+        makeOptions(/*alignment=*/1, /*maxCoalesceDistance=*/1'000));
+
+    uint32_t totalRegions = 0;
+    for (const auto& group : testData.groups) {
+      totalRegions += group.size();
+    }
+    input.reserve(totalRegions);
+
+    for (const auto& group : testData.groups) {
+      input.startGroup();
+      for (const auto& [offset, length] : group) {
+        input.enqueue({offset, length});
+      }
+    }
+
+    NIMBLE_ASSERT_THROW(
+        input.load(),
+        "Read groups must be sorted and non-overlapping by file offset");
   }
 }
 
@@ -611,6 +682,14 @@ TEST_F(DataInputTest, emptyGroup) {
 
   EXPECT_EQ(refData(input.bufferRef(idx)), data.substr(100, 50));
   EXPECT_EQ(refData(input.bufferRef(idx2)), data.substr(500, 50));
+
+  DirectDataInput emptyFinalGroup(file.get(), makeOptions());
+  emptyFinalGroup.reserve(1);
+  emptyFinalGroup.startGroup();
+  emptyFinalGroup.enqueue({100, 50});
+  emptyFinalGroup.startGroup();
+  NIMBLE_ASSERT_THROW(
+      emptyFinalGroup.load(), "Read group must contain a region");
 }
 
 TEST_F(DataInputTest, handleOutlivesDataInput) {
