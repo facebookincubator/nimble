@@ -28,9 +28,12 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+// SubIntSplit integration commented out (disabled):
+/*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
+*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 
@@ -147,6 +150,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+    // SubIntSplit integration commented out (disabled):
+    /*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
       if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
@@ -155,6 +160,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
 #endif
+    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
