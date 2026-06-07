@@ -20,7 +20,8 @@
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/encodings/SubIntSplitConfig.h"
+// SubIntSplit integration commented out (disabled):
+// #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
 namespace facebook::nimble {
@@ -290,11 +291,12 @@ namespace {
 
 constexpr uint32_t kEncodingPrefixSize = 6;
 
-// Captures the layout of a SubIntSplit encoding by reading its per-section bit
-// ranges and recursively capturing each split's nested encoding. The recovered
-// bit boundaries are preserved in the encoding config so the same split layout
-// can be replayed. The call site is currently commented out, so this function
-// is marked [[maybe_unused]].
+// SubIntSplit integration commented out (disabled):
+/*
+Captures the layout of a SubIntSplit encoding by reading its per-section bit
+ranges and recursively capturing each split's nested encoding. The recovered
+bit boundaries are preserved in the encoding config so the same split layout
+can be replayed.
 [[maybe_unused]] EncodingLayout captureSubIntSplit(
     std::string_view encoding,
     CompressionType compressionType) {
@@ -342,6 +344,7 @@ constexpr uint32_t kEncodingPrefixSize = 6;
       compressionType,
       std::move(children)};
 }
+*/
 
 } // namespace
 
@@ -369,9 +372,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::BlockBitPacking:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
-    // SubIntSplit handled as a non-nested encoding (original behavior); the
-    // SubIntSplit-specific capture logic is commented out below.
-    case EncodingType::SubIntSplit:
+      // SubIntSplit integration commented out (disabled):
+      // case EncodingType::SubIntSplit:
       // Non nested encodings have zero children
       break;
     case EncodingType::Trivial: {
@@ -467,11 +469,11 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
-    // SubIntSplit-specific logic commented out to restore original behavior:
-    /*
-    case EncodingType::SubIntSplit:
-      return captureSubIntSplit(encoding, compressionType);
-    */
+      // SubIntSplit-specific logic commented out to restore original behavior:
+      /*
+      case EncodingType::SubIntSplit:
+        return captureSubIntSplit(encoding, compressionType);
+      */
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);
