@@ -17,9 +17,12 @@
 
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
+// SubIntSplit integration commented out (disabled):
+/*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
+*/
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -130,17 +133,18 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+    // SubIntSplit integration commented out (disabled):
+    /*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
-      if constexpr (
-          isNumericType<T>() &&
-          (sizeof(T) == 4 || sizeof(T) == 8)) {
+      if constexpr (isNumericType<T>() && (sizeof(T) == 4 || sizeof(T) == 8)) {
         return f(
             static_cast<::facebook::nimble::SubIntSplitEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
 #endif
+    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
