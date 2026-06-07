@@ -97,6 +97,8 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
+      // SubIntSplit integration commented out (disabled):
+      /*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
       case EncodingType::SubIntSplit: {
         if constexpr (
@@ -125,6 +127,7 @@ struct EncodingSizeEstimation {
         }
       }
 #endif
+      */
       default: {
         return std::nullopt;
       }
