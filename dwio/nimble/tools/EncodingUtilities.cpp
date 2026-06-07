@@ -53,7 +53,8 @@ void extractCompressionType(
     case EncodingType::ALP:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
-    case EncodingType::SubIntSplit:
+      // SubIntSplit integration commented out (disabled):
+      // case EncodingType::SubIntSplit:
       break;
   }
 }
@@ -204,6 +205,8 @@ void traverseEncodings(
           visitor);
       break;
     }
+    // SubIntSplit integration commented out (disabled):
+    /*
     case EncodingType::SubIntSplit: {
       const char* pos = stream.data() + kEncodingPrefixSize;
       const uint8_t splitCount = encoding::read<uint8_t>(pos);
@@ -227,6 +230,7 @@ void traverseEncodings(
       }
       break;
     }
+    */
     case EncodingType::Sentinel: {
       const char* pos = stream.data() + kEncodingPrefixSize + 8;
       traverseEncodings(
