@@ -1223,6 +1223,30 @@ TEST_P(TabletTest, deduplicateStreams) {
   }
 }
 
+TEST_P(TabletTest, duplicateStreamStats) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile, *pool_, {.streamDeduplicationEnabled = true});
+
+  const std::string data = "same-stream-data";
+  nimble::Stream stream0{.offset = 0};
+  nimble::Chunk chunk0;
+  chunk0.content = {data};
+  stream0.chunks.push_back(chunk0);
+  nimble::Stream stream1{.offset = 1};
+  nimble::Chunk chunk1;
+  chunk1.content = {data};
+  stream1.chunks.push_back(chunk1);
+
+  tabletWriter->writeStripe(10, {std::move(stream0), std::move(stream1)});
+  EXPECT_EQ(tabletWriter->stats().duplicateStreamCount, 1);
+  EXPECT_EQ(tabletWriter->stats().duplicateStreamBytes, data.size());
+  tabletWriter->close();
+  EXPECT_EQ(tabletWriter->stats().duplicateStreamCount, 1);
+  EXPECT_EQ(tabletWriter->stats().duplicateStreamBytes, data.size());
+}
+
 TEST_P(TabletTest, chunkContentSize) {
   nimble::Chunk chunk;
   EXPECT_EQ(chunk.contentSize(), 0);

@@ -1493,6 +1493,8 @@ VeloxWriter::Stats VeloxWriter::stats() const {
           context_->encodingSelectionTiming().cpuNanos,
       .rowsPerStripe = toRuntimeMetric(context_->rowsPerStripe()),
       .chunkSizeBytes = context_->chunkSizeStats(),
+      .duplicateStreamCount = tabletWriter_->stats().duplicateStreamCount,
+      .duplicateStreamBytes = tabletWriter_->stats().duplicateStreamBytes,
       .columnStats = context_->columnStats(),
   };
 }

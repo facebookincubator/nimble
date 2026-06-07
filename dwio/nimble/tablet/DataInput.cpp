@@ -149,54 +149,53 @@ std::vector<DirectDataInput::IoGroup> DirectDataInput::computeIoGroups(
   std::vector<IoGroup> ioGroups;
   ioGroups.reserve(sortedRegions.size());
 
-  const auto coalesceStats =
-      velox::coalesceIo<int32_t, char, /*coalesceDuplicateRanges=*/true>(
-          items,
-          /*maxGap=*/maxCoalesceDistance_,
-          /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
-          /*offsetFunc=*/
-          [&](int32_t i) -> uint64_t { return sortedRegions[i].region.offset; },
-          /*sizeFunc=*/
-          [&](int32_t i) -> int32_t {
-            return static_cast<int32_t>(sortedRegions[i].region.length);
-          },
-          /*numRanges=*/
-          [&](int32_t i) -> int32_t {
-            const auto size =
-                static_cast<int64_t>(sortedRegions[i].region.length);
-            if (coalescedBytes + size > maxCoalesceBytes_) {
-              coalescedBytes = 0;
-              return velox::kNoCoalesce;
-            }
-            coalescedBytes += size;
-            return 1;
-          },
-          /*addRanges=*/
-          [](const int32_t& /*i*/, std::vector<char>& ranges) {
-            ranges.push_back(0);
-          },
-          /*skipRange=*/
-          [](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
-          /*ioFunc=*/
-          [&](const std::vector<int32_t>& /*items*/,
-              int32_t begin,
-              int32_t end,
-              uint64_t /*offset*/,
-              const std::vector<char>& /*ranges*/) {
-            coalescedBytes = 0;
-            IoGroup group;
-            const auto groupRegions = std::span<const EnqueuedRegion>(
-                &sortedRegions[begin], static_cast<size_t>(end - begin));
-            const auto [payloadSize, lastEnd] =
-                computePayloadSize(groupRegions);
-            group.readOffset = alignDown(sortedRegions[begin].region.offset);
-            group.readSize = alignUp(lastEnd) - group.readOffset;
-            group.payloadSize = payloadSize;
-            group.regions = groupRegions;
-            ioGroups.emplace_back(group);
-          });
+  const auto coalesceStats = velox::coalesceIo<int32_t, char>(
+      items,
+      /*maxGap=*/maxCoalesceDistance_,
+      /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
+      /*offsetFunc=*/
+      [&](int32_t i) -> uint64_t { return sortedRegions[i].region.offset; },
+      /*sizeFunc=*/
+      [&](int32_t i) -> int32_t {
+        return static_cast<int32_t>(sortedRegions[i].region.length);
+      },
+      /*numRanges=*/
+      [&](int32_t i) -> int32_t {
+        const auto size = static_cast<int64_t>(sortedRegions[i].region.length);
+        if (coalescedBytes + size > maxCoalesceBytes_) {
+          coalescedBytes = 0;
+          return velox::kNoCoalesce;
+        }
+        coalescedBytes += size;
+        return 1;
+      },
+      /*addRanges=*/
+      [](const int32_t& /*i*/, std::vector<char>& ranges) {
+        ranges.push_back(0);
+      },
+      /*skipRange=*/
+      [](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
+      /*ioFunc=*/
+      [&](const std::vector<int32_t>& /*items*/,
+          int32_t begin,
+          int32_t end,
+          uint64_t /*offset*/,
+          const std::vector<char>& /*ranges*/) {
+        coalescedBytes = 0;
+        IoGroup group;
+        const auto groupRegions = std::span<const EnqueuedRegion>(
+            &sortedRegions[begin], static_cast<size_t>(end - begin));
+        const auto [payloadSize, lastEnd] = computePayloadSize(groupRegions);
+        group.readOffset = alignDown(sortedRegions[begin].region.offset);
+        group.readSize = alignUp(lastEnd) - group.readOffset;
+        group.payloadSize = payloadSize;
+        group.regions = groupRegions;
+        ioGroups.emplace_back(group);
+      });
 
   ioStats_->readGap().merge(coalesceStats.gaps);
+  ioStats_->incDuplicateRead(
+      coalesceStats.duplicateRegions, coalesceStats.duplicateBytes);
   return ioGroups;
 }
 

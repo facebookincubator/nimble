@@ -118,47 +118,50 @@ std::vector<MetadataInput::IoGroup> MetadataInput::computeIoGroups(
   int64_t coalescedBytes = 0;
   std::vector<int32_t> groupEnds;
 
-  const auto ioStats =
-      velox::coalesceIo<int32_t, char, /*coalesceDuplicateRanges=*/false>(
-          items,
-          /*maxGap=*/maxCoalesceDistance_,
-          /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
-          /*offsetFunc=*/
-          [&](int32_t i) -> uint64_t {
-            return sections[loadIndices[i]].section.offset();
-          },
-          /*sizeFunc=*/
-          [&](int32_t i) -> int32_t {
-            return sections[loadIndices[i]].section.size();
-          },
-          /*numRanges=*/
-          [&](int32_t i) -> int32_t {
-            const auto size = sections[loadIndices[i]].section.size();
-            if (coalescedBytes + size > maxCoalesceBytes_) {
-              coalescedBytes = 0;
-              return velox::kNoCoalesce;
-            }
-            coalescedBytes += size;
-            return 1;
-          },
-          /*addRanges=*/
-          [&](const int32_t& /*i*/, std::vector<char>& ranges) {
-            // Dummy range so coalesceIo sees non-empty ranges for kNoCoalesce
-            // flush check.
-            ranges.push_back(0);
-          },
-          /*skipRange=*/
-          [&](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
-          /*ioFunc=*/
-          [&](const std::vector<int32_t>& /*items*/,
-              int32_t /*begin*/,
-              int32_t end,
-              uint64_t /*offset*/,
-              const std::vector<char>& /*ranges*/) {
-            coalescedBytes = 0;
-            groupEnds.push_back(end);
-          });
+  const auto ioStats = velox::coalesceIo<int32_t, char>(
+      items,
+      /*maxGap=*/maxCoalesceDistance_,
+      /*rangesPerIo=*/std::numeric_limits<int32_t>::max(),
+      /*offsetFunc=*/
+      [&](int32_t i) -> uint64_t {
+        return sections[loadIndices[i]].section.offset();
+      },
+      /*sizeFunc=*/
+      [&](int32_t i) -> int32_t {
+        return sections[loadIndices[i]].section.size();
+      },
+      /*numRanges=*/
+      [&](int32_t i) -> int32_t {
+        const auto size = sections[loadIndices[i]].section.size();
+        if (coalescedBytes + size > maxCoalesceBytes_) {
+          coalescedBytes = 0;
+          return velox::kNoCoalesce;
+        }
+        coalescedBytes += size;
+        return 1;
+      },
+      /*addRanges=*/
+      [&](const int32_t& /*i*/, std::vector<char>& ranges) {
+        // Dummy range so coalesceIo sees non-empty ranges for kNoCoalesce
+        // flush check.
+        ranges.push_back(0);
+      },
+      /*skipRange=*/
+      [&](int32_t /*gap*/, std::vector<char>& /*ranges*/) {},
+      /*ioFunc=*/
+      [&](const std::vector<int32_t>& /*items*/,
+          int32_t /*begin*/,
+          int32_t end,
+          uint64_t /*offset*/,
+          const std::vector<char>& /*ranges*/) {
+        coalescedBytes = 0;
+        groupEnds.push_back(end);
+      });
 
+  NIMBLE_CHECK_EQ(
+      ioStats.duplicateRegions,
+      0,
+      "Metadata input must not contain duplicate regions");
   recordCoalescedIoStats(ioStats);
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::MetadataInput::computeIoGroups",

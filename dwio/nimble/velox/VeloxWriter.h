@@ -85,6 +85,10 @@ class VeloxWriter {
     velox::RuntimeMetric rowsPerStripe;
     /// Encoded chunk size distribution in bytes (count/sum/min/max).
     velox::RuntimeMetric chunkSizeBytes;
+    /// Number of streams deduplicated by the tablet writer.
+    uint64_t duplicateStreamCount;
+    /// Encoded bytes deduplicated by the tablet writer.
+    uint64_t duplicateStreamBytes;
     /// Per-column statistics. Only available at file close.
     /// NOTE: expected to be exposed as a view, for merging with base stats
     /// objects. User needs to explicitly copy.

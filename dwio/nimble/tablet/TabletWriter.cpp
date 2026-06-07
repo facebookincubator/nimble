@@ -353,6 +353,10 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
       } else {
         // If we are here, this is a duplicate stream, so we need to reference
         // the original stream instead of this one.
+        ++stats_.duplicateStreamCount;
+        for (const auto& chunk : stream.chunks) {
+          stats_.duplicateStreamBytes += chunk.contentSize();
+        }
 
         // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
         stripeStreamOffsets[index] = it.first->second.first;

@@ -482,6 +482,8 @@ DEBUG_ONLY_TEST_F(DataInputTest, coalescesDuplicateRegions) {
   EXPECT_EQ(ioStats_->read().sum(), 125);
   EXPECT_EQ(ioStats_->rawBytesRead(), 125);
   EXPECT_EQ(ioStats_->rawOverreadBytes(), 0);
+  EXPECT_EQ(ioStats_->duplicateReadRegions(), 1);
+  EXPECT_EQ(ioStats_->duplicateReadBytes(), 50);
 }
 
 TEST_F(DataInputTest, crossGroupCoalescing) {
