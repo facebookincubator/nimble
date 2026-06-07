@@ -372,8 +372,9 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::BlockBitPacking:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
-      // SubIntSplit integration commented out (disabled):
-      // case EncodingType::SubIntSplit:
+    // SubIntSplit integration is disabled; treat it as a non-nested encoding
+    // (zero children) so its layout is captured without nested logic.
+    case EncodingType::SubIntSplit:
       // Non nested encodings have zero children
       break;
     case EncodingType::Trivial: {
