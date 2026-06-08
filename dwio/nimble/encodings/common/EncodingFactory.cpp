@@ -27,6 +27,12 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+// SubIntSplit integration commented out (disabled):
+/*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
+#endif
+*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -261,6 +267,14 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
+    // SubIntSplit integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit: {
+      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
+    }
+#endif
+    */
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -426,6 +440,22 @@ std::string_view EncodingFactory::encode(
             TypeTraits<T>::dataType);
       }
     }
+    // SubIntSplit integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit: {
+      if constexpr (
+          isNumericType<physicalType>() &&
+          (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
+        return SubIntSplitEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
+      }
+    }
+#endif
+    */
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported.", toString(selection.encodingType()));

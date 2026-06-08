@@ -39,6 +39,9 @@
 
 namespace facebook::nimble {
 
+template <typename T>
+class EncodingSelection;
+
 // Data layout is:
 // EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 1 byte: compression type

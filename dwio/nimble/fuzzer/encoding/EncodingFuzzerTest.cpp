@@ -35,6 +35,9 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
+#endif
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/fuzzer/encoding/EncodingFuzzer.h"
@@ -328,3 +331,27 @@ TYPED_TEST(ALPFuzzerTest, correctness) {
       FLAGS_fuzzer_compression);
   fuzzer.run();
 }
+
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+// SubIntSplit: 32- and 64-bit numeric types (no bool, no string_view)
+using SubIntSplitTypes = ::testing::Types<
+    SubIntSplitEncoding<int32_t>,
+    SubIntSplitEncoding<uint32_t>,
+    SubIntSplitEncoding<int64_t>,
+    SubIntSplitEncoding<uint64_t>,
+    SubIntSplitEncoding<float>,
+    SubIntSplitEncoding<double>>;
+
+template <typename E>
+class SubIntSplitFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(SubIntSplitFuzzerTest, SubIntSplitTypes);
+
+TYPED_TEST(SubIntSplitFuzzerTest, Correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+#endif  // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS

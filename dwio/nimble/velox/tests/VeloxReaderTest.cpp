@@ -686,16 +686,13 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
 
   template <typename T>
   void getFieldDefaultValue(nimble::Vector<T>& input, uint32_t index) {
-    static_assert(
-        T() == 0, "Default Constructor value is not zero initialized");
-    input[index] = T();
-  }
-
-  template <>
-  void getFieldDefaultValue(
-      nimble::Vector<std::string>& input,
-      uint32_t index) {
-    input[index] = std::string();
+    if constexpr (std::is_same_v<T, std::string>) {
+      input[index] = std::string();
+    } else {
+      static_assert(
+          T() == 0, "Default Constructor value is not zero initialized");
+      input[index] = T();
+    }
   }
 
   template <typename T>
@@ -6091,14 +6088,14 @@ TEST_P(VeloxReaderTest, chunkStreamsWithNulls) {
 
   for (auto enableChunking : {false, true}) {
     nimble::VeloxWriterOptions options{
+        .minStreamChunkRawSize = 0,
         .flushPolicyFactory =
             [&]() {
               return std::make_unique<nimble::LambdaFlushPolicy>(
                   /*flushLambda=*/[&](auto&) { return false; },
                   /*chunkLambda=*/[&](auto&) { return true; });
             },
-        .enableChunking = enableChunking,
-        .minStreamChunkRawSize = 0};
+        .enableChunking = enableChunking};
     auto file = nimble::test::createNimbleFile(
         *rootPool_, vectors, options, /* flushAfterWrite */ false);
     velox::InMemoryReadFile readFile(file);

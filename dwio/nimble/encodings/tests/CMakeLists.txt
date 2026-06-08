@@ -37,6 +37,10 @@ add_executable(
   TrivialEncodingTest.cpp
 )
 
+if(NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS)
+  target_sources(nimble_encodings_tests PRIVATE SubIntSplitEncodingTest.cpp)
+endif()
+
 add_test(nimble_encodings_tests nimble_encodings_tests)
 
 target_link_libraries(

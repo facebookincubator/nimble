@@ -53,6 +53,9 @@ void extractCompressionType(
     case EncodingType::ALP:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
+    // SubIntSplit integration is disabled; it carries no separate compression
+    // byte, so treat it like the other encodings handled here.
+    case EncodingType::SubIntSplit:
       break;
   }
 }
@@ -109,7 +112,10 @@ void traverseEncodings(
     case EncodingType::ALP:
     case EncodingType::BlockBitPacking:
     case EncodingType::PFOR:
-    case EncodingType::SimdForBitpack: {
+    case EncodingType::SimdForBitpack:
+    // SubIntSplit integration is disabled; treat it as having no nested
+    // encoding to traverse.
+    case EncodingType::SubIntSplit: {
       // don't have any nested encoding
       break;
     }
@@ -203,6 +209,32 @@ void traverseEncodings(
           visitor);
       break;
     }
+    // SubIntSplit integration commented out (disabled):
+    /*
+    case EncodingType::SubIntSplit: {
+      const char* pos = stream.data() + kEncodingPrefixSize;
+      const uint8_t splitCount = encoding::read<uint8_t>(pos);
+      encoding::read<uint8_t>(pos); // reserved
+
+      std::vector<uint32_t> sectionBytes(splitCount);
+      for (uint8_t s = 0; s < splitCount; ++s) {
+        encoding::read<uint8_t>(pos); // bitStart
+        encoding::read<uint8_t>(pos); // bitEnd
+        sectionBytes[s] = encoding::readUint32(pos);
+      }
+
+      for (uint8_t s = 0; s < splitCount; ++s) {
+        traverseEncodings(
+            {pos, sectionBytes[s]},
+            level + 1,
+            s,
+            folly::to<std::string>("Section", static_cast<int>(s)),
+            visitor);
+        pos += sectionBytes[s];
+      }
+      break;
+    }
+    */
     case EncodingType::Sentinel: {
       const char* pos = stream.data() + kEncodingPrefixSize + 8;
       traverseEncodings(

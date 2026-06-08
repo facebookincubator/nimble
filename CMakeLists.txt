@@ -21,6 +21,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 add_compile_definitions(DISABLE_META_INTERNAL_COMPRESSOR=1)
 
+option(NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS "Enable experimental encodings" OFF)
+if(NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS)
+  add_compile_definitions(NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS)
+endif()
+
 # Sets new behavior for CMP0135, which controls how timestamps are extracted
 # when using ExternalProject_Add():
 # https://cmake.org/cmake/help/latest/policy/CMP0135.html
@@ -120,7 +125,7 @@ add_link_options(-Wl,--gc-sections)
 include(CTest) # include after project() but before add_subdirectory()
 
 find_package(flatbuffers)
-set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS FLASE)
+set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS FALSE)
 if(flatbuffers_FOUND)
   if(flatbuffers_VERSION VERSION_LESS "22.9.4")
     set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)

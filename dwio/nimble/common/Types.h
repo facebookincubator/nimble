@@ -113,6 +113,10 @@ enum class EncodingType {
   // SIMD Frame-of-Reference bitpacking. Subtracts baseline (global min),
   // packs residuals in groups of 32 via Lemire FastPFor SIMD bitpacking.
   SimdForBitpack = 14,
+  // Decomposes each value into bit-range sub-streams and encodes each
+  // independently. Optimal splits are chosen via a sample-driven DP algorithm.
+  // Only supported for 32- and 64-bit numeric types.
+  SubIntSplit = 16,
   // Stores integer data in fixed-size chunks (default 1024 rows), each with
   // its own baseline and bit width. Adapts per-chunk variable bit widths for
   // better compression on data with locally narrow value ranges.

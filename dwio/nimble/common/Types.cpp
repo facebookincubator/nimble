@@ -55,6 +55,8 @@ std::string toString(EncodingType encodingType) {
       return "PFOR";
     case EncodingType::SimdForBitpack:
       return "SimdForBitpack";
+    case EncodingType::SubIntSplit:
+      return "SubIntSplit";
     case EncodingType::BlockBitPacking:
       return "BlockBitPacking";
   }
