@@ -199,19 +199,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
       [&, baseline = selection.statistics().min()](char*& pos) {
         memset(pos, 0, fixedBitArraySize);
         FixedBitArray fba(pos, bitsRequired);
-        if constexpr (sizeof(physicalType) == 4) {
-          fba.bulkSet32WithBaseline(
-              0,
-              rowCount,
-              reinterpret_cast<const uint32_t*>(values.data()),
-              baseline);
-        } else {
-          // TODO: We may want to support 32-bit mode with (u)int64 here as
-          // well.
-          for (uint32_t i = 0; i < values.size(); ++i) {
-            fba.set(i, values[i] - baseline);
-          }
-        }
+        fba.bulkSetWithBaseline(0, rowCount, values.data(), baseline);
         pos += fixedBitArraySize;
         return pos;
       }};
