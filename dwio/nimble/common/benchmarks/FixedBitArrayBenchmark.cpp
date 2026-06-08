@@ -120,7 +120,7 @@ void observeWrittenBuffer(
     nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);               \
     const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                  \
     while (iters--) {                                                          \
-      fixedBitArray.bulkGet64WithBaseline(                                     \
+      fixedBitArray.bulkGetWithBaseline(                                       \
           0, kNumElements, output.data(), baseline);                           \
       folly::doNotOptimizeAway(*(output.data() + kNumElements - 1));           \
     }                                                                          \

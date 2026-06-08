@@ -180,20 +180,8 @@ void FixedBitWidthEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  if constexpr (isFourByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGetWithBaseline32(
-        row_, rowCount, static_cast<uint32_t*>(buffer), baseline_);
-  } else if constexpr (isEightByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGet64WithBaseline(
-        row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
-  } else {
-    const uint32_t start = row_;
-    const uint32_t end = start + rowCount;
-    physicalType* output = static_cast<physicalType*>(buffer);
-    for (uint32_t i = start; i < end; ++i) {
-      *output++ = fixedBitArray_.get(i) + baseline_;
-    }
-  }
+  fixedBitArray_.bulkGetWithBaseline(
+      row_, rowCount, static_cast<physicalType*>(buffer), baseline_);
   row_ += rowCount;
 }
 
@@ -277,11 +265,8 @@ void FixedBitWidthEncoding<T>::bulkScan(
     if constexpr (isFourByteIntegralType<physicalType>()) {
       // 4-byte path: use the optimized template-unrolled bulk decode.
       buffer_.resize(numSelected);
-      fixedBitArray_.bulkGetWithBaseline32(
-          selectedRows[0] + offset,
-          numSelected,
-          reinterpret_cast<uint32_t*>(buffer_.data()),
-          baseline_);
+      fixedBitArray_.bulkGetWithBaseline(
+          selectedRows[0] + offset, numSelected, buffer_.data(), baseline_);
 
       if constexpr (kSameSize) {
         std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
@@ -295,10 +280,10 @@ void FixedBitWidthEncoding<T>::bulkScan(
       // including branchless byte-aligned loads for bitWidth <= 58.
       static_assert(isEightByteIntegralType<physicalType>());
       static_assert(kSameSize, "8-byte bulkScan requires same-size output");
-      fixedBitArray_.bulkGet64WithBaseline(
+      fixedBitArray_.bulkGetWithBaseline(
           selectedRows[0] + offset,
           numSelected,
-          reinterpret_cast<uint64_t*>(values),
+          reinterpret_cast<physicalType*>(values),
           baseline_);
     }
   } else {

@@ -233,7 +233,7 @@ TEST(FixedBitArrayTests, BulkGetWithBaseline32Random) {
         fixedBitArray.set32(i, randomValues[i]);
       }
       std::vector<uint32_t> values(elementCount);
-      fixedBitArray.bulkGetWithBaseline32(
+      fixedBitArray.bulkGetWithBaseline(
           0, elementCount, values.data(), baseline);
       for (int i = 0; i < elementCount; ++i) {
         ASSERT_EQ(values[i], randomValues[i] + baseline)
@@ -241,7 +241,7 @@ TEST(FixedBitArrayTests, BulkGetWithBaseline32Random) {
       }
       for (int i = 0; i < elementCount; ++i) {
         uint32_t element;
-        fixedBitArray.bulkGetWithBaseline32(i, 1, &element, baseline);
+        fixedBitArray.bulkGetWithBaseline(i, 1, &element, baseline);
         ASSERT_EQ(element, randomValues[i] + baseline);
       }
       std::vector<uint64_t> values64(elementCount);
@@ -296,7 +296,7 @@ TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
 
       // Bulk read all elements.
       std::vector<uint64_t> values(elementCount);
-      fixedBitArray.bulkGet64WithBaseline(
+      fixedBitArray.bulkGetWithBaseline(
           0, elementCount, values.data(), baseline);
       for (int i = 0; i < elementCount; ++i) {
         ASSERT_EQ(values[i], randomValues[i] + baseline)
@@ -306,7 +306,7 @@ TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
       // Single-element reads at each position.
       for (int i = 0; i < elementCount; ++i) {
         uint64_t element;
-        fixedBitArray.bulkGet64WithBaseline(i, 1, &element, baseline);
+        fixedBitArray.bulkGetWithBaseline(i, 1, &element, baseline);
         ASSERT_EQ(element, randomValues[i] + baseline);
       }
 
@@ -315,7 +315,7 @@ TEST(FixedBitArrayTests, bulkGet64WithBaseline) {
         const int offset = folly::Random::rand32(rng) % (elementCount - 1);
         const int count = elementCount - offset;
         std::vector<uint64_t> partial(count);
-        fixedBitArray.bulkGet64WithBaseline(
+        fixedBitArray.bulkGetWithBaseline(
             offset, count, partial.data(), baseline);
         for (int i = 0; i < count; ++i) {
           ASSERT_EQ(partial[i], randomValues[offset + i] + baseline);
@@ -351,7 +351,7 @@ TEST(FixedBitArrayTests, bulkGet64WithBaselineZeroBaseline) {
     }
 
     std::vector<uint64_t> bulkValues(elementCount);
-    fixedBitArray.bulkGet64WithBaseline(0, elementCount, bulkValues.data(), 0);
+    fixedBitArray.bulkGetWithBaseline(0, elementCount, bulkValues.data(), 0);
 
     for (int i = 0; i < elementCount; ++i) {
       ASSERT_EQ(bulkValues[i], fixedBitArray.get(i))
@@ -474,7 +474,7 @@ TEST(FixedBitArrayTests, bulkGet64WithBaselineBitWidth58Boundary) {
   fixedBitArray.set(start, maxElement);
 
   uint64_t value = 0;
-  fixedBitArray.bulkGet64WithBaseline(start, 1, &value, baseline);
+  fixedBitArray.bulkGetWithBaseline(start, 1, &value, baseline);
   ASSERT_EQ(value, maxElement + baseline);
 }
 
@@ -521,7 +521,7 @@ TEST(FixedBitArrayTests, bulkSet64WithBaseline) {
       }
 
       std::vector<uint64_t> recovered(elementCount);
-      fixedBitArray.bulkGet64WithBaseline(
+      fixedBitArray.bulkGetWithBaseline(
           0, elementCount, recovered.data(), baseline);
       ASSERT_EQ(recovered, inputValues);
     }
@@ -636,5 +636,59 @@ TEST(FixedBitArrayTests, bulkSetWithBaselineDispatchesByElementWidth) {
   verifyBulkSetWithBaseline<uint8_t>(
       /*bitWidth=*/5, /*elementCount=*/2500, rng);
   verifyBulkSetWithBaseline<uint16_t>(
+      /*bitWidth=*/12, /*elementCount=*/2500, rng);
+}
+
+// Round-trips values of element type T through bulkSetWithBaseline +
+// bulkGetWithBaseline and confirms each compile-time branch recovers them.
+template <typename T>
+void verifyBulkGetWithBaseline(
+    int bitWidth,
+    int elementCount,
+    std::mt19937& rng) {
+  SCOPED_TRACE(
+      fmt::format(
+          "typeBytes={} bitWidth={} elementCount={}",
+          sizeof(T),
+          bitWidth,
+          elementCount));
+  const auto bufferBytes =
+      nimble::FixedBitArray::bufferSize(elementCount, bitWidth);
+  auto buffer = std::make_unique<char[]>(bufferBytes);
+  std::memset(buffer.get(), 0, bufferBytes);
+  nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
+
+  const T baseline = static_cast<T>(folly::Random::rand32(rng) % 7);
+  const uint64_t residualMask =
+      bitWidth == 64 ? ~0ULL : ((1ULL << bitWidth) - 1);
+  std::vector<T> inputValues(elementCount);
+  for (int i = 0; i < elementCount; ++i) {
+    inputValues[i] =
+        static_cast<T>((folly::Random::rand64(rng) & residualMask) + baseline);
+  }
+
+  fixedBitArray.bulkSetWithBaseline(
+      0, elementCount, inputValues.data(), baseline);
+
+  std::vector<T> actual(elementCount);
+  fixedBitArray.bulkGetWithBaseline(0, elementCount, actual.data(), baseline);
+  EXPECT_EQ(actual, inputValues);
+}
+
+TEST(FixedBitArrayTests, bulkGetWithBaselineDispatchesByElementWidth) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  const int smallCount = 1 + folly::Random::rand32(rng) % kMaxElements;
+  verifyBulkGetWithBaseline<uint8_t>(/*bitWidth=*/5, smallCount, rng);
+  verifyBulkGetWithBaseline<uint16_t>(/*bitWidth=*/12, smallCount, rng);
+  verifyBulkGetWithBaseline<uint32_t>(/*bitWidth=*/20, smallCount, rng);
+  verifyBulkGetWithBaseline<uint64_t>(/*bitWidth=*/40, smallCount, rng);
+
+  // Narrow read path across multiple stack chunks (length > kWidenChunk).
+  verifyBulkGetWithBaseline<uint8_t>(
+      /*bitWidth=*/5, /*elementCount=*/2500, rng);
+  verifyBulkGetWithBaseline<uint16_t>(
       /*bitWidth=*/12, /*elementCount=*/2500, rng);
 }
