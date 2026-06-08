@@ -292,7 +292,7 @@ void FixedBitWidthEncoding<T>::bulkScan(
       }
     } else {
       // 8-byte path: use bulkGet64WithBaseline which handles all bit widths
-      // including branchless byte-aligned loads for bitWidth <= 56.
+      // including branchless byte-aligned loads for bitWidth <= 58.
       static_assert(isEightByteIntegralType<physicalType>());
       static_assert(kSameSize, "8-byte bulkScan requires same-size output");
       fixedBitArray_.bulkGet64WithBaseline(
@@ -401,19 +401,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
       [&, baseline = selection.statistics().min()](char*& pos) {
         memset(pos, 0, fixedBitArraySize);
         FixedBitArray fba(pos, bitsRequired);
-        if constexpr (sizeof(physicalType) == 4) {
-          fba.bulkSet32WithBaseline(
-              0,
-              rowCount,
-              reinterpret_cast<const uint32_t*>(values.data()),
-              baseline);
-        } else {
-          // TODO: We may want to support 32-bit mode with (u)int64 here as
-          // well.
-          for (uint32_t i = 0; i < values.size(); ++i) {
-            fba.set(i, values[i] - baseline);
-          }
-        }
+        fba.bulkSetWithBaseline(0, rowCount, values.data(), baseline);
         pos += fixedBitArraySize;
         return pos;
       }};

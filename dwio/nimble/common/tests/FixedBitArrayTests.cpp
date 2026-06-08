@@ -405,7 +405,7 @@ TEST(FixedBitArrayTests, BulkSet32WithBaselineRandom) {
       }
       const int offset = folly::Random::rand32(rng) % elementCount;
       const int size = elementCount - offset;
-      fixedBitArray.bulkSet32WithBaseline(
+      fixedBitArray.bulkSetWithBaseline(
           offset, size, randomValuesWithBaseline.data() + offset, baseline);
       for (int i = 0; i < size; ++i) {
         ASSERT_EQ(fixedBitArray.get32(offset + i), randomValues[offset + i])
@@ -513,7 +513,7 @@ TEST(FixedBitArrayTests, bulkSet64WithBaseline) {
         inputValues[i] = expectedResiduals[i] + baseline;
       }
 
-      fixedBitArray.bulkSet64WithBaseline(
+      fixedBitArray.bulkSetWithBaseline(
           0, elementCount, inputValues.data(), baseline);
 
       for (int i = 0; i < elementCount; ++i) {
@@ -559,7 +559,7 @@ TEST(FixedBitArrayTests, bulkSet64WithBaselinePartialRange) {
       inputValues[i] = residual + baseline;
     }
 
-    fixedBitArray.bulkSet64WithBaseline(
+    fixedBitArray.bulkSetWithBaseline(
         offset, count, inputValues.data(), baseline);
 
     for (int i = 0; i < count; ++i) {
@@ -576,4 +576,65 @@ TEST(FixedBitArrayTests, bulkSet64WithBaselinePartialRange) {
           << "post-range slot " << i << " should be zero";
     }
   }
+}
+
+// Packs random values of element type T through the unified
+// bulkSetWithBaseline and confirms the stored residuals round-trip. bitWidth is
+// chosen so values fit in T.
+template <typename T>
+void verifyBulkSetWithBaseline(
+    int bitWidth,
+    int elementCount,
+    std::mt19937& rng) {
+  SCOPED_TRACE(
+      fmt::format(
+          "typeBytes={} bitWidth={} elementCount={}",
+          sizeof(T),
+          bitWidth,
+          elementCount));
+  const auto bufferBytes =
+      nimble::FixedBitArray::bufferSize(elementCount, bitWidth);
+  auto buffer = std::make_unique<char[]>(bufferBytes);
+  std::memset(buffer.get(), 0, bufferBytes);
+  nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);
+
+  const T baseline = static_cast<T>(folly::Random::rand32(rng) % 7);
+  const uint64_t residualMask =
+      bitWidth == 64 ? ~0ULL : ((1ULL << bitWidth) - 1);
+  std::vector<T> inputValues(elementCount);
+  std::vector<uint64_t> expectedResiduals(elementCount);
+  for (int i = 0; i < elementCount; ++i) {
+    expectedResiduals[i] = folly::Random::rand64(rng) & residualMask;
+    inputValues[i] = static_cast<T>(expectedResiduals[i] + baseline);
+  }
+
+  fixedBitArray.bulkSetWithBaseline(
+      0, elementCount, inputValues.data(), baseline);
+
+  std::vector<uint64_t> actualResiduals(elementCount);
+  for (int i = 0; i < elementCount; ++i) {
+    actualResiduals[i] = fixedBitArray.get(i);
+  }
+  EXPECT_EQ(actualResiduals, expectedResiduals);
+}
+
+TEST(FixedBitArrayTests, bulkSetWithBaselineDispatchesByElementWidth) {
+  auto seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng(seed);
+
+  const int smallCount = 1 + folly::Random::rand32(rng) % kMaxElements;
+  // One element type per compile-time branch: 1- and 2-byte exercise the widen
+  // path, 4-byte delegates to bulkSet32, 8-byte to bulkSet64.
+  verifyBulkSetWithBaseline<uint8_t>(/*bitWidth=*/5, smallCount, rng);
+  verifyBulkSetWithBaseline<uint16_t>(/*bitWidth=*/12, smallCount, rng);
+  verifyBulkSetWithBaseline<uint32_t>(/*bitWidth=*/20, smallCount, rng);
+  verifyBulkSetWithBaseline<uint64_t>(/*bitWidth=*/40, smallCount, rng);
+
+  // Exercise the narrow widen path across multiple stack chunks
+  // (length > kWidenChunk = 1024), including a partial final chunk.
+  verifyBulkSetWithBaseline<uint8_t>(
+      /*bitWidth=*/5, /*elementCount=*/2500, rng);
+  verifyBulkSetWithBaseline<uint16_t>(
+      /*bitWidth=*/12, /*elementCount=*/2500, rng);
 }

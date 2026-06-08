@@ -73,7 +73,7 @@ void observeWrittenBuffer(
       BENCHMARK_SUSPEND {                                                      \
         clearBuffer(buffer.get(), bufferBytes);                                \
       }                                                                        \
-      fixedBitArray.bulkSet64WithBaseline(                                     \
+      fixedBitArray.bulkSetWithBaseline(                                       \
           0, kNumElements, values.data(), baseline);                           \
       observeWrittenBuffer(buffer.get(), kNumElements, bitWidth);              \
     }                                                                          \
@@ -114,7 +114,7 @@ void observeWrittenBuffer(
       output.resize(kNumElements);                                             \
       nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);             \
       const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                \
-      fixedBitArray.bulkSet64WithBaseline(                                     \
+      fixedBitArray.bulkSetWithBaseline(                                       \
           0, kNumElements, values.data(), baseline);                           \
     }                                                                          \
     nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);               \
@@ -138,7 +138,7 @@ void observeWrittenBuffer(
       output.resize(kNumElements);                                             \
       nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);             \
       const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;                \
-      fixedBitArray.bulkSet64WithBaseline(                                     \
+      fixedBitArray.bulkSetWithBaseline(                                       \
           0, kNumElements, values.data(), baseline);                           \
     }                                                                          \
     nimble::FixedBitArray fixedBitArray(buffer.get(), bitWidth);               \
@@ -170,7 +170,7 @@ void observeWrittenBuffer(
       BENCHMARK_SUSPEND {                                             \
         clearBuffer(buffer.get(), bufferBytes);                       \
       }                                                               \
-      fixedBitArray.bulkSet64WithBaseline(                            \
+      fixedBitArray.bulkSetWithBaseline(                              \
           kStartOffset, kNumElements, values.data(), baseline);       \
       observeWrittenBuffer(                                           \
           buffer.get(), kStartOffset + kNumElements, bitWidth);       \
