@@ -415,6 +415,24 @@ void skipStream(const char*& pos) {
 /// encoding-specific payload.
 std::vector<uint32_t> readTrailerStreamSizes(const char* end);
 
+/// Caller-fills overload of readTrailerStreamSizes that picks a sparse or
+/// dense representation off the encoding-type byte:
+///   - MainlyConstant: fills `sparseIndices` + `sparseSizes` with only the
+///     non-zero stream slots and returns `true`. The dense
+///     `streamCount`-zero-filled scatter is skipped entirely; the caller
+///     iterates the sparse arrays to visit non-empty streams.
+///   - All other encodings (Trivial/Varint/Delta/FixedBitWidth): fills
+///     `denseSizes` and returns `false`. Caller iterates `denseSizes` as
+///     usual.
+/// All three out vectors must be reusable buffers owned by the caller
+/// (e.g. members on `StreamDataReader`) to keep the per-blob hot path
+/// alloc-free across invocations.
+bool readTrailerStreamSizes(
+    const char* end,
+    std::vector<uint32_t>& denseSizes,
+    std::vector<uint32_t>& sparseIndices,
+    std::vector<uint32_t>& sparseSizes);
+
 /// IOBuf overload: reads stream sizes from the trailer of a (possibly
 /// chained) IOBuf. Tries the fast path first: if the tail segment contains the
 /// entire trailer, delegates to the contiguous overload. Falls back to
