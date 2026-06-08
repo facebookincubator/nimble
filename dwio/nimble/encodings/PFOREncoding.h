@@ -315,26 +315,8 @@ void PFOREncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   if (baseBitWidth_ == 0) {
     // All residuals are zero; every value equals baseline.
     std::fill(output, output + rowCount, baseline_);
-  } else if constexpr (isFourByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGetWithBaseline32(
-        /*start=*/row_,
-        /*length=*/rowCount,
-        reinterpret_cast<uint32_t*>(output),
-        static_cast<uint32_t>(baseline_));
-  } else if constexpr (isEightByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGet64WithBaseline(
-        /*start=*/row_,
-        /*length=*/rowCount,
-        reinterpret_cast<uint64_t*>(output),
-        static_cast<uint64_t>(baseline_));
   } else {
-    // Narrow integral path (1- or 2-byte types). The bulk paths require
-    // 4- or 8-byte outputs; per-element get is acceptable for rare narrow
-    // streams.
-    for (auto i = 0; i < rowCount; ++i) {
-      output[i] =
-          static_cast<physicalType>(fixedBitArray_.get(row_ + i) + baseline_);
-    }
+    fixedBitArray_.bulkGetWithBaseline(row_, rowCount, output, baseline_);
   }
 
   // Patch exception positions with their full values.

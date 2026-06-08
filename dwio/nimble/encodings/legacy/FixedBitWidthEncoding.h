@@ -120,20 +120,8 @@ void FixedBitWidthEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  if constexpr (isFourByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGetWithBaseline32(
-        row_, rowCount, static_cast<uint32_t*>(buffer), baseline_);
-  } else if constexpr (isEightByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGet64WithBaseline(
-        row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
-  } else {
-    const uint32_t start = row_;
-    const uint32_t end = start + rowCount;
-    physicalType* output = static_cast<physicalType*>(buffer);
-    for (uint32_t i = start; i < end; ++i) {
-      *output++ = fixedBitArray_.get(i) + baseline_;
-    }
-  }
+  fixedBitArray_.bulkGetWithBaseline(
+      row_, rowCount, static_cast<physicalType*>(buffer), baseline_);
   row_ += rowCount;
 }
 
