@@ -696,19 +696,13 @@ std::string_view BlockBitPackingEncoding<T>::encode(
                           block.baseline);
                 }
               }
-            } else if constexpr (sizeof(physicalType) < 4) {
-              FixedBitArray fba(pos + dataOffset, block.bitWidth);
-              uint32_t tmp[kMaxBlockSize];
-              for (uint32_t i = 0; i < block.count; ++i) {
-                tmp[i] = static_cast<uint32_t>(values[block.start + i]);
-              }
-              fba.bulkSet32WithBaseline(
-                  0, block.count, tmp, static_cast<uint32_t>(block.baseline));
             } else {
+              // 1-, 2-, and 8-byte types: the unified bulk path picks the
+              // optimal packing for the width (4-byte uses SIMD fastpack
+              // above).
               FixedBitArray fba(pos + dataOffset, block.bitWidth);
-              for (uint32_t i = 0; i < block.count; ++i) {
-                fba.set(i, values[block.start + i] - block.baseline);
-              }
+              fba.bulkSetWithBaseline(
+                  0, block.count, values.data() + block.start, block.baseline);
             }
           }
           dataOffset += block.packedSize;

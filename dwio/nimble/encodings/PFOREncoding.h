@@ -472,19 +472,11 @@ std::string_view PFOREncoding<T>::encode(
       char* bitpackedStart = pos;
       std::memset(bitpackedStart, 0, bitpackedSize);
       FixedBitArray fba(bitpackedStart, baseBitWidth);
-      if constexpr (isFourByteIntegralType<physicalType>()) {
-        fba.bulkSet32WithBaseline(
-            /*start=*/0,
-            /*length=*/rowCount,
-            reinterpret_cast<const uint32_t*>(maskedResiduals.data()),
-            /*baseline=*/0);
-      } else {
-        // TODO: Add a bulkSet64 path to FixedBitArray and use it here
-        // for 8-byte types to match the 4-byte bulk path above.
-        for (uint32_t i = 0; i < rowCount; ++i) {
-          fba.set(i, static_cast<uint64_t>(maskedResiduals[i]));
-        }
-      }
+      fba.bulkSetWithBaseline(
+          /*start=*/0,
+          /*length=*/rowCount,
+          maskedResiduals.data(),
+          /*baseline=*/physicalType{0});
       pos += bitpackedSize;
     }
 
