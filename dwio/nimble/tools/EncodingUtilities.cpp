@@ -53,8 +53,9 @@ void extractCompressionType(
     case EncodingType::ALP:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
-      // SubIntSplit integration commented out (disabled):
-      // case EncodingType::SubIntSplit:
+    // SubIntSplit integration is disabled; it carries no separate compression
+    // byte, so treat it like the other encodings handled here.
+    case EncodingType::SubIntSplit:
       break;
   }
 }
@@ -111,7 +112,10 @@ void traverseEncodings(
     case EncodingType::ALP:
     case EncodingType::BlockBitPacking:
     case EncodingType::PFOR:
-    case EncodingType::SimdForBitpack: {
+    case EncodingType::SimdForBitpack:
+    // SubIntSplit integration is disabled; treat it as having no nested
+    // encoding to traverse.
+    case EncodingType::SubIntSplit: {
       // don't have any nested encoding
       break;
     }
