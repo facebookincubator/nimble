@@ -117,6 +117,10 @@ class Encoding {
     /// dictionary-enabled. False by default — only the selective
     /// reader enables this for dictionary vector output.
     bool preserveDictionaryEncoding;
+    /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
+    /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,
+    /// 2 = TierTagArray, 3 = EliasFano.
+    uint8_t frequencyPartitionIndex;
   };
 
   static constexpr int kEncodingTypeOffset =
