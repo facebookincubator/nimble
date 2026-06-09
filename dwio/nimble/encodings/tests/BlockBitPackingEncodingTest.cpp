@@ -669,7 +669,7 @@ TEST_F(BlockBitPackingEncodingTest, fixedBitArrayBaselineMatchesFastUnpack) {
     const auto bufSize = nimble::FixedBitArray::bufferSize(kGroupSize, bw);
     std::vector<char> packed(bufSize, 0);
     nimble::FixedBitArray fba(packed.data(), bw);
-    fba.bulkSet32WithBaseline(0, kGroupSize, values.data(), baseline);
+    fba.bulkSetWithBaseline(0, kGroupSize, values.data(), baseline);
 
     // Unpack with fastUnpack32 + manual baseline add.
     std::vector<uint32_t> decoded(kGroupSize, 0xDEADBEEF);
