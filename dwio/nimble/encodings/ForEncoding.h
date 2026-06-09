@@ -20,15 +20,15 @@
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/EncodingPrimitives.h"
-#include "dwio/nimble/common/EncodingType.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/encodings/Compression.h"
-#include "dwio/nimble/encodings/Encoding.h"
-#include "dwio/nimble/encodings/EncodingFactory.h"
-#include "dwio/nimble/encodings/EncodingSelection.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Frame of Reference encoding. Divides data into fixed-size frames, storing
 // a reference value per frame and bit-packing the exceptions (value - ref).
@@ -66,6 +66,10 @@ class ForEncoding final
     std::function<void*(uint32_t)> stringBufferFactory = nullptr,
     const Encoding::Options& options = {});
 
+  ~ForEncoding() override {
+    this->releaseBuffer(uncompressedData_);
+  }
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -95,7 +99,7 @@ class ForEncoding final
   Vector<FrameInfo> frames_;
   const char* packedData_;
   uint32_t currentRow_;
-  Vector<char> uncompressedData_;
+  velox::BufferPtr uncompressedData_;
   Vector<physicalType> buffer_;
 
   uint32_t getFrameIndex(uint32_t row) const {
@@ -126,7 +130,6 @@ ForEncoding<T>::ForEncoding(
   : TypedEncoding<T, physicalType>{memoryPool, data, options},
       frames_{&memoryPool},
       currentRow_(0),
-      uncompressedData_{&memoryPool},
       buffer_{&memoryPool} {
   static_assert(
       std::is_integral_v<physicalType>,
@@ -182,7 +185,7 @@ ForEncoding<T>::ForEncoding(
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
         *this->pool_, compressionType, DataType::Undefined, packedDataView);
-    packedData_ = uncompressedData_.data();
+    packedData_ = uncompressedData_->as<char>();
   } else {
     packedData_ = packedDataView.data();
   }
