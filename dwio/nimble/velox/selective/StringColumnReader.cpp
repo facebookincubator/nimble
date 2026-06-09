@@ -25,6 +25,8 @@
 namespace facebook::nimble {
 
 using namespace facebook::velox;
+using velox::dwio::common::DictionaryValues;
+using velox::dwio::common::FilterResult;
 
 uint64_t StringColumnReader::skip(uint64_t numValues) {
   numValues = SelectiveColumnReader::skip(numValues);
@@ -32,26 +34,60 @@ uint64_t StringColumnReader::skip(uint64_t numValues) {
   return numValues;
 }
 
+void StringColumnReader::clearDictionaryState() {
+  dictionaryState_.clear();
+  scanState_.dictionary.clear();
+  scanState_.updateRawState();
+}
+
+// TODO: Derive alphabetVector from scanState_.dictionary.values to eliminate
+// redundant alphabet storage.
 void StringColumnReader::ensureDictionaryState() {
   if (hasDictionaryState()) {
     return;
   }
   // Invalidate dictionary state when a new chunk is loaded, since the new
   // chunk may have a different encoding or dictionary alphabet.
-  decoder_.setOnChunkLoad([this] { dictionaryState_.clear(); });
+  decoder_.setOnChunkLoad([this] { clearDictionaryState(); });
   dictionaryState_.alphabet = buildEncodingDictionaryAlphabet<std::string_view>(
       decoder_.currentEncoding());
+
+  if (DictionaryValues::hasFilter(scanSpec_->filter())) {
+    const auto& alphabet = dictionaryState_.alphabet;
+    const auto alphabetSize = static_cast<int32_t>(alphabet.size());
+    int64_t totalBytes = 0;
+    for (const auto& entry : alphabet) {
+      totalBytes += entry.size();
+    }
+    scanState_.dictionary.numValues = alphabetSize;
+    scanState_.dictionary.strings =
+        AlignedBuffer::allocate<char>(totalBytes, pool_);
+    scanState_.dictionary.values =
+        AlignedBuffer::allocate<StringView>(alphabetSize, pool_);
+    auto* rawStrings = scanState_.dictionary.strings->asMutable<char>();
+    auto* rawValues = scanState_.dictionary.values->asMutable<StringView>();
+    int64_t offset = 0;
+    for (int32_t i = 0; i < alphabetSize; ++i) {
+      auto len = alphabet[i].size();
+      std::memcpy(rawStrings + offset, alphabet[i].data(), len);
+      rawValues[i] = StringView(rawStrings + offset, len);
+      offset += len;
+    }
+    scanState_.filterCache.resize(alphabetSize);
+    simd::memset(
+        scanState_.filterCache.data(), FilterResult::kUnknown, alphabetSize);
+    scanState_.updateRawState();
+  }
 }
 
 bool StringColumnReader::readWithDictionary(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
-  // Dictionary path requires: no filter pushdown, no value hook, non-legacy
-  // encoding path (zero-copy), session property enabled, single-chunk read,
-  // and dictionary-convertible encoding.
-  if (scanSpec_->hasFilter() || scanSpec_->valueHook() ||
-      !formatData().stringDecoderZeroCopy() ||
+  // Dictionary path requires: no value hook, non-legacy encoding path
+  // (zero-copy), session property enabled, single-chunk read, and
+  // dictionary-convertible encoding.
+  if (scanSpec_->valueHook() || !formatData().stringDecoderZeroCopy() ||
       !static_cast<const NimbleData&>(formatData())
            .nimblePreserveDictionaryEncoding()) {
     return false;
@@ -93,7 +129,7 @@ void StringColumnReader::read(
   if (readWithDictionary(offset, rows, incomingNulls)) {
     return;
   }
-  dictionaryState_.clear();
+  clearDictionaryState();
   prepareRead<std::string_view>(offset, rows, incomingNulls);
   dwio::common::StringColumnReadWithVisitorHelper<
       /*kEncodingHasNulls=*/false,

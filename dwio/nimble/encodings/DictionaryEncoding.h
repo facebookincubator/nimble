@@ -290,8 +290,7 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
     ReadWithVisitorParams& params) {
   NIMBLE_CHECK(this->dictionaryEnabled());
   NIMBLE_CHECK(
-      !V::kHasFilter && !V::kHasHook,
-      "readIndicesWithVisitor should only be invoked in dictionary fast path");
+      !V::kHasHook, "readIndicesWithVisitor does not support value hooks");
   const auto numReadRows =
       visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
   auto* rawNulls = visitor.reader().rawNullsInReadRange();
@@ -299,6 +298,18 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
       ? velox::bits::countNonNulls(
             rawNulls, params.numScanned, params.numScanned + numReadRows)
       : numReadRows;
+
+  if constexpr (V::kHasFilter) {
+    auto* rawIndices = ensureIndicesBuffer(numNonNulls);
+    this->materializeIndices(numNonNulls, rawIndices);
+    uint32_t indexOffset = 0;
+    detail::readWithVisitorSlow(
+        visitor,
+        params,
+        [&](uint32_t numNonNullsToSkip) { indexOffset += numNonNullsToSkip; },
+        [&]() -> int32_t { return rawIndices[indexOffset++]; });
+    return;
+  }
 
   // Dense fast path: materialize directly into rawValues_, scatter for nulls.
   if (V::dense) {

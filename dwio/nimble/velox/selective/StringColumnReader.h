@@ -67,6 +67,8 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
     return false;
   }
 
+  void clearDictionaryState();
+
   // Populates dictionaryState_ from the current chunk's encoding if not
   // already set. Registers the onChunkLoad callback on first call.
   void ensureDictionaryState();

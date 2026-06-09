@@ -1629,6 +1629,178 @@ TEST_P(StringColumnReaderTest, filterOnlyMultiChunkNumValuesSync) {
   ASSERT_EQ(readRows(/*projectOut=*/false), expected);
 }
 
+// Dictionary path with BytesValues filter. The filter is evaluated once per
+// dictionary entry via the filter cache, and the output is a DictionaryVector
+// containing only rows that pass the filter.
+TEST_P(StringColumnReaderTest, dictionaryWithBytesValuesFilter) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 500;
+  auto c0 = makeFlatVector<std::string>(kRows, [](auto i) {
+    return std::vector<std::string>{
+        "alpha", "bravo", "charlie", "delta", "echo"}[i % 5];
+  });
+  auto input = makeRowVector({c0});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"bravo", "delta"}, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+
+  auto expectedStrings = makeFlatVector<std::string>(
+      200, [](auto i) { return i % 2 == 0 ? "bravo" : "delta"; });
+
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expectedStrings,
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {E::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
+// Dictionary path with BytesRange filter across chunk boundaries. The filter
+// cache is invalidated when the chunk changes and rebuilt from the new chunk's
+// dictionary.
+TEST_P(StringColumnReaderTest, dictionaryWithFilterAcrossChunks) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 300;
+  auto chunk1 =
+      makeRowVector({makeFlatVector<std::string>(kChunkRows, [](auto i) {
+        return std::vector<std::string>{"aaa", "bbb", "ccc"}[i % 3];
+      })});
+  auto chunk2 =
+      makeRowVector({makeFlatVector<std::string>(kChunkRows, [](auto i) {
+        return std::vector<std::string>{"xxx", "yyy"}[i % 2];
+      })});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*chunk1->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesRange>(
+          "bbb", false, false, "bbb", false, false, false));
+  auto readers = makeReaders(chunk1, file, scanSpec, stringDecoderZeroCopy);
+
+  auto expectedStrings =
+      makeFlatVector<std::string>(100, [](auto) { return "bbb"; });
+
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expectedStrings,
+      *readers.rowReader,
+      kChunkRows,
+      /*totalRows=*/2 * kChunkRows,
+      {E::DICTIONARY},
+      asRowType(chunk1->type()),
+      pool());
+}
+
+// Dictionary path with filter and nullable input. Exercises the null-skipping
+// logic in the readWithVisitorSlow path where indexOffset must correctly
+// advance past only non-null values.
+TEST_P(StringColumnReaderTest, dictionaryWithFilterAndNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 500;
+  auto c0 = makeFlatVector<std::string>(
+      kRows,
+      [](auto i) {
+        return std::vector<std::string>{
+            "alpha", "bravo", "charlie", "delta", "echo"}[i % 5];
+      },
+      nullEvery(7));
+  auto input = makeRowVector({c0});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"bravo", "delta"}, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+
+  std::vector<std::optional<std::string>> expected;
+  for (int i = 0; i < kRows; ++i) {
+    if (i % 7 == 0) {
+      continue;
+    }
+    auto value = std::vector<std::string>{
+        "alpha", "bravo", "charlie", "delta", "echo"}[i % 5];
+    if (value == "bravo" || value == "delta") {
+      expected.push_back(value);
+    }
+  }
+  auto expectedStrings = makeFlatVector<std::string>(
+      expected.size(), [&](auto i) { return *expected[i]; });
+
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expectedStrings,
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {E::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
+// Dictionary path with a filter that accepts all entries. The filter cache
+// populates every entry as passing, and the output should contain all rows.
+TEST_P(StringColumnReaderTest, dictionaryWithFilterAllPass) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 500;
+  auto c0 = makeFlatVector<std::string>(kRows, [](auto i) {
+    return std::vector<std::string>{
+        "alpha", "bravo", "charlie", "delta", "echo"}[i % 5];
+  });
+  auto input = makeRowVector({c0});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesRange>(
+          "a", false, false, "z", false, false, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *c0,
+      *readers.rowReader,
+      kRows,
+      /*totalRows=*/kRows,
+      {E::DICTIONARY},
+      asRowType(input->type()),
+      pool());
+}
+
 INSTANTIATE_TEST_CASE_P(
     StringColumnReaderTestSuite,
     StringColumnReaderTest,
