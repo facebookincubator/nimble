@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/common/FixedBitArray.h"
 
+#include <folly/lang/Bits.h>
+
 #include <glog/logging.h>
 
 namespace facebook::nimble {
@@ -327,22 +329,16 @@ template <int byteWidth>
 inline uint64_t loadByteAlignedResidual(const char* next) {
   static_assert(byteWidth >= 4 && byteWidth <= 8);
   if constexpr (byteWidth == 4) {
-    return *reinterpret_cast<const uint32_t*>(next);
-  } else if constexpr (byteWidth == 5) {
-    return *reinterpret_cast<const uint32_t*>(next) |
-        (static_cast<uint64_t>(static_cast<unsigned char>(next[4])) << 32);
-  } else if constexpr (byteWidth == 6) {
-    return *reinterpret_cast<const uint32_t*>(next) |
-        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
-         << 32);
-  } else if constexpr (byteWidth == 7) {
-    return *reinterpret_cast<const uint32_t*>(next) |
-        (static_cast<uint64_t>(*reinterpret_cast<const uint16_t*>(next + 4))
-         << 32) |
-        (static_cast<uint64_t>(static_cast<unsigned char>(next[6])) << 48);
+    return folly::loadUnaligned<uint32_t>(next);
+  } else if constexpr (byteWidth == 8) {
+    return folly::loadUnaligned<uint64_t>(next);
   } else {
-    static_assert(byteWidth == 8);
-    return *reinterpret_cast<const uint64_t*>(next);
+    // 5/6/7 bytes: a single unaligned 8-byte load (FixedBitArray buffers are
+    // required to be sized with bufferSize(), which reserves 7 bytes of slop,
+    // so reading past the last value is safe) masked to the byte width.
+    // Faster than stitching the value from a uint32 plus narrow loads.
+    constexpr uint64_t kMask = (uint64_t{1} << (byteWidth * 8)) - 1;
+    return folly::loadUnaligned<uint64_t>(next) & kMask;
   }
 }
 

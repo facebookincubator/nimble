@@ -567,6 +567,14 @@ TEST(FixedBitArrayTests, bulkSet64WithBaselinePartialRange) {
           << "i=" << i;
     }
 
+    // Round-trip the partial range through the bulk read path. A non-zero start
+    // offset exercises the byte-aligned masked load at a non-zero base pointer
+    // (its last element also reads into bufferSize's trailing slop).
+    std::vector<uint64_t> recovered(count);
+    fixedBitArray.bulkGetWithBaseline(
+        offset, count, recovered.data(), baseline);
+    ASSERT_EQ(recovered, inputValues);
+
     for (int i = 0; i < offset; ++i) {
       ASSERT_EQ(fixedBitArray.get(i), 0)
           << "pre-range slot " << i << " should be zero";

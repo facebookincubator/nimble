@@ -264,16 +264,20 @@ void FixedBitWidthEncoding<T>::bulkScan(
   if constexpr (V::dense) {
     if constexpr (isFourByteIntegralType<physicalType>()) {
       // 4-byte path: use the optimized template-unrolled bulk decode.
-      buffer_.resize(numSelected);
-      fixedBitArray_.bulkGetWithBaseline(
-          selectedRows[0] + offset, numSelected, buffer_.data(), baseline_);
-
       if constexpr (kSameSize) {
+        buffer_.resize(numSelected);
+        fixedBitArray_.bulkGetWithBaseline(
+            selectedRows[0] + offset, numSelected, buffer_.data(), baseline_);
         std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
       } else if constexpr (kIsUpcast) {
-        for (vector_size_t i = 0; i < numSelected; ++i) {
-          values[i] = static_cast<OutputType>(buffer_[i]);
-        }
+        static_assert(isEightByteIntegralType<OutputType>());
+        // Read the 4-byte-width values directly into the wider 8-byte output in
+        // a single pass, avoiding the staging buffer and per-element widening.
+        fixedBitArray_.bulkGetWithBaseline32Into64(
+            selectedRows[0] + offset,
+            numSelected,
+            reinterpret_cast<uint64_t*>(values),
+            baseline_);
       }
     } else {
       // 8-byte path: use bulkGet64WithBaseline which handles all bit widths
