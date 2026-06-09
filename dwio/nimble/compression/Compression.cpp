@@ -116,7 +116,7 @@ class MetaInternalToZstdPolicy : public CompressionPolicy {
     MetaInternalToZstdPolicy wrapper(compressionPolicy);
     compression = wrapper.compression();
     return getCompressor(compression.compressionType)
-        .compress(memoryPool, data, dataType, bitWidth, wrapper);
+        .compress(pool, data, dataType, bitWidth, wrapper);
   }
 #endif
 
