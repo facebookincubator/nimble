@@ -415,7 +415,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_16bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -455,7 +455,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_40bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -493,7 +493,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_56bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -531,7 +531,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_57bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
