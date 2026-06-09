@@ -214,21 +214,21 @@ std::unique_ptr<Encoding> EncodingFactory::create(
 #define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)           \
   switch (dataType) {                                                 \
     case DataType::Int8:                                              \
-      return std::make_unique<Encoding<int8_t>>(memoryPool, data);    \
+      return std::make_unique<Encoding<int8_t>>(pool, data);    \
     case DataType::Uint8:                                             \
-      return std::make_unique<Encoding<uint8_t>>(memoryPool, data);   \
+      return std::make_unique<Encoding<uint8_t>>(pool, data);   \
     case DataType::Int16:                                             \
-      return std::make_unique<Encoding<int16_t>>(memoryPool, data);   \
+      return std::make_unique<Encoding<int16_t>>(pool, data);   \
     case DataType::Uint16:                                            \
-      return std::make_unique<Encoding<uint16_t>>(memoryPool, data);  \
+      return std::make_unique<Encoding<uint16_t>>(pool, data);  \
     case DataType::Int32:                                             \
-      return std::make_unique<Encoding<int32_t>>(memoryPool, data);   \
+      return std::make_unique<Encoding<int32_t>>(pool, data);   \
     case DataType::Uint32:                                            \
-      return std::make_unique<Encoding<uint32_t>>(memoryPool, data);  \
+      return std::make_unique<Encoding<uint32_t>>(pool, data);  \
     case DataType::Int64:                                             \
-      return std::make_unique<Encoding<int64_t>>(memoryPool, data);   \
+      return std::make_unique<Encoding<int64_t>>(pool, data);   \
     case DataType::Uint64:                                            \
-      return std::make_unique<Encoding<uint64_t>>(memoryPool, data);  \
+      return std::make_unique<Encoding<uint64_t>>(pool, data);  \
     default:                                                          \
       NIMBLE_UNREACHABLE(                                             \
           "ForEncoding only supports integer types, got {}.",         \
