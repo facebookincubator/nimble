@@ -61,7 +61,7 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       return false;
     }
 
-    auto vectorType = vector->type();
+    const auto& vectorType = vector->type();
     switch (vectorType->kind()) {
       case velox::TypeKind::BOOLEAN:
       case velox::TypeKind::TINYINT:
@@ -99,7 +99,7 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
         }
         velox::DecodedVector decodedVector(*vector);
         auto rowVector = decodedVector.base()->as<velox::RowVector>();
-        for (auto child : rowVector->children()) {
+        for (const auto& child : rowVector->children()) {
           if (!isFullyLoaded(child)) {
             return false;
           }
@@ -120,7 +120,7 @@ class TrackedColumnLoader : public velox::dwio::common::ColumnLoader {
       return;
     }
 
-    auto vectorType = vector->type();
+    const auto& vectorType = vector->type();
 
     switch (vectorType->kind()) {
       case velox::TypeKind::BOOLEAN:
