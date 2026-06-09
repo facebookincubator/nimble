@@ -221,102 +221,9 @@ class Encoder {
     CompressionType compressionType_;
   };
 
-  template <typename Encoding>
-  struct EncodingTypeTraits {};
-
-  template <>
-  struct EncodingTypeTraits<nimble::ALPEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::ALP;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Constant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Delta;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Dictionary;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FixedBitWidth;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::FrequencyPartitionEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FrequencyPartition;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::MainlyConstant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::RLEEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::RLE;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SparseBool;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::TrivialEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Trivial;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Varint;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Nullable;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::BlockBitPackingEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::BlockBitPacking;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::PFOREncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::PFOR;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::SimdForBitpackEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SimdForBitpack;
-  };
-
  public:
   static constexpr EncodingType encodingType() {
-    return EncodingTypeTraits<E, T>::encodingType;
+    return EncodingTypeTraits<E>::encodingType;
   }
 
   static std::string_view encode(
@@ -329,7 +236,7 @@ class Encoder {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<E, T>::encodingType,
+        {.encodingType = EncodingTypeTraits<E>::encodingType,
          .compressionPolicyFactory =
              [compressionType]() {
                return std::make_unique<TestCompressPolicy>(compressionType);
@@ -353,7 +260,7 @@ class Encoder {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<E, T>::encodingType,
+        {.encodingType = EncodingTypeTraits<E>::encodingType,
          .compressionPolicyFactory =
              [compressionType]() {
                return std::make_unique<TestCompressPolicy>(compressionType);
