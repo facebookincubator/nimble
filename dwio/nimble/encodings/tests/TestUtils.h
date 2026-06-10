@@ -50,6 +50,12 @@ struct EncodingTypeTraits<nimble::ALPEncoding<T>> {
 };
 
 template <typename T>
+struct EncodingTypeTraits<nimble::BlockBitPackingEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::BlockBitPacking;
+};
+
+template <typename T>
 struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::Constant;
