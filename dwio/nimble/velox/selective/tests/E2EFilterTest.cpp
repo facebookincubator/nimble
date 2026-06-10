@@ -18,8 +18,8 @@
 
 #include <utility>
 
-#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
@@ -335,11 +335,16 @@ class E2EFilterTest
       };
     }
 
-    // Forward the FPE index type when specified.
+    // Forwarding the FrequencyPartition index type requires writer-side
+    // plumbing (VeloxWriterOptions::encodingOptions) that is not present, and
+    // the tests that set it are compiled out (FrequencyPartition encoding is
+    // disabled in EncodingFactory). See NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS.
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     if (frequencyPartitionIndexType_.has_value()) {
       options.encodingOptions.frequencyPartitionIndex =
           static_cast<uint8_t>(frequencyPartitionIndexType_.value());
     }
+#endif
 
     auto i = 0;
     options.flushPolicyFactory = [&] {
@@ -725,6 +730,7 @@ class E2EFilterTest
       case EncodingType::SubIntSplit:
         // SubIntSplit may fall back to Constant for fully-constant data.
         factors.emplace_back(EncodingType::Constant, 100.0);
+        break;
       case EncodingType::FrequencyPartition:
       case EncodingType::FOR:
         // These encodings handle all integer data independently.
@@ -1131,6 +1137,10 @@ TEST_P(E2EFilterTest, integerBiasedDelta) {
   verifyColumnEncodingsOnDisk(EncodingType::Delta);
 }
 
+// FOR and FrequencyPartition encodings are disabled in EncodingFactory, so the
+// tests that force them are compiled out unless experimental encodings are
+// enabled. See encodings/common/EncodingFactory.cpp.
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Forces FOR (Frame of Reference) encoding via encoding layout tree and
 // verifies it on disk. FOR excels at bounded-range integer data where
 // per-frame minimum references reduce bit widths.
@@ -1236,6 +1246,7 @@ TEST_P(E2EFilterTest, integerFrequencyPartitionEliasFano) {
   frequencyPartitionIndexType_.reset();
   verifyColumnEncodingsOnDisk(EncodingType::FrequencyPartition);
 }
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Biased variant that forces SubIntSplit encoding selection.
@@ -1323,7 +1334,8 @@ TEST_P(E2EFilterTest, floatBiasedSubIntSplit) {
 }
 
 // Forces SubIntSplit via EncodingLayoutTree and verifies the on-disk encoding
-// matches. Schema uses only 32/64-bit types (SubIntSplit requires sizeof(T)>=4).
+// matches. Schema uses only 32/64-bit types (SubIntSplit requires
+// sizeof(T)>=4).
 TEST_P(E2EFilterTest, integerForcedSubIntSplit) {
   forcedEncodingType_ = EncodingType::SubIntSplit;
   testWithTypes(
@@ -1356,7 +1368,7 @@ TEST_P(E2EFilterTest, integerForcedSubIntSplit) {
   forcedEncodingType_.reset();
   verifyColumnEncodingsOnDisk(EncodingType::SubIntSplit);
 }
-#endif  // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 TEST_P(E2EFilterTest, float) {
   testWithTypes(
