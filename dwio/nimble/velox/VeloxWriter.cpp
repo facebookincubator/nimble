@@ -347,13 +347,12 @@ std::string_view encode(
                 .release()));
   }
 
-  const auto& encOpts = context.options().encodingOptions;
   if (streamData.hasNulls()) {
     std::span<const bool> notNulls = streamData.nonNulls();
     return EncodingFactory::encodeNullable(
-        std::move(policy), data, notNulls, buffer, encOpts);
+        std::move(policy), data, notNulls, buffer);
   } else {
-    return EncodingFactory::encode(std::move(policy), data, buffer, encOpts);
+    return EncodingFactory::encode(std::move(policy), data, buffer);
   }
 }
 
