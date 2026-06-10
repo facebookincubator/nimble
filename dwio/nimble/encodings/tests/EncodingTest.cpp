@@ -1234,7 +1234,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> encodeMainlyConstantDictionary(
       const std::vector<T>& values) {
     auto serialized = serializeMainlyConstantDictionary(values, *buffer_);
-    return decodeEncoding(serialized);
+    return decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
   }
 
   /// Encodes data as Nullable wrapping MainlyConstant wrapping Dictionary.
@@ -1281,7 +1281,9 @@ class DictionaryApiTypedTest : public ::testing::Test {
     nimble::encoding::writeString(serializedMC, pos);
     nimble::encoding::writeBytes(serializedNulls, pos);
 
-    return decodeEncoding(std::string_view(reserved, encodingSize));
+    return decodeEncoding(
+        std::string_view(reserved, encodingSize),
+        /*preserveDictionaryEncoding=*/true);
   }
 
   /// Serializes values as RLE wrapping Dictionary into outputBuffer.
@@ -2468,6 +2470,54 @@ TYPED_TEST(DictionaryApiTypedTest, rleSkipAndMaterializeAlternating) {
   }
 }
 
+// Verifies that preserveDictionaryEncoding=false forces the flat values path
+// when the inner encoding is dictionary-enabled. The encoding should behave
+// identically to a non-dict RLE — materialize returns correct values but
+// dictionaryEnabled() is false.
+TYPED_TEST(DictionaryApiTypedTest, rleDictionaryDisabledByOption) {
+  using T = TypeParam;
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+  }
+
+  // Serialize as RLE→Dictionary.
+  auto serialized = this->serializeRleDictionary(data, *this->buffer_);
+
+  // Decode without preserveDictionaryEncoding — should use flat values path.
+  nimble::Encoding::Options options{};
+  auto encoding = nimble::EncodingFactory(options).create(
+      *this->pool_, serialized, [this](uint32_t size) {
+        this->stringBuffers_.push_back(
+            velox::AlignedBuffer::allocate<char>(size, this->pool_.get()));
+        return this->stringBuffers_.back()->template asMutable<void>();
+      });
+
+  EXPECT_FALSE(encoding->dictionaryEnabled());
+
+  // Materialize should still produce correct values.
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+  std::vector<PhysicalType> materialized(data.size());
+  encoding->materialize(data.size(), materialized.data());
+  for (size_t i = 0; i < data.size(); ++i) {
+    EXPECT_EQ(materialized[i], reinterpret_cast<const PhysicalType&>(data[i]))
+        << "row " << i;
+  }
+}
+
 TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
   using T = TypeParam;
 
@@ -2592,7 +2642,8 @@ TYPED_TEST(DictionaryApiTypedTest, constantDictionaryBasics) {
           span),
       std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
   auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
-  auto encoding = this->decodeEncoding(serialized);
+  auto encoding =
+      this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
 
   EXPECT_TRUE(encoding->dictionaryEnabled());
   EXPECT_EQ(encoding->dictionarySize(), 1);
@@ -2631,7 +2682,8 @@ TYPED_TEST(DictionaryApiTypedTest, buildAlphabetConstant) {
           span),
       std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
   auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
-  auto encoding = this->decodeEncoding(serialized);
+  auto encoding =
+      this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
 
   auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
   ASSERT_EQ(alphabet.size(), 1);
@@ -2674,7 +2726,8 @@ TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithSingleOtherValue) {
     } else {
       auto serialized =
           this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
-      encoding = this->decodeEncoding(serialized);
+      encoding =
+          this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
     }
 
     ASSERT_TRUE(encoding->dictionaryEnabled());
@@ -2819,7 +2872,8 @@ TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithConstantLeafFuzz) {
     nimble::Buffer mcBuffer{*this->pool_};
     auto serialized =
         this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
-    auto encoding = this->decodeEncoding(serialized);
+    auto encoding =
+        this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
 
     ASSERT_TRUE(encoding->dictionaryEnabled());
     ASSERT_EQ(encoding->dictionarySize(), 2);
