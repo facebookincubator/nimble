@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <functional>
+#include <optional>
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
@@ -25,8 +27,27 @@
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/dwio/common/SeekableInputStream.h"
+#include "velox/dwio/common/SelectiveColumnReader.h"
 
 namespace facebook::nimble {
+
+/// Invoked when a chunk boundary is crossed during skip, ensureLoaded, or
+/// multi-chunk dictionary index reads. Returns true to continue processing
+/// subsequent chunks, or false to stop (e.g., when the new chunk's encoding
+/// is not dictionary-compatible and requires flat fallback).
+using ChunkBoundaryCallback = std::function<bool()>;
+
+/// Default chunk boundary callback that always returns true (continue
+/// processing). Used when the caller does not need to react to chunk
+/// transitions.
+inline const ChunkBoundaryCallback kNoopAtChunkBoundary = [] { return true; };
+
+/// Controls how accumulated string buffers are delivered to the reader after
+/// a chunk read. By default (nullptr), replaces the reader's string buffers.
+/// Callers that need to preserve existing string buffers (e.g., reactive
+/// fallback from dict to flat mid-read) pass an appending handler.
+using SaveStringBufferCallback =
+    std::function<void(std::vector<velox::BufferPtr>&&)>;
 
 class ChunkedDecoderTestHelper;
 
@@ -52,21 +73,12 @@ class ChunkedDecoder {
     NIMBLE_CHECK_NOT_NULL(encodingFactory_);
   }
 
-  /// Registers a callback invoked whenever loadNextChunk() loads a new chunk.
-  /// Used by StringColumnReader to invalidate dictionary state that is tied
-  /// to the current chunk's encoding and string buffers.
-  void setOnChunkLoad(std::function<void()> callback) {
-    onChunkLoad_ = std::move(callback);
-  }
-
-  /// Skip non null values.
-  void skip(int64_t numValues);
-
-  /// Skip non null values using index-based acceleration.
-  void skipWithIndex(int64_t numValues);
-
-  /// Skip non null values using sequential skipping.
-  void skipWithoutIndex(int64_t numValues);
+  /// Skips non-null values. The optional onChunkBoundary callback is invoked
+  /// whenever the skip crosses into a new chunk. This allows callers (e.g.,
+  /// StringColumnReader) to invalidate cached state like mergedAlphabet_.
+  void skip(
+      int64_t numValues,
+      const ChunkBoundaryCallback& onChunkBoundary = kNoopAtChunkBoundary);
 
   /// Decode nulls or in-map buffer values.
   void nextBools(uint64_t* data, int64_t count, const uint64_t* incomingNulls);
@@ -81,26 +93,56 @@ class ChunkedDecoder {
     return nullableValues_;
   }
 
+  /// Reads values using a visitor pattern, handling chunk transitions
+  /// automatically. The optional saveStringBuffersFn callback controls how
+  /// accumulated string buffers are delivered to the reader. By default,
+  /// replaces the reader's string buffers. Callers that need to preserve
+  /// existing string buffers (e.g., flat encoding fallback after a partial dict
+  /// read, where abandonDictionaryEncoding already placed string buffers)
+  /// pass an appending handler. readDictionaryIndices does not need this
+  /// because it reads dict indices (int32_t), not string values — no string
+  /// buffers are produced during dict index reads.
+  /// @param readOffset Starting position in nullsInReadRange_ for
+  ///   reading from the middle of a batch (e.g., flat encoding fallback after a
+  ///   partial dict read). Defaults to 0.
   template <typename DecoderVisitor>
-  void readWithVisitor(DecoderVisitor& visitor) {
+  void readWithVisitor(
+      DecoderVisitor& visitor,
+      velox::vector_size_t readOffset = 0,
+      const SaveStringBufferCallback& saveStringBuffersFn = nullptr) {
+    NIMBLE_CHECK(
+        readOffset == 0 || stringDecoderZeroCopy_,
+        "readOffset is only valid for dict→flat encoding fallback reads");
     const velox::RowSet rows(visitor.rows(), visitor.numRows());
     NIMBLE_DCHECK(std::is_sorted(rows.begin(), rows.end()));
     const auto numRows = visitor.numRows();
     ReadWithVisitorParams params{};
+    params.numScanned = readOffset;
     bool resultNullsPrepared{false};
-    // Allocate one extra byte (8 bits) for nulls to handle multi-chunk
-    // reading, where each chunk we need to align the result nulls to byte
-    // boundary then shift.
-    params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
-      if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
-        visitor.reader().prepareNulls(
-            rows, /*mayResize=*/true, /*extraBits=*/8);
-        resultNullsPrepared = true;
-      }
-    };
-    params.initReturnReaderNulls = [&visitor, &rows] {
-      visitor.reader().initReturnReaderNulls(rows);
-    };
+    if (readOffset > 0) {
+      // Flat encoding fallback (resuming mid-batch after an abandoned
+      // dictionary read). The dictionary phase already prepared the result
+      // null buffer and the return-nulls mode for the full output; this read
+      // only appends. Re-preparing here would clear/re-base the shared null
+      // buffer (wiping the dict portion's nulls) and re-evaluate the mode on
+      // the non-dense continuation row set. So both are no-ops — prepare once.
+      params.prepareResultNulls = [] {};
+      params.initReturnReaderNulls = [] {};
+    } else {
+      // Allocate one extra byte (8 bits) for nulls to handle multi-chunk
+      // reading, where each chunk we need to align the result nulls to byte
+      // boundary then shift.
+      params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
+        if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
+          visitor.reader().prepareNulls(
+              rows, /*hasNulls=*/true, /*extraRows=*/8);
+          resultNullsPrepared = true;
+        }
+      };
+      params.initReturnReaderNulls = [&visitor, &rows] {
+        visitor.reader().initReturnReaderNulls(rows);
+      };
+    }
     bool readerNullsMade{false};
     if (auto& nulls = visitor.reader().nullsInReadRange()) {
       // For flat map child columns, NimbleData::readNulls() may alias inMap_
@@ -125,7 +167,7 @@ class ChunkedDecoder {
         };
       }
       dispatchReadWithVisitorImpl<true>(
-          visitor, nulls->template as<uint64_t>(), params);
+          visitor, nulls->template as<uint64_t>(), params, saveStringBuffersFn);
     } else {
       params.makeReaderNulls = [&readerNullsMade, this, numRows, &visitor] {
         if (FOLLY_UNLIKELY(!readerNullsMade)) {
@@ -142,7 +184,8 @@ class ChunkedDecoder {
             .nullsInReadRange()
             ->template asMutable<uint64_t>();
       };
-      dispatchReadWithVisitorImpl<false>(visitor, /*nulls=*/nullptr, params);
+      dispatchReadWithVisitorImpl<false>(
+          visitor, /*nulls=*/nullptr, params, saveStringBuffersFn);
     }
   }
 
@@ -226,18 +269,21 @@ class ChunkedDecoder {
   /// TODO: Remove after column statistics are added.
   std::optional<size_t> estimateStringDataSize() const;
 
-  /// Ensures a chunk with remaining values is loaded. Loads the first chunk
-  /// if none has been loaded yet, or advances to the next chunk if the current
-  /// one is fully consumed. Called before inspecting the current encoding
-  /// (e.g., currentEncoding, dictionaryConvertible) so that the caller sees
-  /// the encoding and remainingValues of the chunk that will actually be read.
-  void ensureLoaded(bool preserveDictionaryEncoding = false) {
+  // Ensures a chunk with remaining values is loaded in the chunked decoder.
+  // Loads the first chunk if none has been loaded yet, or advances to the
+  // next chunk if the current one is fully consumed. Called before inspecting
+  // the current encoding (e.g., currentEncoding, dictionaryConvertible) so
+  // that the caller sees the encoding and remainingValues of the chunk that
+  // will actually be read.
+  void ensureLoaded(
+      bool preserveDictionaryEncoding = false,
+      const ChunkBoundaryCallback& onChunkBoundary = kNoopAtChunkBoundary) {
     if (encoding_ != nullptr && remainingValues_ != 0) {
       return;
     }
 
     if (hasMoreChunks()) {
-      loadNextChunk(preserveDictionaryEncoding);
+      loadNextChunk(preserveDictionaryEncoding, onChunkBoundary);
     }
   }
 
@@ -256,17 +302,29 @@ class ChunkedDecoder {
     return remainingValues_;
   }
 
-  /// Reads dictionary indices from the current chunk's encoding.
-  /// Non-legacy encodings only: requires stringDecoderZeroCopy_ == true.
+  // Reads dictionary indices across chunks, invoking onChunkBoundary at each
+  // chunk transition. The callback can extend the merged alphabet and refresh
+  // cached state. The callback returns true to continue reading with the new
+  // chunk's dictionary, or false to stop (e.g., when the new chunk is not
+  // dictionary-compatible and requires flat fallback).
+  //
+  // Uses a dedicated loop instead of readWithVisitorImpl to avoid the
+  // testNulls-based chunk transition in computeNextRowIndex, which counts
+  // non-nulls across chunk boundaries and produces incorrect index reads.
+  //
+  // Returns true if all requested rows were consumed. Returns false if
+  // reading stopped early at a chunk boundary (the callback returned false);
+  // in that case it advances the reader's readOffset_ to the boundary so the
+  // flat encoding fallback resumes the decode there.
   template <typename DictionaryVisitor>
-  void readDictionaryIndices(DictionaryVisitor& visitor) {
-    // Dictionary indices reading requires the non-legacy encoding path.
-    // callReadIndicesWithVisitor static_casts to DictionaryEncoding /
-    // NullableEncoding / MainlyConstantEncoding which only exist in the
-    // non-legacy path (stringDecoderZeroCopy_ == true).
+  bool readDictionaryIndices(
+      DictionaryVisitor& visitor,
+      const ChunkBoundaryCallback& onChunkBoundary) {
     NIMBLE_CHECK(
         stringDecoderZeroCopy_,
         "Dictionary indices reading requires non-legacy encoding path");
+    NIMBLE_CHECK_NOT_NULL(encoding_);
+
     const velox::RowSet rows(visitor.rows(), visitor.numRows());
     NIMBLE_DCHECK(std::is_sorted(rows.begin(), rows.end()));
     ReadWithVisitorParams params{};
@@ -276,8 +334,7 @@ class ChunkedDecoder {
     // boundary then shift.
     params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
       if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
-        visitor.reader().prepareNulls(
-            rows, /*mayResize=*/true, /*extraBits=*/8);
+        visitor.reader().prepareNulls(rows, /*hasNulls=*/true, /*extraRows=*/8);
         resultNullsPrepared = true;
       }
     };
@@ -307,15 +364,16 @@ class ChunkedDecoder {
           return nulls->template asMutable<uint64_t>();
         };
       }
-      readDictionaryIndicesImpl<true>(
-          visitor, nulls->template as<uint64_t>(), params);
+      return readDictionaryIndicesImpl<true>(
+          visitor, nulls->template as<uint64_t>(), onChunkBoundary, params);
     } else {
-      params.makeReaderNulls = [&readerNullsMade, this, &visitor] {
+      const auto numRows = visitor.numRows();
+      params.makeReaderNulls = [&readerNullsMade, this, numRows, &visitor] {
         if (FOLLY_UNLIKELY(!readerNullsMade)) {
           auto& nulls = visitor.reader().nullsInReadRange();
           if (!nulls) {
             nulls = velox::AlignedBuffer::allocate<bool>(
-                visitor.rowAt(visitor.numRows() - 1) + 1,
+                visitor.rowAt(numRows - 1) + 1,
                 pool_,
                 /*value=*/velox::bits::kNotNull);
           }
@@ -325,7 +383,8 @@ class ChunkedDecoder {
             .nullsInReadRange()
             ->template asMutable<uint64_t>();
       };
-      readDictionaryIndicesImpl<false>(visitor, /*nulls=*/nullptr, params);
+      return readDictionaryIndicesImpl<false>(
+          visitor, /*nulls=*/nullptr, onChunkBoundary, params);
     }
   }
 
@@ -335,51 +394,97 @@ class ChunkedDecoder {
   // streams are not part of the data stream but interact with the value
   // streams just like nulls. Not using this parameter causes a bug for
   // flatmap data shapes.
+
+  // Dedicated chunk iteration loop for dictionary index reads. Unlike
+  // readWithVisitorImpl, this handles chunk transitions explicitly at the
+  // top of the loop (for both kHasNulls and !kHasNulls paths) instead of
+  // relying on testNulls which counts non-nulls across chunk boundaries.
   template <bool kHasNulls, typename V>
-  void readDictionaryIndicesImpl(
+  bool readDictionaryIndicesImpl(
       V& visitor,
       const uint64_t* nulls,
+      const ChunkBoundaryCallback& onChunkBoundary,
       ReadWithVisitorParams& params) {
     constexpr bool kExtractToReader = std::
         is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
-    NIMBLE_CHECK_GT(remainingValues_, 0);
-    params.numScanned = 0;
     const auto numRows = visitor.numRows();
-    velox::vector_size_t numNulls{0};
-    velox::vector_size_t numNonNulls{0};
-    const auto endRowIndex = computeNextRowIndex<kHasNulls>(
-        visitor, nulls, params, numRows, numNulls, numNonNulls);
-    if (visitor.rowIndex() < endRowIndex) {
-      visitor.setRows(velox::RowSet(visitor.rows(), endRowIndex));
-      if (numNonNulls > 0) {
-        callReadIndicesWithVisitor(*encoding_, visitor, params);
-      } else if (!visitor.allowNulls()) {
-        visitor.setRowIndex(endRowIndex);
-      } else {
-        bool emitNullsRowByRow = true;
-        if constexpr (kExtractToReader) {
-          params.prepareResultNulls();
-          if (visitor.reader().returnReaderNulls()) {
-            auto numValues = endRowIndex - visitor.rowIndex();
-            visitor.setRowIndex(endRowIndex);
-            visitor.addNumValues(numValues);
-            emitNullsRowByRow = false;
+
+    std::vector<velox::BufferPtr> stringBuffers;
+    SCOPE_EXIT {
+      if (stringDecoderZeroCopy_) {
+        visitor.reader().setStringBuffers(std::move(stringBuffers));
+      }
+    };
+
+    while (visitor.rowIndex() < numRows) {
+      // Check for chunk exhaustion before computing the next row range.
+      // This is done unconditionally (for both kHasNulls and !kHasNulls)
+      // to avoid the testNulls path in computeNextRowIndex loading a new
+      // chunk mid-count, which would produce numNonNulls spanning two
+      // chunks and incorrect index reads.
+      if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
+        loadNextChunk(/*preserveDictionaryEncoding=*/true);
+        if (!onChunkBoundary()) {
+          // The new chunk is not dictionary-compatible. readOffset_ has not
+          // moved during this read, so it still holds the read's start offset;
+          // adding params.numScanned (the rows consumed up to this chunk
+          // boundary) advances it to the boundary, where the flat encoding
+          // fallback resumes the decode.
+          //
+          // TODO: Make the decoder the single owner of readOffset_ — also
+          // advance it on the full-read path here instead of readWithDictionary
+          // doing readOffset_ += endReadRow, so the update is not split across
+          // the reader and the decoder.
+          visitor.reader().setReadOffset(
+              visitor.reader().readOffset() + params.numScanned);
+          return false;
+        }
+      }
+
+      velox::vector_size_t numNulls{0};
+      velox::vector_size_t numNonNulls{0};
+      const auto endRowIndex =
+          computeNextRowIndex<kHasNulls, /*kReadAllChunks=*/false>(
+              visitor, nulls, params, numRows, numNulls, numNonNulls);
+
+      if (visitor.rowIndex() < endRowIndex) {
+        visitor.setRows(velox::RowSet(visitor.rows(), endRowIndex));
+        if (numNonNulls > 0) {
+          callReadIndicesWithVisitor(*encoding_, visitor, params);
+        } else if (!visitor.allowNulls()) {
+          visitor.setRowIndex(endRowIndex);
+        } else {
+          bool emitNullsRowByRow = true;
+          if constexpr (kExtractToReader) {
+            params.prepareResultNulls();
+            if (visitor.reader().returnReaderNulls()) {
+              auto numValues = endRowIndex - visitor.rowIndex();
+              visitor.setRowIndex(endRowIndex);
+              visitor.addNumValues(numValues);
+              emitNullsRowByRow = false;
+            }
+          }
+          if (emitNullsRowByRow) {
+            bool atEnd = false;
+            while (!atEnd) {
+              visitor.processNull(atEnd);
+            }
           }
         }
-        if (emitNullsRowByRow) {
-          bool atEnd = false;
-          while (!atEnd) {
-            visitor.processNull(atEnd);
-          }
+        NIMBLE_CHECK_EQ(visitor.rowIndex(), endRowIndex);
+      }
+      advancePosition(numNonNulls);
+      params.numScanned += numNulls + numNonNulls;
+
+      if (stringDecoderZeroCopy_) {
+        stringBuffers.reserve(
+            stringBuffers.size() + currentStringBuffers_.size());
+        for (const auto& buf : currentStringBuffers_) {
+          stringBuffers.emplace_back(buf);
         }
       }
     }
-    advancePosition(numNonNulls);
-    params.numScanned += numNulls + numNonNulls;
-    if (stringDecoderZeroCopy_) {
-      visitor.reader().setStringBuffers(
-          {currentStringBuffers_.begin(), currentStringBuffers_.end()});
-    }
+    return true;
   }
 
   template <bool kHasMask>
@@ -440,7 +545,19 @@ class ChunkedDecoder {
     return allConsumed ? end - 1 : index;
   }
 
-  template <bool kHasNulls, typename V>
+  // Computes the end row index for the current chunk's read range.
+  //
+  // When kReadAllChunks is true (default, used by readWithVisitorImpl),
+  // the kHasNulls path calls lastNonNullIndex which may load new chunks via
+  // testNulls when remainingValues_ reaches 0. This allows the flat read
+  // path to transparently span chunks.
+  //
+  // When kReadAllChunks is false (used by readDictionaryIndicesImpl),
+  // the kHasNulls path caps at the current chunk's boundary using
+  // countNonNulls + findSetBit instead of lastNonNullIndex. This prevents
+  // testNulls from loading new chunks, which would bypass the dict path's
+  // onChunkBoundary callback.
+  template <bool kHasNulls, bool kReadAllChunks = true, typename V>
   velox::vector_size_t computeNextRowIndex(
       const V& visitor,
       const uint64_t* nulls,
@@ -450,49 +567,96 @@ class ChunkedDecoder {
       velox::vector_size_t& numNonNulls) {
     numNulls = 0;
     numNonNulls = 0;
+
     if constexpr (V::dense) {
+      // Dense: row positions equal indices, so endRowIndex is computed
+      // directly from numScanned without lower_bound.
       NIMBLE_DCHECK_EQ(visitor.currentRow(), params.numScanned);
       if constexpr (!kHasNulls) {
         numNonNulls =
             std::min<int64_t>(numRows - visitor.rowIndex(), remainingValues_);
         return visitor.rowIndex() + numNonNulls;
       }
-      return 1 +
-          lastNonNullIndex(
-                 nulls, params.numScanned, numRows, numNulls, numNonNulls);
-    }
-    auto end = visitor.rowAt(numRows - 1) + 1;
-    velox::vector_size_t chunkEnd;
-    if constexpr (kHasNulls) {
-      chunkEnd = 1 +
-          lastNonNullIndex(
-                     nulls, params.numScanned, end, numNulls, numNonNulls);
+      // Absolute end in the null bitmap. For a row set starting at 0 this
+      // equals numRows. For continuation reads (numScanned > 0 at start),
+      // this accounts for the offset so the bitmap is scanned correctly.
+      const auto nullsEnd = params.numScanned + (numRows - visitor.rowIndex());
+      if constexpr (kReadAllChunks) {
+        return 1 +
+            lastNonNullIndex(
+                   nulls, params.numScanned, nullsEnd, numNulls, numNonNulls);
+      }
+      // !kReadAllChunks: cap at the current chunk boundary.
+      numNonNulls = static_cast<velox::vector_size_t>(
+          velox::bits::countNonNulls(nulls, params.numScanned, nullsEnd));
+      velox::vector_size_t chunkEnd{0};
+      if (numNonNulls <= remainingValues_) {
+        chunkEnd = nullsEnd;
+      } else {
+        numNonNulls = remainingValues_;
+        chunkEnd = static_cast<velox::vector_size_t>(
+            1 +
+            velox::bits::findSetBit(
+                reinterpret_cast<const char*>(nulls),
+                params.numScanned,
+                nullsEnd,
+                remainingValues_));
+      }
+      numNulls = (chunkEnd - params.numScanned) - numNonNulls;
+      return visitor.rowIndex() + (chunkEnd - params.numScanned);
     } else {
-      chunkEnd = params.numScanned + remainingValues_;
-      numNonNulls =
-          std::min<int64_t>(end - params.numScanned, remainingValues_);
+      // Sparse: row positions are non-contiguous, so we need lower_bound
+      // to map chunkEnd back to a row index.
+      const auto endRow = visitor.rowAt(numRows - 1) + 1;
+      velox::vector_size_t chunkEnd{0};
+      if constexpr (!kHasNulls) {
+        chunkEnd = params.numScanned + remainingValues_;
+        numNonNulls =
+            std::min<int64_t>(endRow - params.numScanned, remainingValues_);
+      } else if constexpr (kReadAllChunks) {
+        chunkEnd = 1 +
+            lastNonNullIndex(
+                       nulls, params.numScanned, endRow, numNulls, numNonNulls);
+      } else {
+        // !kReadAllChunks: cap at the current chunk boundary.
+        numNonNulls = static_cast<velox::vector_size_t>(
+            velox::bits::countNonNulls(nulls, params.numScanned, endRow));
+        if (numNonNulls <= remainingValues_) {
+          chunkEnd = endRow;
+        } else {
+          numNonNulls = remainingValues_;
+          chunkEnd = static_cast<velox::vector_size_t>(
+              1 +
+              velox::bits::findSetBit(
+                  reinterpret_cast<const char*>(nulls),
+                  params.numScanned,
+                  endRow,
+                  remainingValues_));
+        }
+        numNulls = (chunkEnd - params.numScanned) - numNonNulls;
+      }
+      return std::lower_bound(
+                 visitor.rows() + visitor.rowIndex(),
+                 visitor.rows() + numRows,
+                 chunkEnd) -
+          visitor.rows();
     }
-
-    return std::lower_bound(
-               visitor.rows() + visitor.rowIndex(),
-               visitor.rows() + numRows,
-               chunkEnd) -
-        visitor.rows();
   }
 
-  /// Selects the encoding trait based on stringDecoderZeroCopy_ and
-  /// forwards to the fully-monomorphic readWithVisitorImpl.
+  // Selects the encoding trait based on stringDecoderZeroCopy_ and
+  // forwards to the fully-monomorphic readWithVisitorImpl.
   template <bool kHasNulls, typename V>
   void dispatchReadWithVisitorImpl(
       V& visitor,
       const uint64_t* nulls,
-      ReadWithVisitorParams& params) {
+      ReadWithVisitorParams& params,
+      const SaveStringBufferCallback& saveStringBuffersFn) {
     if (stringDecoderZeroCopy_) {
       readWithVisitorImpl<kHasNulls, DefaultEncodingTrait>(
-          visitor, nulls, params);
+          visitor, nulls, params, saveStringBuffersFn);
     } else {
       readWithVisitorImpl<kHasNulls, legacy::LegacyEncodingTrait>(
-          visitor, nulls, params);
+          visitor, nulls, params, saveStringBuffersFn);
     }
   }
 
@@ -500,12 +664,14 @@ class ChunkedDecoder {
   void readWithVisitorImpl(
       V& visitor,
       const uint64_t* nulls,
-      ReadWithVisitorParams& params) {
+      ReadWithVisitorParams& params,
+      const SaveStringBufferCallback& saveStringBuffersFn) {
     constexpr bool kExtractToReader = std::
         is_same_v<typename V::Extract, velox::dwio::common::ExtractToReader>;
     const auto numRows = visitor.numRows();
 
     std::vector<velox::BufferPtr> stringBuffers;
+
     while (visitor.rowIndex() < numRows) {
       if constexpr (!kHasNulls) {
         if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
@@ -516,6 +682,7 @@ class ChunkedDecoder {
       velox::vector_size_t numNonNulls;
       const auto endRowIndex = computeNextRowIndex<kHasNulls>(
           visitor, nulls, params, numRows, numNulls, numNonNulls);
+
       VLOG(1) << visitor.reader().fileType().fullName() << ":"
               << " rowIndex=" << visitor.rowIndex()
               << " endRowIndex=" << endRowIndex << " numNulls=" << numNulls
@@ -558,17 +725,23 @@ class ChunkedDecoder {
       advancePosition(numNonNulls);
       params.numScanned += numNulls + numNonNulls;
 
+      // Accumulate string buffers from each chunk. For non-string types,
+      // currentStringBuffers_ will be empty.
       // Note: we can over queue the current string buffers by exactly
       // once, but that doesn't change the life cycle of the buffers for now.
       // Keeping this pattern for simplicity.
-      // For non-string types, currentStringBuffers_ will be empty
       for (const auto& buf : currentStringBuffers_) {
         stringBuffers.push_back(buf);
       }
     }
 
-    if (visitor.reader().formatData().stringDecoderZeroCopy()) {
-      visitor.reader().setStringBuffers(std::move(stringBuffers));
+    // Flush accumulated string buffers to the reader.
+    if (stringDecoderZeroCopy_) {
+      if (saveStringBuffersFn) {
+        saveStringBuffersFn(std::move(stringBuffers));
+      } else {
+        visitor.reader().setStringBuffers(std::move(stringBuffers));
+      }
     }
   }
 
@@ -589,13 +762,18 @@ class ChunkedDecoder {
   // TODO: remove with row size estimate hacks.
   bool ensureInputIncremental_hack(int size, const char*& pos);
 
-  void invokeOnChunkLoad() {
-    if (onChunkLoad_) {
-      onChunkLoad_();
-    }
-  }
-
-  void loadNextChunk(bool preserveDictionaryEncoding = false);
+  // Loads the next chunk from the input stream and creates a new encoding.
+  //
+  // @param preserveDictionaryEncoding When true, creates the encoding with
+  //   dictionary mode enabled so that RLE enters dict index mode. Only the
+  //   string dictionary reader passes true; all other callers use the
+  //   default (false).
+  // @param onChunkLoaded Callback invoked after loading. Returns true to
+  //   continue reading, false to stop (e.g., the new chunk is not
+  //   dictionary-compatible). Defaults to kNoopAtChunkBoundary.
+  bool loadNextChunk(
+      bool preserveDictionaryEncoding = false,
+      const ChunkBoundaryCallback& onChunkLoaded = kNoopAtChunkBoundary);
 
   void prepareInputBuffer(int32_t size);
 
@@ -613,7 +791,9 @@ class ChunkedDecoder {
   // Positions the decoder at the beginning of the chunk at the given offset.
   // The caller is responsible for updating rowPosition_ after this call.
   // @param offset The byte offset of the chunk in the stream
-  void seekToChunk(uint32_t offset);
+  void seekToChunk(
+      uint32_t offset,
+      const ChunkBoundaryCallback& onChunkBoundary = kNoopAtChunkBoundary);
 
   // Advances the position by the given number of values.
   // Updates both remainingValues_ and currentRow_.
@@ -625,6 +805,14 @@ class ChunkedDecoder {
         rowPosition_,
         streamRowCount_.value_or(std::numeric_limits<uint32_t>::max()));
   }
+
+  void skipWithIndex(
+      int64_t numValues,
+      const ChunkBoundaryCallback& onChunkBoundary);
+
+  void skipWithoutIndex(
+      int64_t numValues,
+      const ChunkBoundaryCallback& onChunkBoundary);
 
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;
@@ -656,10 +844,6 @@ class ChunkedDecoder {
 
   // Tracks the current row position in the stream.
   uint32_t rowPosition_{0};
-
-  // Callback invoked on chunk transitions. Used to clear cached state
-  // (e.g., alphabet, dictionaryValues) in the owning column reader.
-  std::function<void()> onChunkLoad_;
 
   friend class ChunkedDecoderTestHelper;
 };

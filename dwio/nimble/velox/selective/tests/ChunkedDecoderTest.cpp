@@ -1367,7 +1367,7 @@ TEST_P(ChunkedDecoderDataTest, ensureLoadedAndAccessors) {
   EXPECT_FALSE(decoder.dictionaryConvertible());
 }
 
-TEST_P(ChunkedDecoderDataTest, onChunkLoadCallback) {
+TEST_P(ChunkedDecoderDataTest, skipChunkBoundaryCallback) {
   auto [streamData, chunkInfos] =
       encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5, 6}});
   auto streamIndex = createTestStreamIndex(chunkInfos);
@@ -1376,15 +1376,15 @@ TEST_P(ChunkedDecoderDataTest, onChunkLoadCallback) {
   ChunkedDecoder decoder(
       std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
 
-  int callbackCount = 0;
-  decoder.setOnChunkLoad([&] { ++callbackCount; });
-
   decoder.ensureLoaded();
-  EXPECT_EQ(callbackCount, 1);
 
-  // Skip past chunk 1 (3 values) into chunk 2, triggering a second load.
-  decoder.skip(4);
-  EXPECT_EQ(callbackCount, 2);
+  int callbackCount = 0;
+  // Skip past chunk 1 (3 values) into chunk 2, triggering the callback.
+  decoder.skip(4, [&] {
+    ++callbackCount;
+    return true;
+  });
+  EXPECT_EQ(callbackCount, 1);
 }
 
 TEST_P(ChunkedDecoderDataTest, hasMoreChunks) {
@@ -1417,9 +1417,31 @@ TEST_P(ChunkedDecoderDataTest, hasMoreChunks) {
   EXPECT_EQ(decoder.remainingValues(), 0);
 }
 
-// Verifies that ensureLoaded fires onChunkLoad when reloading an exhausted
-// chunk, allowing the caller to invalidate cached state.
-TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresOnChunkLoadOnReload) {
+TEST_P(ChunkedDecoderDataTest, ensureLoadedReloadsExhaustedChunk) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5, 6}});
+  auto streamIndex = createTestStreamIndex(chunkInfos);
+  auto input = std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+      streamData.data(), streamData.size());
+  ChunkedDecoder decoder(
+      std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
+
+  decoder.ensureLoaded();
+  EXPECT_EQ(decoder.remainingValues(), 3);
+
+  // Consume chunk 1.
+  decoder.skip(3);
+  EXPECT_EQ(decoder.remainingValues(), 0);
+
+  // ensureLoaded reloads chunk 2.
+  decoder.ensureLoaded();
+  EXPECT_EQ(decoder.remainingValues(), 3);
+}
+
+// Verifies that ensureLoaded fires its onChunkBoundary callback when
+// reloading an exhausted chunk, allowing the caller to invalidate cached
+// state (e.g., dictionary alphabet).
+TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresCallbackOnReload) {
   auto [streamData, chunkInfos] =
       encodeChunkedStream<uint32_t>({{1, 2, 3}, {4, 5, 6}});
   auto streamIndex = createTestStreamIndex(chunkInfos);
@@ -1429,19 +1451,26 @@ TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresOnChunkLoadOnReload) {
       std::move(input), streamIndex, false, &encodingFactory(), pool_.get());
 
   int callbackCount = 0;
-  decoder.setOnChunkLoad([&] { ++callbackCount; });
+  auto onChunkBoundary = [&] {
+    ++callbackCount;
+    return true;
+  };
 
-  // First load.
-  decoder.ensureLoaded();
+  // First load fires the callback.
+  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
   EXPECT_EQ(callbackCount, 1);
   EXPECT_EQ(decoder.remainingValues(), 3);
+
+  // ensureLoaded with remaining > 0 does not fire.
+  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+  EXPECT_EQ(callbackCount, 1);
 
   // Consume chunk 1.
   decoder.skip(3);
   EXPECT_EQ(decoder.remainingValues(), 0);
 
   // ensureLoaded reloads chunk 2, firing the callback.
-  decoder.ensureLoaded();
+  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
   EXPECT_EQ(callbackCount, 2);
   EXPECT_EQ(decoder.remainingValues(), 3);
 }
@@ -1545,9 +1574,122 @@ class ChunkedDecoderDictTest : public ChunkedDecoderTest {
   }
 };
 
-// Verify buildAlphabet for a simple Dictionary encoding.
-// Verify string buffers keep alphabet data alive after reading a
-// dictionary-encoded string chunk.
+// Verify dictionaryConvertible() returns true for Dictionary encoding and
+// eagerly loads the first chunk when encoding_ is null.
+// Verifies dictionaryConvertible() for standalone (non-nested) encodings:
+// Dictionary (true), Nullable→Dictionary (true), and Trivial (false).
+TEST_F(ChunkedDecoderDictTest, dictionaryConvertibleLeafEncodings) {
+  // Dictionary encoding.
+  {
+    SCOPED_TRACE("Dictionary");
+    std::vector<std::string_view> data = {"apple", "banana", "apple", "cherry"};
+    auto streamData = encodeStringChunkedStream({data}, stringDictEnc());
+    auto decoder = createStringDecoder(streamData);
+    decoder.ensureLoaded();
+    EXPECT_TRUE(decoder.dictionaryConvertible());
+    EXPECT_EQ(decoder.currentEncoding()->dataType(), DataType::String);
+  }
+
+  // Nullable→Dictionary.
+  {
+    SCOPED_TRACE("Nullable→Dictionary");
+    std::vector<std::optional<std::string_view>> data = {
+        "apple", std::nullopt, "banana", "apple"};
+    auto streamData =
+        encodeNullableStringChunkedStream({data}, stringDictEnc());
+    auto decoder = createStringDecoder(streamData);
+    decoder.ensureLoaded();
+    EXPECT_TRUE(decoder.dictionaryConvertible());
+    EXPECT_EQ(
+        decoder.currentEncoding()->encodingType(), EncodingType::Nullable);
+  }
+
+  // Trivial — not dictionary-convertible.
+  {
+    SCOPED_TRACE("Trivial");
+    std::vector<std::string_view> data = {"hello", "world"};
+    auto streamData = encodeStringChunkedStream({data}, StringTrivialEnc{});
+    auto decoder = createStringDecoder(streamData);
+    decoder.ensureLoaded();
+    EXPECT_FALSE(decoder.dictionaryConvertible());
+  }
+}
+
+// Verifies dictionaryConvertible() for nested encodings:
+// MainlyConstant→Dictionary (true) and Nullable→MainlyConstant→Dictionary
+// (true).
+TEST_F(ChunkedDecoderDictTest, dictionaryConvertibleNestedEncodings) {
+  // MainlyConstant→Dictionary.
+  {
+    SCOPED_TRACE("MainlyConstant→Dictionary");
+    std::vector<std::string_view> data;
+    data.reserve(100);
+    for (int i = 0; i < 100; ++i) {
+      data.emplace_back("common");
+    }
+    data[10] = "rare";
+    data[20] = "rare";
+    auto streamData = encodeStringChunkedStream(
+        {data}, MainlyConstantEnc{.otherValues = stringDictEnc()});
+    auto decoder = createStringDecoder(streamData);
+    decoder.ensureLoaded();
+    EXPECT_TRUE(decoder.dictionaryConvertible());
+  }
+
+  // Nullable→MainlyConstant→Dictionary.
+  {
+    SCOPED_TRACE("Nullable→MainlyConstant→Dictionary");
+    std::vector<std::optional<std::string_view>> data;
+    data.reserve(100);
+    for (int i = 0; i < 100; ++i) {
+      data.emplace_back("common");
+    }
+    data[10] = "rare";
+    data[20] = "rare";
+    data[30] = std::nullopt;
+    data[60] = std::nullopt;
+    auto streamData = encodeNullableStringChunkedStream(
+        {data}, MainlyConstantEnc{.otherValues = stringDictEnc()});
+    auto decoder = createStringDecoder(streamData);
+    decoder.ensureLoaded();
+    EXPECT_TRUE(decoder.dictionaryConvertible());
+    EXPECT_EQ(
+        decoder.currentEncoding()->encodingType(), EncodingType::Nullable);
+  }
+}
+
+// Verifies dictionaryConvertible() is re-evaluated per chunk and that
+// multi-chunk navigation works correctly.
+TEST_F(ChunkedDecoderDictTest, dictionaryConvertibleAcrossChunks) {
+  std::vector<std::string_view> chunk1 = {"a", "b", "c", "a"};
+  std::vector<std::string_view> chunk2 = {"x", "y", "z", "x", "y"};
+
+  auto streamData =
+      encodeStringChunkedStream({chunk1, chunk2}, stringDictEnc());
+
+  auto decoder = createStringDecoder(streamData);
+
+  // First chunk is dictionary.
+  decoder.ensureLoaded();
+  EXPECT_TRUE(decoder.dictionaryConvertible());
+  EXPECT_EQ(decoder.remainingValues(), 4);
+
+  // Calling again with remaining > 0 returns cached result.
+  EXPECT_TRUE(decoder.dictionaryConvertible());
+
+  // Skip 3 values within chunk 1.
+  decoder.skip(3);
+  EXPECT_EQ(decoder.remainingValues(), 1);
+
+  // Skip past the chunk boundary into chunk 2.
+  decoder.skip(2);
+  EXPECT_EQ(decoder.remainingValues(), 4);
+  // Second chunk is also dictionary — re-evaluated after chunk load.
+  EXPECT_TRUE(decoder.dictionaryConvertible());
+}
+
+// Verifies that alphabet string_views built from the encoding's dictionary
+// point into valid string buffers allocated during loadNextChunk.
 TEST_F(ChunkedDecoderDictTest, stringBuffersAfterChunkLoad) {
   std::vector<std::string_view> data = {"hello", "world", "hello"};
   auto streamData = encodeStringChunkedStream({data}, stringDictEnc());
@@ -1556,8 +1698,6 @@ TEST_F(ChunkedDecoderDictTest, stringBuffersAfterChunkLoad) {
   decoder.ensureLoaded();
   ASSERT_TRUE(decoder.dictionaryConvertible());
 
-  // Build the alphabet — string_views point into the encoding's string
-  // buffers that were allocated during loadNextChunk.
   auto alphabet = buildEncodingDictionaryAlphabet<std::string_view>(
       decoder.currentEncoding());
   ASSERT_EQ(alphabet.size(), 2);
