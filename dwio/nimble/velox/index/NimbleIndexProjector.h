@@ -275,8 +275,8 @@ class NimbleIndexProjector {
   // metadata for selected stripes, and populates ctx_.plan.
   void prepareStripes();
 
-  // Enqueues all projected streams from ctx_.plan into DataInput
-  // and issues a single coalesced load() call.
+  // Enqueues all projected streams from ctx_.plan into DataInput and issues a
+  // single coalesced load() call.
   void loadStripes();
 
   // Serializes each stripe's loaded streams, builds per-request results,

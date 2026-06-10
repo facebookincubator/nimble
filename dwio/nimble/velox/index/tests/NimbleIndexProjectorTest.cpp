@@ -32,8 +32,11 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include "velox/common/caching/FileIds.h"
+#include "velox/common/file/IoUringReader.h"
+#include "velox/common/file/LocalFile.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempFilePath.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -160,10 +163,16 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   velox::FileHandle makeFileHandle() {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+    return makeFileHandle(std::move(readFile), "test_file");
+  }
+
+  velox::FileHandle makeFileHandle(
+      std::shared_ptr<velox::ReadFile> readFile,
+      std::string_view id) {
     return velox::FileHandle{
         std::move(readFile),
-        velox::StringIdLease(velox::fileIds(), "test_file"),
-        velox::StringIdLease(velox::fileIds(), "test_group")};
+        velox::StringIdLease(velox::fileIds(), id),
+        velox::StringIdLease(velox::fileIds(), id)};
   }
 
   std::unique_ptr<NimbleIndexProjector> createProjector(
@@ -171,10 +180,23 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
       bool setDataIoStats = true,
       bool setMetadataIoStats = true,
       bool setIndexIoStats = true) {
+    return createProjectorWithFileHandle(
+        projectedSubfields,
+        makeFileHandle(),
+        setDataIoStats,
+        setMetadataIoStats,
+        setIndexIoStats);
+  }
+
+  std::unique_ptr<NimbleIndexProjector> createProjectorWithFileHandle(
+      const std::vector<Subfield>& projectedSubfields,
+      velox::FileHandle fileHandle,
+      bool setDataIoStats = true,
+      bool setMetadataIoStats = true,
+      bool setIndexIoStats = true) {
     dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
     metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
     indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
-    auto fileHandle = makeFileHandle();
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     if (setDataIoStats) {
       readerOptions.setDataIoStats(dataIoStats_);
@@ -976,6 +998,166 @@ TEST_P(NimbleIndexProjectorTest, stats) {
     EXPECT_EQ(proj->stats().numProjectedRows, 0);
     EXPECT_EQ(dataIoStats_->rawBytesRead(), 0);
   }
+}
+
+TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  constexpr int numBatches = 4;
+  constexpr int rowsPerBatch = 128;
+  constexpr int numRows = numBatches * rowsPerBatch;
+  std::vector<RowVectorPtr> inputBatches;
+  inputBatches.reserve(numBatches);
+  for (int batch = 0; batch < numBatches; ++batch) {
+    std::vector<int64_t> keys(rowsPerBatch);
+    std::vector<int32_t> values(rowsPerBatch);
+    for (int row = 0; row < rowsPerBatch; ++row) {
+      const auto key = batch * rowsPerBatch + row;
+      keys[row] = key;
+      values[row] = key * 10;
+    }
+    inputBatches.emplace_back(vectorMaker_->rowVector(
+        {"key", "value"},
+        {vectorMaker_->flatVector<int64_t>(keys),
+         vectorMaker_->flatVector<int32_t>(values)}));
+  }
+  writeData(inputBatches, {"key"}, {}, /*stripeSize=*/1);
+
+  auto tempFile = velox::common::testutil::TempFilePath::create();
+  {
+    velox::LocalWriteFile writeFile(
+        tempFile->getPath(),
+        /*shouldCreateParentDirectories=*/false,
+        /*shouldThrowOnFileAlreadyExists=*/false);
+    writeFile.append(sinkData_);
+    writeFile.close();
+  }
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  struct TestCase {
+    const char* name;
+    bool bufferIo;
+    bool useIoUring;
+  };
+  const std::vector<TestCase> testCases = {
+      {"buffered", /*bufferIo=*/true, /*useIoUring=*/false},
+      {"direct", /*bufferIo=*/false, /*useIoUring=*/false},
+      {"directIoUring", /*bufferIo=*/false, /*useIoUring=*/true},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    velox::ThreadLocalIoUringReader::testingClear();
+    uint64_t numIoUringReaders{0};
+    EXPECT_EQ(velox::getIoUringReaderStats(numIoUringReaders).readCalls, 0);
+    EXPECT_EQ(numIoUringReaders, 0);
+
+    auto tabletReadFile = std::make_shared<velox::LocalReadFile>(
+        tempFile->getPath(),
+        /*executor=*/nullptr,
+        /*bufferIo=*/true,
+        /*useIoUring=*/false);
+    auto dataReadFile = std::make_shared<velox::LocalReadFile>(
+        tempFile->getPath(),
+        /*executor=*/nullptr,
+        testCase.bufferIo,
+        testCase.useIoUring);
+    const auto fileName = dataReadFile->getName();
+    dwio::common::ReaderOptions tabletReaderOptions(leafPool_.get());
+    tabletReaderOptions.setFileFormat(FileFormat::NIMBLE);
+    tabletReaderOptions.setLoadClusterIndex(true);
+    tabletReaderOptions.setCacheData(false);
+    tabletReaderOptions.setCacheMetadata(GetParam().cacheMetadata);
+    tabletReaderOptions.setPinMetadata(GetParam().pinMetadata);
+    tabletReaderOptions.setIOExecutor(ioExecutor_);
+    ensureTabletReaderCache();
+    (void)tabletReaderCache_->get(
+        tabletReadFile, TabletReader::configureOptions(tabletReaderOptions));
+    auto projector = createProjectorWithFileHandle(
+        subfields, makeFileHandle(dataReadFile, fileName));
+    const auto fileBytesBeforeProject = dataReadFile->bytesRead();
+
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {makeRangeLookup(rowType, {"key"}, 0, numRows)};
+    auto result = projector->project(request, {});
+
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_EQ(result.responses[0].slices.size(), numBatches);
+    std::vector<folly::IOBuf> ownedSlices;
+    std::vector<std::string_view> serializedBatches;
+    ownedSlices.reserve(numBatches);
+    serializedBatches.reserve(numBatches);
+    for (const auto& slice : result.responses[0].slices) {
+      const auto rowRange = readEmbeddedRowRange(slice);
+      EXPECT_EQ(rowRange, RowRange(0, rowsPerBatch));
+      ownedSlices.push_back(slice.cloneCoalescedAsValue());
+      serializedBatches.emplace_back(
+          reinterpret_cast<const char*>(ownedSlices.back().data()),
+          ownedSlices.back().length());
+    }
+
+    DeserializerOptions deserOptions;
+    deserOptions.hasHeader = true;
+    Deserializer deserializer(
+        projector->projectedNimbleType(), leafPool_.get(), deserOptions);
+    VectorPtr output;
+    deserializer.deserialize(serializedBatches, output);
+    ASSERT_EQ(output->size(), static_cast<uint32_t>(numRows));
+    auto* rowVec = output->as<RowVector>();
+    auto* valueVec = rowVec->childAt(0)->as<FlatVector<int32_t>>();
+    for (uint32_t row = 0; row < numRows; ++row) {
+      EXPECT_EQ(valueVec->valueAt(row), static_cast<int32_t>(row * 10))
+          << "row=" << row;
+    }
+
+    EXPECT_EQ(projector->stats().numReadStripes, numBatches);
+    EXPECT_EQ(projector->stats().numReadRows, numRows);
+    EXPECT_EQ(projector->stats().numProjectedRows, numRows);
+    EXPECT_GT(projector->stats().numOutputBytes, 0);
+
+    const auto physicalBytes = dataIoStats_->read().sum();
+    const auto payloadBytes = dataIoStats_->rawBytesRead();
+    EXPECT_GT(dataIoStats_->read().count(), 0);
+    EXPECT_GT(payloadBytes, 0);
+    EXPECT_EQ(
+        dataReadFile->bytesRead() - fileBytesBeforeProject, physicalBytes);
+    EXPECT_EQ(dataIoStats_->rawOverreadBytes(), physicalBytes - payloadBytes);
+    EXPECT_GE(physicalBytes, payloadBytes);
+    uint64_t alignment{0};
+    EXPECT_EQ(dataReadFile->directIo(alignment), !testCase.bufferIo);
+    if (!testCase.bufferIo) {
+      EXPECT_EQ(physicalBytes % alignment, 0);
+      EXPECT_GE(physicalBytes, payloadBytes);
+    } else {
+      EXPECT_EQ(alignment, 1);
+    }
+    uint64_t tabletAlignment{0};
+    EXPECT_FALSE(tabletReadFile->directIo(tabletAlignment));
+    EXPECT_EQ(tabletAlignment, 1);
+
+    const auto ioUringStats = velox::getIoUringReaderStats(numIoUringReaders);
+    if (testCase.useIoUring) {
+      EXPECT_EQ(numIoUringReaders, 1);
+      EXPECT_EQ(ioUringStats.readCalls, 1);
+      EXPECT_EQ(ioUringStats.regions, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.batches, 1);
+      EXPECT_EQ(ioUringStats.minRegionsPerRead, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.maxRegionsPerRead, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.minBatchSize, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.maxBatchSize, dataIoStats_->read().count());
+    } else {
+      EXPECT_EQ(numIoUringReaders, 0);
+      EXPECT_EQ(ioUringStats.readCalls, 0);
+      EXPECT_EQ(ioUringStats.regions, 0);
+      EXPECT_EQ(ioUringStats.batches, 0);
+    }
+  }
+  velox::ThreadLocalIoUringReader::testingClear();
+  EXPECT_EQ(tabletReaderCache_->stats().numElements, 1);
+  EXPECT_EQ(tabletReaderCache_->stats().numLookups, 2 * testCases.size());
+  EXPECT_EQ(tabletReaderCache_->stats().numHits, 2 * testCases.size() - 1);
 }
 
 TEST_P(NimbleIndexProjectorTest, statsToString) {
