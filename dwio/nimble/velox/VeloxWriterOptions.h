@@ -18,7 +18,6 @@
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
-#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -249,11 +248,6 @@ struct VeloxWriterOptions {
   // with the goal of eventually replacing RawSizeUtils accumulation with column
   // statistics for non-deduplicated columns.
   bool enableStatsConsistencyCheck{true};
-
-  // Low-level encoding options forwarded to EncodingFactory::encode for every
-  // stream. Currently used to control the FrequencyPartitionEncoding index
-  // type (frequencyPartitionIndex field).
-  Encoding::Options encodingOptions{};
 };
 
 } // namespace facebook::nimble
