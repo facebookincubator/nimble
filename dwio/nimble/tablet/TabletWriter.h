@@ -204,8 +204,6 @@ class TabletWriter {
   std::vector<uint32_t> stripeRowCounts_;
   // Offsets from start of file to first byte in each stripe.
   std::vector<uint64_t> stripeOffsets_;
-  // Sizes of the stripes
-  std::vector<uint32_t> stripeSizes_;
 
   // For each stripe, which stripe group it belongs to.
   std::vector<uint32_t> stripeGroupIndices_;

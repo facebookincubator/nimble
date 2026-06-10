@@ -180,8 +180,7 @@ void TabletWriter::close() {
   checkNotClosed();
   const auto stripeCount = stripeOffsets_.size();
   NIMBLE_CHECK(
-      stripeCount == stripeSizes_.size() &&
-          stripeCount == stripeRowCounts_.size() &&
+      stripeCount == stripeRowCounts_.size() &&
           stripeCount == stripeGroupIndices_.size(),
       "Stripe count mismatch.");
 
@@ -398,8 +397,6 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
     }
   }
 
-  stripeSizes_.push_back(file_->size() - stripeOffsets_.back());
-
   stripeGroupIndices_.push_back(stripeGroupIndex_);
   // Write stripe group if size of column offsets/sizes is too large.
   tryWriteStripeGroup();
@@ -520,7 +517,6 @@ MetadataSection TabletWriter::writeStripes(size_t stripeCount) {
           stripesBuilder,
           stripesBuilder.CreateVector(stripeRowCounts_),
           stripesBuilder.CreateVector(stripeOffsets_),
-          stripesBuilder.CreateVector(stripeSizes_),
           stripesBuilder.CreateVector(stripeGroupIndices_)));
   return createMetadataSection(asView(stripesBuilder));
 }
