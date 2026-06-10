@@ -215,14 +215,14 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
   auto pos = encoding.data();
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
   auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
-  
+
 #ifdef DISABLE_META_INTERNAL_COMPRESSOR
   // When MetaInternal is not available, map it to Zstd
   if (compressionType == CompressionType::MetaInternal) {
     compressionType = CompressionType::Zstd;
   }
 #endif
-  
+
   const auto childrenCount = encoding::read<uint8_t>(pos);
   // SubIntSplit-specific logic commented out to restore original behavior:
   /*
@@ -383,6 +383,11 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     // SubIntSplit integration is disabled; treat it as a non-nested encoding
     // (zero children) so its layout is captured without nested logic.
     case EncodingType::SubIntSplit:
+    // FOR and FrequencyPartition integration is disabled; treat them as
+    // non-nested encodings (zero children). Their nested-capture logic is
+    // commented out below.
+    case EncodingType::FOR:
+    case EncodingType::FrequencyPartition:
       // Non nested encodings have zero children
       break;
     case EncodingType::Trivial: {
@@ -483,6 +488,8 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       case EncodingType::SubIntSplit:
         return captureSubIntSplit(encoding, compressionType);
       */
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
     case EncodingType::FOR: {
       compressionType = encoding::peek<uint8_t, CompressionType>(
           encoding.data() + kEncodingPrefixSize);
@@ -510,6 +517,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     }
     case EncodingType::FrequencyPartition:
       break;
+    */
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);
