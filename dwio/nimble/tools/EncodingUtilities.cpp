@@ -56,6 +56,8 @@ void extractCompressionType(
     // SubIntSplit integration is disabled; it carries no separate compression
     // byte, so treat it like the other encodings handled here.
     case EncodingType::SubIntSplit:
+    case EncodingType::FrequencyPartition:
+    case EncodingType::FOR:
       break;
   }
 }
