@@ -145,8 +145,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       }
 #endif
     */
-    // FOR and FrequencyPartition have no legacy counterparts; use the new
-    // encoding classes directly (same Encoding base class).
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR:
       if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
@@ -162,6 +162,7 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
 #endif
+    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
