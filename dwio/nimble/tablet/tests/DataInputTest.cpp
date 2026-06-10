@@ -22,28 +22,47 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 
-#include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
+#include "velox/common/file/IoUringReader.h"
+#include "velox/common/file/LocalFile.h"
 #include "velox/common/io/IoStatistics.h"
+#include "velox/common/memory/Allocation.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempFilePath.h"
 #include "velox/common/testutil/TestValue.h"
 
 namespace facebook::nimble {
 namespace {
 
 struct OptionParams {
-  uint64_t alignment;
   int32_t maxCoalesceDistance;
   int64_t maxCoalesceBytes;
-  int32_t minIoGroupsPerTask;
 
   std::string toString() const {
-    return fmt::format(
-        "align{}_dist{}_bytes{}_batch{}",
-        alignment,
-        maxCoalesceDistance,
-        maxCoalesceBytes,
-        minIoGroupsPerTask);
+    return fmt::format("dist{}_bytes{}", maxCoalesceDistance, maxCoalesceBytes);
+  }
+};
+
+class DirectIoInMemoryReadFile : public velox::InMemoryReadFile {
+ public:
+  using velox::InMemoryReadFile::InMemoryReadFile;
+
+  bool directIo(uint64_t& alignment) const override {
+    alignment = velox::memory::AllocationTraits::kPageSize;
+    return true;
+  }
+};
+
+class FailingPreadvInMemoryReadFile : public velox::InMemoryReadFile {
+ public:
+  using velox::InMemoryReadFile::InMemoryReadFile;
+  using velox::InMemoryReadFile::preadv;
+
+  uint64_t preadv(
+      folly::Range<const velox::common::Region*> /*regions*/,
+      folly::Range<const folly::Range<char*>*> /*buffers*/,
+      const velox::FileIoContext& /*context*/ = {}) const override {
+    NIMBLE_FAIL("Injected preadv failure");
   }
 };
 
@@ -56,7 +75,6 @@ class DataInputTest : public ::testing::Test {
 
   void SetUp() override {
     pool_ = velox::memory::memoryManager()->addLeafPool("DataInputTest");
-    executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(2);
     ioStats_ = std::make_shared<velox::io::IoStatistics>();
   }
 
@@ -66,14 +84,11 @@ class DataInputTest : public ::testing::Test {
   }
 
   DirectDataInput::Options makeOptions(
-      uint64_t alignment = 1,
       int32_t maxCoalesceDistance = 1'000'000,
       int64_t maxCoalesceBytes = 128 << 20) {
     DirectDataInput::Options options;
     options.pool = pool_.get();
-    options.executor = executor_.get();
     options.ioStats = ioStats_;
-    options.alignment = alignment;
     options.maxCoalesceDistance = maxCoalesceDistance;
     options.maxCoalesceBytes = maxCoalesceBytes;
     return options;
@@ -82,12 +97,9 @@ class DataInputTest : public ::testing::Test {
   DirectDataInput::Options makeOptions(const OptionParams& params) {
     DirectDataInput::Options options;
     options.pool = pool_.get();
-    options.executor = executor_.get();
     options.ioStats = ioStats_;
-    options.alignment = params.alignment;
     options.maxCoalesceDistance = params.maxCoalesceDistance;
     options.maxCoalesceBytes = params.maxCoalesceBytes;
-    options.minIoGroupsPerTask = params.minIoGroupsPerTask;
     return options;
   }
 
@@ -96,7 +108,6 @@ class DataInputTest : public ::testing::Test {
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
-  std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
   std::shared_ptr<velox::io::IoStatistics> ioStats_;
 };
 
@@ -285,15 +296,10 @@ INSTANTIATE_TEST_SUITE_P(
     DataInputOptions,
     DataInputParamTest,
     ::testing::Values(
-        OptionParams{1, 100, 128 << 20, 1},
-        OptionParams{1, 100, 128 << 20, 4},
-        OptionParams{1, 100, 128 << 20, 32},
-        OptionParams{1, 1'000'000, 128 << 20, 1},
-        OptionParams{1, 100, 1'024, 1},
-        OptionParams{1, 100, 512, 4},
-        OptionParams{4'096, 100, 128 << 20, 1},
-        OptionParams{4'096, 100, 128 << 20, 4},
-        OptionParams{4'096, 1'000'000, 128 << 20, 1}),
+        OptionParams{100, 128 << 20},
+        OptionParams{1'000'000, 128 << 20},
+        OptionParams{100, 1'024},
+        OptionParams{100, 512}),
     [](const auto& info) { return info.param.toString(); });
 
 // --- Non-parameterized tests ---
@@ -303,18 +309,17 @@ TEST_F(DataInputTest, alignment) {
   for (int i = 0; i < 16'384; ++i) {
     data[i] = static_cast<char>(i % 256);
   }
-  auto file = createFile(data);
 
   struct TestParam {
-    uint64_t alignment;
+    bool directIo;
     uint64_t offset;
     uint64_t length;
     uint64_t expectedOverread;
 
     std::string debugString() const {
       return fmt::format(
-          "alignment {} offset {} length {} expectedOverread {}",
-          alignment,
+          "directIo {} offset {} length {} expectedOverread {}",
+          directIo,
           offset,
           length,
           expectedOverread);
@@ -333,31 +338,32 @@ TEST_F(DataInputTest, alignment) {
     return alignUp(offset + length, align) - alignDown(offset, align) - length;
   };
 
+  constexpr uint64_t kPageSize = velox::memory::AllocationTraits::kPageSize;
   std::vector<TestParam> testSettings = {
-      // offset 4100 → alignDown=4096, alignUp(4300)=8192 → read=4096,
-      // overread=8192-4096-200=3896
-      {4'096, 4'100, 200, expectedOverread(4'096, 4'100, 200)},
+      // O_DIRECT files are page-aligned. offset 4100 -> alignDown=4096,
+      // alignUp(4300)=8192 -> overread=8192-4096-200=3896.
+      {true, 4'100, 200, expectedOverread(kPageSize, 4'100, 200)},
 
-      // offset already aligned → alignDown=4096, alignUp(4296)=8192 →
-      // overread=8192-4096-200=3896
-      {4'096, 4'096, 200, expectedOverread(4'096, 4'096, 200)},
+      // Offset already aligned.
+      {true, 4'096, 200, expectedOverread(kPageSize, 4'096, 200)},
 
-      // offset 0, length 100 → alignDown=0, alignUp(100)=4096 →
-      // overread=3996
-      {4'096, 0, 100, expectedOverread(4'096, 0, 100)},
+      // Offset 0, short length.
+      {true, 0, 100, expectedOverread(kPageSize, 0, 100)},
 
-      // alignment=1 → no padding, overread=0.
-      {1, 4'100, 200, 0},
-
-      // alignment=512, offset 600 → alignDown=512, alignUp(800)=1024 →
-      // overread=1024-512-200=312
-      {512, 600, 200, expectedOverread(512, 600, 200)},
+      // Buffered files use byte alignment and do not overread for alignment.
+      {false, 4'100, 200, 0},
   };
 
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
+    std::unique_ptr<velox::InMemoryReadFile> file;
+    if (testData.directIo) {
+      file = std::make_unique<DirectIoInMemoryReadFile>(data);
+    } else {
+      file = createFile(data);
+    }
     auto stats = std::make_shared<velox::io::IoStatistics>();
-    auto options = makeOptions(testData.alignment);
+    auto options = makeOptions();
     options.ioStats = stats;
 
     DirectDataInput input(file.get(), options);
@@ -427,7 +433,7 @@ TEST_F(DataInputTest, intraGroupCoalescing) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     auto stats = std::make_shared<velox::io::IoStatistics>();
-    auto options = makeOptions(/*alignment=*/1, testData.maxCoalesceDistance);
+    auto options = makeOptions(testData.maxCoalesceDistance);
     options.ioStats = stats;
     DirectDataInput input(file.get(), options);
 
@@ -457,7 +463,7 @@ DEBUG_ONLY_TEST_F(DataInputTest, coalescesDuplicateRegions) {
   }
   auto file = createFile(data);
 
-  DirectDataInput input(file.get(), makeOptions(/*alignment=*/1));
+  DirectDataInput input(file.get(), makeOptions());
   input.reserve(4);
   input.startGroup();
   const auto duplicate0 = input.enqueue({100, 50});
@@ -533,7 +539,7 @@ TEST_F(DataInputTest, crossGroupCoalescing) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     auto stats = std::make_shared<velox::io::IoStatistics>();
-    auto options = makeOptions(/*alignment=*/1, testData.maxCoalesceDistance);
+    auto options = makeOptions(testData.maxCoalesceDistance);
     options.ioStats = stats;
     DirectDataInput input(file.get(), options);
 
@@ -581,8 +587,7 @@ TEST_F(DataInputTest, rejectsInvalidGroupBoundaries) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.name);
     DirectDataInput input(
-        file.get(),
-        makeOptions(/*alignment=*/1, /*maxCoalesceDistance=*/1'000));
+        file.get(), makeOptions(/*maxCoalesceDistance=*/1'000));
 
     uint32_t totalRegions = 0;
     for (const auto& group : testData.groups) {
@@ -774,8 +779,7 @@ TEST_F(DataInputTest, noCoalesceDistantRequests) {
   }
   auto file = createFile(data);
 
-  DirectDataInput input(
-      file.get(), makeOptions(/*alignment=*/1, /*maxCoalesceDistance=*/10));
+  DirectDataInput input(file.get(), makeOptions(/*maxCoalesceDistance=*/10));
   input.reserve(2);
   input.startGroup();
   input.enqueue({100, 50});
@@ -801,7 +805,6 @@ TEST_F(DataInputTest, maxCoalesceDistanceCap) {
   auto stats = std::make_shared<velox::io::IoStatistics>();
   DirectDataInput::Options options;
   options.pool = pool_.get();
-  options.executor = executor_.get();
   options.ioStats = stats;
   options.maxCoalesceDistance = 1'000'000;
 
@@ -830,19 +833,11 @@ TEST_F(DataInputTest, invalidOptions) {
   nullPool.pool = nullptr;
   NIMBLE_ASSERT_THROW(DirectDataInput(file.get(), nullPool), "");
 
-  auto nullExecutor = validOptions;
-  nullExecutor.executor = nullptr;
-  NIMBLE_ASSERT_THROW(DirectDataInput(file.get(), nullExecutor), "");
-
   auto nullIoStats = validOptions;
   nullIoStats.ioStats = nullptr;
   NIMBLE_ASSERT_THROW(DirectDataInput(file.get(), nullIoStats), "");
 
   NIMBLE_ASSERT_THROW(DirectDataInput(nullptr, validOptions), "");
-
-  auto badAlignment = validOptions;
-  badAlignment.alignment = 3;
-  NIMBLE_ASSERT_THROW(DirectDataInput(file.get(), badAlignment), "power of 2");
 }
 
 DEBUG_ONLY_TEST_F(DataInputTest, readError) {
@@ -850,26 +845,143 @@ DEBUG_ONLY_TEST_F(DataInputTest, readError) {
   for (int i = 0; i < 10'000; ++i) {
     data[i] = static_cast<char>(i % 256);
   }
-  auto file = createFile(data);
+  auto file = std::make_unique<FailingPreadvInMemoryReadFile>(data);
 
-  DirectDataInput input(
-      file.get(), makeOptions(/*alignment=*/1, /*maxCoalesceDistance=*/10));
+  DirectDataInput input(file.get(), makeOptions(/*maxCoalesceDistance=*/10));
   input.reserve(2);
   input.startGroup();
   input.enqueue({100, 50});
   input.startGroup();
   input.enqueue({5'000, 50});
 
-  std::atomic_bool injected{false};
-  SCOPED_TESTVALUE_SET(
-      "facebook::nimble::DirectDataInput::executeIoGroups",
-      std::function<void(DirectDataInput*)>([&](DirectDataInput*) {
-        if (!injected.exchange(true)) {
-          NIMBLE_FAIL("Injected pread failure");
-        }
-      }));
+  NIMBLE_ASSERT_THROW(input.load(), "Injected preadv failure");
+}
 
-  NIMBLE_ASSERT_THROW(input.load(), "Injected pread failure");
+TEST_F(DataInputTest, loadTracksLocalReadModeStats) {
+  constexpr uint64_t kPageSize = velox::memory::AllocationTraits::kPageSize;
+  std::string data(8 * kPageSize, '\0');
+  for (size_t i = 0; i < data.size(); ++i) {
+    data[i] = static_cast<char>((i * 131) % 256);
+  }
+  auto tempFile = velox::common::testutil::TempFilePath::create();
+  {
+    velox::LocalWriteFile writeFile(
+        tempFile->getPath(),
+        /*shouldCreateParentDirectories=*/false,
+        /*shouldThrowOnFileAlreadyExists=*/false);
+    writeFile.append(data);
+    writeFile.close();
+  }
+
+  const std::vector<std::vector<std::pair<uint64_t, uint64_t>>> groups = {
+      {{100, 200}},
+      {{kPageSize + 10, 1'000}},
+      {{3 * kPageSize, 4'096}},
+      {{7 * kPageSize, 100}},
+  };
+  constexpr uint64_t kPayloadBytes = 200 + 1'000 + 4'096 + 100;
+  constexpr uint64_t kDirectReadBytes = 4 * kPageSize;
+
+  struct TestCase {
+    const char* name;
+    bool bufferIo;
+    bool useIoUring;
+    uint64_t expectedReadBytes;
+    uint64_t expectedOverreadBytes;
+    uint64_t expectedIoUringReadCalls;
+    uint64_t expectedIoUringRegions;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {
+          "buffered",
+          /*bufferIo=*/true,
+          /*useIoUring=*/false,
+          /*expectedReadBytes=*/kPayloadBytes,
+          /*expectedOverreadBytes=*/0,
+          /*expectedIoUringReadCalls=*/0,
+          /*expectedIoUringRegions=*/0,
+      },
+      {
+          "direct",
+          /*bufferIo=*/false,
+          /*useIoUring=*/false,
+          /*expectedReadBytes=*/kDirectReadBytes,
+          /*expectedOverreadBytes=*/kDirectReadBytes - kPayloadBytes,
+          /*expectedIoUringReadCalls=*/0,
+          /*expectedIoUringRegions=*/0,
+      },
+      {
+          "directIoUring",
+          /*bufferIo=*/false,
+          /*useIoUring=*/true,
+          /*expectedReadBytes=*/kDirectReadBytes,
+          /*expectedOverreadBytes=*/kDirectReadBytes - kPayloadBytes,
+          /*expectedIoUringReadCalls=*/1,
+          /*expectedIoUringRegions=*/groups.size(),
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    velox::ThreadLocalIoUringReader::testingClear();
+    uint64_t numIoUringReaders{0};
+    ASSERT_EQ(velox::getIoUringReaderStats(numIoUringReaders).readCalls, 0);
+    ASSERT_EQ(numIoUringReaders, 0);
+
+    auto file = std::make_unique<velox::LocalReadFile>(
+        tempFile->getPath(),
+        /*executor=*/nullptr,
+        testCase.bufferIo,
+        testCase.useIoUring);
+
+    auto stats = std::make_shared<velox::io::IoStatistics>();
+    auto options = makeOptions(/*maxCoalesceDistance=*/0);
+    options.ioStats = stats;
+    DirectDataInput input(file.get(), options);
+    uint32_t totalRegions = 0;
+    for (const auto& group : groups) {
+      totalRegions += group.size();
+    }
+    input.reserve(totalRegions);
+    std::vector<std::pair<uint32_t, std::pair<uint64_t, uint64_t>>> indices;
+    for (const auto& group : groups) {
+      input.startGroup();
+      for (const auto& [offset, length] : group) {
+        indices.emplace_back(
+            input.enqueue({offset, length}), std::make_pair(offset, length));
+      }
+    }
+
+    auto handle = input.load();
+
+    for (const auto& [idx, region] : indices) {
+      EXPECT_EQ(
+          refData(input.bufferRef(idx)),
+          data.substr(region.first, region.second));
+    }
+    EXPECT_EQ(file->bytesRead(), testCase.expectedReadBytes);
+    EXPECT_EQ(stats->rawBytesRead(), kPayloadBytes);
+    EXPECT_EQ(stats->rawOverreadBytes(), testCase.expectedOverreadBytes);
+    EXPECT_EQ(stats->read().count(), groups.size());
+    EXPECT_EQ(stats->read().sum(), testCase.expectedReadBytes);
+
+    const auto ioUringStats = velox::getIoUringReaderStats(numIoUringReaders);
+    EXPECT_EQ(ioUringStats.readCalls, testCase.expectedIoUringReadCalls);
+    EXPECT_EQ(ioUringStats.regions, testCase.expectedIoUringRegions);
+    if (testCase.useIoUring) {
+      EXPECT_EQ(numIoUringReaders, 1);
+      EXPECT_EQ(ioUringStats.batches, 1);
+      EXPECT_EQ(ioUringStats.minRegionsPerRead, groups.size());
+      EXPECT_EQ(ioUringStats.maxRegionsPerRead, groups.size());
+      EXPECT_EQ(ioUringStats.minBatchSize, groups.size());
+      EXPECT_EQ(ioUringStats.maxBatchSize, groups.size());
+    } else {
+      EXPECT_EQ(numIoUringReaders, 0);
+      EXPECT_EQ(ioUringStats.batches, 0);
+    }
+  }
+  velox::ThreadLocalIoUringReader::testingClear();
 }
 
 } // namespace

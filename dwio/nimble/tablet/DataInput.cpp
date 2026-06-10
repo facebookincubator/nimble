@@ -16,10 +16,10 @@
 #include "dwio/nimble/tablet/DataInput.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "folly/synchronization/Latch.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/CoalesceIo.h"
 #include "velox/common/memory/MemoryAllocator.h"
@@ -29,6 +29,20 @@
 namespace facebook::nimble {
 
 // --- DirectDataInput ---
+
+namespace {
+
+velox::ReadFile* checkedFile(velox::ReadFile* file) {
+  NIMBLE_CHECK_NOT_NULL(file);
+  return file;
+}
+
+uint64_t readAlignment(const velox::ReadFile& file) {
+  uint64_t alignment{0};
+  return file.directIo(/*alignment=*/alignment) ? alignment : 1;
+}
+
+} // namespace
 
 /*static*/ std::string_view DirectDataInput::stateName(State state) {
   switch (state) {
@@ -45,22 +59,18 @@ namespace facebook::nimble {
 }
 
 DirectDataInput::DirectDataInput(velox::ReadFile* file, const Options& options)
-    : file_{file},
+    : file_{checkedFile(file)},
       pool_{options.pool},
-      executor_{options.executor},
       ioStats_{options.ioStats},
-      alignment_{options.alignment},
+      alignment_{readAlignment(*file_)},
       allocAlignment_{std::max(
           alignment_,
           static_cast<uint64_t>(
               velox::memory::MemoryAllocator::kMinAlignment))},
       maxCoalesceDistance_{
           std::min(options.maxCoalesceDistance, kMaxCoalesceDistance)},
-      maxCoalesceBytes_{options.maxCoalesceBytes},
-      minIoGroupsPerTask_{std::max(1, options.minIoGroupsPerTask)} {
-  NIMBLE_CHECK_NOT_NULL(file_);
+      maxCoalesceBytes_{options.maxCoalesceBytes} {
   NIMBLE_CHECK_NOT_NULL(pool_);
-  NIMBLE_CHECK_NOT_NULL(executor_);
   NIMBLE_CHECK_NOT_NULL(ioStats_);
   NIMBLE_CHECK_GT(alignment_, 0, "alignment must be positive");
   NIMBLE_CHECK(
@@ -230,54 +240,24 @@ std::pair<char*, DataInput::Handle> DirectDataInput::allocateBuffer(
 
 void DirectDataInput::executeIoGroups(
     std::vector<IoGroup>& ioGroups,
-    char* buffer) {
+    char* buffer,
+    uint64_t bufferSize) {
   NIMBLE_CHECK(!ioGroups.empty());
-  const auto numGroups = ioGroups.size();
-
-  // Batch IO groups into tasks. Each task reads multiple groups
-  // sequentially to reduce executor overhead.
-  const auto batchSize = static_cast<size_t>(minIoGroupsPerTask_);
-  const auto numTasks = velox::bits::divRoundUp(numGroups, batchSize);
-
-  std::exception_ptr readError;
-  std::mutex errorMutex;
-  folly::Latch latch(numTasks);
-
-  for (size_t t = 0; t < numTasks; ++t) {
-    const auto start = t * batchSize;
-    const auto end = std::min(start + batchSize, numGroups);
-    executor_->add([this,
-                    &ioGroups,
-                    buffer,
-                    start,
-                    end,
-                    &readError,
-                    &errorMutex,
-                    &latch]() {
-      try {
-        for (size_t i = start; i < end; ++i) {
-          velox::common::testutil::TestValue::adjust(
-              "facebook::nimble::DirectDataInput::executeIoGroups", this);
-          file_->pread(
-              ioGroups[i].readOffset,
-              ioGroups[i].readSize,
-              buffer + ioGroups[i].bufferOffset);
-        }
-      } catch (...) {
-        std::lock_guard<std::mutex> lock(errorMutex);
-        if (readError == nullptr) {
-          readError = std::current_exception();
-        }
-      }
-      latch.count_down();
-    });
+  std::vector<velox::common::Region> readRegions;
+  readRegions.reserve(ioGroups.size());
+  std::vector<folly::Range<char*>> readBuffers;
+  readBuffers.reserve(ioGroups.size());
+  for (const auto& ioGroup : ioGroups) {
+    readRegions.emplace_back(ioGroup.readOffset, ioGroup.readSize);
+    readBuffers.emplace_back(
+        buffer + ioGroup.bufferOffset, static_cast<size_t>(ioGroup.readSize));
   }
-
-  latch.wait();
-
-  if (readError != nullptr) {
-    std::rethrow_exception(readError);
-  }
+  const auto bytesRead = file_->preadv(
+      folly::Range<const velox::common::Region*>(
+          readRegions.data(), readRegions.size()),
+      folly::Range<const folly::Range<char*>*>(
+          readBuffers.data(), readBuffers.size()));
+  NIMBLE_CHECK_EQ(bytesRead, bufferSize, "preadv returned a short read");
 }
 
 DataInput::Handle DirectDataInput::load() {
@@ -325,7 +305,7 @@ DataInput::Handle DirectDataInput::load() {
   uint64_t ioUs{0};
   {
     velox::MicrosecondTimer ioTimer(&ioUs);
-    executeIoGroups(ioGroups, buffer);
+    executeIoGroups(ioGroups, buffer, readBytes);
   }
 
   for (const auto& group : ioGroups) {
