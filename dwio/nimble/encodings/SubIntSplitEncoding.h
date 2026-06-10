@@ -27,15 +27,15 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#include "dwio/nimble/encodings/SubIntSplitSampler.h"
+#include "dwio/nimble/encodings/SubIntSplitSelector.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
-#include "dwio/nimble/encodings/SubIntSplitConfig.h"
-#include "dwio/nimble/encodings/SubIntSplitSampler.h"
-#include "dwio/nimble/encodings/SubIntSplitSelector.h"
 #include "velox/common/memory/Memory.h"
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -118,9 +118,12 @@ class SubIntSplitEncoding
 
   // Return the storage byte width for a section of the given bit width.
   static constexpr uint8_t sectionStorageBytes(int bitWidth) noexcept {
-    if (bitWidth <= 8) return 1;
-    if (bitWidth <= 16) return 2;
-    if (bitWidth <= 32) return 4;
+    if (bitWidth <= 8)
+      return 1;
+    if (bitWidth <= 16)
+      return 2;
+    if (bitWidth <= 32)
+      return 4;
     return 8;
   }
 
@@ -152,7 +155,8 @@ class SubIntSplitEncoding
 //
 
 namespace detail {
-inline constexpr uint32_t kSubIntSplitSectionHeaderSize = 6; // bitStart+bitEnd+size
+inline constexpr uint32_t kSubIntSplitSectionHeaderSize =
+    6; // bitStart+bitEnd+size
 
 inline uint32_t subIntSplitSpecificHeaderSize(uint8_t splitCount) noexcept {
   return 2u + static_cast<uint32_t>(splitCount) * kSubIntSplitSectionHeaderSize;
@@ -195,9 +199,7 @@ SubIntSplitEncoding<T>::SubIntSplitEncoding(
     sec.mask = (width >= 64) ? ~uint64_t{0} : ((uint64_t{1} << width) - 1);
     sec.storageBytes = sectionStorageBytes(width);
     sec.encoding = factory.create(
-        *this->pool_,
-        {pos, meta[s].encodedSize},
-        stringBufferFactory);
+        *this->pool_, {pos, meta[s].encodedSize}, stringBufferFactory);
     pos += meta[s].encodedSize;
   }
 }
@@ -242,24 +244,29 @@ void SubIntSplitEncoding<T>::accumulateSection(
       // Widening into 64-bit output
       // ----------------------------------------------------------------
       const __m128i vshift = _mm_cvtsi64_si128(static_cast<int64_t>(shift));
-      const __m256i vmask  = _mm256_set1_epi64x(static_cast<int64_t>(mask));
+      const __m256i vmask = _mm256_set1_epi64x(static_cast<int64_t>(mask));
 
       if constexpr (sizeof(SectionT) == 1) {
         // uint8 → uint64: _mm256_cvtepu8_epi64 processes 4 elements.
         uint32_t i = 0;
         for (; i + 4 <= count; i += 4) {
-          _mm_prefetch(reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
-          _mm_prefetch(reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
           int32_t tmp;
           std::memcpy(&tmp, src + i, 4);
           __m256i vs = _mm256_cvtepu8_epi64(_mm_cvtsi32_si128(tmp));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift) vs = _mm256_sll_epi64(vs, vshift);
+          if (shift)
+            vs = _mm256_sll_epi64(vs, vshift);
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
-            __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
+            __m256i vd =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
           }
         }
         for (; i < count; ++i) {
@@ -274,17 +281,22 @@ void SubIntSplitEncoding<T>::accumulateSection(
         // uint16 → uint64: _mm256_cvtepu16_epi64 processes 4 elements.
         uint32_t i = 0;
         for (; i + 4 <= count; i += 4) {
-          _mm_prefetch(reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
-          _mm_prefetch(reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
           __m256i vs = _mm256_cvtepu16_epi64(
               _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift) vs = _mm256_sll_epi64(vs, vshift);
+          if (shift)
+            vs = _mm256_sll_epi64(vs, vshift);
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
-            __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
+            __m256i vd =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
           }
         }
         for (; i < count; ++i) {
@@ -299,17 +311,22 @@ void SubIntSplitEncoding<T>::accumulateSection(
         // uint32 → uint64: _mm256_cvtepu32_epi64 processes 4 elements.
         uint32_t i = 0;
         for (; i + 4 <= count; i += 4) {
-          _mm_prefetch(reinterpret_cast<const char*>(src + i + 16), _MM_HINT_T1);
-          _mm_prefetch(reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(src + i + 16), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
           __m256i vs = _mm256_cvtepu32_epi64(
               _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift) vs = _mm256_sll_epi64(vs, vshift);
+          if (shift)
+            vs = _mm256_sll_epi64(vs, vshift);
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
-            __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
+            __m256i vd =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
           }
         }
         for (; i < count; ++i) {
@@ -326,24 +343,29 @@ void SubIntSplitEncoding<T>::accumulateSection(
       // Widening into 32-bit output
       // ----------------------------------------------------------------
       const __m128i vshift = _mm_cvtsi32_si128(static_cast<int32_t>(shift));
-      const __m256i vmask  = _mm256_set1_epi32(static_cast<int32_t>(mask));
+      const __m256i vmask = _mm256_set1_epi32(static_cast<int32_t>(mask));
 
       if constexpr (sizeof(SectionT) == 1) {
         // uint8 → uint32: _mm256_cvtepu8_epi32 processes 8 elements.
         uint32_t i = 0;
         for (; i + 8 <= count; i += 8) {
-          _mm_prefetch(reinterpret_cast<const char*>(src + i + 64), _MM_HINT_T1);
-          _mm_prefetch(reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(src + i + 64), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
           int64_t tmp;
           std::memcpy(&tmp, src + i, 8);
           __m256i vs = _mm256_cvtepu8_epi32(_mm_cvtsi64_si128(tmp));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift) vs = _mm256_sll_epi32(vs, vshift);
+          if (shift)
+            vs = _mm256_sll_epi32(vs, vshift);
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
-            __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
+            __m256i vd =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
           }
         }
         for (; i < count; ++i) {
@@ -358,17 +380,22 @@ void SubIntSplitEncoding<T>::accumulateSection(
         // uint16 → uint32: _mm256_cvtepu16_epi32 processes 8 elements.
         uint32_t i = 0;
         for (; i + 8 <= count; i += 8) {
-          _mm_prefetch(reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
-          _mm_prefetch(reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(src + i + 32), _MM_HINT_T1);
+          _mm_prefetch(
+              reinterpret_cast<const char*>(dst + i + 32), _MM_HINT_T1);
           __m256i vs = _mm256_cvtepu16_epi32(
               _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift) vs = _mm256_sll_epi32(vs, vshift);
+          if (shift)
+            vs = _mm256_sll_epi32(vs, vshift);
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
-            __m256i vd = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
+            __m256i vd =
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+            _mm256_storeu_si256(
+                reinterpret_cast<__m256i*>(dst + i), _mm256_or_si256(vd, vs));
           }
         }
         for (; i < count; ++i) {
@@ -384,7 +411,8 @@ void SubIntSplitEncoding<T>::accumulateSection(
 #endif // __AVX2__
 
   // Scalar path: same-width sections (SectionT == physicalType), or builds
-  // without AVX2, or narrow cases not covered by the AVX2 specialisations above.
+  // without AVX2, or narrow cases not covered by the AVX2 specialisations
+  // above.
   // __restrict__ on the parameters allows the compiler to auto-vectorise this
   // loop for same-width cases (e.g. uint32_t → uint32_t, uint64_t → uint64_t).
   if constexpr (IsFirst) {
@@ -431,36 +459,44 @@ void SubIntSplitEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
           auto* scratch = reinterpret_cast<uint8_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
           if (isFirst)
-            accumulateSection<uint8_t, true>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint8_t, true>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           else
-            accumulateSection<uint8_t, false>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint8_t, false>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           break;
         }
         case 2: {
           auto* scratch = reinterpret_cast<uint16_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
           if (isFirst)
-            accumulateSection<uint16_t, true>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint16_t, true>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           else
-            accumulateSection<uint16_t, false>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint16_t, false>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           break;
         }
         case 4: {
           auto* scratch = reinterpret_cast<uint32_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
           if (isFirst)
-            accumulateSection<uint32_t, true>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint32_t, true>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           else
-            accumulateSection<uint32_t, false>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint32_t, false>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           break;
         }
         case 8: {
           auto* scratch = reinterpret_cast<uint64_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
           if (isFirst)
-            accumulateSection<uint64_t, true>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint64_t, true>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           else
-            accumulateSection<uint64_t, false>(scratch, chunkOutput, chunkCount, mask, shift);
+            accumulateSection<uint64_t, false>(
+                scratch, chunkOutput, chunkCount, mask, shift);
           break;
         }
         default:
@@ -595,7 +631,8 @@ std::string_view SubIntSplitEncoding<T>::encode(
         }
         encoded = selection.template encodeNested<uint8_t>(
             static_cast<NestedEncodingIdentifier>(s),
-            std::span<const uint8_t>(sectionValues.data(), sectionValues.size()),
+            std::span<const uint8_t>(
+                sectionValues.data(), sectionValues.size()),
             tempBuffer,
             options);
         break;
@@ -697,13 +734,13 @@ std::string_view SubIntSplitEncoding<T>::encode(
 template <typename T>
 std::string SubIntSplitEncoding<T>::debugString(int offset) const {
   std::string indent(offset, ' ');
-  std::string result = indent + "SubIntSplitEncoding sections=" +
-      std::to_string(sections_.size()) + "\n";
+  std::string result = indent +
+      "SubIntSplitEncoding sections=" + std::to_string(sections_.size()) + "\n";
   for (size_t s = 0; s < sections_.size(); ++s) {
     const auto& sec = sections_[s];
     result += indent + "  [" + std::to_string(sec.bitStart) + ".." +
-        std::to_string(sec.bitEnd) + "] storageBytes=" +
-        std::to_string(sec.storageBytes) + "\n";
+        std::to_string(sec.bitEnd) +
+        "] storageBytes=" + std::to_string(sec.storageBytes) + "\n";
     result += sec.encoding->debugString(offset + 4);
     result += "\n";
   }
