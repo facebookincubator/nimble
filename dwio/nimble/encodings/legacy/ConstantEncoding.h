@@ -154,7 +154,7 @@ std::string ConstantEncoding<T>::debugString(int offset) const {
       toString(Encoding::encodingType()),
       toString(Encoding::dataType()),
       Encoding::rowCount(),
-      AS_CONST(T, value_));
+      NIMBLE_AS_CONST(T, value_));
 }
 
 } // namespace facebook::nimble::legacy
