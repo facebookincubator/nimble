@@ -354,4 +354,4 @@ TYPED_TEST(SubIntSplitFuzzerTest, Correctness) {
       FLAGS_fuzzer_compression);
   fuzzer.run();
 }
-#endif  // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS

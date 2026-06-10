@@ -135,7 +135,7 @@ Vector<T> makeBitStructuredData(
   Vector<T> data(&pool);
   data.reserve(rowCount);
   if constexpr (
-  std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
+      std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
     using UintType = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
     UintType prefix{};
     if constexpr (sizeof(T) == 4) {
@@ -144,8 +144,8 @@ Vector<T> makeBitStructuredData(
       prefix = static_cast<UintType>(0x1234567800000000ULL);
     }
     for (uint32_t i = 0; i < rowCount; ++i) {
-      auto bits = static_cast<UintType>(
-          prefix + (folly::Random::rand32(rng) & 0xFFFF));
+      auto bits =
+          static_cast<UintType>(prefix + (folly::Random::rand32(rng) & 0xFFFF));
       data.push_back(std::bit_cast<T>(bits));
     }
   }

@@ -127,7 +127,8 @@ uint64_t getRawDataSize(
       pos += otherValuesSize;
       auto constantValueSize = encoding::readUint32(pos);
       result += (rowCount - otherValuesCount) * constantValueSize;
-      result += getRawDataSize(memoryPool, {otherValuesOffset, otherValuesSize});
+      result +=
+          getRawDataSize(memoryPool, {otherValuesOffset, otherValuesSize});
       break;
     }
 

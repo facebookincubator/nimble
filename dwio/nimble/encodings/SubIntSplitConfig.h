@@ -27,8 +27,7 @@
 
 namespace facebook::nimble::detail::subintsplit {
 
-inline constexpr std::string_view kSplitModeConfigKey =
-    "subintsplit.mode";
+inline constexpr std::string_view kSplitModeConfigKey = "subintsplit.mode";
 inline constexpr std::string_view kSplitBoundariesConfigKey =
     "subintsplit.boundaries";
 inline constexpr std::string_view kSplitModeRecompute = "recompute";
@@ -70,16 +69,15 @@ inline std::optional<std::vector<SegmentPlan>> parseSplitBoundaries(
     const std::string_view startText = value.substr(cursor, dashPos - cursor);
     const std::string_view endText = value.substr(
         dashPos + 1,
-        semiPos == std::string_view::npos
-            ? value.size() - (dashPos + 1)
-            : semiPos - (dashPos + 1));
+        semiPos == std::string_view::npos ? value.size() - (dashPos + 1)
+                                          : semiPos - (dashPos + 1));
 
     int bitStart = 0;
     int bitEnd = 0;
-    const auto startResult =
-        std::from_chars(startText.data(), startText.data() + startText.size(), bitStart);
-    const auto endResult =
-        std::from_chars(endText.data(), endText.data() + endText.size(), bitEnd);
+    const auto startResult = std::from_chars(
+        startText.data(), startText.data() + startText.size(), bitStart);
+    const auto endResult = std::from_chars(
+        endText.data(), endText.data() + endText.size(), bitEnd);
     if (startResult.ec != std::errc{} ||
         startResult.ptr != startText.data() + startText.size() ||
         endResult.ec != std::errc{} ||
@@ -87,7 +85,8 @@ inline std::optional<std::vector<SegmentPlan>> parseSplitBoundaries(
       return std::nullopt;
     }
 
-    if (bitStart != expectedStart || bitStart < 0 || bitEnd < bitStart || bitEnd >= kBits) {
+    if (bitStart != expectedStart || bitStart < 0 || bitEnd < bitStart ||
+        bitEnd >= kBits) {
       return std::nullopt;
     }
 
@@ -110,7 +109,8 @@ inline std::unordered_map<std::string, std::string> makePreserveSplitConfig(
     std::span<const SegmentPlan> segments) {
   return {
       {std::string(kSplitModeConfigKey), std::string(kSplitModePreserve)},
-      {std::string(kSplitBoundariesConfigKey), serializeSplitBoundaries(segments)},
+      {std::string(kSplitBoundariesConfigKey),
+       serializeSplitBoundaries(segments)},
   };
 }
 

@@ -99,21 +99,21 @@ void observeWrittenBuffer(
 template <typename T>
 std::string encodeFixedBitWidth(
     Buffer& buffer,
-  const Vector<T>& data,
-  const Encoding::Options& options = {}) {
+    const Vector<T>& data,
+    const Encoding::Options& options = {}) {
   using physicalType = typename TypeTraits<T>::physicalType;
 
   auto physicalValues = std::span<const physicalType>(
-    reinterpret_cast<const physicalType*>(data.data()), data.size());
+      reinterpret_cast<const physicalType*>(data.data()), data.size());
   EncodingSelectionResult selectionResult{
-    .encodingType = EncodingType::FixedBitWidth};
+      .encodingType = EncodingType::FixedBitWidth};
   auto selection = EncodingSelection<physicalType>{
-    std::move(selectionResult),
-    Statistics<physicalType>::create(physicalValues),
-    nullptr};
+      std::move(selectionResult),
+      Statistics<physicalType>::create(physicalValues),
+      nullptr};
 
   auto encoded = FixedBitWidthEncoding<T>::encode(
-    selection, physicalValues, buffer, options);
+      selection, physicalValues, buffer, options);
   return std::string{encoded.data(), encoded.size()};
 }
 
