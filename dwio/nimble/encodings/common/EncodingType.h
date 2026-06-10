@@ -49,7 +49,7 @@ struct EncodingPhysicalType {
   }
 };
 
-#define AS(D, v) *(reinterpret_cast<D*>(&(v)))
+#define NIMBLE_AS(D, v) *(reinterpret_cast<D*>(&(v)))
 
-#define AS_CONST(D, v) *(reinterpret_cast<const D*>(&(v)))
+#define NIMBLE_AS_CONST(D, v) *(reinterpret_cast<const D*>(&(v)))
 } // namespace facebook::nimble
