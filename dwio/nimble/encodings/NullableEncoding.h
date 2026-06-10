@@ -18,7 +18,6 @@
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
@@ -363,11 +362,9 @@ std::string_view NullableEncoding<T>::encodeNullable(
   std::string_view serializedNulls = selection.template encodeNested<bool>(
       EncodingIdentifiers::Nullable::Nulls, nulls, tempBuffer, options);
 
-  const uint32_t prefixSize = useVarint
-    ? Encoding::kRowCountOffset + varint::varintSize(rowCount)
-    : Encoding::kPrefixSize;
   const uint32_t encodingSize =
-    prefixSize + 4 + serializedValues.size() + serializedNulls.size();
+      Encoding::serializePrefixSize(rowCount, useVarint) + 4 +
+      serializedValues.size() + serializedNulls.size();
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
   Encoding::serializePrefix(
