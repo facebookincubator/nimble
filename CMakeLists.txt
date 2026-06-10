@@ -131,16 +131,9 @@ if(flatbuffers_FOUND)
     set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
   endif()
 else()
-  # Try lowercase variant
-  find_package(flatbuffers QUIET)
-  if(flatbuffers_FOUND)
-    if(flatbuffers_VERSION VERSION_LESS "22.9.4")
-      set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
-    endif()
-  else()
-    # No system FlatBuffers found, use bundled
-    set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
-  endif()
+  # Fallback to old FlatBuffers (< 2.0.0).
+  find_package(Flatbuffers REQUIRED)
+  set(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS TRUE)
 endif()
 if(NIMBLE_NEED_BUNDLED_BUILD_FLAT_BUFFERS)
   # Old FlatBuffers (< 22.9.4) doesn't provide build_flatbuffers(). So
