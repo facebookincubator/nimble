@@ -67,7 +67,8 @@ struct SegmentMetrics {
 // and uses a running prev-value comparison for run counting.
 class MetricCollector {
  public:
-  static constexpr size_t kUniqueCountCap = 1 << 14; // 16K cap (lighter than full HLL)
+  static constexpr size_t kUniqueCountCap = 1
+      << 14; // 16K cap (lighter than full HLL)
 
   SegmentMetrics compute(
       const std::vector<uint64_t>& values,

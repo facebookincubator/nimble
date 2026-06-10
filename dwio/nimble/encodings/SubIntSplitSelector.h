@@ -140,7 +140,8 @@ inline SelectorResult selectSplits(
     for (int r = l; r < sz; ++r) {
       extractor.extend(r);
       const std::vector<uint64_t>& segValues = extractor.values();
-      const SegmentMetrics metrics = collector.compute(segValues, requiredFlags);
+      const SegmentMetrics metrics =
+          collector.compute(segValues, requiredFlags);
       const int bitWidth = r - l + 1;
 
       EncodingType bestEnc = EncodingType::Trivial;
@@ -148,8 +149,8 @@ inline SelectorResult selectSplits(
           bestCostBits(metrics, numSamples, bitWidth, bestEnc);
 
       // Scale to full stream
-      const double fullCost = perSampleCost *
-          static_cast<double>(fullCount) / static_cast<double>(numSamples);
+      const double fullCost = perSampleCost * static_cast<double>(fullCount) /
+          static_cast<double>(numSamples);
 
       bestCost[l * sz + r] = {fullCost, bestEnc};
     }
