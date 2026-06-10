@@ -15,85 +15,283 @@
  */
 #pragma once
 
-#include <cstdint>
+#include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
+#include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+// FOR and FrequencyPartition integration commented out (disabled):
+/*
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+*/
+#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
+#include "dwio/nimble/encodings/NullableEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
+#include "dwio/nimble/encodings/PrefixEncoding.h"
+#include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
+#include "dwio/nimble/encodings/SparseBoolEncoding.h"
+// SubIntSplit integration commented out (disabled):
+/*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
+#endif
+*/
+#include "dwio/nimble/encodings/TrivialEncoding.h"
+#include "dwio/nimble/encodings/VarintEncoding.h"
 
 namespace facebook::nimble {
 
-// When encoding contains nested encodings, each nested encoding has its
-// own identifier.
-using NestedEncodingIdentifier = uint8_t;
+template <typename DecoderVisitor>
+void callReadWithVisitor(
+    Encoding& encoding,
+    DecoderVisitor& visitor,
+    ReadWithVisitorParams& params);
 
-struct EncodingIdentifiers {
-  struct Dictionary {
-    static constexpr NestedEncodingIdentifier Alphabet = 0;
-    static constexpr NestedEncodingIdentifier Indices = 1;
-  };
+namespace detail {
 
-  struct MainlyConstant {
-    static constexpr NestedEncodingIdentifier IsCommon = 0;
-    static constexpr NestedEncodingIdentifier OtherValues = 1;
-  };
+inline int dataTypeSize(DataType type) {
+  switch (type) {
+    case DataType::Int8:
+    case DataType::Uint8:
+    case DataType::Bool:
+      return 1;
+    case DataType::Int16:
+    case DataType::Uint16:
+      return 2;
+    case DataType::Int32:
+    case DataType::Uint32:
+    case DataType::Float:
+      return 4;
+    case DataType::Int64:
+    case DataType::Uint64:
+    case DataType::Double:
+      return 8;
+    default:
+      NIMBLE_UNSUPPORTED("{}", type);
+  }
+}
 
-  struct Nullable {
-    static constexpr NestedEncodingIdentifier Data = 0;
-    static constexpr NestedEncodingIdentifier Nulls = 1;
-  };
+template <typename F>
+auto encodingTypeDispatchString(Encoding& encoding, F f) {
+  NIMBLE_CHECK_EQ(
+      encoding.dataType(), DataType::String, "{}", encoding.dataType());
+  switch (encoding.encodingType()) {
+    case EncodingType::Trivial:
+      return f(static_cast<TrivialEncoding<std::string_view>&>(encoding));
+    case EncodingType::RLE:
+      return f(static_cast<RLEEncoding<std::string_view>&>(encoding));
+    case EncodingType::Dictionary:
+      return f(static_cast<DictionaryEncoding<std::string_view>&>(encoding));
+    case EncodingType::Nullable:
+      return f(static_cast<NullableEncoding<std::string_view>&>(encoding));
+    case EncodingType::Constant:
+      return f(static_cast<ConstantEncoding<std::string_view>&>(encoding));
+    case EncodingType::MainlyConstant:
+      return f(
+          static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
+    case EncodingType::Prefix:
+      return f(static_cast<PrefixEncoding&>(encoding));
+    default:
+      NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
+  }
+}
 
-  struct RunLength {
-    static constexpr NestedEncodingIdentifier RunLengths = 0;
-    static constexpr NestedEncodingIdentifier RunValues = 1;
-  };
+template <typename T, typename F>
+auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
+  NIMBLE_CHECK_EQ(
+      dataTypeSize(encoding.dataType()), sizeof(T), "{}", encoding.dataType());
+  switch (encoding.encodingType()) {
+    case EncodingType::Trivial:
+      return f(static_cast<TrivialEncoding<T>&>(encoding));
+    case EncodingType::RLE:
+      return f(static_cast<RLEEncoding<T>&>(encoding));
+    case EncodingType::Dictionary:
+      return f(static_cast<DictionaryEncoding<T>&>(encoding));
+    case EncodingType::FixedBitWidth:
+      return f(static_cast<FixedBitWidthEncoding<T>&>(encoding));
+    case EncodingType::Nullable:
+      return f(static_cast<NullableEncoding<T>&>(encoding));
+    case EncodingType::SparseBool:
+      if constexpr (std::is_same_v<T, bool>) {
+        return f(static_cast<SparseBoolEncoding&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::Varint:
+      if constexpr (folly::IsOneOf<
+                        T,
+                        int32_t,
+                        uint32_t,
+                        int64_t,
+                        uint64_t,
+                        float,
+                        double>::value) {
+        return f(static_cast<VarintEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::Constant:
+      return f(static_cast<ConstantEncoding<T>&>(encoding));
+    case EncodingType::MainlyConstant:
+      return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
+    case EncodingType::Delta:
+      return f(static_cast<DeltaEncoding<T>&>(encoding));
+    case EncodingType::ALP:
+      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+    case EncodingType::BlockBitPacking:
+      return f(static_cast<BlockBitPackingEncoding<T>&>(encoding));
+    case EncodingType::PFOR:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<PFOREncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::SimdForBitpack:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<SimdForBitpackEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+      // SubIntSplit integration commented out (disabled):
+      /*
+  #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+      case EncodingType::SubIntSplit:
+        if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
+          return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
+        } else {
+          NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+        }
+  #endif
+      */
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FOR:
+      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        return f(static_cast<ForEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::FrequencyPartition:
+      if constexpr (!std::is_same_v<T, bool>) {
+        return f(static_cast<FrequencyPartitionEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+#endif
+    */
+    default:
+      NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
+  }
+}
 
-  struct SparseBool {
-    static constexpr NestedEncodingIdentifier Indices = 0;
-  };
+} // namespace detail
 
-  struct Trivial {
-    static constexpr NestedEncodingIdentifier Lengths = 0;
-  };
+template <typename V>
+void callReadWithVisitor(
+    Encoding& encoding,
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  using T = typename V::DataType;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    detail::encodingTypeDispatchString(encoding, [&](auto& typedEncoding) {
+      typedEncoding.readWithVisitor(visitor, params);
+    });
+  } else if constexpr (std::is_same_v<T, velox::int128_t>) {
+    NIMBLE_UNSUPPORTED("Int128 is not supported in Nimble");
+  } else if constexpr (std::is_same_v<T, int8_t>) {
+    if (encoding.dataType() == DataType::Bool) {
+      detail::encodingTypeDispatchNonString<bool>(
+          encoding, [&](auto& typedEncoding) {
+            typedEncoding.readWithVisitor(visitor, params);
+          });
+    } else {
+      detail::encodingTypeDispatchNonString<int8_t>(
+          encoding, [&](auto& typedEncoding) {
+            typedEncoding.readWithVisitor(visitor, params);
+          });
+    }
+  } else {
+    detail::encodingTypeDispatchNonString<T>(
+        encoding, [&](auto& typedEncoding) {
+          typedEncoding.readWithVisitor(visitor, params);
+        });
+  }
+}
 
-  struct Delta {
-    static constexpr NestedEncodingIdentifier Deltas = 0;
-    static constexpr NestedEncodingIdentifier Restatements = 1;
-    static constexpr NestedEncodingIdentifier IsRestatements = 2;
-  };
-
-  struct ALP {
-    static constexpr NestedEncodingIdentifier EncodedValues = 0;
-  };
-
-  // SubIntSplit integration commented out (disabled):
-  /*
-  struct SubIntSplit {
-    // Section identifiers equal the section index (0..splitCount-1).
-    // Maximum 64 sections (one per bit of a 64-bit integer).
-    // The identifier is written directly as section_index, so no named
-    // constants are defined here; callers use the index directly.
-  };
-  */
-  
-  struct FrequencyPartition {
-    // Partition metadata
-    // Eventually we may want to allow for non-power-of-two bit partitions, but for now we can just define constants for the power-of-two cases.
-    static constexpr NestedEncodingIdentifier PartitionOffsets = 0;
-    static constexpr NestedEncodingIdentifier PartitionSizes = 1;
-    // Per-tier dictionaries (1-bit, 2-bit, 4-bit, 8-bit, etc.)
-    static constexpr NestedEncodingIdentifier Dict1Bit = 2;
-    static constexpr NestedEncodingIdentifier Dict2Bit = 3;
-    static constexpr NestedEncodingIdentifier Dict4Bit = 4;
-    static constexpr NestedEncodingIdentifier Dict8Bit = 5;
-    static constexpr NestedEncodingIdentifier Dict16Bit = 6;
-    static constexpr NestedEncodingIdentifier Dict32Bit = 7;
-    // Per-tier encoded keys
-    static constexpr NestedEncodingIdentifier Keys1Bit = 8;
-    static constexpr NestedEncodingIdentifier Keys2Bit = 9;
-    static constexpr NestedEncodingIdentifier Keys4Bit = 10;
-    static constexpr NestedEncodingIdentifier Keys8Bit = 11;
-    static constexpr NestedEncodingIdentifier Keys16Bit = 12;
-    static constexpr NestedEncodingIdentifier Keys32Bit = 13;
-    // Unencoded partition (raw values that don't fit in any tier)
-    static constexpr NestedEncodingIdentifier UnencodedValues = 14;
-  };
+/// Encoding trait for non-legacy encodings. Dispatches to the standard
+/// callReadWithVisitor which casts to non-legacy concrete encoding types.
+struct DefaultEncodingTrait {
+  template <typename V>
+  static void callReadWithVisitor(
+      Encoding& encoding,
+      V& visitor,
+      ReadWithVisitorParams& params) {
+    nimble::callReadWithVisitor(encoding, visitor, params);
+  }
 };
+
+/// Reads dictionary indices (not decoded values) from an encoding.
+/// Supports DictionaryEncoding, NullableEncoding, and MainlyConstantEncoding
+/// wrapping DictionaryEncoding. Currently only supports string
+/// (std::string_view) dictionary encodings. Non-legacy encodings only.
+template <typename V>
+void callReadIndicesWithVisitor(
+    Encoding& encoding,
+    V& visitor,
+    ReadWithVisitorParams& params) {
+  switch (encoding.encodingType()) {
+    case EncodingType::Dictionary: {
+      static_cast<DictionaryEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::Nullable: {
+      static_cast<NullableEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::MainlyConstant: {
+      static_cast<MainlyConstantEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::RLE: {
+      static_cast<RLEEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    case EncodingType::Constant: {
+      static_cast<ConstantEncoding<std::string_view>&>(encoding)
+          .readIndicesWithVisitor(visitor, params);
+      return;
+    }
+    default:
+      NIMBLE_UNREACHABLE(
+          "Dictionary indices dispatch on unsupported encoding: {}",
+          encoding.encodingType());
+  }
+}
+
+/// Builds the dictionary alphabet from any dictionary-enabled encoding.
+/// Uses dictionaryEntries() which returns a contiguous array for all
+/// encoding types (Dict, Nullable→Dict, MC→Dict).
+template <typename T>
+inline std::vector<T> buildEncodingDictionaryAlphabet(
+    const Encoding* encoding) {
+  NIMBLE_CHECK(
+      encoding->dictionaryEnabled(),
+      "buildEncodingDictionaryAlphabet requires a dictionary-enabled encoding");
+  if (encoding->encodingType() == EncodingType::Nullable) {
+    return buildEncodingDictionaryAlphabet<T>(
+        static_cast<const NullableEncoding<T>*>(encoding)->nonNulls());
+  }
+  const auto size = encoding->dictionarySize();
+  const auto* entries = static_cast<const T*>(encoding->dictionaryEntries());
+  return {entries, entries + size};
+}
 
 } // namespace facebook::nimble
