@@ -239,6 +239,35 @@ TEST_P(DataInputParamTest, clearAndReuse) {
   }
 }
 
+TEST_F(DataInputTest, loadedBufferHandleKeepsPoolOwnerAlive) {
+  std::string data(1'000, '\0');
+  for (int i = 0; i < 1'000; ++i) {
+    data[i] = static_cast<char>(i % 256);
+  }
+
+  auto rootPool =
+      velox::memory::memoryManager()->addRootPool("DataInputOwnerTest");
+  DataInput::Handle handle;
+  {
+    auto ownedPool = rootPool->addLeafChild("owned");
+    auto file = createFile(data);
+    auto options = makeOptions();
+    options.pool = ownedPool.get();
+
+    DirectDataInput input(file.get(), options);
+    input.reserve(1);
+    input.startGroup();
+    const auto index = input.enqueue({500, 100});
+    handle = input.load();
+    EXPECT_EQ(refData(input.bufferRef(index)), data.substr(500, 100));
+
+    ownedPool.reset();
+  }
+
+  handle.reset();
+  rootPool.reset();
+}
+
 TEST_P(DataInputParamTest, fuzz) {
   const size_t fileSize = 102'400;
   std::string data(fileSize, '\0');
