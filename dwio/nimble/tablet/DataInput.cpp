@@ -232,7 +232,10 @@ std::pair<char*, DataInput::Handle> DirectDataInput::allocateBuffer(
       reinterpret_cast<uintptr_t>(buffer) % alignment_ == 0,
       "allocateAligned returned unaligned buffer");
   auto handle = Handle(
-      buffer, [pool = pool_, bytes, allocAlignment = allocAlignment_](void* p) {
+      buffer,
+      [pool = pool_->shared_from_this(),
+       bytes,
+       allocAlignment = allocAlignment_](void* p) {
         pool->freeAligned(p, static_cast<int64_t>(bytes), allocAlignment);
       });
   return {buffer, std::move(handle)};
