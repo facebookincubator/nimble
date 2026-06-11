@@ -411,12 +411,10 @@ class ManualEncodingSelectionPolicyFactory {
         EncodingType::Dictionary,
         EncodingType::RLE,
         EncodingType::Varint,
-        // SubIntSplit integration commented out (disabled):
-        /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+        EncodingType::PFOR,
+        EncodingType::SimdForBitpack,
         EncodingType::SubIntSplit,
-#endif
-        */
+        EncodingType::BlockBitPacking,
     };
   }
 
