@@ -24,14 +24,14 @@
 
 #include <cstddef>
 
-using facebook::velox::common::testutil::TestValue;
-
 namespace facebook::nimble {
 
 using namespace facebook::velox;
+using velox::common::testutil::TestValue;
 
-void ChunkedDecoder::loadNextChunk(bool preserveDictionaryEncoding) {
-  invokeOnChunkLoad();
+bool ChunkedDecoder::loadNextChunk(
+    bool preserveDictionaryEncoding,
+    const ChunkBoundaryCallback& onChunkLoaded) {
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
   const auto [length, compressionType] = readChunkHeader(inputData_);
@@ -58,7 +58,8 @@ void ChunkedDecoder::loadNextChunk(bool preserveDictionaryEncoding) {
   };
   auto data = std::string_view(chunkData, chunkSize);
   if (preserveDictionaryEncoding) {
-    Encoding::Options options{.preserveDictionaryEncoding = true};
+    auto options = encodingFactory_->options();
+    options.preserveDictionaryEncoding = true;
     encoding_ =
         EncodingFactory(options).create(*pool_, data, stringBufferFactory);
   } else {
@@ -67,6 +68,7 @@ void ChunkedDecoder::loadNextChunk(bool preserveDictionaryEncoding) {
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();
+  return onChunkLoaded();
 }
 
 bool ChunkedDecoder::ensureInput(int size) {
@@ -190,20 +192,24 @@ void ChunkedDecoder::nextIndices(
       incomingNulls);
 }
 
-void ChunkedDecoder::skip(int64_t numValues) {
-  NIMBLE_DCHECK_GE(numValues, 0);
+void ChunkedDecoder::skip(
+    int64_t numValues,
+    const ChunkBoundaryCallback& onChunkBoundary) {
+  NIMBLE_CHECK_GE(numValues, 0);
   if (numValues == 0) {
     return;
   }
 
   if (streamIndex_ != nullptr) {
-    skipWithIndex(numValues);
+    skipWithIndex(numValues, onChunkBoundary);
   } else {
-    skipWithoutIndex(numValues);
+    skipWithoutIndex(numValues, onChunkBoundary);
   }
 }
 
-void ChunkedDecoder::skipWithIndex(int64_t numValues) {
+void ChunkedDecoder::skipWithIndex(
+    int64_t numValues,
+    const ChunkBoundaryCallback& onChunkBoundary) {
   TestValue::adjust("facebook::nimble::ChunkedDecoder::skipWithIndex", this);
   NIMBLE_CHECK_GT(numValues, 0);
   // If we can skip within the current chunk, do so without seeking.
@@ -228,11 +234,10 @@ void ChunkedDecoder::skipWithIndex(int64_t numValues) {
     encoding_ = nullptr;
     remainingValues_ = 0;
     rowPosition_ = targetRow;
-    // Advance input buffer to the end.
     inputData_ += inputSize_;
     inputSize_ = 0;
-    // Exhaust the underlying input stream.
     input_->SkipInt64(std::numeric_limits<int64_t>::max());
+    onChunkBoundary();
     return;
   }
 
@@ -240,7 +245,7 @@ void ChunkedDecoder::skipWithIndex(int64_t numValues) {
   const auto location = streamIndex_->lookupChunk(targetRow);
 
   // Seek to the chunk and skip within it.
-  seekToChunk(location.chunkOffset);
+  seekToChunk(location.chunkOffset, onChunkBoundary);
   rowPosition_ = location.rowOffset;
 
   const uint32_t rowsToSkipInChunk = targetRow - rowPosition_;
@@ -249,10 +254,12 @@ void ChunkedDecoder::skipWithIndex(int64_t numValues) {
   advancePosition(rowsToSkipInChunk);
 }
 
-void ChunkedDecoder::skipWithoutIndex(int64_t numValues) {
+void ChunkedDecoder::skipWithoutIndex(
+    int64_t numValues,
+    const ChunkBoundaryCallback& onChunkBoundary) {
   while (numValues > 0) {
     if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-      loadNextChunk();
+      loadNextChunk(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
     }
     if (numValues < remainingValues_) {
       encoding_->skip(numValues);
@@ -265,7 +272,9 @@ void ChunkedDecoder::skipWithoutIndex(int64_t numValues) {
   }
 }
 
-void ChunkedDecoder::seekToChunk(uint32_t offset) {
+void ChunkedDecoder::seekToChunk(
+    uint32_t offset,
+    const ChunkBoundaryCallback& onChunkBoundary) {
   // Use position provider to seek to the chunk offset
   const std::vector<uint64_t> offsets{offset};
   velox::dwio::common::PositionProvider positionProvider(offsets);
@@ -277,7 +286,7 @@ void ChunkedDecoder::seekToChunk(uint32_t offset) {
   remainingValues_ = 0;
 
   // Load the chunk at this position
-  loadNextChunk();
+  loadNextChunk(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {

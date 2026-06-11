@@ -31,12 +31,6 @@ std::shared_ptr<const Type> convertToNimbleType(const velox::Type& type);
 /// Records which columns use encoding-specific types (ArrayWithOffsets,
 /// SlidingWindowMap, FlatMap), enabling the Serializer to produce output
 /// consistent with the file's encoding.
-///
-/// FlatMap columns projected with key subscripts (e.g., "map[\"key\"]") are
-/// handled automatically. However, projecting an entire FlatMap column without
-/// any key subscripts is not supported because the velox type does not carry
-/// FlatMap key names/order — use the nimble-schema-based
-/// buildProjectedNimbleType overload for full FlatMap column projection.
 struct ColumnEncodings {
   folly::F14FastSet<std::string> dictionaryArrayColumns;
   folly::F14FastSet<std::string> deduplicatedMapColumns;
@@ -58,24 +52,32 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
     const std::vector<velox::common::Subfield>& projectedSubfields,
     const ColumnEncodings& columnEncodings = {});
 
-/// Builds a projected nimble schema from an existing nimble schema, assigning
-/// output stream offsets sequentially in DFS traversal order. This ensures
-/// the offset assignment matches how SchemaBuilder assigns offsets in
-/// buildProjectedNimbleType, enabling clients to recover the schema.
+/// Builds a projected nimble schema from a source nimble schema and emits
+/// the source stream-offset mapping in one pass. Used by
+/// `nimble::serde::Projector` and `nimble::NimbleIndexProjector` to derive
+/// everything the byte-copy pipeline needs from `(type, projectedSubfields)`.
 ///
-/// Unlike buildProjectedNimbleType (which builds from velox types and loses
-/// encoding-specific info like ArrayWithOffsets/SlidingWindowMap), this
-/// function preserves the exact nimble type structure from the input schema.
+/// Internally: converts the source nimble schema to velox (FlatMaps collapse
+/// to `MAP<K,V>`), derives encoding hints from the source's top-level Kinds,
+/// builds the projected schema via the velox-source `buildProjectedNimbleType`
+/// overload, and walks the source nimble in the matching DFS pre-order +
+/// FlatMap-children-alphabetical traversal to emit one source stream offset
+/// per projected stream position.
 ///
-/// FlatMap children are sorted alphabetically by name for canonical ordering.
+/// Missing FlatMap keys are allowed: each subscript whose key does not exist
+/// in the source FlatMap produces a synthetic child in the returned schema
+/// (the value subtree is cloned from `flatMap.childAt(0)`'s type as a
+/// structural template) and emits `UINT32_MAX` placeholder entries in
+/// `projectedStreamOffsets` (>= any real source offset). The projector's
+/// stream-copy guard turns those into 0-byte placeholder slots in the
+/// projected blob, which the deserializer's gap-fill renders as null
+/// columns. An all-missing-keys projection is permitted and yields a
+/// FlatMap whose every child is a placeholder.
 ///
-/// @param type The input nimble schema tree.
-/// @param projectedSubfields Subfields to project. Each subfield path is
-///        resolved against the schema to determine which children to include
-///        at each Row/FlatMap node.
-/// @param projectedStreamOffsets Output: input stream offsets in DFS traversal
-///        order, defining which streams to include and in what order. Must be
-///        empty on entry.
+/// @param type                    The source nimble schema; root must be Row.
+/// @param projectedSubfields      Subfields to project; must not be empty.
+/// @param projectedStreamOffsets  Output: appended in projected-stream-
+///                                position order. Must be empty on entry.
 std::shared_ptr<const Type> buildProjectedNimbleType(
     const Type* type,
     const std::vector<velox::common::Subfield>& projectedSubfields,

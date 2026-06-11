@@ -81,8 +81,8 @@ struct NullableMapData {
     }
   }
 
-  operator std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>()
-      const {
+  operator std::optional<
+      std::vector<std::pair<int64_t, std::optional<int64_t>>>>() const {
     return value;
   }
 };
@@ -653,7 +653,8 @@ class SelectiveNimbleReaderTest
       bool stringDecoderZeroCopy,
       bool filterAfterRead = false) {
     std::vector<
-        std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>> converted;
+        std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
+        converted;
     converted.reserve(data.size());
     for (const auto& item : data) {
       converted.push_back(item);

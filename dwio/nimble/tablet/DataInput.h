@@ -27,10 +27,6 @@
 #include "velox/common/io/Options.h"
 #include "velox/common/memory/Memory.h"
 
-namespace folly {
-class Executor;
-} // namespace folly
-
 namespace facebook::nimble {
 
 /// Base class for data I/O with an enqueue + batch load pattern.
@@ -84,12 +80,11 @@ class DataInput {
   virtual void clear() = 0;
 };
 
-/// Direct data loading with IO coalescing, alignment for direct I/O,
-/// and optional parallel reads via executor.
+/// Direct data loading with IO coalescing and alignment for direct I/O.
 ///
 /// After coalescing, each I/O group is backed by a non-contiguous
-/// Allocation (page-aligned runs). Reads are parallelized across
-/// I/O groups via the executor.
+/// Allocation (page-aligned runs). Reads are submitted through the file's
+/// positioned vector read API.
 ///
 /// NOTE: DirectDataInput is not thread-safe. Each thread must use its
 /// own instance.
@@ -100,15 +95,9 @@ class DirectDataInput : public DataInput {
 
   struct Options {
     velox::memory::MemoryPool* pool{nullptr};
-    folly::Executor* executor{nullptr};
     std::shared_ptr<velox::io::IoStatistics> ioStats;
-    uint64_t alignment{1};
     int32_t maxCoalesceDistance{kDefaultCoalesceDistance};
     int64_t maxCoalesceBytes{velox::io::ReaderOptions::kDefaultCoalesceBytes};
-    /// Minimum number of IO groups per executor task. Batching multiple
-    /// pread calls into one task reduces executor overhead (task timing,
-    /// lambda allocation, scheduling) at the cost of less parallelism.
-    int32_t minIoGroupsPerTask{4};
   };
 
   DirectDataInput(velox::ReadFile* file, const Options& options);
@@ -173,9 +162,11 @@ class DirectDataInput : public DataInput {
   // it.
   std::pair<char*, Handle> allocateBuffer(uint64_t bytes);
 
-  // Executes all physical IO groups, batching executor tasks to reduce
-  // scheduling overhead.
-  void executeIoGroups(std::vector<IoGroup>& ioGroups, char* buffer);
+  // Executes all physical IO groups through ReadFile's positioned vector API.
+  void executeIoGroups(
+      std::vector<IoGroup>& ioGroups,
+      char* buffer,
+      uint64_t bufferSize);
 
   uint64_t alignDown(uint64_t value) const {
     return value & ~(alignment_ - 1);
@@ -189,8 +180,6 @@ class DirectDataInput : public DataInput {
   velox::ReadFile* const file_;
   // Memory pool for allocating the read buffer.
   velox::memory::MemoryPool* const pool_;
-  // Executor for parallel I/O across coalesced groups.
-  folly::Executor* const executor_;
   // IO statistics for tracking read bytes, latency, and gaps.
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
   // I/O alignment for file offsets and read sizes.
@@ -202,8 +191,6 @@ class DirectDataInput : public DataInput {
   const int32_t maxCoalesceDistance_;
   // Max total bytes per coalesced I/O group.
   const int64_t maxCoalesceBytes_;
-  // Min IO groups per executor task.
-  const int32_t minIoGroupsPerTask_;
 
   State state_{State::kInit};
 

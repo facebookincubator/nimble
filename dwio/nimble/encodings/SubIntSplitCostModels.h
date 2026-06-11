@@ -83,11 +83,10 @@ inline double fixedBitWidthCostBits(
       static_cast<double>(storageWidthBits(bitWidth)) / 8.0;
   const double headerBits = (7.0 + baselineBytes + 1.0) * 8.0;
 
-  const uint8_t rangeWidth = m.range == 0
-      ? uint8_t{0}
-      : static_cast<uint8_t>(std::bit_width(m.range));
-  const uint8_t packedBits = std::min<uint8_t>(
-      static_cast<uint8_t>(bitWidth), rangeWidth);
+  const uint8_t rangeWidth =
+      m.range == 0 ? uint8_t{0} : static_cast<uint8_t>(std::bit_width(m.range));
+  const uint8_t packedBits =
+      std::min<uint8_t>(static_cast<uint8_t>(bitWidth), rangeWidth);
   // Round up to byte boundary (matches nimble's current FixedBitWidth impl).
   const uint8_t roundedBits = (packedBits + 7u) & ~7u;
 
@@ -133,8 +132,7 @@ inline double dictionaryCostBits(
       ? 1u
       : std::min(32u, static_cast<uint32_t>(std::bit_width(uniques - 1)));
   // Bit-packed indices rounded up to byte boundary
-  const double roundedIndexBits =
-      static_cast<double>((indexWidth + 7u) & ~7u);
+  const double roundedIndexBits = static_cast<double>((indexWidth + 7u) & ~7u);
   const double indexBits = roundedIndexBits * static_cast<double>(numValues);
   // prefix(6) + alphabetSize(4) + nested header overhead (~15 bytes)
   const double headerBits = (6.0 + 4.0 + 15.0) * 8.0;
@@ -149,16 +147,13 @@ inline double dictionaryCostBits(
 
 // RLE: run values + bit-packed run lengths.
 // Required: RunStats, MinMax
-inline double rleCostBits(
-    const SegmentMetrics& m,
-    size_t numValues,
-    int bitWidth) noexcept {
+inline double
+rleCostBits(const SegmentMetrics& m, size_t numValues, int bitWidth) noexcept {
   if (numValues == 0 || m.avgRunLength <= 0.0) {
     return 0.0;
   }
   // avgRunLength is scale-invariant, so extrapolate run count to full stream.
-  const double estimatedRuns =
-      static_cast<double>(numValues) / m.avgRunLength;
+  const double estimatedRuns = static_cast<double>(numValues) / m.avgRunLength;
   // prefix(6) + runLengthsSize(4) + nested encoding overhead (~16 bytes)
   const double headerBits = (6.0 + 4.0 + 16.0) * 8.0;
   const double runValuesBits =
@@ -202,8 +197,7 @@ inline double varintCostBits(
   const double headerBits =
       (6.0 + static_cast<double>(storageWidthBits(bitWidth)) / 8.0) * 8.0;
   return headerBits +
-      static_cast<double>(varintBytes) * 8.0 *
-      static_cast<double>(numValues);
+      static_cast<double>(varintBytes) * 8.0 * static_cast<double>(numValues);
 }
 
 // Evaluate all cost models and return the minimum cost in bits.

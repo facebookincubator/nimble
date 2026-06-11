@@ -97,8 +97,8 @@ class TabletReaderCache {
 
   /// Returns a cached or newly created CachedTabletReader for the given file.
   /// Uses readFile->getName() as the cache key. On cache miss, creates the
-  /// TabletReader and deserializes the schema using a sharded system pool
-  /// (keyed by filename hash) and the provided readFile/options.
+  /// TabletReader and deserializes the schema using a sharded system pool and
+  /// the provided readFile/options.
   CachedTabletReader get(
       const std::shared_ptr<velox::ReadFile>& readFile,
       const TabletReader::Options& tabletOptions);

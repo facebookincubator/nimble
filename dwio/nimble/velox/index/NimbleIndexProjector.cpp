@@ -66,7 +66,8 @@ std::unique_ptr<DataInput> createDataInput(
   DirectDataInput::Options dataInputOptions;
   dataInputOptions.pool = &options.memoryPool();
   dataInputOptions.ioStats = options.dataIoStats();
-  dataInputOptions.executor = options.ioExecutor().get();
+  dataInputOptions.maxCoalesceDistance = options.maxCoalesceDistance();
+  dataInputOptions.maxCoalesceBytes = options.maxCoalesceBytes();
   return std::make_unique<DirectDataInput>(
       fileHandle.file.get(), dataInputOptions);
 }

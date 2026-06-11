@@ -1332,6 +1332,7 @@ TEST_P(E2EFilterTest, floatBiasedSubIntSplit) {
       /*withRecursiveNulls=*/true,
       biasedEncodingFactors(EncodingType::SubIntSplit));
 }
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 // Forces SubIntSplit via EncodingLayoutTree and verifies the on-disk encoding
 // matches. Schema uses only 32/64-bit types (SubIntSplit requires

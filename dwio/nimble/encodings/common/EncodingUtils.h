@@ -234,7 +234,7 @@ struct DefaultEncodingTrait {
   }
 };
 
-/// Reads dictionary indices (not decoded values) from an encoding.
+/// Dispatches readIndicesWithVisitor to the correct encoding type.
 /// Supports DictionaryEncoding, NullableEncoding, and MainlyConstantEncoding
 /// wrapping DictionaryEncoding. Currently only supports string
 /// (std::string_view) dictionary encodings. Non-legacy encodings only.

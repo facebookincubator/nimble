@@ -320,14 +320,14 @@ TEST_F(VariableLengthColumnReaderTest, mapMixedNullsAndEmpty) {
       std::optional<std::vector<std::pair<int64_t, std::optional<int64_t>>>>>
       data = {
           std::nullopt,
-      makeNullableMap<int64_t>({}),
-      makeNullableMap<int64_t>({{1, 10}, {2, 20}}),
+          makeNullableMap<int64_t>({}),
+          makeNullableMap<int64_t>({{1, 10}, {2, 20}}),
           std::nullopt,
-      makeNullableMap<int64_t>({}),
-      makeNullableMap<int64_t>({{3, 30}}),
+          makeNullableMap<int64_t>({}),
+          makeNullableMap<int64_t>({{3, 30}}),
           std::nullopt,
-      makeNullableMap<int64_t>({{4, 40}, {5, 50}, {6, 60}}),
-      makeNullableMap<int64_t>({}),
+          makeNullableMap<int64_t>({{4, 40}, {5, 50}, {6, 60}}),
+          makeNullableMap<int64_t>({}),
       };
   auto input = makeRowVector({makeNullableMapVector<int64_t, int64_t>(data)});
   auto scanSpec = std::make_shared<common::ScanSpec>("root");

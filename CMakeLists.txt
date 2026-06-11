@@ -56,6 +56,12 @@ set(
   "Velox vector test utilities (VectorMaker)."
 )
 set(
+  VELOX_ENABLE_PARQUET
+  OFF
+  CACHE BOOL
+  "Disable Velox Parquet support for Nimble minimal builds."
+)
+set(
   VELOX_DEPENDENCY_SOURCE
   AUTO
   CACHE STRING

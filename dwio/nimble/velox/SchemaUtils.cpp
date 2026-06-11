@@ -523,23 +523,35 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
 }
 
 //
-// buildProjectedNimbleType and its helpers.
+// deriveColumnEncodings, computeSourceStreamOffsets.
 //
 
 namespace {
 
-// Tracks which children to include at each Row/FlatMap node during projection.
-// When a node appears in this map, only its selected children are included.
-// When absent, all children are included.
-using NimbleSelectedChildrenMap =
-    folly::F14FastMap<const Type*, std::set<size_t>>;
+// Tracks the source children the projection touches at each Row or FlatMap
+// node, stored as the child's source-side index. For a Row, the indices are
+// Row child positions. For a FlatMap, the indices are positions of source
+// keys that match a requested subscript. FlatMap subscripts whose key is NOT
+// in the source go into `missingChildren` below instead.
+using SelectedChildrenMap = folly::F14FastMap<const Type*, std::set<size_t>>;
 
-// Resolves a single subfield path against a nimble schema tree, populating
-// selectedChildren with which children to include at each Row/FlatMap node.
+// Tracks the FlatMap subscript keys the projection requested that do NOT
+// exist in the source. The offset walker iterates them alphabetically and
+// emits UINT32_MAX placeholder slots so the projected blob lines up with the
+// projected schema's synthetic children (created by the velox-source
+// `buildProjectedNimbleType`).
+using MissingChildrenMap =
+    folly::F14FastMap<const Type*, std::set<std::string>>;
+
+// Resolves a single subfield path against a source nimble schema, populating
+// selectedChildren for present Row children + present FlatMap keys (by
+// source index) and missingChildren for FlatMap keys absent from the source
+// (by name).
 void resolveSubfield(
     const Type* type,
     const velox::common::Subfield& subfield,
-    NimbleSelectedChildrenMap& selectedChildren) {
+    SelectedChildrenMap& selectedChildren,
+    MissingChildrenMap& missingChildren) {
   const auto& path = subfield.path();
   NIMBLE_CHECK(!path.empty(), "Empty subfield path");
 
@@ -581,10 +593,12 @@ void resolveSubfield(
       const auto& flatMap = current->asFlatMap();
       const auto childIdx = flatMap.findChild(keyName);
       if (!childIdx.has_value()) {
-        // Key not in file schema — skip this subfield silently.
+        // Key not in source — recorded by name for placeholder emission. Any
+        // remaining subfield path elements are discarded; the whole synthetic
+        // value subtree decodes to null.
+        missingChildren[current].insert(keyName);
         return;
       }
-
       selectedChildren[current].insert(*childIdx);
       current = flatMap.childAt(*childIdx).get();
     } else {
@@ -596,219 +610,284 @@ void resolveSubfield(
   }
 }
 
-// Allocates an output stream offset on-demand during schema traversal and
-// records the corresponding input stream offset.
-StreamDescriptor allocateStreamOffset(
-    const StreamDescriptor& inputDesc,
-    uint32_t& nextOffset,
-    std::vector<uint32_t>& inputStreamOffsets) {
-  inputStreamOffsets.push_back(inputDesc.offset());
-  return StreamDescriptor{nextOffset++, inputDesc.scalarKind()};
-}
-
-// Sorts FlatMap children indices alphabetically by name for canonical ordering
-// that matches buildProjectedNimbleType's stream offset assignment.
-std::vector<size_t> sortedFlatMapChildIndices(
-    const FlatMapType& flatMap,
-    std::vector<size_t> indices) {
-  std::sort(indices.begin(), indices.end(), [&](auto a, auto b) {
-    return flatMap.nameAt(a) < flatMap.nameAt(b);
-  });
-  return indices;
-}
-
-// Returns true if the kind is an encoding-specific type that should only
-// appear as a direct child of the top-level Row.
-bool specificEncodingKind(Kind kind) {
-  return kind == Kind::FlatMap || kind == Kind::ArrayWithOffsets ||
-      kind == Kind::SlidingWindowMap;
-}
-
-// Builds a projected nimble type from the input type, including only selected
-// children. Assigns output stream offsets sequentially in DFS traversal order,
-// matching how SchemaBuilder assigns offsets in buildProjectedNimbleType.
-// FlatMap children are sorted alphabetically by name for canonical ordering.
-//
-// Encoding-specific types (FlatMap, ArrayWithOffsets, SlidingWindowMap) must
-// only appear as direct children of the top-level Row. The public function
-// buildProjectedNimbleType handles the root Row and passes isTopLevelChild=true
-// for its direct children.
-std::shared_ptr<const Type> buildProjectedType(
-    const Type* inputType,
-    const NimbleSelectedChildrenMap& selectedChildren,
-    uint32_t& nextOffset,
-    std::vector<uint32_t>& inputStreamOffsets,
-    bool isTopLevelChild = false) {
-  const auto kind = inputType->kind();
-  NIMBLE_CHECK(
-      isTopLevelChild || !specificEncodingKind(kind),
-      "Encoding-specific type {} must be a direct child of the top-level Row",
-      kind);
-  switch (kind) {
-    case Kind::Scalar: {
-      return std::make_shared<ScalarType>(allocateStreamOffset(
-          inputType->asScalar().scalarDescriptor(),
-          nextOffset,
-          inputStreamOffsets));
-    }
-
-    case Kind::TimestampMicroNano: {
-      const auto& ts = inputType->asTimestampMicroNano();
-      auto microsDesc = allocateStreamOffset(
-          ts.microsDescriptor(), nextOffset, inputStreamOffsets);
-      auto nanosDesc = allocateStreamOffset(
-          ts.nanosDescriptor(), nextOffset, inputStreamOffsets);
-      return std::make_shared<TimestampMicroNanoType>(
-          std::move(microsDesc), std::move(nanosDesc));
-    }
-
+// Walks a value-type (typically `flatMap.childAt(0)` from a source FlatMap
+// whose requested key is missing) and pushes UINT32_MAX into
+// `projectedStreamOffsets` for every stream descriptor the subtree contains.
+// The number of UINT32_MAX entries matches the slot count the velox-source
+// `buildProjectedNimbleType` would allocate for the corresponding synthetic
+// FlatMap value subtree.
+void emitPlaceholderStreamOffsets(
+    const Type* valueType,
+    std::vector<uint32_t>& projectedStreamOffsets) {
+  switch (valueType->kind()) {
+    case Kind::Scalar:
+      projectedStreamOffsets.push_back(UINT32_MAX);
+      return;
+    case Kind::TimestampMicroNano:
+      projectedStreamOffsets.push_back(UINT32_MAX); // micros
+      projectedStreamOffsets.push_back(UINT32_MAX); // nanos
+      return;
     case Kind::Row: {
-      const auto& row = inputType->asRow();
-      auto nullsDesc = allocateStreamOffset(
-          row.nullsDescriptor(), nextOffset, inputStreamOffsets);
+      const auto& row = valueType->asRow();
+      projectedStreamOffsets.push_back(UINT32_MAX); // nulls
+      for (size_t i = 0; i < row.childrenCount(); ++i) {
+        emitPlaceholderStreamOffsets(
+            row.childAt(i).get(), projectedStreamOffsets);
+      }
+      return;
+    }
+    case Kind::Array: {
+      const auto& array = valueType->asArray();
+      projectedStreamOffsets.push_back(UINT32_MAX); // lengths
+      emitPlaceholderStreamOffsets(
+          array.elements().get(), projectedStreamOffsets);
+      return;
+    }
+    case Kind::ArrayWithOffsets: {
+      const auto& array = valueType->asArrayWithOffsets();
+      projectedStreamOffsets.push_back(UINT32_MAX); // offsets
+      projectedStreamOffsets.push_back(UINT32_MAX); // lengths
+      emitPlaceholderStreamOffsets(
+          array.elements().get(), projectedStreamOffsets);
+      return;
+    }
+    case Kind::Map: {
+      const auto& map = valueType->asMap();
+      projectedStreamOffsets.push_back(UINT32_MAX); // lengths
+      emitPlaceholderStreamOffsets(map.keys().get(), projectedStreamOffsets);
+      emitPlaceholderStreamOffsets(map.values().get(), projectedStreamOffsets);
+      return;
+    }
+    case Kind::SlidingWindowMap: {
+      const auto& map = valueType->asSlidingWindowMap();
+      projectedStreamOffsets.push_back(UINT32_MAX); // offsets
+      projectedStreamOffsets.push_back(UINT32_MAX); // lengths
+      emitPlaceholderStreamOffsets(map.keys().get(), projectedStreamOffsets);
+      emitPlaceholderStreamOffsets(map.values().get(), projectedStreamOffsets);
+      return;
+    }
+    case Kind::FlatMap:
+      // Value subtrees of a FlatMap are not themselves FlatMaps per the
+      // encoding invariant.
+      NIMBLE_FAIL(
+          "Nested FlatMap inside synthetic value subtree is not supported");
+  }
+  NIMBLE_UNREACHABLE("Unknown type kind: {}", valueType->kind());
+}
 
-      std::vector<std::string> names;
-      std::vector<std::shared_ptr<const Type>> children;
+// Forward declaration: projectStreamOffsets and projectFlatmapStreamOffsets
+// recurse mutually (a FlatMap's value subtree may contain Rows that recurse
+// back through the general walker).
+void projectStreamOffsets(
+    const Type* type,
+    const SelectedChildrenMap& selectedChildren,
+    const MissingChildrenMap& missingChildren,
+    std::vector<uint32_t>& projectedStreamOffsets);
 
-      const auto it = selectedChildren.find(inputType);
+// Emits the FlatMap branch of `projectStreamOffsets`. Merges present keys
+// (from `selectedChildren[flatMap]`, by source index) and missing keys (from
+// `missingChildren[flatMap]`, by name) into a single alphabetically-sorted
+// list — matching the velox-source builder's iteration over its
+// `std::set<std::string>` of requested keys — and emits per-key stream
+// offsets: the source's value-subtree offsets + inMap offset for present
+// keys, or UINT32_MAX placeholders for missing keys.
+void projectFlatmapStreamOffsets(
+    const FlatMapType& flatMap,
+    const SelectedChildrenMap& selectedChildren,
+    const MissingChildrenMap& missingChildren,
+    std::vector<uint32_t>& projectedStreamOffsets) {
+  const auto* flatMapPtr = static_cast<const Type*>(&flatMap);
+  const auto selectedIt = selectedChildren.find(flatMapPtr);
+  const auto missingIt = missingChildren.find(flatMapPtr);
+  // FlatMap must have at least one requested key (real or missing).
+  // Projecting an entire FlatMap without subscripts is rejected — the
+  // velox-source builder cannot emit a FlatMap from a velox MAP<K,V>
+  // without the explicit key list.
+  NIMBLE_CHECK(
+      selectedIt != selectedChildren.end() ||
+          missingIt != missingChildren.end(),
+      "Cannot project entire FlatMap column without key subscripts. "
+      "Use key-level projection (e.g., map[\"key\"]).");
+
+  struct Entry {
+    std::string keyName;
+    // nullopt → missing; the value subtree and inMap are emitted as
+    // UINT32_MAX placeholders.
+    std::optional<size_t> valueIndex;
+  };
+  std::vector<Entry> entries;
+  if (selectedIt != selectedChildren.end()) {
+    entries.reserve(selectedIt->second.size());
+    for (size_t idx : selectedIt->second) {
+      entries.push_back({std::string(flatMap.nameAt(idx)), idx});
+    }
+  }
+  if (missingIt != missingChildren.end()) {
+    entries.reserve(entries.size() + missingIt->second.size());
+    for (const auto& keyName : missingIt->second) {
+      entries.push_back({keyName, std::nullopt});
+    }
+  }
+  std::sort(
+      entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
+        return lhs.keyName < rhs.keyName;
+      });
+
+  projectedStreamOffsets.push_back(flatMap.nullsDescriptor().offset());
+  const auto* valueType = flatMap.childAt(0).get();
+  for (const auto& entry : entries) {
+    if (entry.valueIndex.has_value()) {
+      projectStreamOffsets(
+          flatMap.childAt(*entry.valueIndex).get(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      projectedStreamOffsets.push_back(
+          flatMap.inMapDescriptorAt(*entry.valueIndex).offset());
+    } else {
+      emitPlaceholderStreamOffsets(valueType, projectedStreamOffsets);
+      projectedStreamOffsets.push_back(UINT32_MAX);
+    }
+  }
+}
+
+// Walks `type` (a node within the source nimble schema) in DFS pre-order
+// and appends one source stream offset per stream descriptor into
+// `projectedStreamOffsets`. At Row nodes appearing in `selectedChildren`,
+// only the selected child indices are descended into (in source order). At
+// FlatMap nodes, defers to `projectFlatmapStreamOffsets` which merges
+// present and missing keys alphabetically. The traversal order matches the
+// velox-source overload of `buildProjectedNimbleType` so the emitted offsets
+// line up positionally with the projected schema it returns.
+void projectStreamOffsets(
+    const Type* type,
+    const SelectedChildrenMap& selectedChildren,
+    const MissingChildrenMap& missingChildren,
+    std::vector<uint32_t>& projectedStreamOffsets) {
+  switch (type->kind()) {
+    case Kind::Scalar:
+      projectedStreamOffsets.push_back(
+          type->asScalar().scalarDescriptor().offset());
+      return;
+    case Kind::TimestampMicroNano: {
+      const auto& ts = type->asTimestampMicroNano();
+      projectedStreamOffsets.push_back(ts.microsDescriptor().offset());
+      projectedStreamOffsets.push_back(ts.nanosDescriptor().offset());
+      return;
+    }
+    case Kind::Row: {
+      const auto& row = type->asRow();
+      projectedStreamOffsets.push_back(row.nullsDescriptor().offset());
+      const auto it = selectedChildren.find(type);
       if (it != selectedChildren.end()) {
-        names.reserve(it->second.size());
-        children.reserve(it->second.size());
-        for (size_t columnIdx : it->second) {
-          names.emplace_back(row.nameAt(columnIdx));
-          children.emplace_back(buildProjectedType(
-              row.childAt(columnIdx).get(),
+        // std::set<size_t> iterates ascending — matches source child order.
+        for (size_t idx : it->second) {
+          projectStreamOffsets(
+              row.childAt(idx).get(),
               selectedChildren,
-              nextOffset,
-              inputStreamOffsets));
+              missingChildren,
+              projectedStreamOffsets);
         }
       } else {
-        names.reserve(row.childrenCount());
-        children.reserve(row.childrenCount());
         for (size_t i = 0; i < row.childrenCount(); ++i) {
-          names.emplace_back(row.nameAt(i));
-          children.emplace_back(buildProjectedType(
+          projectStreamOffsets(
               row.childAt(i).get(),
               selectedChildren,
-              nextOffset,
-              inputStreamOffsets));
+              missingChildren,
+              projectedStreamOffsets);
         }
       }
-
-      return std::make_shared<RowType>(
-          std::move(nullsDesc), std::move(names), std::move(children));
+      return;
     }
-
     case Kind::Array: {
-      const auto& array = inputType->asArray();
-      auto lengthsDesc = allocateStreamOffset(
-          array.lengthsDescriptor(), nextOffset, inputStreamOffsets);
-      auto elements = buildProjectedType(
+      const auto& array = type->asArray();
+      projectedStreamOffsets.push_back(array.lengthsDescriptor().offset());
+      projectStreamOffsets(
           array.elements().get(),
           selectedChildren,
-          nextOffset,
-          inputStreamOffsets);
-      return std::make_shared<ArrayType>(
-          std::move(lengthsDesc), std::move(elements));
+          missingChildren,
+          projectedStreamOffsets);
+      return;
     }
-
     case Kind::ArrayWithOffsets: {
-      const auto& array = inputType->asArrayWithOffsets();
-      auto offsetsDesc = allocateStreamOffset(
-          array.offsetsDescriptor(), nextOffset, inputStreamOffsets);
-      auto lengthsDesc = allocateStreamOffset(
-          array.lengthsDescriptor(), nextOffset, inputStreamOffsets);
-      auto elements = buildProjectedType(
+      const auto& array = type->asArrayWithOffsets();
+      projectedStreamOffsets.push_back(array.offsetsDescriptor().offset());
+      projectedStreamOffsets.push_back(array.lengthsDescriptor().offset());
+      projectStreamOffsets(
           array.elements().get(),
           selectedChildren,
-          nextOffset,
-          inputStreamOffsets);
-      return std::make_shared<ArrayWithOffsetsType>(
-          std::move(offsetsDesc), std::move(lengthsDesc), std::move(elements));
+          missingChildren,
+          projectedStreamOffsets);
+      return;
     }
-
     case Kind::Map: {
-      const auto& map = inputType->asMap();
-      auto lengthsDesc = allocateStreamOffset(
-          map.lengthsDescriptor(), nextOffset, inputStreamOffsets);
-      auto keys = buildProjectedType(
-          map.keys().get(), selectedChildren, nextOffset, inputStreamOffsets);
-      auto values = buildProjectedType(
-          map.values().get(), selectedChildren, nextOffset, inputStreamOffsets);
-      return std::make_shared<MapType>(
-          std::move(lengthsDesc), std::move(keys), std::move(values));
+      const auto& map = type->asMap();
+      projectedStreamOffsets.push_back(map.lengthsDescriptor().offset());
+      projectStreamOffsets(
+          map.keys().get(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      projectStreamOffsets(
+          map.values().get(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      return;
     }
-
     case Kind::SlidingWindowMap: {
-      const auto& map = inputType->asSlidingWindowMap();
-      auto offsetsDesc = allocateStreamOffset(
-          map.offsetsDescriptor(), nextOffset, inputStreamOffsets);
-      auto lengthsDesc = allocateStreamOffset(
-          map.lengthsDescriptor(), nextOffset, inputStreamOffsets);
-      auto keys = buildProjectedType(
-          map.keys().get(), selectedChildren, nextOffset, inputStreamOffsets);
-      auto values = buildProjectedType(
-          map.values().get(), selectedChildren, nextOffset, inputStreamOffsets);
-      return std::make_shared<SlidingWindowMapType>(
-          std::move(offsetsDesc),
-          std::move(lengthsDesc),
-          std::move(keys),
-          std::move(values));
+      const auto& map = type->asSlidingWindowMap();
+      projectedStreamOffsets.push_back(map.offsetsDescriptor().offset());
+      projectedStreamOffsets.push_back(map.lengthsDescriptor().offset());
+      projectStreamOffsets(
+          map.keys().get(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      projectStreamOffsets(
+          map.values().get(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      return;
     }
-
-    case Kind::FlatMap: {
-      const auto& flatMap = inputType->asFlatMap();
-
-      // FlatMap must have selected children (key subscripts). Projecting
-      // an entire FlatMap without specifying keys is not supported because
-      // the Projector requires explicit key selection for FlatMap columns.
-      const auto it = selectedChildren.find(inputType);
-      NIMBLE_CHECK(
-          it != selectedChildren.end(),
-          "Cannot project entire FlatMap column without key subscripts. "
-          "Use key-level projection (e.g., map[\"key\"]).");
-
-      auto nullsDesc = allocateStreamOffset(
-          flatMap.nullsDescriptor(), nextOffset, inputStreamOffsets);
-
-      std::vector<std::string> names;
-      std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors;
-      std::vector<std::shared_ptr<const Type>> children;
-
-      // Build sorted child indices — always sort by name for canonical
-      // ordering that matches buildProjectedNimbleType.
-      std::vector<size_t> indices;
-      indices.assign(it->second.begin(), it->second.end());
-      indices = sortedFlatMapChildIndices(flatMap, std::move(indices));
-
-      names.reserve(indices.size());
-      inMapDescriptors.reserve(indices.size());
-      children.reserve(indices.size());
-      for (size_t columnIdx : indices) {
-        names.emplace_back(flatMap.nameAt(columnIdx));
-        children.emplace_back(buildProjectedType(
-            flatMap.childAt(columnIdx).get(),
-            selectedChildren,
-            nextOffset,
-            inputStreamOffsets));
-        inMapDescriptors.emplace_back(
-            std::make_unique<StreamDescriptor>(allocateStreamOffset(
-                flatMap.inMapDescriptorAt(columnIdx),
-                nextOffset,
-                inputStreamOffsets)));
-      }
-
-      return std::make_shared<FlatMapType>(
-          std::move(nullsDesc),
-          flatMap.keyScalarKind(),
-          std::move(names),
-          std::move(inMapDescriptors),
-          std::move(children));
-    }
-
-    default:
-      NIMBLE_FAIL("Unsupported type kind for projected schema: {}", kind);
+    case Kind::FlatMap:
+      projectFlatmapStreamOffsets(
+          type->asFlatMap(),
+          selectedChildren,
+          missingChildren,
+          projectedStreamOffsets);
+      return;
   }
+  NIMBLE_UNREACHABLE("Unknown type kind: {}", type->kind());
+}
+
+// Classifies each top-level column of the source nimble Row by `Kind` to
+// build the encoding hints the velox-source `buildProjectedNimbleType`
+// overload requires: FlatMap → flatMapColumns, ArrayWithOffsets →
+// dictionaryArrayColumns, SlidingWindowMap → deduplicatedMapColumns. Other
+// kinds produce no entry (plain encoding). Internal helper of
+// `buildProjectedNimbleType` (nimble-source overload).
+ColumnEncodings getColumnEncodings(const RowType& nimbleType) {
+  ColumnEncodings encodings;
+  for (size_t i = 0; i < nimbleType.childrenCount(); ++i) {
+    const auto& name = nimbleType.nameAt(i);
+    switch (nimbleType.childAt(i)->kind()) {
+      case Kind::FlatMap:
+        encodings.flatMapColumns.insert(std::string(name));
+        break;
+      case Kind::ArrayWithOffsets:
+        encodings.dictionaryArrayColumns.insert(std::string(name));
+        break;
+      case Kind::SlidingWindowMap:
+        encodings.deduplicatedMapColumns.insert(std::string(name));
+        break;
+      default:
+        // Plain encoding; no entry needed.
+        break;
+    }
+  }
+  return encodings;
 }
 
 } // namespace
@@ -823,39 +902,55 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
       projectedStreamOffsets.empty(),
       "projectedStreamOffsets must be empty, got size: {}",
       projectedStreamOffsets.size());
+  NIMBLE_CHECK_NOT_NULL(type, "type must not be null");
   NIMBLE_CHECK(type->isRow(), "Root type must be a Row, got: {}", type->kind());
 
-  NimbleSelectedChildrenMap selectedChildren;
+  // Resolve subfields against the source schema once. Real selections (Row
+  // children + present FlatMap keys) land in `selectedChildren` keyed by
+  // source index; FlatMap keys absent from the source go into
+  // `missingChildren` keyed by name. The offset walker merges the two per
+  // FlatMap node before emitting.
+  SelectedChildrenMap selectedChildren;
+  MissingChildrenMap missingChildren;
   for (const auto& subfield : projectedSubfields) {
-    resolveSubfield(type, subfield, selectedChildren);
+    resolveSubfield(type, subfield, selectedChildren, missingChildren);
   }
+
+  // An all-missing-keys projection is allowed: the projected FlatMap contains
+  // a placeholder child per requested key, and the byte-copy pipeline emits
+  // 0-byte slots that the deserializer's gap-fill turns into null columns.
+  // Callers that need to surface "typo on every key" as an error must do
+  // their own presence check against the source schema before projecting.
 
   const auto& rootRow = type->asRow();
-  uint32_t nextOffset = 0;
-  auto nullsDesc = allocateStreamOffset(
-      rootRow.nullsDescriptor(), nextOffset, projectedStreamOffsets);
-
-  const auto& selectedTopLevelColumns = selectedChildren[type];
+  const auto& selectedColumnIndices = selectedChildren[type];
   NIMBLE_CHECK(
-      !selectedTopLevelColumns.empty(),
+      !selectedColumnIndices.empty(),
       "No top-level columns resolved from projectedSubfields");
 
-  std::vector<std::string> names;
-  std::vector<std::shared_ptr<const Type>> children;
-  names.reserve(selectedTopLevelColumns.size());
-  children.reserve(selectedTopLevelColumns.size());
-  for (size_t columnIdx : selectedTopLevelColumns) {
-    names.emplace_back(rootRow.nameAt(columnIdx));
-    children.emplace_back(buildProjectedType(
+  // Build the projected schema from the velox view of the source. The velox
+  // MAP<K,V> view discards FlatMap key inventory, so the velox-source
+  // builder produces one alphabetically-sorted child per requested subscript
+  // key regardless of source presence — exactly the shape we need for the
+  // source-offset walker below to align positionally.
+  auto veloxSource = convertToVeloxType(*type);
+  const auto encodings = getColumnEncodings(rootRow);
+  auto projectedSchema = buildProjectedNimbleType(
+      veloxSource->asRow(), projectedSubfields, encodings);
+
+  // Walk the source nimble in the same DFS pre-order + FlatMap-alphabetical
+  // traversal the velox-source builder uses, emitting one source stream
+  // offset per projected stream position (UINT32_MAX for missing keys).
+  projectedStreamOffsets.push_back(rootRow.nullsDescriptor().offset());
+  for (size_t columnIdx : selectedColumnIndices) {
+    projectStreamOffsets(
         rootRow.childAt(columnIdx).get(),
         selectedChildren,
-        nextOffset,
-        projectedStreamOffsets,
-        /*isTopLevelChild=*/true));
+        missingChildren,
+        projectedStreamOffsets);
   }
 
-  return std::make_shared<RowType>(
-      std::move(nullsDesc), std::move(names), std::move(children));
+  return projectedSchema;
 }
 
 } // namespace facebook::nimble

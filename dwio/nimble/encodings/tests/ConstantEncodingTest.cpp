@@ -127,10 +127,11 @@ class ConstantEncodingTest : public ::testing::Test {
     if constexpr (std::is_same_v<T, double>) {
       const double dNaN0 = std::numeric_limits<double>::quiet_NaN();
       const double dNaN1 = std::numeric_limits<double>::signaling_NaN();
-      const double dNaN2 = nimble::EncodingPhysicalType<double>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<double>::
-                                     asEncodingPhysicalType(dNaN0) |
-                                 0x3));
+      const double dNaN2 =
+          nimble::EncodingPhysicalType<double>::asEncodingLogicalType(
+              (nimble::EncodingPhysicalType<double>::asEncodingPhysicalType(
+                   dNaN0) |
+               0x3));
       return {
           toVector({0.0}),
           toVector({0.0, 0.00}),
@@ -142,10 +143,11 @@ class ConstantEncodingTest : public ::testing::Test {
     } else if constexpr (std::is_same_v<T, float>) {
       const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
       const float fNaN1 = std::numeric_limits<float>::signaling_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-        asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                     asEncodingPhysicalType(fNaN0) |
-                   0x3));
+      const float fNaN2 =
+          nimble::EncodingPhysicalType<float>::asEncodingLogicalType(
+              (nimble::EncodingPhysicalType<float>::asEncodingPhysicalType(
+                   fNaN0) |
+               0x3));
       return {
           toVector({0.0f}),
           toVector({0.0f, 0.00f}),
@@ -172,10 +174,11 @@ class ConstantEncodingTest : public ::testing::Test {
           toVector({dNaN0, dNaN0, dNaN1})};
     } else if constexpr (std::is_same_v<T, float>) {
       const float fNaN0 = std::numeric_limits<float>::quiet_NaN();
-      const float fNaN2 = nimble::EncodingPhysicalType<float>::
-          asEncodingLogicalType((nimble::EncodingPhysicalType<float>::
-                                     asEncodingPhysicalType(fNaN0) |
-                                 0x3));
+      const float fNaN2 =
+          nimble::EncodingPhysicalType<float>::asEncodingLogicalType(
+              (nimble::EncodingPhysicalType<float>::asEncodingPhysicalType(
+                   fNaN0) |
+               0x3));
       return {
           toVector({-0.0f, -0.00f, -0.0000001f}),
           toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),

@@ -763,7 +763,8 @@ TEST_F(ProjectorTest, unsupportedArraySubscript) {
   SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
-  // Array subscripts are not supported.
+  // Array subscripts are not supported — subscripts on non-FlatMap source
+  // nodes are rejected during subfield resolution against the source schema.
   auto subfields = makeSubfields({"arr[0]"});
 
   NIMBLE_ASSERT_THROW(
@@ -782,7 +783,9 @@ TEST_F(ProjectorTest, unsupportedMapKeyProjection) {
   SerializerOptions serOpts{.version = SerializationVersion::kCompactRaw};
   auto inputSchema = getNimbleSchema(type, serOpts);
 
-  // Regular map subscripts are not supported (would need re-encoding).
+  // Regular map subscripts are not supported (would need re-encoding) — the
+  // source's MAP is not encoded as FlatMap, so subfield resolution rejects
+  // the subscript before we even reach schema building.
   auto subfields = makeSubfields({"m[\"key\"]"});
 
   NIMBLE_ASSERT_THROW(
@@ -1521,7 +1524,9 @@ TEST_F(ProjectorTest, projectFlatMapMultipleKeys) {
   }
 }
 
-// Test projecting FlatMap with non-existent key throws.
+// Test projecting FlatMap with only non-existent keys: the projected schema
+// contains a placeholder child per requested key, and the round-trip decoded
+// output produces null values for those keys.
 TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
   auto type = ROW({
       {"id", BIGINT()},
@@ -1577,18 +1582,358 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
       .flatMapColumns = {{"features", {}}},
   };
   auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
-  (void)serialized; // Not used, just needed to discover keys.
 
-  // Try to project a key that doesn't exist in schema.
+  // Project a key that does not exist in the source schema. The Projector
+  // succeeds: the projected FlatMap contains "999" as a synthetic child,
+  // and the byte-copy pipeline writes a 0-byte placeholder slot for it.
   auto subfields = makeSubfields({"features[\"999\"]"});
+  Projector projector{
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompactRaw}};
 
-  NIMBLE_ASSERT_THROW(
-      Projector(
-          inputSchema,
-          subfields,
-          pool_.get(),
-          {.projectVersion = SerializationVersion::kCompactRaw}),
-      "Cannot project entire FlatMap column without key subscripts");
+  // The projected schema has one child for the requested (missing) key.
+  const auto& projectedSchema = projector.projectedSchema();
+  ASSERT_EQ(Kind::Row, projectedSchema->kind());
+  ASSERT_EQ(1, projectedSchema->asRow().childrenCount());
+  ASSERT_EQ(Kind::FlatMap, projectedSchema->asRow().childAt(0)->kind());
+  const auto& projectedFlatMap =
+      projectedSchema->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(1, projectedFlatMap.childrenCount());
+  EXPECT_EQ("999", projectedFlatMap.nameAt(0));
+
+  // Round-trip: deserialize the projected blob against the projected schema
+  // and confirm key 999 decodes to null for every row.
+  auto projected = projectInput(projector, serialized, /*useIOBuf=*/false);
+  auto projectedStr = toString(projected);
+  DeserializerOptions deserOpts{.hasHeader = true};
+  auto result = deserialize(projectedStr, projectedSchema, deserOpts);
+  ASSERT_EQ(numRows, result->size());
+  auto* features = result->as<RowVector>()->childAt(0)->as<MapVector>();
+  ASSERT_NE(nullptr, features);
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    EXPECT_EQ(0, features->sizeAt(i))
+        << "row " << i << " should have an empty map (all requested keys "
+        << "missing in source)";
+  }
+}
+
+// All-missing-keys projection on a FlatMap whose value subtree is a Row.
+// Exercises the `emitPlaceholderOffsets` Row branch end-to-end (Row.nulls +
+// 2 inner scalars = 3 UINT32_MAX value slots + 1 inMap slot per missing key).
+TEST_F(ProjectorTest, projectFlatMapNonExistentKey_RowValue) {
+  auto valueRowType = ROW({{"a", INTEGER()}, {"b", VARCHAR()}});
+  auto type =
+      ROW({{"id", BIGINT()}, {"features", MAP(INTEGER(), valueRowType)}});
+
+  // 2 rows × 2 entries (keys 1 and 2 — both real, so the source FlatMap has
+  // a non-empty value template for `convertToVeloxType` / `childAt(0)`).
+  const vector_size_t numRows = 2;
+  const int entriesPerRow = 2;
+  const int totalEntries = numRows * entriesPerRow;
+
+  auto ids = makeIntVector<int64_t>({100, 200});
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  auto* rawOffsets = mapOffsets->asMutable<vector_size_t>();
+  auto* rawSizes = mapSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = i * entriesPerRow;
+    rawSizes[i] = entriesPerRow;
+  }
+  std::vector<int32_t> keys;
+  std::vector<int32_t> aVals;
+  std::vector<std::string> bVals;
+  for (int i = 0; i < totalEntries; ++i) {
+    keys.push_back((i % entriesPerRow) + 1); // keys 1, 2
+    aVals.push_back(i);
+    bVals.push_back(fmt::format("v{}", i));
+  }
+  auto keysVec = makeIntVector(keys);
+  auto aVec = makeIntVector(aVals);
+  auto bVec = makeStringVector(bVals);
+  auto valueRows = std::make_shared<RowVector>(
+      pool_.get(),
+      valueRowType,
+      nullptr,
+      static_cast<vector_size_t>(totalEntries),
+      std::vector<VectorPtr>{aVec, bVec});
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), valueRowType),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      keysVec,
+      valueRows);
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{ids, mapVector});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompactRaw,
+      .flatMapColumns = {{"features", {}}},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Project a non-existent key (subscript 999 not in source). Should succeed:
+  // the projected FlatMap holds "999" as a synthetic child whose value-subtree
+  // is a clone of the source's value Row, with UINT32_MAX placeholders for
+  // every stream in that subtree plus the inMap.
+  auto subfields = makeSubfields({"features[\"999\"]"});
+  Projector projector{
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompactRaw}};
+
+  const auto& projectedSchema = projector.projectedSchema();
+  ASSERT_EQ(Kind::Row, projectedSchema->kind());
+  ASSERT_EQ(1, projectedSchema->asRow().childrenCount());
+  const auto& projectedFlatMap =
+      projectedSchema->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(1, projectedFlatMap.childrenCount());
+  EXPECT_EQ("999", projectedFlatMap.nameAt(0));
+  // Value subtree is a Row (cloned structurally from the source's value Row).
+  ASSERT_EQ(Kind::Row, projectedFlatMap.childAt(0)->kind());
+  EXPECT_EQ(2, projectedFlatMap.childAt(0)->asRow().childrenCount());
+
+  // Round-trip: decoded map should be empty for every row (the inMap stream
+  // is all-zero placeholder → gap-fill says "no rows have this key").
+  auto projected = projectInput(projector, serialized, /*useIOBuf=*/false);
+  DeserializerOptions deserOpts{.hasHeader = true};
+  auto result = deserialize(toString(projected), projectedSchema, deserOpts);
+  ASSERT_EQ(numRows, result->size());
+  auto* features = result->as<RowVector>()->childAt(0)->as<MapVector>();
+  ASSERT_NE(nullptr, features);
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    EXPECT_EQ(0, features->sizeAt(i)) << "row " << i;
+  }
+}
+
+// All-missing-keys projection on a FlatMap whose value subtree is an Array.
+// Exercises the `emitPlaceholderOffsets` Array branch end-to-end (Array
+// lengths + 1 element scalar = 2 UINT32_MAX value slots + 1 inMap per key).
+TEST_F(ProjectorTest, projectFlatMapNonExistentKey_ArrayValue) {
+  auto valueArrayType = ARRAY(INTEGER());
+  auto type =
+      ROW({{"id", BIGINT()}, {"features", MAP(INTEGER(), valueArrayType)}});
+
+  // 2 rows × 2 entries; each value is a 2-element array.
+  const vector_size_t numRows = 2;
+  const int entriesPerRow = 2;
+  const int totalEntries = numRows * entriesPerRow;
+  const int elementsPerArray = 2;
+
+  auto ids = makeIntVector<int64_t>({100, 200});
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  auto* rawMapOff = mapOffsets->asMutable<vector_size_t>();
+  auto* rawMapSz = mapSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawMapOff[i] = i * entriesPerRow;
+    rawMapSz[i] = entriesPerRow;
+  }
+  std::vector<int32_t> keys;
+  for (int i = 0; i < totalEntries; ++i) {
+    keys.push_back((i % entriesPerRow) + 1); // keys 1, 2
+  }
+  auto keysVec = makeIntVector(keys);
+
+  auto arrayOffsets = allocateOffsets(totalEntries, pool_.get());
+  auto arraySizes = allocateSizes(totalEntries, pool_.get());
+  auto* rawArrOff = arrayOffsets->asMutable<vector_size_t>();
+  auto* rawArrSz = arraySizes->asMutable<vector_size_t>();
+  for (int i = 0; i < totalEntries; ++i) {
+    rawArrOff[i] = i * elementsPerArray;
+    rawArrSz[i] = elementsPerArray;
+  }
+  std::vector<int32_t> elementVals;
+  for (int i = 0; i < totalEntries * elementsPerArray; ++i) {
+    elementVals.push_back(i);
+  }
+  auto elementsVec = makeIntVector(elementVals);
+  auto arrayValues = std::make_shared<ArrayVector>(
+      pool_.get(),
+      valueArrayType,
+      nullptr,
+      static_cast<vector_size_t>(totalEntries),
+      arrayOffsets,
+      arraySizes,
+      elementsVec);
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), valueArrayType),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      keysVec,
+      arrayValues);
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{ids, mapVector});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompactRaw,
+      .flatMapColumns = {{"features", {}}},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(vec, type, serOpts);
+
+  auto subfields = makeSubfields({"features[\"999\"]"});
+  Projector projector{
+      inputSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompactRaw}};
+
+  const auto& projectedSchema = projector.projectedSchema();
+  ASSERT_EQ(Kind::Row, projectedSchema->kind());
+  const auto& projectedFlatMap =
+      projectedSchema->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(1, projectedFlatMap.childrenCount());
+  EXPECT_EQ("999", projectedFlatMap.nameAt(0));
+  // Value subtree is an Array (cloned structurally from the source's value).
+  ASSERT_EQ(Kind::Array, projectedFlatMap.childAt(0)->kind());
+
+  auto projected = projectInput(projector, serialized, /*useIOBuf=*/false);
+  DeserializerOptions deserOpts{.hasHeader = true};
+  auto result = deserialize(toString(projected), projectedSchema, deserOpts);
+  ASSERT_EQ(numRows, result->size());
+  auto* features = result->as<RowVector>()->childAt(0)->as<MapVector>();
+  ASSERT_NE(nullptr, features);
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    EXPECT_EQ(0, features->sizeAt(i)) << "row " << i;
+  }
+}
+
+// Verifies the placeholder-slot behavior for missing FlatMap keys in the
+// production workflow:
+//   1) Projector is constructed with the SOURCE schema (the schema the blob
+//      was actually serialized with — keys "1" and "3" only).
+//   2) Caller projects subfields ["1", "2", "3"], where "2" is missing in
+//      the source.
+//   3) Caller constructs an EXPANDED schema via the velox-based
+//      buildProjectedNimbleType containing all three keys, and uses it to
+//      deserialize the projected blob.
+//
+// The Projector's nimble-schema-based buildProjectedNimbleType emits key "2"
+// as a synthetic child with UINT32_MAX input offsets, so the Projector
+// writes 0-byte placeholder slots into the trailer at positions 4-5. The
+// expanded schema's offsets line up with these positions, and the
+// Deserializer's gap-fill produces a null/absent column for key "2" while
+// keys "1" and "3" decode their real bytes.
+//
+// Asserted end-to-end semantics: data["1"]=10.0, data["2"] absent/null,
+// data["3"]=30.0.
+TEST_F(ProjectorTest, missingKeyInMiddleProducesPlaceholder) {
+  auto type = ROW({{"data", MAP(INTEGER(), DOUBLE())}});
+
+  // One row, two entries: keys 1 and 3 (key 2 is intentionally absent).
+  const vector_size_t numRows = 1;
+  const int entriesPerRow = 2;
+  const int totalEntries = numRows * entriesPerRow;
+
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  mapOffsets->asMutable<vector_size_t>()[0] = 0;
+  mapSizes->asMutable<vector_size_t>()[0] = entriesPerRow;
+
+  auto mapKeys = BaseVector::create<FlatVector<int32_t>>(
+      INTEGER(), totalEntries, pool_.get());
+  auto mapValues = BaseVector::create<FlatVector<double>>(
+      DOUBLE(), totalEntries, pool_.get());
+  mapKeys->set(0, 1);
+  mapKeys->set(1, 3);
+  mapValues->set(0, 10.0);
+  mapValues->set(1, 30.0);
+
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      mapKeys,
+      mapValues);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{mapVector});
+
+  // Serialize as FlatMap — blob will have streams only for keys "1" and "3".
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kCompactRaw,
+      .flatMapColumns = {{"data", {}}},
+  };
+  auto [blob, sourceSchema] = serializeWithSchema(vec, type, serOpts);
+
+  // Caller asks for all three keys (key "2" is missing in source).
+  auto subfields = makeSubfields({"data[\"1\"]", "data[\"2\"]", "data[\"3\"]"});
+
+  // Build the EXPANDED schema via the velox-based API for use at deserialize
+  // time. It has children for all three keys with dense alphabetical offsets.
+  nimble::ColumnEncodings encodings;
+  encodings.flatMapColumns.insert("data");
+  auto expandedSchema =
+      nimble::buildProjectedNimbleType(type->asRow(), subfields, encodings);
+
+  // Production flow: construct the Projector with the SOURCE schema (the
+  // schema that actually matches the blob). The Projector currently silent-
+  // drops key "2" because it's not in the source.
+  Projector projector(
+      sourceSchema,
+      subfields,
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kCompactRaw});
+
+  auto projected = projectInput(projector, blob, /*useIOBuf=*/false);
+  auto projectedStr = toString(projected);
+
+  // Deserialize the projected blob using the EXPANDED schema (which expects
+  // all three keys). The Projector emits a 0-byte placeholder slot for key 2
+  // so the expanded schema's offsets line up with the projected blob and the
+  // Deserializer's gap-fill produces a null column for the missing key.
+  DeserializerOptions deserOpts{.hasHeader = true};
+  auto result = deserialize(projectedStr, expandedSchema, deserOpts);
+
+  ASSERT_EQ(result->size(), 1);
+  auto resultRow = result->as<RowVector>();
+  auto dataMap = resultRow->childAt(0)->as<MapVector>();
+  ASSERT_NE(dataMap, nullptr);
+
+  // Build (key -> optional<value>) map for the single row by walking the
+  // MapVector. A key is "present" if it appears in the map; "absent" if it
+  // doesn't. We expect: 1 -> 10.0, 2 -> absent, 3 -> 30.0.
+  std::map<int32_t, std::optional<double>> got;
+  auto* keys = dataMap->mapKeys()->as<FlatVector<int32_t>>();
+  auto* values = dataMap->mapValues()->as<FlatVector<double>>();
+  ASSERT_NE(keys, nullptr);
+  ASSERT_NE(values, nullptr);
+  const auto offset = dataMap->offsetAt(0);
+  const auto size = dataMap->sizeAt(0);
+  for (vector_size_t i = offset; i < offset + size; ++i) {
+    const auto k = keys->valueAt(i);
+    if (values->isNullAt(i)) {
+      got[k] = std::nullopt;
+    } else {
+      got[k] = values->valueAt(i);
+    }
+  }
+
+  const std::map<int32_t, std::optional<double>> expected{
+      {1, 10.0},
+      {3, 30.0},
+  };
+  EXPECT_EQ(got, expected);
 }
 
 // Test stream indices are correct.

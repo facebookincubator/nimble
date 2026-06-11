@@ -45,12 +45,19 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
       const override;
 
  protected:
-  // Cached dictionary alphabet and materialized vector for the current chunk's
-  // encoding. Cleared on chunk transitions via the onChunkLoad callback.
+  ChunkedDecoder decoder_;
+
+ private:
+  bool readsNullsOnly() const final {
+    return false;
+  }
+
+  // Merged alphabet accumulated across chunks for multi-chunk dictionary
+  // reads. Each chunk's alphabet is appended, and indices are offset to
+  // reference this merged alphabet. Cleared when skip crosses a chunk
+  // boundary (via the skip callback) to invalidate stale state.
   struct DictionaryState {
-    // Raw alphabet entries extracted from the encoding's dictionary.
     std::vector<std::string_view> alphabet;
-    // Materialized FlatVector wrapping alphabet for DictionaryVector output.
     velox::VectorPtr alphabetVector;
 
     void clear() {
@@ -59,32 +66,82 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
     }
   };
 
-  ChunkedDecoder decoder_;
-  DictionaryState dictionaryState_;
-
- private:
-  bool readsNullsOnly() const final {
-    return false;
-  }
-
-  // Populates dictionaryState_ from the current chunk's encoding if not
-  // already set. Registers the onChunkLoad callback on first call.
-  void ensureDictionaryState();
-
   // Materializes the alphabet FlatVector from dictionaryState_.alphabet
   // for use in DictionaryVector output.
   void ensureAlphabetVector();
 
-  // Attempts to read using the dictionary index path. Returns true if the
-  // dict path was taken, false if the caller should fall back to flat read.
+  // Populates dictionaryState_ from the current chunk's encoding if not
+  // already set.
+  void ensureDictionaryState();
+
+  void clearDictionaryState() {
+    dictionaryState_.clear();
+  }
+
+  // Attempts to extend the merged dictionary alphabet when a chunk boundary
+  // is crossed during multi-chunk dictionary index reading. Offsets the
+  // indices written since valueOffset by alphabetOffset (to reference the
+  // merged alphabet), then checks whether the new chunk is
+  // dictionary-convertible.
+  //
+  // Returns true if the new chunk's alphabet was appended and reading
+  // should continue. Returns false if the new chunk is not
+  // dictionary-convertible, signaling the caller to fall back to flat
+  // decoding for the remaining rows.
+  //
+  // @param alphabetOffset Running offset into the merged alphabet. Updated
+  //   to the new alphabet size when a chunk is appended. Tracked to produce
+  //   the correct indices in the merged alphabets.
+  // @param valueOffset Index into rawValues_ marking where the current
+  //   chunk's indices start. Updated to numValues_ after offsetting.
+  // Offsets dictionary indices in rawValues_ by alphabetSize, starting
+  // from position 'valueOffset' up to numValues_. Used to remap per-chunk
+  // indices into the merged alphabet's index space.
+  void updateDictionaryIndices(
+      velox::vector_size_t alphabetSize,
+      velox::vector_size_t valueOffset);
+
+  bool tryExtendDictionaryAtChunkBoundary(
+      int32_t& alphabetOffset,
+      velox::vector_size_t& valueOffset);
+
+  // Converts the dict indices in rawValues_ to flat StringView values by
+  // resolving each index against the merged alphabet. The StringViews point
+  // into the encoding's string buffers already held by stringBuffers_. Null
+  // positions (uninitialized indices) are skipped. Called during reactive
+  // fallback when a non-dictionary chunk is encountered mid-read.
+  //
+  // @param endReadRow End row of the read range (for output buffer sizing).
+  void abandonDictionaryEncoding(velox::vector_size_t endReadRow);
+
+  bool hasDictionaryState() const {
+    return !dictionaryState_.alphabet.empty();
+  }
+
+  // Attempts to read all rows using the dictionary index path.
+  //
+  // Returns true if all rows were consumed via dictionary encoding.
+  //
+  // Returns false if the dict path could not handle the entire batch.
+  // readOffset_ indicates how many rows were consumed:
+  //   - readOffset_ == offset: dict path not taken at all. The caller
+  //     should do a full flat read starting with prepareRead.
+  //   - readOffset_ > offset: partial dict read stopped at a non-dict
+  //     chunk. The dict rows are expanded to flat StringViews via
+  //     abandonDictionaryEncoding, nulls are set up, and the decoder is
+  //     at the continuation point. The caller reads the remaining rows
+  //     as flat without calling prepareRead.
   bool readWithDictionary(
       int64_t offset,
       const velox::RowSet& rows,
       const uint64_t* incomingNulls);
 
-  bool hasDictionaryState() const {
-    return !dictionaryState_.alphabet.empty();
-  }
+  DictionaryState dictionaryState_;
+
+  // Set when the current batch's read crossed chunk boundaries.
+  // Consumed by getValues to clear the merged alphabet after the
+  // DictionaryVector is constructed.
+  bool crossChunkRead_{false};
 };
 
 } // namespace facebook::nimble

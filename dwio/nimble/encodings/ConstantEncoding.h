@@ -158,7 +158,7 @@ class ConstantEncodingBase
         toString(this->encodingType()),
         toString(this->dataType()),
         this->rowCount(),
-        AS_CONST(T, value_));
+        NIMBLE_AS_CONST(T, value_));
   }
 
   static std::string_view encode(

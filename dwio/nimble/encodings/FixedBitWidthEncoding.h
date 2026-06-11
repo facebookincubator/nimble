@@ -180,20 +180,8 @@ void FixedBitWidthEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void FixedBitWidthEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
-  if constexpr (isFourByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGetWithBaseline32(
-        row_, rowCount, static_cast<uint32_t*>(buffer), baseline_);
-  } else if constexpr (isEightByteIntegralType<physicalType>()) {
-    fixedBitArray_.bulkGet64WithBaseline(
-        row_, rowCount, static_cast<uint64_t*>(buffer), baseline_);
-  } else {
-    const uint32_t start = row_;
-    const uint32_t end = start + rowCount;
-    physicalType* output = static_cast<physicalType*>(buffer);
-    for (uint32_t i = start; i < end; ++i) {
-      *output++ = fixedBitArray_.get(i) + baseline_;
-    }
-  }
+  fixedBitArray_.bulkGetWithBaseline(
+      row_, rowCount, static_cast<physicalType*>(buffer), baseline_);
   row_ += rowCount;
 }
 
@@ -276,29 +264,30 @@ void FixedBitWidthEncoding<T>::bulkScan(
   if constexpr (V::dense) {
     if constexpr (isFourByteIntegralType<physicalType>()) {
       // 4-byte path: use the optimized template-unrolled bulk decode.
-      buffer_.resize(numSelected);
-      fixedBitArray_.bulkGetWithBaseline32(
-          selectedRows[0] + offset,
-          numSelected,
-          reinterpret_cast<uint32_t*>(buffer_.data()),
-          baseline_);
-
       if constexpr (kSameSize) {
+        buffer_.resize(numSelected);
+        fixedBitArray_.bulkGetWithBaseline(
+            selectedRows[0] + offset, numSelected, buffer_.data(), baseline_);
         std::memcpy(values, buffer_.data(), numSelected * sizeof(physicalType));
       } else if constexpr (kIsUpcast) {
-        for (vector_size_t i = 0; i < numSelected; ++i) {
-          values[i] = static_cast<OutputType>(buffer_[i]);
-        }
+        static_assert(isEightByteIntegralType<OutputType>());
+        // Read the 4-byte-width values directly into the wider 8-byte output in
+        // a single pass, avoiding the staging buffer and per-element widening.
+        fixedBitArray_.bulkGetWithBaseline32Into64(
+            selectedRows[0] + offset,
+            numSelected,
+            reinterpret_cast<uint64_t*>(values),
+            baseline_);
       }
     } else {
       // 8-byte path: use bulkGet64WithBaseline which handles all bit widths
-      // including branchless byte-aligned loads for bitWidth <= 56.
+      // including branchless byte-aligned loads for bitWidth <= 58.
       static_assert(isEightByteIntegralType<physicalType>());
       static_assert(kSameSize, "8-byte bulkScan requires same-size output");
-      fixedBitArray_.bulkGet64WithBaseline(
+      fixedBitArray_.bulkGetWithBaseline(
           selectedRows[0] + offset,
           numSelected,
-          reinterpret_cast<uint64_t*>(values),
+          reinterpret_cast<physicalType*>(values),
           baseline_);
     }
   } else {
@@ -401,19 +390,7 @@ std::string_view FixedBitWidthEncoding<T>::encode(
       [&, baseline = selection.statistics().min()](char*& pos) {
         memset(pos, 0, fixedBitArraySize);
         FixedBitArray fba(pos, bitsRequired);
-        if constexpr (sizeof(physicalType) == 4) {
-          fba.bulkSet32WithBaseline(
-              0,
-              rowCount,
-              reinterpret_cast<const uint32_t*>(values.data()),
-              baseline);
-        } else {
-          // TODO: We may want to support 32-bit mode with (u)int64 here as
-          // well.
-          for (uint32_t i = 0; i < values.size(); ++i) {
-            fba.set(i, values[i] - baseline);
-          }
-        }
+        fba.bulkSetWithBaseline(0, rowCount, values.data(), baseline);
         pos += fixedBitArraySize;
         return pos;
       }};

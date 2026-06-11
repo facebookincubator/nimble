@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <cstdint>
+
+#include "dwio/nimble/common/Types.h"
 #include "velox/common/base/BitUtil.h"
 
 /// Packs integers into a fixed number (1-64) of bits and retrieves them.
@@ -86,56 +89,101 @@ class FixedBitArray {
   void bulkGet32Into64(uint64_t start, uint64_t length, uint64_t* values) const;
 
   /// Same as above. Add baseline to every value.
-  void bulkGetWithBaseline32(
-      uint64_t start,
-      uint64_t length,
-      uint32_t* values,
-      uint32_t baseline) const;
-
-  /// Same as above. Add baseline to every value.
   void bulkGetWithBaseline32Into64(
       uint64_t start,
       uint64_t length,
       uint64_t* values,
       uint64_t baseline) const;
 
-  /// Retrieves a contiguous subarray from slots [start, start + length) into
-  /// 64-bit output values, adding baseline to each. Supports any bit width
-  /// up to 64. For bitWidth < 32, delegates to the optimized bulkGet32 path.
-  /// For byte-aligned bit widths 32, 40, 48, 56, and 64, uses direct loads.
-  /// Other bit widths up to 58 use a single 64-bit load per value. For
-  /// bitWidth 59-63, handles cross-word boundary overflow.
-  void bulkGet64WithBaseline(
+  /// Unified bulk get for any unsigned integral element type, adding baseline
+  /// to each value. Mirror of bulkSetWithBaseline: 4-byte outputs reuse
+  /// bulkGetWithBaseline32 and 8-byte outputs reuse bulkGet64WithBaseline (both
+  /// zero-copy). Narrow 1- and 2-byte outputs are read into fixed-size stack
+  /// chunks via the fast bulkGet32 path and narrowed down -- faster than
+  /// per-element get, with no heap allocation.
+  template <typename T>
+  void bulkGetWithBaseline(
       uint64_t start,
       uint64_t length,
-      uint64_t* values,
-      uint64_t baseline) const;
+      T* values,
+      uint64_t baseline) const {
+    static_assert(
+        isUnsignedIntegralType<T>(),
+        "bulkGetWithBaseline requires an unsigned integral type.");
+    if constexpr (isFourByteIntegralType<T>()) {
+      bulkGetWithBaseline32(
+          start,
+          length,
+          reinterpret_cast<uint32_t*>(values),
+          static_cast<uint32_t>(baseline));
+    } else if constexpr (isEightByteIntegralType<T>()) {
+      bulkGet64WithBaseline(
+          start, length, reinterpret_cast<uint64_t*>(values), baseline);
+    } else {
+      // Narrow (1- or 2-byte) types cannot be reinterpreted as a wider array in
+      // place, so read into fixed-size stack chunks via the fast bulkGet32 path
+      // and narrow down -- no heap allocation regardless of length.
+      constexpr uint64_t kWidenChunk = 1024;
+      uint32_t widened[kWidenChunk];
+      const auto baseline32 = static_cast<uint32_t>(baseline);
+      for (uint64_t offset = 0; offset < length; offset += kWidenChunk) {
+        const uint64_t chunk =
+            length - offset < kWidenChunk ? length - offset : kWidenChunk;
+        bulkGetWithBaseline32(start + offset, chunk, widened, baseline32);
+        for (uint64_t i = 0; i < chunk; ++i) {
+          values[offset + i] = static_cast<T>(widened[i]);
+        }
+      }
+    }
+  }
 
   /// Sets a contiguous subarray of slots from [start, start + length).
   /// Considerably faster than looping set calls. Only callable when bitWidth
   /// <= 32. Same semantics as set -- see the warning there.
   void bulkSet32(uint64_t start, uint64_t length, const uint32_t* values);
 
-  /// Same as above. Subtracts baseline from every value.
-  void bulkSet32WithBaseline(
+  /// Unified bulk set for any unsigned integral element type, subtracting
+  /// baseline from each value before packing. Dispatches at compile time to the
+  /// optimal path: 4-byte values reuse bulkSet32WithBaseline and 8-byte values
+  /// reuse bulkSet64WithBaseline (both zero-copy). Narrow 1- and 2-byte values
+  /// are widened in fixed-size stack chunks onto the bulkSet32 path -- faster
+  /// than per-element packing, with no heap allocation. Requires the same
+  /// zeroed-buffer precondition as set.
+  template <typename T>
+  void bulkSetWithBaseline(
       uint64_t start,
       uint64_t length,
-      const uint32_t* values,
-      uint32_t baseline);
-
-  /// Sets a contiguous subarray of slots from [start, start + length),
-  /// subtracting baseline from each 64-bit value before packing. Supports any
-  /// value where values[i] >= baseline and values[i] - baseline fits in the
-  /// bit width up to 64. For bitWidth < 32, delegates to the optimized
-  /// bulkSet32 path. For byte-aligned bit widths 32, 40, 48, 56, and 64, uses
-  /// direct stores. Other bit widths up to 58 use a single 64-bit OR per
-  /// value. For bitWidth 59-63, handles cross-word boundary overflow.
-  /// Requires the same zeroed-buffer precondition as set.
-  void bulkSet64WithBaseline(
-      uint64_t start,
-      uint64_t length,
-      const uint64_t* values,
-      uint64_t baseline);
+      const T* values,
+      uint64_t baseline) {
+    static_assert(
+        isUnsignedIntegralType<T>(),
+        "bulkSetWithBaseline requires an unsigned integral type.");
+    if constexpr (isFourByteIntegralType<T>()) {
+      bulkSet32WithBaseline(
+          start,
+          length,
+          reinterpret_cast<const uint32_t*>(values),
+          static_cast<uint32_t>(baseline));
+    } else if constexpr (isEightByteIntegralType<T>()) {
+      bulkSet64WithBaseline(
+          start, length, reinterpret_cast<const uint64_t*>(values), baseline);
+    } else {
+      // Narrow (1- or 2-byte) types cannot be reinterpreted as a wider array in
+      // place, so widen in fixed-size stack chunks and use the fast bulkSet32
+      // path -- no heap allocation regardless of length.
+      constexpr uint64_t kWidenChunk = 1024;
+      uint32_t widened[kWidenChunk];
+      const auto baseline32 = static_cast<uint32_t>(baseline);
+      for (uint64_t offset = 0; offset < length; offset += kWidenChunk) {
+        const uint64_t chunk =
+            length - offset < kWidenChunk ? length - offset : kWidenChunk;
+        for (uint64_t i = 0; i < chunk; ++i) {
+          widened[i] = static_cast<uint32_t>(values[offset + i]);
+        }
+        bulkSet32WithBaseline(start + offset, chunk, widened, baseline32);
+      }
+    }
+  }
 
   /// Fills in the bit-packed |bitVector| with whether each value in
   /// [start, start + length) equals |value|. Should be faster than
@@ -157,6 +205,44 @@ class FixedBitArray {
   }
 
  private:
+  // Width-specific bulk-set/get implementations. Callers use the public
+  // bulkSetWithBaseline / bulkGetWithBaseline, which dispatch to these by
+  // element type.
+
+  // Only callable when bitWidth <= 32; subtracts baseline from each value.
+  // Same zeroed-buffer precondition as set.
+  void bulkSet32WithBaseline(
+      uint64_t start,
+      uint64_t length,
+      const uint32_t* values,
+      uint32_t baseline);
+
+  // Packs 64-bit values, subtracting baseline; supports bit widths up to 64.
+  // For bitWidth < 32 delegates to bulkSet32; 32/40/48/56/64 use direct stores;
+  // up to 58 use a single 64-bit OR per value; 59-63 handle cross-word
+  // overflow. Same zeroed-buffer precondition as set.
+  void bulkSet64WithBaseline(
+      uint64_t start,
+      uint64_t length,
+      const uint64_t* values,
+      uint64_t baseline);
+
+  // Only callable when bitWidth <= 32; adds baseline to every value.
+  void bulkGetWithBaseline32(
+      uint64_t start,
+      uint64_t length,
+      uint32_t* values,
+      uint32_t baseline) const;
+
+  // Reads 64-bit values, adding baseline; supports bit widths up to 64. For
+  // bitWidth < 32 delegates to bulkGet32; 32/40/48/56/64 use direct loads; up
+  // to 58 use a single 64-bit load per value; 59-63 handle cross-word overflow.
+  void bulkGet64WithBaseline(
+      uint64_t start,
+      uint64_t length,
+      uint64_t* values,
+      uint64_t baseline) const;
+
   char* buffer_;
   int bitWidth_;
   uint64_t mask_;

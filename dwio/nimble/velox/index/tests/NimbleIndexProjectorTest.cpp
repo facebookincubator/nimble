@@ -32,8 +32,11 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include "velox/common/caching/FileIds.h"
+#include "velox/common/file/IoUringReader.h"
+#include "velox/common/file/LocalFile.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempFilePath.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -160,10 +163,16 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
   velox::FileHandle makeFileHandle() {
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
+    return makeFileHandle(std::move(readFile), "test_file");
+  }
+
+  velox::FileHandle makeFileHandle(
+      std::shared_ptr<velox::ReadFile> readFile,
+      std::string_view id) {
     return velox::FileHandle{
         std::move(readFile),
-        velox::StringIdLease(velox::fileIds(), "test_file"),
-        velox::StringIdLease(velox::fileIds(), "test_group")};
+        velox::StringIdLease(velox::fileIds(), id),
+        velox::StringIdLease(velox::fileIds(), id)};
   }
 
   std::unique_ptr<NimbleIndexProjector> createProjector(
@@ -171,10 +180,23 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
       bool setDataIoStats = true,
       bool setMetadataIoStats = true,
       bool setIndexIoStats = true) {
+    return createProjectorWithFileHandle(
+        projectedSubfields,
+        makeFileHandle(),
+        setDataIoStats,
+        setMetadataIoStats,
+        setIndexIoStats);
+  }
+
+  std::unique_ptr<NimbleIndexProjector> createProjectorWithFileHandle(
+      const std::vector<Subfield>& projectedSubfields,
+      velox::FileHandle fileHandle,
+      bool setDataIoStats = true,
+      bool setMetadataIoStats = true,
+      bool setIndexIoStats = true) {
     dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
     metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
     indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
-    auto fileHandle = makeFileHandle();
     dwio::common::ReaderOptions readerOptions(leafPool_.get());
     if (setDataIoStats) {
       readerOptions.setDataIoStats(dataIoStats_);
@@ -978,6 +1000,166 @@ TEST_P(NimbleIndexProjectorTest, stats) {
   }
 }
 
+TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+
+  constexpr int numBatches = 4;
+  constexpr int rowsPerBatch = 128;
+  constexpr int numRows = numBatches * rowsPerBatch;
+  std::vector<RowVectorPtr> inputBatches;
+  inputBatches.reserve(numBatches);
+  for (int batch = 0; batch < numBatches; ++batch) {
+    std::vector<int64_t> keys(rowsPerBatch);
+    std::vector<int32_t> values(rowsPerBatch);
+    for (int row = 0; row < rowsPerBatch; ++row) {
+      const auto key = batch * rowsPerBatch + row;
+      keys[row] = key;
+      values[row] = key * 10;
+    }
+    inputBatches.emplace_back(vectorMaker_->rowVector(
+        {"key", "value"},
+        {vectorMaker_->flatVector<int64_t>(keys),
+         vectorMaker_->flatVector<int32_t>(values)}));
+  }
+  writeData(inputBatches, {"key"}, {}, /*stripeSize=*/1);
+
+  auto tempFile = velox::common::testutil::TempFilePath::create();
+  {
+    velox::LocalWriteFile writeFile(
+        tempFile->getPath(),
+        /*shouldCreateParentDirectories=*/false,
+        /*shouldThrowOnFileAlreadyExists=*/false);
+    writeFile.append(sinkData_);
+    writeFile.close();
+  }
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  struct TestCase {
+    const char* name;
+    bool bufferIo;
+    bool useIoUring;
+  };
+  const std::vector<TestCase> testCases = {
+      {"buffered", /*bufferIo=*/true, /*useIoUring=*/false},
+      {"direct", /*bufferIo=*/false, /*useIoUring=*/false},
+      {"directIoUring", /*bufferIo=*/false, /*useIoUring=*/true},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    velox::ThreadLocalIoUringReader::testingClear();
+    uint64_t numIoUringReaders{0};
+    EXPECT_EQ(velox::getIoUringReaderStats(numIoUringReaders).readCalls, 0);
+    EXPECT_EQ(numIoUringReaders, 0);
+
+    auto tabletReadFile = std::make_shared<velox::LocalReadFile>(
+        tempFile->getPath(),
+        /*executor=*/nullptr,
+        /*bufferIo=*/true,
+        /*useIoUring=*/false);
+    auto dataReadFile = std::make_shared<velox::LocalReadFile>(
+        tempFile->getPath(),
+        /*executor=*/nullptr,
+        testCase.bufferIo,
+        testCase.useIoUring);
+    const auto fileName = dataReadFile->getName();
+    dwio::common::ReaderOptions tabletReaderOptions(leafPool_.get());
+    tabletReaderOptions.setFileFormat(FileFormat::NIMBLE);
+    tabletReaderOptions.setLoadClusterIndex(true);
+    tabletReaderOptions.setCacheData(false);
+    tabletReaderOptions.setCacheMetadata(GetParam().cacheMetadata);
+    tabletReaderOptions.setPinMetadata(GetParam().pinMetadata);
+    tabletReaderOptions.setIOExecutor(ioExecutor_);
+    ensureTabletReaderCache();
+    (void)tabletReaderCache_->get(
+        tabletReadFile, TabletReader::configureOptions(tabletReaderOptions));
+    auto projector = createProjectorWithFileHandle(
+        subfields, makeFileHandle(dataReadFile, fileName));
+    const auto fileBytesBeforeProject = dataReadFile->bytesRead();
+
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {makeRangeLookup(rowType, {"key"}, 0, numRows)};
+    auto result = projector->project(request, {});
+
+    ASSERT_EQ(result.responses.size(), 1);
+    ASSERT_EQ(result.responses[0].slices.size(), numBatches);
+    std::vector<folly::IOBuf> ownedSlices;
+    std::vector<std::string_view> serializedBatches;
+    ownedSlices.reserve(numBatches);
+    serializedBatches.reserve(numBatches);
+    for (const auto& slice : result.responses[0].slices) {
+      const auto rowRange = readEmbeddedRowRange(slice);
+      EXPECT_EQ(rowRange, RowRange(0, rowsPerBatch));
+      ownedSlices.push_back(slice.cloneCoalescedAsValue());
+      serializedBatches.emplace_back(
+          reinterpret_cast<const char*>(ownedSlices.back().data()),
+          ownedSlices.back().length());
+    }
+
+    DeserializerOptions deserOptions;
+    deserOptions.hasHeader = true;
+    Deserializer deserializer(
+        projector->projectedNimbleType(), leafPool_.get(), deserOptions);
+    VectorPtr output;
+    deserializer.deserialize(serializedBatches, output);
+    ASSERT_EQ(output->size(), static_cast<uint32_t>(numRows));
+    auto* rowVec = output->as<RowVector>();
+    auto* valueVec = rowVec->childAt(0)->as<FlatVector<int32_t>>();
+    for (uint32_t row = 0; row < numRows; ++row) {
+      EXPECT_EQ(valueVec->valueAt(row), static_cast<int32_t>(row * 10))
+          << "row=" << row;
+    }
+
+    EXPECT_EQ(projector->stats().numReadStripes, numBatches);
+    EXPECT_EQ(projector->stats().numReadRows, numRows);
+    EXPECT_EQ(projector->stats().numProjectedRows, numRows);
+    EXPECT_GT(projector->stats().numOutputBytes, 0);
+
+    const auto physicalBytes = dataIoStats_->read().sum();
+    const auto payloadBytes = dataIoStats_->rawBytesRead();
+    EXPECT_GT(dataIoStats_->read().count(), 0);
+    EXPECT_GT(payloadBytes, 0);
+    EXPECT_EQ(
+        dataReadFile->bytesRead() - fileBytesBeforeProject, physicalBytes);
+    EXPECT_EQ(dataIoStats_->rawOverreadBytes(), physicalBytes - payloadBytes);
+    EXPECT_GE(physicalBytes, payloadBytes);
+    uint64_t alignment{0};
+    EXPECT_EQ(dataReadFile->directIo(alignment), !testCase.bufferIo);
+    if (!testCase.bufferIo) {
+      EXPECT_EQ(physicalBytes % alignment, 0);
+      EXPECT_GE(physicalBytes, payloadBytes);
+    } else {
+      EXPECT_EQ(alignment, 1);
+    }
+    uint64_t tabletAlignment{0};
+    EXPECT_FALSE(tabletReadFile->directIo(tabletAlignment));
+    EXPECT_EQ(tabletAlignment, 1);
+
+    const auto ioUringStats = velox::getIoUringReaderStats(numIoUringReaders);
+    if (testCase.useIoUring) {
+      EXPECT_EQ(numIoUringReaders, 1);
+      EXPECT_EQ(ioUringStats.readCalls, 1);
+      EXPECT_EQ(ioUringStats.regions, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.batches, 1);
+      EXPECT_EQ(ioUringStats.minRegionsPerRead, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.maxRegionsPerRead, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.minBatchSize, dataIoStats_->read().count());
+      EXPECT_EQ(ioUringStats.maxBatchSize, dataIoStats_->read().count());
+    } else {
+      EXPECT_EQ(numIoUringReaders, 0);
+      EXPECT_EQ(ioUringStats.readCalls, 0);
+      EXPECT_EQ(ioUringStats.regions, 0);
+      EXPECT_EQ(ioUringStats.batches, 0);
+    }
+  }
+  velox::ThreadLocalIoUringReader::testingClear();
+  EXPECT_EQ(tabletReaderCache_->stats().numElements, 1);
+  EXPECT_EQ(tabletReaderCache_->stats().numLookups, 2 * testCases.size());
+  EXPECT_EQ(tabletReaderCache_->stats().numHits, 2 * testCases.size() - 1);
+}
+
 TEST_P(NimbleIndexProjectorTest, statsToString) {
   NimbleIndexProjector::Stats stats;
   stats.numReadStripes = 3;
@@ -1401,7 +1583,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
 }
 
 TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
-  // Verify that missing FlatMap keys are silently skipped.
+  // Verify that missing FlatMap keys are emitted as synthetic placeholder
+  // children in the projected schema so cross-schema-version reads decode
+  // missing keys as null columns instead of silently shifting offsets.
   auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
 
   const int numRows = 200;
@@ -1439,31 +1623,90 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
     subfields.emplace_back("features[\"z\"]");
     auto projector = createProjector(subfields);
 
-    // Projected schema should only contain existing keys, sorted: "a", "c".
+    // Projected schema contains all requested keys in alphabetical order
+    // ("a", "c", "x", "z"). Real keys ("a", "c") carry source data while
+    // synthetic keys ("x", "z") hold placeholder slots that decode to nulls.
     const auto& schema = projector->projectedNimbleType();
     ASSERT_TRUE(schema->isRow());
     const auto& flatMap = schema->asRow().childAt(0)->asFlatMap();
-    ASSERT_EQ(flatMap.childrenCount(), 2);
+    ASSERT_EQ(flatMap.childrenCount(), 4);
     EXPECT_EQ(flatMap.nameAt(0), "a");
     EXPECT_EQ(flatMap.nameAt(1), "c");
+    EXPECT_EQ(flatMap.nameAt(2), "x");
+    EXPECT_EQ(flatMap.nameAt(3), "z");
 
-    // Verify data reads correctly.
+    // Decode the projected slice and verify per-row values. Source row r's
+    // map values are `r * 100 + mapIndex` for mapIndex in {0, 1, 2} mapping
+    // to keys {"a", "b", "c"} respectively. The decoded map for the target
+    // row must contain only the present projected keys ("a" → r*100+0,
+    // "c" → r*100+2) — "x" and "z" are missing in source and therefore not
+    // present in the decoded MapVector entries (gap-fill renders their inMap
+    // as all-false, producing no key entry).
     auto pointBounds = makePointLookup(rowType, {"key"}, 50);
     NimbleIndexProjector::Request request;
     request.keyBounds = {pointBounds};
     auto result = projector->project(request, {});
     ASSERT_EQ(result.responses.size(), 1);
     ASSERT_FALSE(result.responses[0].slices.empty());
+
+    const auto& slice = result.responses[0].slices[0];
+    const auto rowRange = readEmbeddedRowRange(slice);
+    ASSERT_GT(rowRange.numRows(), 0);
+
+    auto coalesced = coalesceChunkSlice(slice);
+    DeserializerOptions deserOptions;
+    deserOptions.hasHeader = true;
+    Deserializer deserializer(
+        projector->projectedNimbleType(), leafPool_.get(), deserOptions);
+    VectorPtr deserialized;
+    deserializer.deserialize(
+        std::string_view(
+            reinterpret_cast<const char*>(coalesced.data()),
+            coalesced.length()),
+        deserialized);
+    ASSERT_NE(deserialized, nullptr);
+
+    auto* mapResult =
+        deserialized->as<RowVector>()->childAt(0)->as<MapVector>();
+    ASSERT_NE(mapResult, nullptr);
+    ASSERT_GE(mapResult->size(), rowRange.endRow);
+
+    const vector_size_t targetRow = rowRange.startRow;
+    auto* keysVec = mapResult->mapKeys()->as<FlatVector<StringView>>();
+    auto* valsVec = mapResult->mapValues()->as<FlatVector<int64_t>>();
+    ASSERT_NE(keysVec, nullptr);
+    ASSERT_NE(valsVec, nullptr);
+
+    const auto mapOffset = mapResult->offsetAt(targetRow);
+    const auto mapSize = mapResult->sizeAt(targetRow);
+    std::map<std::string, int64_t> kvPairs;
+    for (vector_size_t i = 0; i < mapSize; ++i) {
+      kvPairs[keysVec->valueAt(mapOffset + i).str()] =
+          valsVec->valueAt(mapOffset + i);
+    }
+    // Only the present-key entries appear; "x" and "z" are absent (their
+    // placeholder slots produced all-false in-map → no map entry).
+    EXPECT_EQ(2, kvPairs.size());
+    EXPECT_EQ(500, kvPairs["a"]); // row 5 * 100 + mapIndex 0
+    EXPECT_EQ(502, kvPairs["c"]); // row 5 * 100 + mapIndex 2
+    EXPECT_EQ(0, kvPairs.count("x"));
+    EXPECT_EQ(0, kvPairs.count("z"));
   }
 
-  // All requested keys missing — should fail.
+  // All requested keys missing — projection still succeeds. The FlatMap
+  // contains alphabetically-sorted placeholder children for every requested
+  // key, all decoded as null columns by the deserializer's gap-fill.
   {
     std::vector<Subfield> subfields;
     subfields.emplace_back("features[\"x\"]");
     subfields.emplace_back("features[\"y\"]");
-    NIMBLE_ASSERT_THROW(
-        createProjector(subfields),
-        "Cannot project entire FlatMap column without key subscripts");
+    auto projector = createProjector(subfields);
+    const auto& schema = projector->projectedNimbleType();
+    ASSERT_TRUE(schema->isRow());
+    const auto& flatMap = schema->asRow().childAt(0)->asFlatMap();
+    ASSERT_EQ(flatMap.childrenCount(), 2);
+    EXPECT_EQ(flatMap.nameAt(0), "x");
+    EXPECT_EQ(flatMap.nameAt(1), "y");
   }
 }
 

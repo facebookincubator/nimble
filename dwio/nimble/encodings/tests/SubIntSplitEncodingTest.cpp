@@ -72,8 +72,7 @@ std::vector<nimble::detail::subintsplit::SegmentPlan> makePreserveSegments() {
 }
 
 template <typename T>
-std::vector<nimble::detail::subintsplit::SegmentPlan>
-makeFullWidthSegments() {
+std::vector<nimble::detail::subintsplit::SegmentPlan> makeFullWidthSegments() {
   return {{0, static_cast<int>(sizeof(PhysicalType<T>) * 8 - 1)}};
 }
 
@@ -83,8 +82,10 @@ std::string_view encodeWithNonRecursiveSubIntSplit(
     nimble::Buffer& buffer);
 
 nimble::EncodingSelectionPolicyFactory makeLeafPolicyFactory() {
-  return [](nimble::DataType type) -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
-    auto readFactors = nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+  return [](nimble::DataType type)
+             -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    auto readFactors =
+        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
     readFactors.erase(
         std::remove_if(
             readFactors.begin(),
@@ -100,7 +101,8 @@ nimble::EncodingSelectionPolicyFactory makeLeafPolicyFactory() {
 }
 
 template <typename T>
-class NonRecursiveSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
+class NonRecursiveSubIntSplitPolicy final
+    : public nimble::EncodingSelectionPolicy<T> {
   using physicalType = typename nimble::TypeTraits<T>::physicalType;
 
  public:
@@ -121,7 +123,8 @@ class NonRecursiveSubIntSplitPolicy final : public nimble::EncodingSelectionPoli
       nimble::EncodingType /* encodingType */,
       nimble::NestedEncodingIdentifier /* identifier */,
       nimble::DataType type) override {
-    auto readFactors = nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+    auto readFactors =
+        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
     readFactors.erase(
         std::remove_if(
             readFactors.begin(),
@@ -272,13 +275,8 @@ class SubIntSplitEncodingTest : public ::testing::Test {
   std::unique_ptr<nimble::Buffer> buffer_;
 };
 
-using SubIntSplitEncodingTypes = ::testing::Types<
-    int32_t,
-    uint32_t,
-    int64_t,
-    uint64_t,
-    float,
-    double>;
+using SubIntSplitEncodingTypes =
+    ::testing::Types<int32_t, uint32_t, int64_t, uint64_t, float, double>;
 
 TYPED_TEST_CASE(SubIntSplitEncodingTest, SubIntSplitEncodingTypes);
 
@@ -286,7 +284,8 @@ TYPED_TEST(SubIntSplitEncodingTest, RecomputeRoundTripAndReplay) {
   using T = TypeParam;
   const auto values = makeStructuredValues<T>();
 
-  const auto encoded = encodeWithNonRecursiveSubIntSplit<T>(values, *this->buffer_);
+  const auto encoded =
+      encodeWithNonRecursiveSubIntSplit<T>(values, *this->buffer_);
   const auto captured = nimble::EncodingLayoutCapture::capture(encoded);
 
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
@@ -304,7 +303,8 @@ TYPED_TEST(SubIntSplitEncodingTest, RecomputeRoundTripAndReplay) {
   const auto decoded = decodeAll<T>(encoded, *this->pool_);
   expectBitwiseEqual(values, decoded);
 
-  const auto replayed = encodeWithReplayLayout<T>(captured, values, *this->buffer_);
+  const auto replayed =
+      encodeWithReplayLayout<T>(captured, values, *this->buffer_);
   const auto replayCaptured = nimble::EncodingLayoutCapture::capture(replayed);
   expectSameLayout(captured, replayCaptured);
 
@@ -320,7 +320,8 @@ TYPED_TEST(SubIntSplitEncodingTest, RecomputeRoundTripAndReplay) {
 
   encoding->reset();
   std::vector<T> fullRoundTrip(values.size());
-  encoding->materialize(static_cast<uint32_t>(values.size()), fullRoundTrip.data());
+  encoding->materialize(
+      static_cast<uint32_t>(values.size()), fullRoundTrip.data());
   expectBitwiseEqual(values, fullRoundTrip);
 }
 
@@ -330,7 +331,8 @@ TYPED_TEST(SubIntSplitEncodingTest, PreserveRoundTripExplicitBoundaries) {
   const auto segments = makePreserveSegments<T>();
   const auto layout = makePreserveLayout<T>(segments);
 
-  const auto encoded = encodeWithReplayLayout<T>(layout, values, *this->buffer_);
+  const auto encoded =
+      encodeWithReplayLayout<T>(layout, values, *this->buffer_);
   const auto captured = nimble::EncodingLayoutCapture::capture(encoded);
 
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
@@ -354,9 +356,7 @@ TYPED_TEST(SubIntSplitEncodingTest, PreserveRoundTripExplicitBoundaries) {
 
 TEST(SubIntSplitEncodingTests, PreserveModeRequiresBoundaries) {
   const std::vector<int64_t> values{
-      0x1234567890000000LL,
-      0x1234567890000001LL,
-      0x1234567890000002LL};
+      0x1234567890000000LL, 0x1234567890000001LL, 0x1234567890000002LL};
 
   nimble::EncodingLayout layout{
       nimble::EncodingType::SubIntSplit,

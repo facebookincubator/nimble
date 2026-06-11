@@ -346,6 +346,27 @@ TEST_P(ScalarColumnReaderTest, integerToBigintEvolution) {
   validate(*expected, *readers.rowReader, 50);
 }
 
+TEST_P(ScalarColumnReaderTest, integerToBigintEvolutionNonZeroBaseline) {
+  const bool stringDecoderZeroCopy = GetParam();
+  // Minimum value is well above zero so FixedBitWidth encoding picks a non-zero
+  // baseline; reading int32 as int64 (the upcast fast path) must add the
+  // baseline back to every value.
+  auto input = makeRowVector({
+      makeFlatVector<int32_t>(
+          50, [](auto i) { return 1000000 + static_cast<int32_t>(i) * 1000; }),
+  });
+  auto readType = ROW({"c0"}, {BIGINT()});
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(
+          50, [](auto i) { return int64_t{1000000} + i * 1000; }),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  auto readers = makeReadersWithEvolution(
+      input, readType, scanSpec, stringDecoderZeroCopy);
+  validate(*expected, *readers.rowReader, 50);
+}
+
 // ----- FloatingPointColumnReader tests -----
 
 TEST_P(ScalarColumnReaderTest, floatRead) {

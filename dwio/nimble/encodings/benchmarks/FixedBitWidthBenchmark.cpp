@@ -17,6 +17,7 @@
 // Micro-benchmarks for FixedBitWidthEncoding decode paths.
 // Measures materialize() and bulkGet64WithBaseline() throughput.
 
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "dwio/nimble/encodings/selection/Statistics.h"
 #include "folly/Benchmark.h"
 #include "folly/Random.h"
+#include "folly/init/Init.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace facebook::nimble;
@@ -35,6 +37,7 @@ using namespace facebook::nimble;
 namespace {
 
 constexpr int kNumElements = 100000;
+constexpr uint64_t kBaseline = 12345;
 
 std::shared_ptr<facebook::velox::memory::MemoryPool> pool;
 
@@ -57,29 +60,217 @@ Vector<T> makeData(int bitWidth, int n = kNumElements) {
   return data;
 }
 
+Vector<uint64_t> makeDataWithBaseline(int bitWidth, int n = kNumElements) {
+  Vector<uint64_t> data{pool.get()};
+  data.resize(n);
+  const uint64_t mask = bitWidth == 64 ? ~0ULL : ((1ULL << bitWidth) - 1);
+  const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;
+  for (int i = 0; i < n; ++i) {
+    data[i] = ((static_cast<uint64_t>(i) * 1000003ULL) & mask) + baseline;
+  }
+  return data;
+}
+
+Vector<uint64_t> makePforMaskedResiduals(
+    int baseBitWidth,
+    int n = kNumElements) {
+  Vector<uint64_t> data{pool.get()};
+  data.resize(n);
+  const uint64_t mask =
+      baseBitWidth == 64 ? ~0ULL : ((1ULL << baseBitWidth) - 1);
+  for (int i = 0; i < n; ++i) {
+    // PFOR zeroes exception slots before bitpacking the base residual stream.
+    data[i] =
+        i % 10 == 0 ? 0 : ((static_cast<uint64_t>(i) * 1000003ULL) & mask);
+  }
+  return data;
+}
+
+void observeWrittenBuffer(
+    const std::vector<char>& buffer,
+    uint32_t elementCount,
+    int bitWidth) {
+  const uint64_t writtenBytes =
+      ((elementCount * static_cast<uint64_t>(bitWidth)) + 7) >> 3;
+  folly::doNotOptimizeAway(buffer[writtenBytes - 1]);
+}
+
 /// Encodes data and returns (encoded string, encoding).
 template <typename T>
 std::string encodeFixedBitWidth(
     Buffer& buffer,
-  const Vector<T>& data,
-  const Encoding::Options& options = {}) {
+    const Vector<T>& data,
+    const Encoding::Options& options = {}) {
   using physicalType = typename TypeTraits<T>::physicalType;
 
   auto physicalValues = std::span<const physicalType>(
-    reinterpret_cast<const physicalType*>(data.data()), data.size());
+      reinterpret_cast<const physicalType*>(data.data()), data.size());
   EncodingSelectionResult selectionResult{
-    .encodingType = EncodingType::FixedBitWidth};
+      .encodingType = EncodingType::FixedBitWidth};
   auto selection = EncodingSelection<physicalType>{
-    std::move(selectionResult),
-    Statistics<physicalType>::create(physicalValues),
-    nullptr};
+      std::move(selectionResult),
+      Statistics<physicalType>::create(physicalValues),
+      nullptr};
 
   auto encoded = FixedBitWidthEncoding<T>::encode(
-    selection, physicalValues, buffer, options);
+      selection, physicalValues, buffer, options);
   return std::string{encoded.data(), encoded.size()};
 }
 
 } // namespace
+
+// ============================================================================
+// FixedBitWidthEncoding encode packing — 64-bit
+// Mirrors the packing portion of FixedBitWidthEncoding::encode(). The scalar
+// benchmark is the old path; the relative benchmark is the bulk path used by
+// D107301473.
+// ============================================================================
+
+#define FBW_PACK64_BENCHMARKS(bitWidth)                                 \
+  BENCHMARK(FBW_PackUint64_Scalar_##bitWidth##bit, iters) {             \
+    Vector<uint64_t> data{pool.get()};                                  \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      data = makeDataWithBaseline(bitWidth);                            \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;           \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      for (uint32_t i = 0; i < data.size(); ++i) {                      \
+        fba.set(i, data[i] - baseline);                                 \
+      }                                                                 \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK_RELATIVE(FBW_PackUint64_Bulk_##bitWidth##bit, iters) {      \
+    Vector<uint64_t> data{pool.get()};                                  \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      data = makeDataWithBaseline(bitWidth);                            \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    const uint64_t baseline = bitWidth == 64 ? 0 : kBaseline;           \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      fba.bulkSetWithBaseline(0, kNumElements, data.data(), baseline);  \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }
+
+FBW_PACK64_BENCHMARKS(32)
+FBW_PACK64_BENCHMARKS(40)
+FBW_PACK64_BENCHMARKS(48)
+FBW_PACK64_BENCHMARKS(56)
+FBW_PACK64_BENCHMARKS(64)
+
+BENCHMARK_DRAW_LINE();
+
+// ============================================================================
+// FixedBitWidthEncoding encode packing — narrow (1-/2-byte) types
+// Scalar = old per-element set() path; Bulk = bulkSetWithBaseline, which widens
+// in fixed-size stack chunks onto the bulkSet32 path. Confirms the unified path
+// is not a regression for narrow types.
+// ============================================================================
+
+#define FBW_PACK_NARROW_BENCHMARKS(Type, bitWidth)                      \
+  BENCHMARK(FBW_Pack_##Type##_Scalar_##bitWidth##bit, iters) {          \
+    Vector<Type> data{pool.get()};                                      \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      data = makeData<Type>(bitWidth);                                  \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      for (uint32_t i = 0; i < data.size(); ++i) {                      \
+        fba.set(i, data[i]);                                            \
+      }                                                                 \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK_RELATIVE(FBW_Pack_##Type##_Bulk_##bitWidth##bit, iters) {   \
+    Vector<Type> data{pool.get()};                                      \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      data = makeData<Type>(bitWidth);                                  \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      fba.bulkSetWithBaseline(                                          \
+          0, kNumElements, data.data(), static_cast<Type>(0));          \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }
+
+FBW_PACK_NARROW_BENCHMARKS(uint8_t, 5)
+FBW_PACK_NARROW_BENCHMARKS(uint16_t, 12)
+
+BENCHMARK_DRAW_LINE();
+
+// ============================================================================
+// PFOREncoding base-residual packing — 64-bit
+// Mirrors the final bitpacking step in PFOREncoding::encode(). PFOR has already
+// materialized `maskedResiduals` with exception slots zeroed before this point.
+// ============================================================================
+
+#define PFOR_PACK64_BENCHMARKS(bitWidth)                                \
+  BENCHMARK(PFOR_PackUint64_Scalar_##bitWidth##bit, iters) {            \
+    Vector<uint64_t> maskedResiduals{pool.get()};                       \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      maskedResiduals = makePforMaskedResiduals(bitWidth);              \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      for (uint32_t i = 0; i < maskedResiduals.size(); ++i) {           \
+        fba.set(i, maskedResiduals[i]);                                 \
+      }                                                                 \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK_RELATIVE(PFOR_PackUint64_Bulk_##bitWidth##bit, iters) {     \
+    Vector<uint64_t> maskedResiduals{pool.get()};                       \
+    std::vector<char> buffer;                                           \
+    BENCHMARK_SUSPEND {                                                 \
+      maskedResiduals = makePforMaskedResiduals(bitWidth);              \
+      buffer.resize(FixedBitArray::bufferSize(kNumElements, bitWidth)); \
+    }                                                                   \
+    while (iters--) {                                                   \
+      BENCHMARK_SUSPEND {                                               \
+        std::memset(buffer.data(), 0, buffer.size());                   \
+      }                                                                 \
+      FixedBitArray fba(buffer.data(), bitWidth);                       \
+      fba.bulkSetWithBaseline(                                          \
+          0, kNumElements, maskedResiduals.data(), /*baseline=*/0);     \
+      observeWrittenBuffer(buffer, kNumElements, bitWidth);             \
+    }                                                                   \
+  }
+
+PFOR_PACK64_BENCHMARKS(32)
+PFOR_PACK64_BENCHMARKS(40)
+PFOR_PACK64_BENCHMARKS(48)
+PFOR_PACK64_BENCHMARKS(56)
+PFOR_PACK64_BENCHMARKS(64)
+
+BENCHMARK_DRAW_LINE();
 
 // ============================================================================
 // FixedBitWidthEncoding materialize() — 32-bit
@@ -224,7 +415,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_16bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -264,7 +455,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_40bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -302,7 +493,7 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_56bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
@@ -340,12 +531,13 @@ BENCHMARK_RELATIVE(BulkGet64_vs_PerElem_57bit, iters) {
     }
   }
   while (iters--) {
-    fba.bulkGet64WithBaseline(0, kNumElements, output.data(), 0);
+    fba.bulkGetWithBaseline(0, kNumElements, output.data(), 0);
     folly::doNotOptimizeAway(output.back());
   }
 }
 
-int main() {
+int main(int argc, char** argv) {
+  folly::Init init(&argc, &argv);
   facebook::velox::memory::MemoryManager::initialize({});
   pool = facebook::velox::memory::memoryManager()->addLeafPool("benchmark");
   folly::runBenchmarks();
