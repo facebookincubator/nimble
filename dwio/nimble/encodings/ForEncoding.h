@@ -454,7 +454,9 @@ std::string_view ForEncoding<T>::encode(
       bitBuffer |= (chunk << bitBufferLen);
       bitBufferLen += bitsThisRound;
       
-      value >>= bitsThisRound;
+      // Shifting by the full width (64) is undefined behavior, so guard it the
+      // same way as the mask computation above.
+      value = (bitsThisRound == 64) ? 0 : (value >> bitsThisRound);
       bitsToWrite -= bitsThisRound;
 
       while (bitBufferLen >= 8) {
@@ -564,7 +566,10 @@ std::string_view ForEncoding<T>::encode(
 
   uint32_t encodingSize =
     Encoding::serializePrefixSize(rowCount, useVarint) +
-    ForEncoding<T>::kPrefixSize +
+    // FOR-specific fixed fields only; the standard prefix is accounted for
+    // separately above via serializePrefixSize (kPrefixSize already includes
+    // Encoding::kPrefixSize, so subtract it to avoid double-counting).
+    (ForEncoding<T>::kPrefixSize - Encoding::kPrefixSize) +
       4 + serializedBitWidths.size() +       // BitWidths
       4 + serializedReferences.size() +      // References
       (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) +
