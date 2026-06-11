@@ -803,13 +803,12 @@ window.addEventListener('resize', drawConnectors);
       <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.6rem 0.7rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
         <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--pass);margin-bottom:0.3rem">Selective Reader (production)</h4>
         <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
-          <code>SelectiveNimbleReader</code> &rarr; <code>SelectiveColumnReader</code><br><br>
+          SelectiveNimbleReader &rarr; SelectiveColumnReader &rarr; Decoder<br><br>
           <strong>APIs used:</strong><br>
-          &bull; <code>readWithVisitor(visitor)</code> &mdash; always, even without filter<br>
-          &bull; <code>skip(n)</code> &mdash; for seekTo<br><br>
-          <strong>Without filter:</strong> visitor is <code>AlwaysTrue</code> &mdash; every row passes<br>
-          <strong>With filter:</strong> visitor applies predicate inline during decode<br><br>
-          <span style="color:var(--pass)">Uses bulkScan with SIMD optimizations</span>
+          &bull; <code>readWithVisitor(visitor)</code><br>
+          &nbsp;&nbsp;&nbsp;&nbsp;Without filter: visitor is AlwaysTrue &mdash; every row passes<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;With filter: visitor applies predicate inline during decode<br>
+          &bull; <code>skip(n)</code>
         </div>
       </div>
 
@@ -817,20 +816,14 @@ window.addEventListener('resize', drawConnectors);
       <div style="flex:1;border:1.5px solid var(--text-muted);border-radius:8px;padding:0.6rem 0.7rem;">
         <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.3rem">Batch Reader (non-selective)</h4>
         <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
-          <code>VeloxReader</code> &rarr; <code>FieldReader</code> &rarr; <code>Decoder</code><br><br>
+          VeloxReader &rarr; FieldReader &rarr; Decoder<br><br>
           <strong>APIs used:</strong><br>
           &bull; <code>materialize(n, buffer)</code> &mdash; decode N values into buffer<br>
           &bull; <code>skip(n)</code> &mdash; advance without decoding<br><br>
-          <strong>No filter support:</strong> reads all rows, filters applied post-decode<br><br>
-          <span style="color:var(--text-muted)">Different code path &mdash; no visitor, no bulkScan</span>
+          <strong>No filter support:</strong> reads all rows, filters applied post-decode
         </div>
       </div>
 
-    </div>
-
-    <div class="callout" style="margin-top:0.5rem">
-      <span style="flex-shrink:0">&#9888;</span>
-      <div>These are <strong>different read paths with different performance characteristics</strong>. The selective path's <code>readWithVisitor</code> uses SIMD-accelerated <code>bulkScan</code> that the batch path's <code>materialize()</code> does not. Benchmarks using the batch reader may not reflect production selective reader performance.</div>
     </div>
   </div>
 </div>
@@ -841,7 +834,6 @@ window.addEventListener('resize', drawConnectors);
   <div class="step">
 
     <div style="border:1.5px solid var(--border);border-radius:10px;padding:0.7rem 0.8rem;background:var(--bg-alt);margin-bottom:0.8rem;">
-      <h3 style="margin-bottom:0.4rem">Key Internal State</h3>
       <div class="state-row">
         <div class="state-chip"><span class="sl">encoding_ </span><span class="sv">Encoding*</span></div>
         <div class="state-chip"><span class="sl">rowPosition_ </span><span class="sv">uint32</span></div>
@@ -858,99 +850,24 @@ window.addEventListener('resize', drawConnectors);
 
     <div style="display:flex;gap:0;margin-top:0.3rem;">
 
-      <!-- Left: decoder_.skip(n) -->
+      <!-- Left: decoder_.readWithVisitor(visitor) -->
       <div style="flex:1;padding-right:1rem;">
-        <h3 style="color:var(--layer-decoder)">1. decoder_.skip(n)</h3>
-        <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Advances position without decoding values.</p>
-
-        <div style="display:flex;gap:0;margin-top:0.3rem;">
-          <!-- With StreamIndex -->
-          <div style="flex:1;padding-right:0.5rem;">
-            <div style="font-size:0.6rem;font-weight:600;color:var(--pass);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">WITH StreamIndex &mdash; O(1)</div>
-            <div class="pipeline">
-              <div class="pipe-step" style="grid-template-columns:1fr">
-                <div class="pipe-body" style="border-color:var(--pass)">
-                  <strong>&circledcirc; lookupChunk(targetRow)</strong>
-                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; {chunkOffset, rowOffset}</span>
-                </div>
-              </div>
-              <div class="pipe-arrow"><div class="arr"></div></div>
-              <div class="pipe-step" style="grid-template-columns:1fr">
-                <div class="pipe-body" style="border-color:var(--pass)">
-                  <strong>&circledcirc; seekToChunk(offset)</strong>
-                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; jump + <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
-                </div>
-              </div>
-              <div class="pipe-arrow"><div class="arr"></div></div>
-              <div class="pipe-step" style="grid-template-columns:1fr">
-                <div class="pipe-body" style="border-color:var(--layer-encoding)">
-                  <strong>&circledcirc; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:600">encoding_-&gt;skip(rowOffset)</span></strong>
-                </div>
-              </div>
-              <div class="pipe-arrow"><div class="arr"></div></div>
-              <div class="pipe-step" style="grid-template-columns:1fr">
-                <div class="pipe-body" style="border-color:var(--layer-reader)">
-                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div style="width:1px;background:var(--border);flex-shrink:0;"></div>
-
-          <!-- Without StreamIndex -->
-          <div style="flex:1;padding-left:0.5rem;">
-            <div style="font-size:0.6rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">WITHOUT StreamIndex &mdash; O(chunks)</div>
-            <div class="loop-box" style="margin-bottom:0.3rem">
-              <div class="loop-label">while n &gt; 0</div>
-              <div class="pipeline" style="margin-top:0.3rem;">
-                <div class="pipe-step" style="grid-template-columns:1fr">
-                  <div class="pipe-body" style="border-color:var(--layer-decoder)">
-                    <strong>&circledcirc; remainingValues_ == 0?</strong>
-                    <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
-                  </div>
-                </div>
-                <div class="pipe-arrow"><div class="arr"></div></div>
-                <div class="pipe-step" style="grid-template-columns:1fr">
-                  <div class="pipe-body" style="border-color:var(--layer-decoder)">
-                    <strong>&circledcirc; n &lt; remainingValues_?</strong>
-                    <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:500">encoding_-&gt;skip(n)</span> &rarr; done<br>no &rarr; n -= remainingValues_ &rarr; loop</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="pipeline">
-              <div class="pipe-step" style="grid-template-columns:1fr">
-                <div class="pipe-body" style="border-color:var(--layer-reader)">
-                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Divider -->
-      <div style="width:2px;background:var(--border-strong);flex-shrink:0;"></div>
-
-      <!-- Right: decoder_.readWithVisitor(visitor) -->
-      <div style="flex:1;padding-left:1rem;">
-        <h3 style="color:var(--layer-decoder)">2. decoder_.readWithVisitor(visitor)</h3>
+        <h3 style="color:var(--layer-decoder)">decoder_.readWithVisitor(visitor)</h3>
         <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Decodes values, applies filter via visitor. Loads chunks transparently.</p>
 
-        <div class="loop-box">
-          <div class="loop-label">while rows remaining</div>
+        <div class="loop-box" style="border-color:var(--layer-decoder)">
+          <div class="loop-label" style="color:var(--layer-decoder)">while rows remaining</div>
           <div class="pipeline" style="margin-top:0.3rem;">
             <div class="pipe-step" style="grid-template-columns:1fr">
               <div class="pipe-body" style="border-color:var(--layer-decoder)">
-                <strong>&circledcirc; remainingValues_ == 0?</strong>
+                <strong>&circledcirc; decoder_.remainingValues_ == 0?</strong>
                 <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
               </div>
             </div>
             <div class="pipe-arrow"><div class="arr"></div></div>
             <div class="pipe-step" style="grid-template-columns:1fr">
               <div class="pipe-body" style="border-color:var(--layer-decoder)">
-                <strong>&circledcirc; computeNextRowIndex</strong>
+                <strong>&circledcirc; decoder_.computeNextRowIndex()</strong>
                 <span style="font-size:0.6rem;color:var(--text-muted)"><br>how many rows can current chunk serve?</span>
               </div>
             </div>
@@ -963,9 +880,80 @@ window.addEventListener('resize', drawConnectors);
             </div>
             <div class="pipe-arrow"><div class="arr"></div></div>
             <div class="pipe-step" style="grid-template-columns:1fr">
-              <div class="pipe-body" style="border-color:var(--layer-reader)">
-                <strong>&circledcirc; decoder_.advancePosition</strong>
+              <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                <strong>&circledcirc; decoder_.advancePosition()</strong>
                 <span style="font-size:0.6rem;color:var(--text-muted)"><br>update rowPosition_ &amp; remainingValues_</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div style="width:2px;background:var(--border-strong);flex-shrink:0;"></div>
+
+      <!-- Right: decoder_.skip(n) -->
+      <div style="flex:1;padding-left:1rem;">
+        <h3 style="color:var(--layer-decoder)">decoder_.skip(n)</h3>
+        <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Advances position without decoding values.</p>
+
+        <div style="display:flex;gap:0;margin-top:0.3rem;">
+          <!-- With StreamIndex -->
+          <div style="flex:1;padding-right:0.5rem;">
+            <div class="pipeline">
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <div style="font-size:0.6rem;font-weight:600;color:var(--layer-decoder);font-family:'Space Grotesk',sans-serif;margin-bottom:0.2rem">WITH StreamIndex &mdash; O(1)</div>
+                  <strong>&circledcirc; streamIndex_-&gt;lookupChunk(targetRow)</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; {chunkOffset, rowOffset}</span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <strong>&circledcirc; decoder_.seekToChunk(offset)</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>&rarr; jump + <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-encoding)">
+                  <strong>&circledcirc; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:600">encoding_-&gt;skip(rowOffset)</span></strong>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="width:1px;background:var(--border);flex-shrink:0;"></div>
+
+          <!-- Without StreamIndex -->
+          <div style="flex:1;padding-left:0.5rem;">
+            <div class="pipeline">
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <div style="font-size:0.6rem;font-weight:600;color:var(--layer-decoder);font-family:'Space Grotesk',sans-serif;margin-bottom:0.2rem">WITHOUT StreamIndex &mdash; O(chunks)</div>
+                  <strong>&circledcirc; decoder_.remainingValues_ == 0?</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.loadNextChunk()</span></span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <strong>&circledcirc; n &lt; decoder_.remainingValues_?</strong>
+                  <span style="font-size:0.6rem;color:var(--text-muted)"><br>yes &rarr; <span style="background:color-mix(in srgb, #e65100 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:#e65100;font-weight:500">encoding_-&gt;skip(n)</span> &rarr; done<br>no &rarr; n -= remainingValues_ &rarr; loop</span>
+                </div>
+              </div>
+              <div class="pipe-arrow"><div class="arr"></div></div>
+              <div class="pipe-step" style="grid-template-columns:1fr">
+                <div class="pipe-body" style="border-color:var(--layer-decoder)">
+                  <strong>&circledcirc; decoder_.advancePosition(n)</strong>
+                </div>
               </div>
             </div>
           </div>
@@ -1061,7 +1049,7 @@ window.addEventListener('resize', drawConnectors);
         </div>
         <div class="flow-arr">&rarr;</div>
         <div class="flow-node" style="border-color:var(--layer-encoding)">
-          <h5>encoding_ = <span style="color:#e65100">EncodingFactory::create()</span></h5>
+          <h5>encoding_ = <span style="color:#e65100">EncodingFactory::create(chunkData)</span></h5>
           <div class="fd">parse prefix, build encoding tree, decompress all leaf data eagerly <span style="color:#e65100;font-weight:500">&darr; Section 3</span></div>
         </div>
         <div class="flow-arr">&rarr;</div>
@@ -1091,9 +1079,9 @@ window.addEventListener('resize', drawConnectors);
       <code>encoding_</code> is a <code>unique_ptr&lt;Encoding&gt;</code> on ChunkedDecoder. Virtual dispatch to concrete type. The encoding never sees the filter &mdash; it just decodes values and calls <code>visitor.process(value)</code>.
     </p>
 
-    <!-- EncodingFactory::create() bracket -->
+    <!-- EncodingFactory::create(chunkData) bracket -->
     <div style="margin-bottom:0.6rem;border:2.5px solid #e65100;border-radius:10px;padding:0.7rem 0.8rem;background:color-mix(in srgb, #e65100 4%, var(--surface));box-shadow:0 2px 8px rgba(230,81,0,0.1);">
-      <h3 style="margin-bottom:0.3rem;color:#e65100">EncodingFactory::create()</h3>
+      <h3 style="margin-bottom:0.3rem;color:#e65100">EncodingFactory::create(chunkData)</h3>
       <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.3rem">Recursive descent parser. Reads prefix, switches on EncodingType, recursively builds tree. Leaf encodings decompress eagerly in their constructors. Example: nullable int32 column.</p>
 
       <div class="obj-tree" style="margin-top:0.4rem;">
@@ -1151,54 +1139,6 @@ window.addEventListener('resize', drawConnectors);
 
     </div>
 
-
-    <!-- encoding_->skip(n) bracket -->
-    <div style="margin-top:0.8rem;border:2.5px solid #e65100;border-radius:10px;padding:0.7rem 0.8rem;background:color-mix(in srgb, #e65100 4%, var(--surface));box-shadow:0 2px 8px rgba(230,81,0,0.1);">
-      <h3 style="margin-bottom:0.3rem;color:#e65100">encoding_-&gt;skip(n)</h3>
-      <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.3rem">Advances position without decoding values. Cost and decompression behavior depends on encoding type.</p>
-      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
-        <div style="border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--pass)">FixedBitWidth / Trivial</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            O(1) &mdash; <code>position_ += n</code>
-          </div>
-        </div>
-        <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">ChunkedBitPacking</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            O(blocks) &mdash; walk headers
-          </div>
-        </div>
-        <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">Varint</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            O(values) &mdash; scan byte boundaries<br>
-            <span style="color:var(--text-muted)">data already decompressed</span>
-          </div>
-        </div>
-        <div style="border:1.5px solid var(--kill);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--kill)">Delta</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            O(values) &mdash; decode + accumulate<br>
-            <span style="color:var(--text-muted)">data already decompressed</span>
-          </div>
-        </div>
-        <div style="border:1.5px solid var(--layer-decoder);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--layer-decoder)">Dictionary</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            skip index encoding<br>
-            <span style="color:var(--text-muted)">depends on index type</span>
-          </div>
-        </div>
-        <div style="border:1.5px solid var(--layer-reader);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--layer-reader)">Nullable</div>
-          <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
-            skip nulls + skip inner<br>
-            <span style="color:var(--text-muted)">depends on inner types</span>
-          </div>
-        </div>
-      </div>
-    </div>
 
   </div>
 </div>
@@ -1288,56 +1228,113 @@ window.addEventListener('resize', drawConnectors);
 
 <!-- Section 5: Encoding decode dispatch -->
 <div class="section ani d8">
-  <div class="section-head"><span class="section-num" style="background:#e65100">5</span> Encoding Decode &mdash; Fast &amp; Slow Paths</div>
+  <div class="section-head"><span class="section-num" style="background:#e65100">5</span> encoding_-&gt;readWithVisitor(visitor)</div>
+
   <div class="step">
-    <!-- Implementation flow -->
+    <div class="pipeline" style="margin-bottom:0.5rem;">
+      <div class="pipe-step" style="grid-template-columns:1fr">
+        <div class="pipe-body" style="border-color:var(--layer-encoding)">
+          <h3 style="font-size:0.95rem">Virtual dispatch to concrete encoding type</h3>
+          <div style="margin-top:0.3rem;font-size:0.62rem;font-weight:600;color:var(--text-secondary)">Example: BlockBitPackingEncoding</div>
+          <pre style="font-family:'JetBrains Mono',monospace;font-size:0.5rem;color:var(--text-secondary);line-height:1.6;margin:0.2rem 0 0;white-space:pre-wrap;">template &lt;typename V&gt;
+void BlockBitPackingEncoding&lt;T&gt;::readWithVisitor(V&amp; visitor, ReadWithVisitorParams&amp; params) {
+  <span style="color:var(--text-muted)">// Compile-time check</span>
+  if constexpr (kIsSuitableWidth &amp;&amp; ExtractToReader &amp;&amp; kIsFluidCast) {
+    <span style="color:var(--text-muted)">// Runtime check</span>
+    if (useFastPath(visitor, nulls)) {
+      detail::<span style="color:var(--pass);font-weight:600">readWithVisitorFast</span>(*this, visitor, params, nulls);  <span style="color:var(--text-muted)">// &rarr; bulkScan</span>
+      return;
+    }
+  }
+  <span style="color:var(--text-muted)">// Fallthrough: slow path</span>
+  detail::<span style="color:var(--text-muted);font-weight:600">readWithVisitorSlow</span>(visitor, params, skip_lambda, decodeOne_lambda);
+}</pre>
+        </div>
+      </div>
+    </div>
     <div class="pipeline" style="margin-bottom:0.3rem;">
       <div class="pipe-step" style="grid-template-columns:1fr">
-        <div class="pipe-body" style="border-color:#e65100">
-          <strong>encoding_-&gt;readWithVisitor(visitor)</strong>
-          <span style="font-size:0.6rem;color:var(--text-muted)"><br>virtual dispatch to concrete encoding type</span>
+        <div class="pipe-body" style="border-color:var(--layer-encoding)">
+          <h3 style="font-size:0.95rem">Eligibility check</h3>
+          <div style="margin-top:0.4rem;">
+            <div style="font-size:0.58rem;font-weight:600;color:var(--text-primary);margin-bottom:0.2rem">Compile-time <span style="color:var(--text-muted);font-weight:400">(if constexpr)</span>:</div>
+            <table style="font-size:0.5rem;color:var(--text-secondary);border-collapse:collapse;width:100%;font-family:'JetBrains Mono',monospace;margin-bottom:0.4rem;">
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="text-align:left;padding:0.2rem 0.4rem;color:var(--text-muted);font-weight:600">Check</th>
+                <th style="text-align:left;padding:0.2rem 0.4rem;color:var(--text-muted);font-weight:600">Variable</th>
+                <th style="text-align:left;padding:0.2rem 0.4rem;color:var(--text-muted);font-weight:600">Condition</th>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.2rem 0.4rem">Type width</td>
+                <td style="padding:0.2rem 0.4rem;color:var(--layer-decoder);font-weight:500">kIsSuitableWidth</td>
+                <td style="padding:0.2rem 0.4rem">physicalType is 4 or 8 bytes (int32, int64, float, double)</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.2rem 0.4rem">Extract type</td>
+                <td style="padding:0.2rem 0.4rem;color:var(--text-muted)">&mdash;</td>
+                <td style="padding:0.2rem 0.4rem">V::Extract is velox::dwio::common::ExtractToReader (standard Velox extract)</td>
+              </tr>
+              <tr>
+                <td style="padding:0.2rem 0.4rem">Cast compatibility</td>
+                <td style="padding:0.2rem 0.4rem;color:var(--layer-decoder);font-weight:500">kIsFluidCast</td>
+                <td style="padding:0.2rem 0.4rem">sizeof(OutputType) &gt;= sizeof(physicalType) and both are integral (no narrowing)</td>
+              </tr>
+            </table>
+            <div style="font-size:0.58rem;font-weight:600;color:var(--text-primary);margin-bottom:0.2rem">Runtime <span style="color:var(--text-muted);font-weight:400">(useFastPath())</span>:</div>
+            <table style="font-size:0.5rem;color:var(--text-secondary);border-collapse:collapse;width:100%;font-family:'JetBrains Mono',monospace;">
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="text-align:left;padding:0.2rem 0.4rem;color:var(--text-muted);font-weight:600">Check</th>
+                <th style="text-align:left;padding:0.2rem 0.4rem;color:var(--text-muted);font-weight:600">What it verifies</th>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.2rem 0.4rem">Deterministic filter</td>
+                <td style="padding:0.2rem 0.4rem">Filter has no side effects, safe to apply post-decode</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border)">
+                <td style="padding:0.2rem 0.4rem">No value hooks</td>
+                <td style="padding:0.2rem 0.4rem">No aggregation pushdown hooks active</td>
+              </tr>
+              <tr>
+                <td style="padding:0.2rem 0.4rem">Compatible visitor state</td>
+                <td style="padding:0.2rem 0.4rem">Visitor is in a state where bulk processing is valid</td>
+              </tr>
+            </table>
+          </div>
         </div>
       </div>
     </div>
 
-    <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
-      <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.6rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
-        <div style="font-size:0.62rem;font-weight:600;color:var(--pass);margin-bottom:0.2rem">bulkScan essence: decode first, filter second</div>
+
+    <div style="border:1.5px solid var(--layer-encoding);border-radius:12px;padding:1rem 1.25rem;background:var(--surface);margin-bottom:0.6rem;">
+    <h3 style="font-size:0.95rem;margin-bottom:0.3rem">Two read paths</h3>
+    <!-- Description row -->
+    <div style="display:flex;gap:0;margin-top:0.3rem;">
+      <div style="flex:1;padding-right:1rem;">
+        <div style="font-size:0.65rem;font-weight:600;color:var(--pass);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">YES &rarr; readWithVisitorFast()</div>
         <div style="font-size:0.52rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
-          Step 1 Decode Batch (<span style="color:var(--col0);font-weight:600">X rows</span>): decode all selected values into flat buffer<br>
+          <span style="font-size:0.62rem;font-weight:600;color:var(--pass)">decode first, filter second</span><br>
+          Step 1 Decode Batch (<span style="color:var(--col0);font-weight:600">N rows</span>): decode all selected values into flat buffer<br>
           &nbsp;&nbsp;dense &rarr; SIMD batch decode (big win)<br>
           &nbsp;&nbsp;sparse &rarr; random access loop (marginal win)<br>
-          Step 2 Filter Batch (<span style="color:var(--col0);font-weight:600">X rows</span>): processFixedWidthRun() &mdash; filter the buffer in one pass<br>
+          Step 2 Filter Batch (<span style="color:var(--col0);font-weight:600">N rows</span>): processFixedWidthRun() &mdash; filter the buffer in one pass<br>
           &nbsp;&nbsp;filter + scatter over contiguous buffer<br>
           &nbsp;&nbsp;cache friendly, branch predictor friendly
         </div>
       </div>
-      <div style="flex:1;border:1.5px solid var(--text-muted);border-radius:8px;padding:0.4rem 0.6rem;">
-        <div style="font-size:0.62rem;font-weight:600;color:var(--text-secondary);margin-bottom:0.2rem">readWithVisitorSlow: decode and filter interleaved</div>
+      <div style="width:2px;background:var(--border-strong);flex-shrink:0;"></div>
+      <div style="flex:1;padding-left:1rem;">
+        <div style="font-size:0.65rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">NO &rarr; readWithVisitorSlow()</div>
         <div style="font-size:0.52rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+          <span style="font-size:0.62rem;font-weight:600;color:var(--text-secondary)">decode and filter interleaved</span><br>
           decode one &rarr; filter one &rarr; decode one &rarr; filter one &rarr; decode one &rarr; filter one...<br>
-          <span style="color:var(--col0);font-weight:600">2X function calls</span> <span style="color:var(--text-muted)">for X rows</span>
+          <span style="color:var(--col0);font-weight:600">2N function calls</span> <span style="color:var(--text-muted)">for N rows</span>
         </div>
       </div>
     </div>
 
-    <div class="pipeline" style="margin-bottom:0.3rem;">
-      <div class="pipe-step" style="grid-template-columns:1fr">
-        <div class="pipe-body" style="border-color:var(--layer-decoder)">
-          <strong>Eligibility check</strong> <span style="font-size:0.55rem;color:var(--text-muted)">&mdash; can each value be decoded independently (no data dependency between rows)?</span>
-          <span style="font-size:0.55rem;color:var(--text-secondary)"><br>
-            <strong>Compile-time</strong> <span style="color:var(--text-muted)">(if constexpr)</span>: has bulkScan()? <span style="color:var(--text-muted)">(FixedBitWidth, Trivial, RLE, MainlyConstant, ChunkedBitPacking: yes &mdash; independent. Varint, Delta: no &mdash; sequential dependency (each value depends on the previous one). Dictionary: no &mdash; indices accessed via abstract Encoding interface, no random access)</span> &middot; suitable type width? &middot; standard extract?<br>
-            <strong>Runtime</strong>: useFastPath(visitor, nulls) &mdash; deterministic filter? &middot; no value hooks?
-          </span>
-        </div>
-      </div>
-    </div>
-
-
-    <div style="display:flex;gap:0;margin-top:0.3rem;">
-      <!-- Left: Fast path -->
+    <!-- Flow chart row -->
+    <div style="display:flex;gap:0;margin-top:0.5rem;">
       <div style="flex:1;padding-right:1rem;">
-        <div style="font-size:0.65rem;font-weight:600;color:var(--pass);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">YES &rarr; readWithVisitorFast()</div>
         <div class="pipeline">
           <div class="pipe-step" style="grid-template-columns:1fr">
             <div class="pipe-body" style="border-color:var(--pass)">
@@ -1372,7 +1369,6 @@ window.addEventListener('resize', drawConnectors);
 
       <!-- Right: Slow path -->
       <div style="flex:1;padding-left:1rem;">
-        <div style="font-size:0.65rem;font-weight:600;color:var(--text-muted);font-family:'Space Grotesk',sans-serif;margin-bottom:0.3rem">NO &rarr; readWithVisitorSlow()</div>
         <div class="loop-box">
           <div class="loop-label">per value</div>
           <div class="pipeline" style="margin-top:0.3rem;">
@@ -1403,8 +1399,10 @@ window.addEventListener('resize', drawConnectors);
         </div>
       </div>
     </div>
+    </div>
 
-    <h4 style="font-size:0.75rem;margin-top:0.6rem">Concrete examples</h4>
+    <div style="border:1.5px solid var(--layer-encoding);border-radius:12px;padding:1rem 1.25rem;background:var(--surface);margin-bottom:0.6rem;">
+    <h3 style="font-size:0.95rem;margin-bottom:0.3rem">Concrete examples</h3>
 
     <!-- col1: Fast path, dense -->
     <div style="border:1.5px solid var(--col0);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col0-bg);margin-bottom:0.4rem;">
@@ -1462,9 +1460,60 @@ window.addEventListener('resize', drawConnectors);
         <span style="font-weight:600">Result: numValues_ = 2</span>
       </div>
     </div>
+    </div>
   </div>
 </div>
 
+
+<!-- Section 6: encoding_->skip(n) -->
+<div class="section ani d9">
+  <div class="section-head"><span class="section-num" style="background:#e65100">6</span> encoding_-&gt;skip(n)</div>
+  <div class="step">
+    <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.3rem">Advances position without decoding values. Cost and decompression behavior depends on encoding type.</p>
+    <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+      <div style="border:1.5px solid var(--pass);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--pass)">FixedBitWidth / Trivial</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          O(1) &mdash; <code>position_ += n</code>
+        </div>
+      </div>
+      <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">ChunkedBitPacking</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          O(blocks) &mdash; walk headers
+        </div>
+      </div>
+      <div style="border:1.5px solid var(--accent);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--accent)">Varint</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          O(values) &mdash; scan byte boundaries<br>
+          <span style="color:var(--text-muted)">data already decompressed</span>
+        </div>
+      </div>
+      <div style="border:1.5px solid var(--kill);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--kill)">Delta</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          O(values) &mdash; decode + accumulate<br>
+          <span style="color:var(--text-muted)">data already decompressed</span>
+        </div>
+      </div>
+      <div style="border:1.5px solid var(--layer-decoder);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--layer-decoder)">Dictionary</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          skip index encoding<br>
+          <span style="color:var(--text-muted)">depends on index type</span>
+        </div>
+      </div>
+      <div style="border:1.5px solid var(--layer-reader);border-radius:8px;padding:0.4rem 0.5rem;flex:1;min-width:140px;">
+        <div style="font-size:0.62rem;font-weight:600;color:var(--layer-reader)">Nullable</div>
+        <div style="font-size:0.52rem;color:var(--text-secondary);margin-top:0.1rem;line-height:1.4">
+          skip nulls + skip inner<br>
+          <span style="color:var(--text-muted)">depends on inner types</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Legend -->
 <div class="legend ani d11">
