@@ -775,6 +775,12 @@ class ChunkedDecoder {
       bool preserveDictionaryEncoding = false,
       const ChunkBoundaryCallback& onChunkLoaded = kNoopAtChunkBoundary);
 
+  /// Parses the chunk header and reads the row count without creating the
+  /// encoding tree. Returns the chunk data length. Does not advance
+  /// inputData_ past the chunk data — the caller decides whether to skip
+  /// it or create an encoding from it.
+  int64_t skipNextChunk();
+
   void prepareInputBuffer(int32_t size);
 
   // Returns true if inputData_ points into inputBuffer_.

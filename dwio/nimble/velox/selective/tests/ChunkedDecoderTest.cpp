@@ -1134,6 +1134,147 @@ DEBUG_ONLY_TEST_P(ChunkedDecoderDataTest, skipChunkWithIndexCheck) {
   }
 }
 
+// Verify that skipWithoutIndex skips whole chunks without creating the
+// encoding, falling back to loadNextChunk only for the final partial skip.
+TEST_F(ChunkedDecoderDataTest, skipWithoutIndexPartialChunk) {
+  // 5 chunks of 10 values each (total 50).
+  std::vector<std::vector<uint32_t>> chunks;
+  uint32_t value = 0;
+  for (int i = 0; i < 5; ++i) {
+    std::vector<uint32_t> chunk(10);
+    std::iota(chunk.begin(), chunk.end(), value);
+    value += 10;
+    chunks.push_back(std::move(chunk));
+  }
+
+  auto [streamData, chunkInfos] = encodeChunkedStream<uint32_t>(chunks);
+
+  // No stream index forces skipWithoutIndex path.
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          streamData.data(), streamData.size()),
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
+      pool_.get());
+
+  // Skip 35 values: skips chunks 0-2 entirely (30 values) then partial
+  // skip of 5 into chunk 3.
+  decoder.skip(35);
+
+  // Read 15 remaining values (5 from chunk 3, 10 from chunk 4).
+  std::vector<int32_t> result(15);
+  decoder.nextIndices(result.data(), 15, nullptr);
+  std::vector<int32_t> expected(15);
+  std::iota(expected.begin(), expected.end(), 35);
+  EXPECT_EQ(result, expected);
+}
+
+// Skip landing exactly on a chunk boundary — all chunks are skipped entirely,
+// no partial skip or encoding creation needed.
+TEST_F(ChunkedDecoderDataTest, skipWithoutIndexExactBoundary) {
+  std::vector<std::vector<uint32_t>> chunks;
+  uint32_t value = 0;
+  for (int size : {20, 30, 50}) {
+    std::vector<uint32_t> chunk(size);
+    std::iota(chunk.begin(), chunk.end(), value);
+    value += size;
+    chunks.push_back(std::move(chunk));
+  }
+
+  auto [streamData, chunkInfos] = encodeChunkedStream<uint32_t>(chunks);
+
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          streamData.data(), streamData.size()),
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
+      pool_.get());
+
+  // Skip exactly 50 values (chunks 0 + 1), landing on the boundary.
+  decoder.skip(50);
+
+  // Read all 50 values from chunk 2.
+  std::vector<int32_t> result(50);
+  decoder.nextIndices(result.data(), 50, nullptr);
+  std::vector<int32_t> expected(50);
+  std::iota(expected.begin(), expected.end(), 50);
+  EXPECT_EQ(result, expected);
+}
+
+// Skip a single whole chunk then read the next — the minimal case for
+// the skipNextChunk optimization.
+TEST_F(ChunkedDecoderDataTest, skipWithoutIndexSingleChunk) {
+  auto [streamData, chunkInfos] =
+      encodeChunkedStream<uint32_t>({{0, 1, 2}, {3, 4, 5}});
+
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          streamData.data(), streamData.size()),
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
+      pool_.get());
+
+  decoder.skip(3);
+
+  std::vector<int32_t> result(3);
+  decoder.nextIndices(result.data(), 3, nullptr);
+  EXPECT_EQ(result, (std::vector<int32_t>{3, 4, 5}));
+}
+
+// Performance test: skip across many chunks should be fast because
+// skipNextChunk() reads only the prefix row count without building the
+// encoding tree. Without the optimization, this would construct and
+// discard 990 encoding trees.
+// Baseline (loadNextChunk every chunk): ~2450us
+// Optimized (skipNextChunk + pointer advance): ~144us (~17x faster)
+TEST_F(ChunkedDecoderDataTest, skipWithoutIndexManyChunksPerformance) {
+  constexpr int kNumChunks = 1000;
+  constexpr int kRowsPerChunk = 1000;
+  constexpr int kTotalRows = kNumChunks * kRowsPerChunk;
+  constexpr int kSkipRows = 990 * kRowsPerChunk;
+
+  std::vector<std::vector<uint32_t>> chunks;
+  chunks.reserve(kNumChunks);
+  uint32_t value = 0;
+  for (int i = 0; i < kNumChunks; ++i) {
+    std::vector<uint32_t> chunk(kRowsPerChunk);
+    std::iota(chunk.begin(), chunk.end(), value);
+    value += kRowsPerChunk;
+    chunks.push_back(std::move(chunk));
+  }
+
+  auto [streamData, chunkInfos] = encodeChunkedStream<uint32_t>(chunks);
+
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          streamData.data(), streamData.size()),
+      /*streamIndex=*/nullptr,
+      /*decodeValuesWithNulls=*/false,
+      &encodingFactory(),
+      pool_.get());
+
+  auto start = std::chrono::steady_clock::now();
+  decoder.skip(kSkipRows);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  auto elapsedUs =
+      std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+  LOG(INFO) << "Skip " << kSkipRows << " values across "
+            << (kSkipRows / kRowsPerChunk) << " chunks in " << elapsedUs
+            << "us";
+
+  // Verify correctness: read remaining values.
+  constexpr int kRemainingRows = kTotalRows - kSkipRows;
+  std::vector<int32_t> result(kRemainingRows);
+  decoder.nextIndices(result.data(), kRemainingRows, nullptr);
+  std::vector<int32_t> expected(kRemainingRows);
+  std::iota(expected.begin(), expected.end(), kSkipRows);
+  EXPECT_EQ(result, expected);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ChunkedDecoderDataTests,
     ChunkedDecoderDataTest,

@@ -71,6 +71,25 @@ bool ChunkedDecoder::loadNextChunk(
   return onChunkLoaded();
 }
 
+int64_t ChunkedDecoder::skipNextChunk() {
+  auto ret = ensureInput(kChunkHeaderSize);
+  NIMBLE_CHECK(ret, "Failed to read chunk header");
+  const auto [length, compressionType] = readChunkHeader(inputData_);
+  inputSize_ -= kChunkHeaderSize;
+  ret = ensureInput(length);
+  NIMBLE_CHECK(ret);
+  NIMBLE_CHECK_EQ(
+      compressionType,
+      CompressionType::Uncompressed,
+      "Unsupported compression type: {}",
+      compressionType);
+  auto data = std::string_view(inputData_, length);
+  const bool useVarint = encodingFactory_->options().useVarintRowCount;
+  remainingValues_ = EncodingPrefix::readRowCount(data, useVarint);
+  NIMBLE_CHECK_GT(remainingValues_, 0);
+  return length;
+}
+
 bool ChunkedDecoder::ensureInput(int size) {
   while (inputSize_ < size) {
     if (inputSize_ > 0) {
@@ -259,7 +278,27 @@ void ChunkedDecoder::skipWithoutIndex(
     const ChunkBoundaryCallback& onChunkBoundary) {
   while (numValues > 0) {
     if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-      loadNextChunk(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+      const auto chunkLength = skipNextChunk();
+      onChunkBoundary();
+      if (numValues >= remainingValues_) {
+        inputData_ += chunkLength;
+        inputSize_ -= chunkLength;
+        numValues -= remainingValues_;
+        rowPosition_ += remainingValues_;
+        remainingValues_ = 0;
+        continue;
+      }
+      currentStringBuffers_.clear();
+      encoding_ = encodingFactory_->create(
+          *pool_,
+          std::string_view(inputData_, chunkLength),
+          [&](uint32_t totalLength) {
+            auto& buffer = currentStringBuffers_.emplace_back(
+                velox::AlignedBuffer::allocate<char>(totalLength, pool_));
+            return buffer->asMutable<void>();
+          });
+      inputData_ += chunkLength;
+      inputSize_ -= chunkLength;
     }
     if (numValues < remainingValues_) {
       encoding_->skip(numValues);
