@@ -45,14 +45,20 @@
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 
+#include <folly/executors/IOThreadPoolExecutor.h>
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
+#include "velox/common/caching/SsdCache.h"
+#include "velox/common/file/FileSystems.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/io/Options.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
+
+DECLARE_bool(velox_ssd_odirect);
 
 using namespace facebook;
 using nimble::SortOrder;
@@ -4957,6 +4963,205 @@ TEST_P(TabletTest, cacheWarmPath) {
   EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries);
   EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
   EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// Verifies that cacheMetadata() stores decompressed metadata in the cache,
+// even when the on-disk metadata is Zstd-compressed. Before the fix,
+// cacheMetadata() stored compressed bytes, causing size mismatches on
+// subsequent reads (RAM: evict-and-recreate; SSD: crash).
+TEST_P(TabletTest, cacheMetadataCompressedRoundtrip) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  // Write a file with enough streams that stripe group metadata exceeds
+  // the 64KB compression threshold, triggering Zstd compression.
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold path: first reader populates the cache via cacheMetadata().
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  auto coldCacheStats = cache_->refreshStats();
+  EXPECT_GT(coldCacheStats.numEntries, 0);
+
+  // Reset IO stats for the warm path.
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm path: second reader should find correctly-sized (decompressed)
+  // entries in cache. Before the fix, cacheMetadata() stored compressed
+  // bytes, causing findOrCreate to evict-and-recreate (size mismatch)
+  // instead of hitting cache.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // No evictions — entries should be correct size from cacheMetadata().
+  // Before the fix, compressed entries would be evicted and re-created
+  // at the correct (uncompressed) size, incrementing numEvict.
+  auto warmCacheStats = cache_->refreshStats();
+  EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// Same as above but exercises the SSD path: forces RAM eviction so entries
+// go to SSD, then verifies a warm reader can load them back without crash.
+TEST_P(TabletTest, cacheMetadataCompressedSsdRoundtrip) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  // Set up cache with SSD backing and small RAM to force eviction.
+  velox::filesystems::registerLocalFileSystem();
+  auto tempDir = velox::common::testutil::TempDirectoryPath::create();
+  FLAGS_velox_ssd_odirect = false;
+  auto ssdExecutor = std::make_unique<folly::IOThreadPoolExecutor>(1);
+  velox::cache::SsdCache::Config ssdConfig(
+      fmt::format("{}/cache", tempDir->getPath()),
+      /*_maxBytes=*/64UL << 20,
+      /*_numShards=*/1,
+      /*_executor=*/ssdExecutor.get());
+  auto ssdCache = std::make_unique<velox::cache::SsdCache>(ssdConfig);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 8UL << 20, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(
+      allocator_.get(), std::move(ssdCache));
+
+  // Cold path: populate cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // Force RAM eviction by filling with unrelated entries (>8MB).
+  // Use a separate file ID to avoid colliding with metadata entries.
+  auto& ids = velox::fileIds();
+  auto evictLease = velox::StringIdLease(ids, "evict_filler");
+  for (int i = 0; i < 256; ++i) {
+    folly::SemiFuture<bool> wait{false};
+    auto pin = cache_->findOrCreate(
+        {evictLease.id(), static_cast<uint64_t>(i) * 65536},
+        65536,
+        false,
+        &wait);
+    if (!pin.empty() && pin.checkedEntry()->isExclusive()) {
+      pin.checkedEntry()->setExclusiveToShared();
+    }
+  }
+
+  // Wait for SSD writes to complete (bounded to avoid infinite hang).
+  constexpr int kMaxWaitMs = 5000;
+  int waitedMs = 0;
+  while (cache_->ssdCache()->writeInProgress()) {
+    ASSERT_LT(waitedMs, kMaxWaitMs) << "SSD write did not complete in time";
+    /* sleep override */ std::this_thread::sleep_for(
+        std::chrono::milliseconds(10));
+    waitedMs += 10;
+  }
+
+  // Reset IO stats.
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm path: should load from SSD without crash.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

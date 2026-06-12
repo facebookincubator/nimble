@@ -482,6 +482,7 @@ void TabletReader::cacheMetadata(
 
   auto cacheSection = [&](uint64_t regionOffset,
                           uint64_t regionSize,
+                          CompressionType compressionType,
                           std::optional<uint64_t> cacheOffset = std::nullopt) {
     if (regionOffset < footerOffset) {
       return;
@@ -491,8 +492,16 @@ void TabletReader::cacheMetadata(
       return;
     }
     std::string_view range = footerBuf.substr(bufOffset, regionSize);
-    metadataInput_->cacheMetadata(
-        cacheOffset.value_or(regionOffset), {&range, 1});
+    if (compressionType == CompressionType::Uncompressed) {
+      metadataInput_->cacheMetadata(
+          cacheOffset.value_or(regionOffset), {&range, 1});
+    } else {
+      auto decompressed =
+          MetadataBuffer::decompress(range, compressionType, pool_);
+      std::string_view view{decompressed->as<char>(), decompressed->size()};
+      metadataInput_->cacheMetadata(
+          cacheOffset.value_or(regionOffset), {&view, 1});
+    }
   };
 
   // Cache decompressed footer + PS at synthetic offset fileSize_.
@@ -507,13 +516,19 @@ void TabletReader::cacheMetadata(
   const auto* footer = footerRoot(*footer_);
 
   if (auto* stripesSection = footer->stripes()) {
-    cacheSection(stripesSection->offset(), stripesSection->size());
+    cacheSection(
+        stripesSection->offset(),
+        stripesSection->size(),
+        static_cast<CompressionType>(stripesSection->compression_type()));
   }
 
   if (auto* stripeGroups = footer->stripe_groups();
       stripeGroups != nullptr && stripeGroups->size() > 0) {
     auto* stripeGroup = stripeGroups->Get(0);
-    cacheSection(stripeGroup->offset(), stripeGroup->size());
+    cacheSection(
+        stripeGroup->offset(),
+        stripeGroup->size(),
+        static_cast<CompressionType>(stripeGroup->compression_type()));
   }
 
   if (clusterIndex_ != nullptr) {
@@ -521,17 +536,25 @@ void TabletReader::cacheMetadata(
         optionalSections_.find(std::string{kClusterIndexSection});
     NIMBLE_CHECK(clusterIndexIt != optionalSections_.end());
     cacheSection(
-        clusterIndexIt->second.offset(), clusterIndexIt->second.size());
+        clusterIndexIt->second.offset(),
+        clusterIndexIt->second.size(),
+        clusterIndexIt->second.compressionType());
   }
 
   if (chunkIndex_ != nullptr) {
     auto chunkIndexIt = optionalSections_.find(std::string{kChunkIndexSection});
     NIMBLE_CHECK(chunkIndexIt != optionalSections_.end());
-    cacheSection(chunkIndexIt->second.offset(), chunkIndexIt->second.size());
+    cacheSection(
+        chunkIndexIt->second.offset(),
+        chunkIndexIt->second.size(),
+        chunkIndexIt->second.compressionType());
 
     const auto& firstSection = chunkIndex_->groupMetadata(0);
     if (firstSection.size() > 0) {
-      cacheSection(firstSection.offset(), firstSection.size());
+      cacheSection(
+          firstSection.offset(),
+          firstSection.size(),
+          firstSection.compressionType());
     }
   }
 }
