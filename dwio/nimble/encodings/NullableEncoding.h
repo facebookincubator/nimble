@@ -339,8 +339,7 @@ void NullableEncoding<T>::readIndicesWithVisitor(
       this->dictionaryEnabled(),
       "readIndicesWithVisitor requires dictionary-enabled inner encoding");
   NIMBLE_CHECK(
-      !V::kHasFilter && !V::kHasHook,
-      "readIndicesWithVisitor should only be invoked in dictionary fast path");
+      !V::kHasHook, "readIndicesWithVisitor does not support value hooks");
   materializeNullsForVisitor(visitor, params);
   callReadIndicesWithVisitor(*nonNullValues_, visitor, params);
 }

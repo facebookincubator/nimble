@@ -290,8 +290,7 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
     ReadWithVisitorParams& params) {
   NIMBLE_CHECK(this->dictionaryEnabled());
   NIMBLE_CHECK(
-      !V::kHasFilter && !V::kHasHook,
-      "readIndicesWithVisitor should only be invoked in dictionary fast path");
+      !V::kHasHook, "readIndicesWithVisitor does not support value hooks");
   const auto numReadRows =
       visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
   auto* rawNulls = visitor.reader().rawNullsInReadRange();
@@ -306,6 +305,7 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
         visitor.rowAt(visitor.numRows() - 1),
         visitor.rowAt(0) + visitor.numRows() - 1,
         "Dense visitor must have contiguous rows");
+    detail::prepareResultNullsForDenseFilter<V>(params, rawNulls);
     detail::readDenseMaterializedIndices(
         *this, visitor, rawNulls, params.numScanned, numReadRows, numNonNulls);
     return;

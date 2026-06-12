@@ -105,6 +105,13 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
       int32_t& alphabetOffset,
       velox::vector_size_t& valueOffset);
 
+  // Populates scanState_.dictionary and scanState_.filterCache from the given
+  // chunk's local alphabet so the visitor's process() can evaluate filters on
+  // that chunk's raw (local) dictionary indices. Called once per chunk during a
+  // filtered dictionary read; the filterCache is reset on each call because a
+  // local index maps to a different value in each chunk.
+  void populateScanState(const std::vector<std::string_view>& chunkAlphabet);
+
   // Converts the dict indices in rawValues_ to flat StringView values by
   // resolving each index against the merged alphabet. The StringViews point
   // into the encoding's string buffers already held by stringBuffers_. Null

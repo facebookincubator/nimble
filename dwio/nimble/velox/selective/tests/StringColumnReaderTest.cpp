@@ -344,6 +344,192 @@ TEST_P(StringColumnReaderTest, stringBytesRangeFilter) {
   });
 }
 
+// Filter on string column with a sibling integer column. Both columns are
+// projected. Verifies that the dict path correctly produces outputRows_ for
+// the struct reader and that the sibling column's values are correctly
+// filtered.
+TEST_P(StringColumnReaderTest, stringFilterWithSiblingColumn) {
+  const bool stringDecoderZeroCopy = GetParam();
+  const int numRows = 100;
+  auto filterCol = makeFlatVector<std::string>(
+      numRows, [](auto i) { return "val_" + std::to_string(i % 10); });
+  auto dataCol =
+      makeFlatVector<int64_t>(numRows, [](auto i) { return i * 100; });
+  auto input = makeRowVector({filterCol, dataCol});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"val_3", "val_7"}, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+
+  auto resultType = asRowType(input->type());
+  auto result = BaseVector::create(resultType, 0, pool());
+  int numScanned = 0;
+  int expectedRow = 0;
+  while (numScanned < numRows) {
+    numScanned += readers.rowReader->next(23, result);
+    auto* rowResult = result->as<RowVector>();
+    for (int j = 0; j < result->size(); ++j) {
+      while (expectedRow < numRows &&
+             !(expectedRow % 10 == 3 || expectedRow % 10 == 7)) {
+        ++expectedRow;
+      }
+      ASSERT_LT(expectedRow, numRows);
+      // c1 (data column) should match the corresponding input row.
+      ASSERT_TRUE(
+          rowResult->childAt(1)->equalValueAt(dataCol.get(), j, expectedRow))
+          << "c1 mismatch at filtered position " << j << " (input row "
+          << expectedRow << ")";
+      ++expectedRow;
+    }
+  }
+}
+
+// Filter that passes all rows — verifies no-op filtering doesn't corrupt.
+TEST_P(StringColumnReaderTest, stringFilterPassesAll) {
+  const bool stringDecoderZeroCopy = GetParam();
+  auto c0 = makeFlatVector<std::string>(
+      100, [](auto i) { return "val_" + std::to_string(i % 5); });
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"val_0", "val_1", "val_2", "val_3", "val_4"},
+          false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(*input, *readers.rowReader, 23, [](auto) { return true; });
+}
+
+// Filter that passes no rows — verifies empty output is handled correctly.
+TEST_P(StringColumnReaderTest, stringFilterPassesNone) {
+  const bool stringDecoderZeroCopy = GetParam();
+  auto c0 = makeFlatVector<std::string>(
+      100, [](auto i) { return "val_" + std::to_string(i % 5); });
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"nonexistent"}, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  auto result = BaseVector::create(asRowType(input->type()), 0, pool());
+  int numScanned = 0;
+  while (numScanned < input->size()) {
+    numScanned += readers.rowReader->next(23, result);
+    ASSERT_EQ(result->size(), 0) << "Expected no rows to pass filter";
+  }
+}
+
+// Filter with nulls — nulls should not pass BytesValues filter.
+TEST_P(StringColumnReaderTest, stringFilterWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  std::vector<std::optional<std::string>> data(100);
+  for (int i = 0; i < 100; ++i) {
+    if (i % 5 == 0) {
+      data[i] = std::nullopt;
+    } else {
+      data[i] = "val_" + std::to_string(i % 10);
+    }
+  }
+  auto c0 = makeNullableFlatVector<std::string>(data);
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"val_3", "val_7"}, false));
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(*input, *readers.rowReader, 23, [](auto i) {
+    if (i % 5 == 0) {
+      return false;
+    }
+    return i % 10 == 3 || i % 10 == 7;
+  });
+}
+
+// Fuzz test: filter on dict-encoded string column with random data shapes,
+// null rates, filter selectivities, and batch sizes.
+TEST_P(StringColumnReaderTest, fuzzFilterDictionary) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary filter path requires stringDecoderZeroCopy";
+  }
+
+  for (int run = 0; run < 20; ++run) {
+    auto seed = folly::Random::rand32();
+    std::mt19937 rng(seed);
+    const int numRows = 100 + rng() % 900;
+    const int batchSize = 10 + rng() % numRows;
+    const int cardinality = 3 + rng() % 10;
+    const bool hasNulls = rng() % 3 == 0;
+    const int numAccepted = 1 + rng() % cardinality;
+
+    SCOPED_TRACE(
+        fmt::format(
+            "run={} seed={} numRows={} batchSize={} cardinality={} hasNulls={} numAccepted={}",
+            run,
+            seed,
+            numRows,
+            batchSize,
+            cardinality,
+            hasNulls,
+            numAccepted));
+
+    // Build accepted set.
+    std::vector<std::string> accepted;
+    for (int i = 0; i < numAccepted; ++i) {
+      accepted.push_back(fmt::format("val_{}", i));
+    }
+    std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+
+    // Build data.
+    std::vector<std::optional<std::string>> data(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      if (hasNulls && rng() % 5 == 0) {
+        data[i] = std::nullopt;
+      } else {
+        data[i] = fmt::format("val_{}", rng() % cardinality);
+      }
+    }
+    auto c0 = makeNullableFlatVector<std::string>(data);
+    auto input = makeRowVector({c0});
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BytesValues>(accepted, false));
+    auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+
+    // Validate: read all batches and compare against reference filter.
+    auto result = BaseVector::create(asRowType(input->type()), 0, pool());
+    int numScanned = 0;
+    int inputRow = 0;
+    while (numScanned < numRows) {
+      numScanned += readers.rowReader->next(batchSize, result);
+      for (int j = 0; j < result->size(); ++j) {
+        while (inputRow < numRows) {
+          if (c0->isNullAt(inputRow)) {
+            ++inputRow;
+            continue;
+          }
+          auto sv = c0->valueAt(inputRow).str();
+          if (acceptedSet.count(sv)) {
+            break;
+          }
+          ++inputRow;
+        }
+        ASSERT_LT(inputRow, numRows)
+            << "Ran out of input rows at result position " << j;
+        ASSERT_TRUE(result->equalValueAt(input.get(), j, inputRow))
+            << "Mismatch at input row " << inputRow;
+        ++inputRow;
+      }
+    }
+  }
+}
+
 // Small batch sizes to exercise skip positioning.
 TEST_P(StringColumnReaderTest, stringSkipAndRead) {
   const bool stringDecoderZeroCopy = GetParam();
@@ -1328,6 +1514,105 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAcrossStripes) {
       pool());
 }
 
+// Regression for an out-of-bounds write in MainlyConstant::materializeIndices
+// when a read range has zero dense non-null rows (an all-null batch). nwords(0)
+// is 0, so the isCommon[numWords - 1] tail write underflowed to isCommon[-1].
+// The column is forced to MainlyConstant; the first half is non-null (mainly a
+// common value) and the second half is all null, so the second read batch has
+// no non-null rows and calls materializeIndices(0).
+TEST_P(StringColumnReaderTest, mainlyConstantAllNullReadRange) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 200;
+  constexpr int kBatchSize = 100;
+  const std::string commonValue(20, 'c');
+  const std::string otherValue(20, 'o');
+
+  // Rows [0, kBatchSize): non-null, mainly the common value (a few others) so
+  // MainlyConstant applies. Rows [kBatchSize, kRows): all null, making the
+  // second read batch a zero-non-null (all-null) range.
+  auto input = makeRowVector({makeFlatVector<std::string>(
+      kRows,
+      [&](auto i) { return i % 10 == 0 ? otherValue : commonValue; },
+      [&](auto i) { return i >= kBatchSize; })});
+
+  // Force MainlyConstant for the string column; the writer wraps it in Nullable
+  // for the null rows.
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  EncodingLayout mainlyConstLayout{
+      EncodingType::MainlyConstant,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::move(dictLayout)}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{EncodingLayoutTree{
+          Kind::Scalar, {{0, std::move(mainlyConstLayout)}}, "c0"}});
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  validate(*input, *readers.rowReader, kBatchSize);
+}
+
+// Repro for Bug #3: an IsNull filter on a dictionary-encoded string column that
+// is ALSO projected (keepValues=true). Null rows pass the IsNull filter and
+// must be emitted as null values. The dictionary filter+extract path must
+// produce one output row per null row, not drop them.
+TEST_P(StringColumnReaderTest, dictionaryIsNullFilterProjected) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  const int numRows = 100;
+  // Small alphabet so dictionary encoding applies; null every 3rd row.
+  auto input = makeRowVector({
+      makeFlatVector<std::string>(
+          numRows,
+          [](auto i) { return "v_" + std::to_string(i % 5); },
+          nullEvery(3)),
+  });
+
+  // Force plain Dictionary encoding for the string column; the writer wraps it
+  // in Nullable for the null rows (Nullable -> Dictionary).
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{EncodingLayoutTree{
+          Kind::Scalar, {{0, std::move(dictLayout)}}, "c0"}});
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(std::make_unique<common::IsNull>());
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  // IsNull passes exactly the null rows (every 3rd).
+  validateWithFilter(
+      *input, *readers.rowReader, 23, [](auto i) { return i % 3 == 0; });
+}
+
 // Mainly-constant string column with chunking where read batches align with
 // chunk boundaries. This exercises the non-fallback dictionary fast path for
 // chunked layouts: each batch fits within a single chunk, so the dictionary
@@ -2279,8 +2564,13 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkDictionary) {
     GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
   }
 
+  // Run 0 replays a previously-crashing seed as a fixed regression for the
+  // MainlyConstant::materializeIndices rowCount==0 out-of-bounds write (an
+  // all-null read range across a chunk boundary). The remaining runs are
+  // random; use --stress-runs to exercise more seeds.
+  constexpr uint32_t kRegressionSeed = 2770505665u;
   for (int run = 0; run < 20; ++run) {
-    auto seed = folly::Random::rand32();
+    auto seed = run == 0 ? kRegressionSeed : folly::Random::rand32();
     std::mt19937 rng(seed);
     const int numChunks = 2 + rng() % 6;
     const int rowsPerChunk = 100 + rng() % 900;
