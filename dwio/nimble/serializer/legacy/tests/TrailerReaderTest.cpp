@@ -331,5 +331,32 @@ TEST(LegacyTrailerReaderTest, readLegacyTrailerStreamMetadataFixedBitWidth) {
   EXPECT_EQ(streamSizes, (std::vector<uint32_t>{1, 63, 7, 33, 5}));
 }
 
+TEST(
+    LegacyTrailerReaderTest,
+    readLegacyTrailerStreamMetadataFixedBitWidthAllZeros) {
+  // Regression: when every stream size is 0, master writes FixedBitWidth
+  // with bitWidth=0 and no packed bytes (just the bitWidth byte and the
+  // varint count). The decoder's sanity bound on count must respect
+  // bitWidth — `count <= payloadSize * 8` is wrong because it assumes
+  // each value takes >= 1 bit. The correct bound is
+  // `count * bitWidth <= payloadSize * 8`, which trivially passes when
+  // bitWidth == 0.
+  const uint32_t count = 210;
+  std::string buffer;
+  buffer.push_back(static_cast<char>(EncodingType::FixedBitWidth));
+  buffer.push_back(static_cast<char>(0)); // bitWidth = 0
+  appendVarint32(buffer, count);
+  // No packed bytes when bitWidth == 0.
+  const uint32_t trailerSize = static_cast<uint32_t>(buffer.size());
+  buffer.append(reinterpret_cast<const char*>(&trailerSize), sizeof(uint32_t));
+
+  const auto* end = buffer.data() + buffer.size();
+  auto [streamIndices, streamSizes] = readLegacyTrailerStreamMetadata(end);
+
+  // All sizes are 0, so the scatter-to-sparse step filters everything out.
+  EXPECT_TRUE(streamIndices.empty());
+  EXPECT_TRUE(streamSizes.empty());
+}
+
 } // namespace
 } // namespace facebook::nimble::serde::legacy

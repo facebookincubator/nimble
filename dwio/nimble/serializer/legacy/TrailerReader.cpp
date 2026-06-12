@@ -95,8 +95,9 @@ void decodeDeltaTrailer(
 }
 
 // Frozen snapshot of master's `decodeFixedBitWidthTrailer`.
-// Bound: each value occupies at least 1 bit, so `count <= payloadSize * 8`
-// is a generous sanity ceiling against trailer corruption.
+// Bound: total packed bits `count * bitWidth` must fit in `payloadSize * 8`.
+// When `bitWidth == 0` (all stream sizes are 0) the packed array is empty,
+// so any `count` is valid and the check trivially passes (0 <= anything).
 void decodeFixedBitWidthTrailer(
     const char*& payload,
     uint32_t payloadSize,
@@ -106,9 +107,9 @@ void decodeFixedBitWidthTrailer(
       bitWidth, 32, "Legacy FixedBitWidth trailer bitWidth exceeds 32 bits");
   const uint32_t count = varint::readVarint32(&payload);
   NIMBLE_CHECK_LE(
-      static_cast<uint64_t>(count),
+      static_cast<uint64_t>(count) * bitWidth,
       static_cast<uint64_t>(payloadSize) * 8u,
-      "Legacy FixedBitWidth trailer count exceeds payload bit-capacity");
+      "Legacy FixedBitWidth trailer count*bitWidth exceeds payload bit-capacity");
   sizes.assign(count, 0);
   if (bitWidth > 0 && count > 0) {
     const uint32_t packedBytes =
