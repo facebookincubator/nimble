@@ -59,7 +59,7 @@ readSerializationHeader(const char*& pos, const char* end, bool hasHeader);
 
 /// Writes a serialization header to buffer.
 /// For kLegacy: writes [optional_version:1B][rowCount:u32]
-/// For kCompactRaw: writes [version:1B][rowCount:varint]
+/// For kLegacyCompact: writes [version:1B][rowCount:varint]
 /// kTablet headers must use createTabletChunkHeader() instead.
 template <typename T>
 void writeSerializationHeader(

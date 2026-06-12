@@ -16,11 +16,11 @@
 
 #include "dwio/nimble/serializer/SerializerImpl.h"
 
-#include <bit>
 #include <limits>
 
-#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/legacy/TrailerReader.h"
+
+#include "dwio/nimble/serializer/SerializationHeader.h"
 
 #include <lz4.h>
 #include <lz4hc.h>
@@ -33,146 +33,124 @@ namespace facebook::nimble::serde::detail {
 
 namespace {
 
-void decodeTrivialTrailer(
+// Sanity cap on the trailing trailer-size u32 at the public reader entries.
+// Production trailers are well under this (typical low-MB at worst). Anything
+// past this is treated as buffer corruption rather than a legitimate
+// allocation request, so a single bit flip in the trailing u32 can't drive
+// a multi-GB allocation before the post-decode mismatch check fires.
+constexpr uint32_t kMaxTrailerBytes = 1u << 26; // 64 MiB.
+
+// Per-section decoders for the two-array sparse trailer layout. Each consumes
+// the encoding-specific payload (no encoding-type byte) and advances `payload`
+// past the bytes it read. The caller is responsible for reading the
+// encoding-type byte and dispatching to the right decoder.
+//
+// `remainingBytes` is the upper bound on payload bytes the decoder may
+// consume (i.e. `trailerEnd - payload` at entry). It is used only for a
+// single pre-loop sanity check on `count` so a corrupted count varint
+// cannot drive a multi-GB `resize`. Loop bodies remain free of
+// per-iteration bound checks to keep the hot path branch-free.
+
+void decodeTrivialSection(
     const char*& payload,
-    uint32_t payloadSize,
-    std::vector<uint32_t>& sizes) {
-  const uint32_t count = payloadSize / sizeof(uint32_t);
-  sizes.resize(count);
+    uint32_t remainingBytes,
+    std::vector<uint32_t>& values) {
+  const uint32_t count = varint::readVarint32(&payload);
+  NIMBLE_CHECK_LE(
+      count,
+      remainingBytes,
+      "Trivial section count exceeds remaining trailer bytes");
+  values.resize(count);
   if (count > 0) {
-    std::memcpy(sizes.data(), payload, count * sizeof(uint32_t));
+    std::memcpy(values.data(), payload, count * sizeof(uint32_t));
     payload += count * sizeof(uint32_t);
   }
 }
 
-void decodeVarintTrailer(const char*& payload, std::vector<uint32_t>& sizes) {
+void decodeVarintSection(
+    const char*& payload,
+    uint32_t remainingBytes,
+    std::vector<uint32_t>& values) {
   const uint32_t count = varint::readVarint32(&payload);
-  sizes.resize(count);
+  NIMBLE_CHECK_LE(
+      count,
+      remainingBytes,
+      "Varint section count exceeds remaining trailer bytes");
+  values.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    sizes[i] = varint::readVarint32(&payload);
+    values[i] = varint::readVarint32(&payload);
   }
 }
 
-void decodeDeltaTrailer(const char*& payload, std::vector<uint32_t>& sizes) {
+void decodeDeltaSection(
+    const char*& payload,
+    uint32_t remainingBytes,
+    std::vector<uint32_t>& values) {
   const uint32_t count = varint::readVarint32(&payload);
-  sizes.resize(count);
+  NIMBLE_CHECK_LE(
+      count,
+      remainingBytes,
+      "Delta section count exceeds remaining trailer bytes");
+  values.resize(count);
   if (count > 0) {
-    sizes[0] = varint::readVarint32(&payload);
+    values[0] = varint::readVarint32(&payload);
     for (uint32_t i = 1; i < count; ++i) {
       const auto delta = varint::readVarint32(&payload);
-      sizes[i] = sizes[i - 1] + delta;
+      values[i] = values[i - 1] + delta;
     }
   }
 }
 
-void decodeFixedBitWidthTrailer(
+void decodeFixedBitWidthSection(
     const char*& payload,
-    std::vector<uint32_t>& sizes) {
+    uint32_t remainingBytes,
+    std::vector<uint32_t>& values) {
   const uint8_t bitWidth = static_cast<uint8_t>(*payload++);
+  NIMBLE_CHECK_LE(
+      bitWidth, 32, "FixedBitWidth section bitWidth exceeds 32 bits");
   const uint32_t count = varint::readVarint32(&payload);
-  sizes.assign(count, 0);
+  // Each value occupies >= 1 bit on the wire, so count <= remainingBytes * 8
+  // is a generous sanity ceiling. Cast to uint64_t to avoid overflow when
+  // remainingBytes is large.
+  NIMBLE_CHECK_LE(
+      static_cast<uint64_t>(count),
+      static_cast<uint64_t>(remainingBytes) * 8u,
+      "FixedBitWidth section count exceeds remaining trailer bit-capacity");
+  values.assign(count, 0);
   if (bitWidth > 0 && count > 0) {
     const uint32_t packedBytes =
         static_cast<uint32_t>(FixedBitArray::bufferSize(count, bitWidth));
     FixedBitArray arr{const_cast<char*>(payload), static_cast<int>(bitWidth)};
-    arr.bulkGet32(0, count, sizes.data());
+    arr.bulkGet32(0, count, values.data());
     payload += packedBytes;
   }
 }
 
-void decodeMainlyConstantTrailer(
+void decodeSection(
+    EncodingType encodingType,
     const char*& payload,
-    std::vector<uint32_t>& sizes) {
-  const uint32_t streamCount = varint::readVarint32(&payload);
-  const uint32_t nonZeroCount = varint::readVarint32(&payload);
-  NIMBLE_CHECK_LE(
-      nonZeroCount,
-      streamCount,
-      "MainlyConstant nonZeroCount exceeds streamCount");
-  // Constant is fixed at 0 and not stored on the wire.
-  sizes.assign(streamCount, 0);
-  if (nonZeroCount == 0) {
-    // idxBitWidth/valBitWidth bytes and packed arrays are omitted when
-    // there are no non-zero entries.
-    return;
+    const char* trailerEnd,
+    std::vector<uint32_t>& values) {
+  const auto remainingBytes = static_cast<uint32_t>(trailerEnd - payload);
+  // NOLINTNEXTLINE(clang-diagnostic-switch-enum)
+  switch (getTrailerEncodingType(encodingType)) {
+    case EncodingType::Trivial:
+      decodeTrivialSection(payload, remainingBytes, values);
+      break;
+    case EncodingType::Varint:
+      decodeVarintSection(payload, remainingBytes, values);
+      break;
+    case EncodingType::Delta:
+      decodeDeltaSection(payload, remainingBytes, values);
+      break;
+    case EncodingType::FixedBitWidth:
+      decodeFixedBitWidthSection(payload, remainingBytes, values);
+      break;
+    default:
+      NIMBLE_FAIL(
+          "Unsupported EncodingType for stream sizes trailer section: {}",
+          encodingType);
   }
-
-  const uint8_t idxBitWidth = static_cast<uint8_t>(*payload++);
-  NIMBLE_CHECK_LE(
-      idxBitWidth, 32, "MainlyConstant idxBitWidth exceeds 32 bits");
-  std::vector<uint32_t> indices(nonZeroCount);
-  const uint32_t packedIndicesBytes = static_cast<uint32_t>(
-      FixedBitArray::bufferSize(nonZeroCount, idxBitWidth));
-  FixedBitArray idxArr{
-      const_cast<char*>(payload), static_cast<int>(idxBitWidth)};
-  idxArr.bulkGet32(0, nonZeroCount, indices.data());
-  payload += packedIndicesBytes;
-
-  const uint8_t valBitWidth = static_cast<uint8_t>(*payload++);
-  NIMBLE_CHECK_LE(
-      valBitWidth, 32, "MainlyConstant valBitWidth exceeds 32 bits");
-  std::vector<uint32_t> values(nonZeroCount);
-  const uint32_t packedValuesBytes = static_cast<uint32_t>(
-      FixedBitArray::bufferSize(nonZeroCount, valBitWidth));
-  FixedBitArray valArr{
-      const_cast<char*>(payload), static_cast<int>(valBitWidth)};
-  valArr.bulkGet32(0, nonZeroCount, values.data());
-  payload += packedValuesBytes;
-
-  for (uint32_t i = 0; i < nonZeroCount; ++i) {
-    NIMBLE_CHECK_LT(
-        indices[i], streamCount, "MainlyConstant trailer index out of range");
-    sizes[indices[i]] = values[i];
-  }
-}
-
-// Sparse-native MainlyConstant trailer decode: fill (indices, sizes)
-// parallel arrays for only the non-zero stream slots, skipping the
-// streamCount-zero-filled dense expansion. Caller iterates the returned
-// indices/sizes directly to visit non-empty streams.
-void decodeMainlyConstantTrailerSparse(
-    const char*& payload,
-    std::vector<uint32_t>& indices,
-    std::vector<uint32_t>& sizes) {
-  const uint32_t streamCount = varint::readVarint32(&payload);
-  const uint32_t nonZeroCount = varint::readVarint32(&payload);
-  NIMBLE_CHECK_LE(
-      nonZeroCount,
-      streamCount,
-      "MainlyConstant nonZeroCount exceeds streamCount");
-  indices.resize(nonZeroCount);
-  sizes.resize(nonZeroCount);
-  if (nonZeroCount == 0) {
-    return;
-  }
-
-  const uint8_t idxBitWidth = static_cast<uint8_t>(*payload++);
-  NIMBLE_CHECK_LE(
-      idxBitWidth, 32, "MainlyConstant idxBitWidth exceeds 32 bits");
-  const uint32_t packedIndicesBytes = static_cast<uint32_t>(
-      FixedBitArray::bufferSize(nonZeroCount, idxBitWidth));
-  FixedBitArray idxArr{
-      const_cast<char*>(payload), static_cast<int>(idxBitWidth)};
-  idxArr.bulkGet32(0, nonZeroCount, indices.data());
-  payload += packedIndicesBytes;
-
-  // Validate decoded indices against streamCount for parity with the dense
-  // decoder's per-scatter NIMBLE_CHECK_LT. Catches trailer corruption that
-  // the downstream `offset <= maxStreamOffset` clamp would otherwise mask.
-  for (uint32_t i = 0; i < nonZeroCount; ++i) {
-    NIMBLE_CHECK_LT(
-        indices[i], streamCount, "MainlyConstant trailer index out of range");
-  }
-
-  const uint8_t valBitWidth = static_cast<uint8_t>(*payload++);
-  NIMBLE_CHECK_LE(
-      valBitWidth, 32, "MainlyConstant valBitWidth exceeds 32 bits");
-  const uint32_t packedValuesBytes = static_cast<uint32_t>(
-      FixedBitArray::bufferSize(nonZeroCount, valBitWidth));
-  FixedBitArray valArr{
-      const_cast<char*>(payload), static_cast<int>(valBitWidth)};
-  valArr.bulkGet32(0, nonZeroCount, sizes.data());
-  payload += packedValuesBytes;
 }
 
 // Upper-bound payload-size estimators (one per trailer encoding). Each
@@ -231,85 +209,76 @@ std::optional<uint32_t> compressLz4(
   return sizeof(uint32_t) + static_cast<uint32_t>(compressedSize);
 }
 
-size_t estimateTrivialTrailerPayloadSize(size_t numStreams) {
-  return numStreams * sizeof(uint32_t);
+// Upper-bound estimators for the encoded payload of one section. `count` is the
+// worst-case number of values to emit; `maxValue` is the largest value that
+// can appear (used by Delta/FixedBitWidth; Trivial/Varint ignore it).
+size_t estimateTrivialSectionSize(size_t count) {
+  // count varint (max 5 bytes) + N u32s.
+  return 5 + count * sizeof(uint32_t);
 }
 
-size_t estimateVarintTrailerPayloadSize(size_t numStreams) {
+size_t estimateVarintSectionSize(size_t count) {
   // count varint + N varints (max 5 bytes each).
-  return 5 + numStreams * 5;
+  return 5 + count * 5;
 }
 
-size_t estimateDeltaTrailerPayloadSize(size_t numStreams) {
-  // count varint + first offset varint + (N-1) delta varints (max 5 bytes
-  // each).
-  return 5 + numStreams * 5;
+size_t estimateDeltaSectionSize(size_t count) {
+  // count varint + first value varint + (N-1) delta varints (max 5 each).
+  return 5 + count * 5;
 }
 
-size_t estimateFixedBitWidthTrailerPayloadSize(size_t numStreams) {
+size_t estimateFixedBitWidthSectionSize(size_t count) {
   // bitWidth:1B + count varint + bufferSize (32 bits per element max).
-  return 1 + 5 + FixedBitArray::bufferSize(numStreams, /*bitWidth=*/32);
+  return 1 + 5 + FixedBitArray::bufferSize(count, /*bitWidth=*/32);
 }
 
-// MainlyConstant: idxBitWidth matches the writer's formula (max(1,
-// bit_width(numStreams - 1)) when there are indices); valBitWidth is
-// unbounded up to 32 since values are uint32_t.
-size_t estimateMainlyConstantTrailerPayloadSize(size_t numStreams) {
-  const size_t idxBitWidth =
-      numStreams == 0 ? 0 : std::max<size_t>(1, std::bit_width(numStreams - 1));
-  // 5 (streamCount varint) + 5 (nonZeroCount varint) + 1 (idxBitWidth) +
-  // packed indices + 1 (valBitWidth) + packed values.
-  return 5 + 5 + 1 +
-      FixedBitArray::bufferSize(numStreams, static_cast<int>(idxBitWidth)) + 1 +
-      FixedBitArray::bufferSize(numStreams, /*bitWidth=*/32);
-}
-
-void decodeTrailerStreamSizes(
-    const char* trailerStart,
-    uint32_t trailerSize,
-    std::vector<uint32_t>& out) {
-  const auto* end = trailerStart + trailerSize;
-  const auto encodingType =
-      static_cast<EncodingType>(static_cast<uint8_t>(*trailerStart));
-  const char* payload = trailerStart + sizeof(uint8_t);
-  const uint32_t payloadSize = trailerSize - sizeof(uint8_t);
-
-  switch (encodingType) {
+size_t estimateSectionSize(EncodingType encodingType, size_t count) {
+  // NOLINTNEXTLINE(clang-diagnostic-switch-enum)
+  switch (getTrailerEncodingType(encodingType)) {
     case EncodingType::Trivial:
-      decodeTrivialTrailer(payload, payloadSize, out);
-      break;
+      return estimateTrivialSectionSize(count);
     case EncodingType::Varint:
-      decodeVarintTrailer(payload, out);
-      break;
+      return estimateVarintSectionSize(count);
     case EncodingType::Delta:
-      decodeDeltaTrailer(payload, out);
-      break;
+      return estimateDeltaSectionSize(count);
     case EncodingType::FixedBitWidth:
-      decodeFixedBitWidthTrailer(payload, out);
-      break;
-    case EncodingType::MainlyConstant:
-      decodeMainlyConstantTrailer(payload, out);
-      break;
+      return estimateFixedBitWidthSectionSize(count);
     default:
       NIMBLE_FAIL(
-          "Unsupported EncodingType for stream sizes trailer: {}",
+          "Unsupported EncodingType for stream sizes trailer section: {}",
           encodingType);
   }
+}
 
+// Decodes a two-array sparse trailer into parallel `streamIndices` and
+// `streamSizes` arrays. Validates that the per-section decoders consume
+// exactly the trailer payload and that
+// `streamIndices.size() == streamSizes.size()`.
+void decodeTrailerStreamMetadata(
+    const char* trailerStart,
+    uint32_t trailerSize,
+    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamSizes) {
+  const auto* trailerEnd = trailerStart + trailerSize;
+  const char* payload = trailerStart;
+  const auto indicesEncodingType =
+      static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+  decodeSection(indicesEncodingType, payload, trailerEnd, streamIndices);
+  const auto sizesEncodingType =
+      static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+  decodeSection(sizesEncodingType, payload, trailerEnd, streamSizes);
   NIMBLE_CHECK_EQ(
       payload,
-      end,
+      trailerEnd,
       "Trailer size mismatch: read {} bytes, expected {}",
       payload - trailerStart,
       trailerSize);
-}
-
-std::vector<uint32_t> decodeTrailerStreamSizes(
-    const char* trailerStart,
-    uint32_t trailerSize) {
-  std::vector<uint32_t> sizes;
-  decodeTrailerStreamSizes(trailerStart, trailerSize, sizes);
-  return sizes;
+  NIMBLE_CHECK_EQ(
+      streamIndices.size(),
+      streamSizes.size(),
+      "Trailer indices/sizes section count mismatch: indices={} sizes={}",
+      streamIndices.size(),
+      streamSizes.size());
 }
 
 } // namespace
@@ -373,42 +342,32 @@ encode(const SerializerOptions& options, std::string_view input, char* output) {
   return size + sizeof(uint32_t) + 1;
 }
 
-std::vector<uint32_t> readTrailerStreamSizes(const char* end) {
-  const uint32_t trailerSize = readTrailerSize(end);
-  const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
-  return decodeTrailerStreamSizes(trailerStart, trailerSize);
-}
-
-bool readTrailerStreamSizes(
+void readTrailerStreamMetadata(
     const char* end,
-    std::vector<uint32_t>& denseSizes,
-    std::vector<uint32_t>& sparseIndices,
-    std::vector<uint32_t>& sparseSizes) {
+    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamSizes) {
   const uint32_t trailerSize = readTrailerSize(end);
+  NIMBLE_CHECK_LE(
+      trailerSize,
+      kMaxTrailerBytes,
+      "Trailer size sanity cap exceeded (likely buffer corruption): {} > {}",
+      trailerSize,
+      kMaxTrailerBytes);
   const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
-  const auto* trailerEnd = trailerStart + trailerSize;
-  const auto encodingType =
-      static_cast<EncodingType>(static_cast<uint8_t>(*trailerStart));
-  if (encodingType != EncodingType::MainlyConstant) {
-    // Fall back to dense for encodings whose wire format isn't naturally
-    // sparse. Caller iterates the dense vector and skips zeros inline.
-    decodeTrailerStreamSizes(trailerStart, trailerSize, denseSizes);
-    return false;
-  }
-  // MainlyConstant is sparse on the wire: fill (indices, sizes) directly
-  // and skip the streamCount-zero-filled dense expansion entirely.
-  const char* payload = trailerStart + sizeof(uint8_t);
-  decodeMainlyConstantTrailerSparse(payload, sparseIndices, sparseSizes);
-  NIMBLE_CHECK_EQ(
-      payload,
-      trailerEnd,
-      "Trailer size mismatch (sparse): read {} bytes, expected {}",
-      payload - trailerStart,
-      trailerSize);
-  return true;
+  decodeTrailerStreamMetadata(
+      trailerStart, trailerSize, streamIndices, streamSizes);
 }
 
-std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input) {
+std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
+readTrailerStreamMetadata(const char* end) {
+  std::vector<uint32_t> streamIndices;
+  std::vector<uint32_t> streamSizes;
+  readTrailerStreamMetadata(end, streamIndices, streamSizes);
+  return {std::move(streamIndices), std::move(streamSizes)};
+}
+
+std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
+readTrailerStreamMetadata(const folly::IOBuf& input) {
   // Fast path: trailer fits in the tail segment.
   const auto* tail = input.prev();
   if (tail->length() >= sizeof(uint32_t)) {
@@ -416,7 +375,7 @@ std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input) {
         reinterpret_cast<const char*>(tail->data()) + tail->length();
     const uint32_t trailerSize = readTrailerSize(tailEnd);
     if (tail->length() >= sizeof(uint32_t) + trailerSize) {
-      return readTrailerStreamSizes(tailEnd);
+      return readTrailerStreamMetadata(tailEnd);
     }
   }
 
@@ -425,40 +384,43 @@ std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input) {
   folly::io::Cursor trailerCursor(&input);
   trailerCursor.skip(totalLength - sizeof(uint32_t));
   const uint32_t trailerSize = trailerCursor.read<uint32_t>();
+  NIMBLE_CHECK_LE(
+      trailerSize,
+      kMaxTrailerBytes,
+      "Trailer size sanity cap exceeded (likely buffer corruption): {} > {}",
+      trailerSize,
+      kMaxTrailerBytes);
+  // Bound trailerSize against the actual IOBuf chain length so a corrupted
+  // value cannot drive a huge std::string allocation.
+  NIMBLE_CHECK_LE(
+      static_cast<uint64_t>(trailerSize) + sizeof(uint32_t),
+      totalLength,
+      "Trailer size exceeds IOBuf chain length: trailerSize={}, chain={}",
+      trailerSize,
+      totalLength);
 
   folly::io::Cursor sizesCursor(&input);
   sizesCursor.skip(totalLength - sizeof(uint32_t) - trailerSize);
   std::string trailerBuf(trailerSize, '\0');
   sizesCursor.pull(trailerBuf.data(), trailerSize);
-  return decodeTrailerStreamSizes(trailerBuf.data(), trailerSize);
+  std::vector<uint32_t> streamIndices;
+  std::vector<uint32_t> streamSizes;
+  decodeTrailerStreamMetadata(
+      trailerBuf.data(), trailerSize, streamIndices, streamSizes);
+  return {std::move(streamIndices), std::move(streamSizes)};
 }
 
-size_t estimateTrailerSize(size_t numStreams, EncodingType encodingType) {
-  const auto resolvedType = getTrailerEncodingType(encodingType);
-  // [encodingType:1B][payload][trailer_size:u32]
-  size_t payloadSize{0};
-  switch (resolvedType) {
-    case EncodingType::Trivial:
-      payloadSize = estimateTrivialTrailerPayloadSize(numStreams);
-      break;
-    case EncodingType::Varint:
-      payloadSize = estimateVarintTrailerPayloadSize(numStreams);
-      break;
-    case EncodingType::Delta:
-      payloadSize = estimateDeltaTrailerPayloadSize(numStreams);
-      break;
-    case EncodingType::FixedBitWidth:
-      payloadSize = estimateFixedBitWidthTrailerPayloadSize(numStreams);
-      break;
-    case EncodingType::MainlyConstant:
-      payloadSize = estimateMainlyConstantTrailerPayloadSize(numStreams);
-      break;
-    default:
-      NIMBLE_FAIL(
-          "Unsupported EncodingType for stream sizes trailer: {}",
-          resolvedType);
-  }
-  return sizeof(uint8_t) + payloadSize + sizeof(uint32_t);
+size_t estimateTrailerSize(
+    size_t numStreams,
+    EncodingType indicesEncodingType,
+    EncodingType sizesEncodingType) {
+  // [indicesEncType:1B][indicesPayload][sizesEncType:1B][sizesPayload]
+  // [trailer_size:u32]
+  // Worst case: every stream slot is non-zero, so both axes carry numStreams
+  // entries.
+  return sizeof(uint8_t) +
+      estimateSectionSize(indicesEncodingType, numStreams) + sizeof(uint8_t) +
+      estimateSectionSize(sizesEncodingType, numStreams) + sizeof(uint32_t);
 }
 
 std::vector<std::string_view> parseStreams(
@@ -471,22 +433,16 @@ std::vector<std::string_view> parseStreams(
   std::vector<std::string_view> streams;
 
   if (isCompactFormat(version)) {
-    // Dispatch on the version byte: legacy kCompactRaw blobs go through the
-    // frozen reader; the else branch is scaffolding for the next diff, which
-    // will introduce a new wire format and a sibling reader.
-    std::vector<uint32_t> streamIndices;
-    std::vector<uint32_t> streamSizes;
-    if (usesLegacyTrailer(version)) {
-      std::tie(streamIndices, streamSizes) =
-          legacy::readLegacyTrailerStreamMetadata(end);
-    } else {
-      NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
-    }
-    // Sparse-place: streams[streamIndices[k]] = stream bytes; gaps remain
-    // empty string_views, matching master's dense-output behavior.
+    // Walk the sparse (streamIndices, streamSizes) trailer and place each
+    // stream at its offset slot. Gaps remain empty string_views. Legacy
+    // kLegacyCompact blobs are decoded via the frozen legacy reader.
+    auto [streamIndices, streamSizes] = usesLegacyTrailer(version)
+        ? legacy::readLegacyTrailerStreamMetadata(end)
+        : readTrailerStreamMetadata(end);
     if (!streamIndices.empty()) {
       streams.resize(streamIndices.back() + 1);
       for (size_t k = 0; k < streamIndices.size(); ++k) {
+        // NOLINTNEXTLINE(facebook-hte-LocalUncheckedArrayBounds)
         streams[streamIndices[k]] = std::string_view(pos, streamSizes[k]);
         pos += streamSizes[k];
       }

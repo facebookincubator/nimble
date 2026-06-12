@@ -61,8 +61,10 @@ readSerializationHeader(const char*& pos, const char* end, bool hasHeader) {
     header.version = static_cast<SerializationVersion>(*pos);
     NIMBLE_CHECK(
         header.version == SerializationVersion::kLegacy ||
-            header.version == SerializationVersion::kCompactRaw ||
-            header.version == SerializationVersion::kTablet,
+            header.version == SerializationVersion::kLegacyCompact ||
+            header.version == SerializationVersion::kTablet ||
+            header.version == SerializationVersion::kSerialization ||
+            header.version == SerializationVersion::kProjection,
         "Unsupported version {}",
         static_cast<uint8_t>(header.version));
     ++pos;

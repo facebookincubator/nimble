@@ -45,8 +45,8 @@ using namespace facebook::nimble;
 using facebook::nimble::test::makeTestTabletOptions;
 
 // Test parameters for parameterized tests.
-// For kCompactRaw mode, we test both with and without compression to exercise
-// the compressionOptions path in ReplayedEncodingSelectionPolicy.
+// For kLegacyCompact mode, we test both with and without compression to
+// exercise the compressionOptions path in ReplayedEncodingSelectionPolicy.
 struct TestParams {
   std::optional<SerializationVersion> version;
   // Compression options used with encodingLayoutTree.
@@ -273,6 +273,7 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
         .compressionThreshold = 32,
         .compressionLevel = 3,
         .version = version(),
+        .streamIndicesEncodingType = streamSizesEncodingType(),
         .streamSizesEncodingType = streamSizesEncodingType(),
     };
     Serializer serializer{options, type, pool};
@@ -438,11 +439,17 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
       case SerializationVersion::kLegacy:
         name = "LegacyFormat";
         break;
-      case SerializationVersion::kCompactRaw:
+      case SerializationVersion::kLegacyCompact:
         name = "CompactRawFormat";
         break;
       case SerializationVersion::kTablet:
         name = "TabletFormat";
+        break;
+      case SerializationVersion::kSerialization:
+        name = "SerializationFormat";
+        break;
+      case SerializationVersion::kProjection:
+        name = "ProjectionFormat";
         break;
     }
   }
@@ -476,6 +483,7 @@ SerializationTest::SerializeResult SerializationTest::serialize(
       .compressionThreshold = 32,
       .compressionLevel = 3,
       .version = version(),
+      .streamIndicesEncodingType = streamSizesEncodingType(),
       .streamSizesEncodingType = streamSizesEncodingType(),
   };
   Serializer serializer{options, type, pool_.get()};
@@ -556,7 +564,10 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
 
     std::string trailerBuf;
     serde::detail::writeTrailer(
-        streamSizes, nimble::EncodingType::Trivial, trailerBuf);
+        streamSizes,
+        nimble::EncodingType::Trivial,
+        nimble::EncodingType::Trivial,
+        trailerBuf);
 
     std::string assembled;
     assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
@@ -658,6 +669,7 @@ TEST_P(SerializationTest, flatMapEncodingFuzz) {
         .compressionLevel = 3,
         .version = version(),
         .flatMapColumns = testCase.flatMapColumns,
+        .streamIndicesEncodingType = streamSizesEncodingType(),
         .streamSizesEncodingType = streamSizesEncodingType(),
     };
     Serializer serializer{options, testCase.type, pool_.get()};
@@ -1601,7 +1613,7 @@ TEST_P(SerializationTest, nullsNotSupported) {
         "nulls not supported");
   }
 
-  // Test 4: FlatMap with null value (only for kCompactRaw format).
+  // Test 4: FlatMap with null value (only for kLegacyCompact format).
   if (SerializerOptions{.version = version()}.enableEncoding()) {
     auto type = velox::ROW({
         {"id", velox::BIGINT()},
@@ -1824,7 +1836,7 @@ TEST_P(SerializationTest, versionMismatch) {
   auto serialized =
       serializer.serialize(input, OrderedRanges::of(0, input->size()));
 
-  // Try to deserialize with kCompactRaw (expects version header).
+  // Try to deserialize with kLegacyCompact (expects version header).
   // The first byte is rowCount (not version), so it will be read as version
   // and fail the version check.
   Deserializer deserializer{
@@ -1849,7 +1861,9 @@ TEST_P(SerializationTest, streamSizesEncodingIgnoredForLegacy) {
   auto type = velox::ROW({{"int_val", velox::INTEGER()}});
   // Legacy format does not use stream sizes trailer, so non-trivial
   // encoding types are accepted (and ignored).
-  SerializerOptions options{.streamSizesEncodingType = EncodingType::Delta};
+  SerializerOptions options{
+      .streamIndicesEncodingType = EncodingType::Delta,
+      .streamSizesEncodingType = EncodingType::Delta};
   EXPECT_NO_THROW(Serializer(options, type, pool_.get()));
 }
 
@@ -3309,7 +3323,10 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
 
     std::string trailerBuf;
     serde::detail::writeTrailer(
-        streamSizes, nimble::EncodingType::Trivial, trailerBuf);
+        streamSizes,
+        nimble::EncodingType::Trivial,
+        nimble::EncodingType::Trivial,
+        trailerBuf);
 
     std::string assembled;
     assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
@@ -3432,7 +3449,10 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
 
       std::string trailerBuf;
       serde::detail::writeTrailer(
-          streamSizes, nimble::EncodingType::Trivial, trailerBuf);
+          streamSizes,
+          nimble::EncodingType::Trivial,
+          nimble::EncodingType::Trivial,
+          trailerBuf);
 
       std::string assembled;
       assembled.reserve(
@@ -3604,7 +3624,10 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
 
     std::string trailerBuf;
     serde::detail::writeTrailer(
-        streamSizes, nimble::EncodingType::Trivial, trailerBuf);
+        streamSizes,
+        nimble::EncodingType::Trivial,
+        nimble::EncodingType::Trivial,
+        trailerBuf);
 
     std::string assembled;
     assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
@@ -3725,7 +3748,10 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
 
     std::string trailerBuf;
     serde::detail::writeTrailer(
-        streamSizes, nimble::EncodingType::Trivial, trailerBuf);
+        streamSizes,
+        nimble::EncodingType::Trivial,
+        nimble::EncodingType::Trivial,
+        trailerBuf);
 
     std::string assembled;
     assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
@@ -4400,7 +4426,7 @@ TEST_P(SerializationTest, flatmapColumnsKeysRejectsRowIngestion) {
 }
 
 // Fuzz test that serializes batches with different versions (cycling through
-// kCompactRaw, kCompactRaw+Delta), deserializes each batch, and
+// kLegacyCompact, kLegacyCompact+Delta), deserializes each batch, and
 // verifies round-trip correctness.
 TEST_F(SerializationTest, fuzzMixedVersionSerialization) {
   auto type = velox::ROW({
@@ -4427,8 +4453,9 @@ TEST_F(SerializationTest, fuzzMixedVersionSerialization) {
 
   // Versions to cycle through for each batch.
   const std::vector<SerializerOptions> serializerVersions = {
-      {.version = SerializationVersion::kCompactRaw},
-      {.version = SerializationVersion::kCompactRaw,
+      {.version = SerializationVersion::kSerialization},
+      {.version = SerializationVersion::kSerialization,
+       .streamIndicesEncodingType = EncodingType::Delta,
        .streamSizesEncodingType = EncodingType::Delta},
   };
 
@@ -5148,56 +5175,182 @@ DEBUG_ONLY_TEST_P(SerializationTest, parallelDecodeDisabledFlatMap) {
   }
 }
 
+namespace {
+
+// Master-format legacy kLegacyCompact Trivial trailer.
+// Wire: [encodingByte:Trivial][denseSizes:u32[]][trailerSize:u32]
+std::string buildLegacyTrivialTrailer(const std::vector<uint32_t>& denseSizes) {
+  std::string trailer;
+  trailer.push_back(static_cast<char>(EncodingType::Trivial));
+  trailer.append(
+      reinterpret_cast<const char*>(denseSizes.data()),
+      denseSizes.size() * sizeof(uint32_t));
+  const auto trailerSize = static_cast<uint32_t>(trailer.size());
+  trailer.append(reinterpret_cast<const char*>(&trailerSize), sizeof(uint32_t));
+  return trailer;
+}
+
+// Rewrites a kSerialization blob to bytes a master-format kLegacyCompact writer
+// would have produced. The body wire format (varint row counts + per-stream
+// payloads) is byte-identical across the two versions; only the trailer
+// layout and the version byte differ. This lets us synthesize a production
+// kLegacyCompact blob without resurrecting the master writer.
+std::string rewriteAsLegacyCompactRaw(std::string_view kSerializationBlob) {
+  const char* end = kSerializationBlob.data() + kSerializationBlob.size();
+  auto [sparseIndices, sparseSizes] =
+      serde::detail::readTrailerStreamMetadata(end);
+  const auto newTrailerSize = serde::detail::readTrailerSize(end);
+
+  std::vector<uint32_t> denseSizes;
+  if (!sparseIndices.empty()) {
+    denseSizes.assign(sparseIndices.back() + 1, 0);
+    for (size_t i = 0; i < sparseIndices.size(); ++i) {
+      denseSizes[sparseIndices[i]] = sparseSizes[i];
+    }
+  }
+
+  std::string rewritten(kSerializationBlob.substr(
+      0, kSerializationBlob.size() - sizeof(uint32_t) - newTrailerSize));
+  rewritten[0] = static_cast<char>(SerializationVersion::kLegacyCompact);
+  rewritten.append(buildLegacyTrivialTrailer(denseSizes));
+  return rewritten;
+}
+
+} // namespace
+
+// End-to-end safety net: prove that production kLegacyCompact blobs (version=2,
+// legacy Trivial trailer) flow through the post-D108024182 dispatch path
+// (DeserializerImpl → legacy::readLegacyTrailerStreamSizes) and decode to the
+// same vector the writer produced. This is the load-bearing test for the
+// "kLegacyCompact stays readable" guarantee — without it, the legacy reader's
+// integration into the dispatch path is unverified.
+TEST_F(SerializationTest, compactRawProductionBlobRoundtrip) {
+  auto type = velox::ROW({
+      {"bool_val", velox::BOOLEAN()},
+      {"int_val", velox::INTEGER()},
+      {"long_val", velox::BIGINT()},
+      {"double_val", velox::DOUBLE()},
+      {"string_val", velox::VARCHAR()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {
+          .vectorSize = 64,
+          .nullRatio = 0,
+          .stringLength = 16,
+          .stringVariableLength = true,
+      },
+      pool_.get(),
+      /*seed=*/12345);
+  auto input = fuzzer.fuzzInputRow(type);
+
+  SerializerOptions writerOptions{
+      .version = SerializationVersion::kSerialization,
+  };
+  Serializer serializer{writerOptions, type, pool_.get()};
+  const auto kSerializationBlob =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  const std::string kLegacyCompactBlob =
+      rewriteAsLegacyCompactRaw(kSerializationBlob);
+
+  ASSERT_FALSE(kLegacyCompactBlob.empty());
+  ASSERT_EQ(
+      static_cast<uint8_t>(kLegacyCompactBlob[0]),
+      static_cast<uint8_t>(SerializationVersion::kLegacyCompact));
+
+  DeserializerOptions deserOptions{.hasHeader = true};
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserOptions};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(kLegacyCompactBlob, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    EXPECT_TRUE(vectorEquals(input, output, i))
+        << "Row " << i << " mismatch:\n  expected: " << input->toString(i)
+        << "\n  actual:   " << output->toString(i);
+  }
+}
+
+// kLegacyCompact is read-only post the two-array trailer change. Existing
+// callers (especially directory-branched prod code we can't touch in this
+// diff) still pass kLegacyCompact for writes — the Serializer must silently
+// upgrade them to kSerialization rather than throw, so they keep working
+// while migrating.
+TEST_F(SerializationTest, serializerUpgradesKLegacyCompactToKSerialization) {
+  auto type = velox::ROW({{"x", velox::INTEGER()}});
+  SerializerOptions options{
+      .version = SerializationVersion::kLegacyCompact,
+  };
+  // Construction must not throw, and the produced blob must carry the
+  // kSerialization version byte (the silent-upgrade target).
+  Serializer serializer{options, type, pool_.get()};
+  auto col = velox::BaseVector::create(velox::INTEGER(), 1, pool_.get());
+  col->asFlatVector<int32_t>()->set(0, 42);
+  auto row = std::make_shared<velox::RowVector>(
+      pool_.get(), type, nullptr, 1, std::vector<velox::VectorPtr>{col});
+  std::string blob;
+  serializer.serialize(row, OrderedRanges::of(0, 1), blob);
+  ASSERT_FALSE(blob.empty());
+  EXPECT_EQ(
+      static_cast<uint8_t>(blob[0]),
+      static_cast<uint8_t>(SerializationVersion::kSerialization));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AllFormats,
     SerializationTest,
     ::testing::Values(
         // Legacy format (no nimble encoding).
         TestParams{.version = std::nullopt},
-        // kCompactRaw format without compression.
-        TestParams{.version = SerializationVersion::kCompactRaw},
-        // kCompactRaw format with compression enabled (for encodingLayoutTree
-        // tests).
+        // kLegacyCompact format without compression.
+        TestParams{.version = SerializationVersion::kSerialization},
+        // kLegacyCompact format with compression enabled (for
+        // encodingLayoutTree tests).
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .compressionOptions =
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0}},
-        // kCompactRaw format with Delta stream sizes encoding.
+        // kLegacyCompact format with Delta stream sizes encoding.
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::Delta},
-        // kCompactRaw format with FixedBitWidth stream sizes encoding.
+        // kLegacyCompact format with FixedBitWidth stream sizes encoding.
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::FixedBitWidth},
-        // kCompactRaw format with MainlyConstant stream sizes encoding.
+        // kLegacyCompact format with Varint stream sizes encoding.
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
-            .streamSizesEncodingType = EncodingType::MainlyConstant},
+            .version = SerializationVersion::kSerialization,
+            .streamSizesEncodingType = EncodingType::Varint},
         // Buffer pool disabled variants.
         TestParams{.version = std::nullopt, .bufferPoolCapacity = 0},
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .bufferPoolCapacity = 0},
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .compressionOptions =
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0},
             .bufferPoolCapacity = 0},
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::Delta,
             .bufferPoolCapacity = 0},
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
+            .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::FixedBitWidth,
             .bufferPoolCapacity = 0},
         TestParams{
-            .version = SerializationVersion::kCompactRaw,
-            .streamSizesEncodingType = EncodingType::MainlyConstant,
+            .version = SerializationVersion::kSerialization,
+            .streamSizesEncodingType = EncodingType::Varint,
             .bufferPoolCapacity = 0}),
     formatName);

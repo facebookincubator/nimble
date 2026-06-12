@@ -28,7 +28,7 @@
 namespace facebook::nimble::serde::legacy {
 namespace {
 
-// Builds a legacy Trivial-encoded kCompactRaw trailer for the given sizes:
+// Builds a legacy Trivial-encoded kLegacyCompact trailer for the given sizes:
 //   [encodingByte=Trivial][raw u32 array][trailerSize:u32]
 std::string buildLegacyTrivialTrailer(const std::vector<uint32_t>& sizes) {
   std::string buffer;
@@ -79,7 +79,7 @@ std::string packFixedBitWidth(
   return buf;
 }
 
-// Builds a legacy MainlyConstant-encoded kCompactRaw trailer for the given
+// Builds a legacy MainlyConstant-encoded kLegacyCompact trailer for the given
 // (streamCount, indices, sizes) shape. Mirrors master's writer wire format:
 //   [encodingByte=MainlyConstant]
 //   [streamCount:varint][nonZeroCount:varint]
@@ -236,7 +236,7 @@ TEST(
   EXPECT_EQ(streamSizes, sizes);
 }
 
-// Builds a legacy Varint-encoded kCompactRaw trailer:
+// Builds a legacy Varint-encoded kLegacyCompact trailer:
 //   [encodingByte=Varint][count:varint][v_0:varint]...[v_N:varint]
 //   [trailerSize:u32]
 std::string buildLegacyVarintTrailer(const std::vector<uint32_t>& denseSizes) {
@@ -251,7 +251,7 @@ std::string buildLegacyVarintTrailer(const std::vector<uint32_t>& denseSizes) {
   return buffer;
 }
 
-// Builds a legacy Delta-encoded kCompactRaw trailer:
+// Builds a legacy Delta-encoded kLegacyCompact trailer:
 //   [encodingByte=Delta][count:varint][first:varint][delta_1:varint]...
 //   [trailerSize:u32]
 std::string buildLegacyDeltaTrailer(const std::vector<uint32_t>& denseSizes) {
@@ -269,7 +269,7 @@ std::string buildLegacyDeltaTrailer(const std::vector<uint32_t>& denseSizes) {
   return buffer;
 }
 
-// Builds a legacy FixedBitWidth-encoded kCompactRaw trailer:
+// Builds a legacy FixedBitWidth-encoded kLegacyCompact trailer:
 //   [encodingByte=FixedBitWidth][bitWidth:1B][count:varint][packed bytes]
 //   [trailerSize:u32]
 std::string buildLegacyFixedBitWidthTrailer(

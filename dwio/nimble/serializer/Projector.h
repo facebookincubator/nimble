@@ -69,11 +69,17 @@ using Subfield = velox::common::Subfield;
 class Projector {
  public:
   struct Options {
-    /// Output serialization format version. Must be kCompactRaw.
-    SerializationVersion projectVersion{SerializationVersion::kCompactRaw};
+    /// Output serialization format version. Defaults to kProjection (the
+    /// Projector-specific version byte for the two-array sparse trailer).
+    /// kLegacyCompact is read-only and rejected at construction.
+    SerializationVersion projectVersion{SerializationVersion::kProjection};
 
-    /// Encoding type for stream sizes in the trailer.
-    /// Supported types: Trivial, Varint, Delta, FixedBitWidth, MainlyConstant.
+    /// Encoding type for the indices array of the sparse stream-sizes
+    /// trailer. Supported types: Trivial, Varint, Delta, FixedBitWidth.
+    EncodingType streamIndicesEncodingType{EncodingType::FixedBitWidth};
+
+    /// Encoding type for the sizes array of the sparse stream-sizes
+    /// trailer. Supported types: Trivial, Varint, Delta, FixedBitWidth.
     EncodingType streamSizesEncodingType{EncodingType::FixedBitWidth};
 
     /// Optional velox type with up-to-date column names from the current
@@ -159,31 +165,45 @@ class Projector {
       SerializationVersion inputVersion) const;
 
   // Projects selected streams from a contiguous IOBuf in unsorted order.
+  // Walks selectedStreamIndices in output order; for each, binary-searches the
+  // sparse (streamIndices, streamSizes) trailer for the corresponding bytes.
+  // Output IOBufs are emitted in output order with run merging across
+  // contiguous-in-input selected streams.
   static std::vector<uint32_t> projectStreamsContiguousUnsorted(
       const folly::IOBuf& input,
       size_t dataOffset,
+      const std::vector<uint32_t>& streamIndices,
       const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedIndices,
+      const std::vector<uint32_t>& selectedStreamIndices,
       std::unique_ptr<folly::IOBuf>& output);
 
   // Projects selected streams from a contiguous IOBuf in sorted order.
+  // Two-pointer merge over the sparse (streamIndices, streamSizes) trailer and
+  // the already-sorted selectedStreamIndices.
   static std::vector<uint32_t> projectStreamsContiguousSorted(
       const folly::IOBuf& input,
       size_t dataOffset,
+      const std::vector<uint32_t>& streamIndices,
       const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedIndices,
+      const std::vector<uint32_t>& selectedStreamIndices,
       std::unique_ptr<folly::IOBuf>& output);
 
   // Projects selected streams from a chained IOBuf in sorted order.
+  // Two-pointer merge; cursor advances stay aligned to the sparse stream
+  // bytes only.
   static std::vector<uint32_t> projectStreamsChainedSorted(
       folly::io::Cursor& cursor,
+      const std::vector<uint32_t>& streamIndices,
       const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedIndices,
+      const std::vector<uint32_t>& selectedStreamIndices,
       std::unique_ptr<folly::IOBuf>& output);
 
   // Projects selected streams from a chained IOBuf in unsorted order.
+  // Same merge-walk shape as the contiguous unsorted variant; output buffers
+  // are sorted by output stream index before chaining.
   static std::vector<uint32_t> projectStreamsChainedUnsorted(
       folly::io::Cursor& cursor,
+      const std::vector<uint32_t>& streamIndices,
       const std::vector<uint32_t>& streamSizes,
       const std::vector<StreamMapping>& sortedStreamMappings,
       std::unique_ptr<folly::IOBuf>& output);

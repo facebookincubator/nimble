@@ -826,10 +826,10 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedRanges) {
 
 TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   // Mix a kTablet chunk slice (projector output, narrow row range) with
-  // a kCompactRaw chunk (Serializer output, no row range) in one deserialize
+  // a kLegacyCompact chunk (Serializer output, no row range) in one deserialize
   // call. Verifies the no-range branch of the per-batch loop: when
   // batchRanges[i] is nullopt, numRowsInBatch falls back to batchRows
-  // (the full kCompactRaw batch).
+  // (the full kLegacyCompact batch).
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
   const int numRows = 100;
@@ -857,25 +857,25 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   ASSERT_EQ(result.responses[0].slices.size(), 1u);
   auto tabletOwned = result.responses[0].slices[0].cloneCoalescedAsValue();
 
-  // kCompactRaw batch: serialize a 5-row Row<INTEGER> vector matching the
+  // kLegacyCompact batch: serialize a 5-row Row<INTEGER> vector matching the
   // projected schema. The Serializer is constructed against the same velox
   // type the Deserializer will use, so the streams encode in lockstep.
   auto projectedVeloxType =
       convertToVeloxType(*projector->projectedNimbleType());
-  std::vector<int32_t> kCompactRawValues = {1000, 2000, 3000, 4000, 5000};
-  auto kCompactRawRow = vectorMaker_->rowVector(
-      {"value"}, {vectorMaker_->flatVector<int32_t>(kCompactRawValues)});
+  std::vector<int32_t> kLegacyCompactValues = {1000, 2000, 3000, 4000, 5000};
+  auto kLegacyCompactRow = vectorMaker_->rowVector(
+      {"value"}, {vectorMaker_->flatVector<int32_t>(kLegacyCompactValues)});
   SerializerOptions serOptions{
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kSerialization,
   };
   Serializer ser{
       serOptions,
       projectedVeloxType,
       leafPool_.get(),
   };
-  auto kCompactRawBytes = ser.serialize(
-      kCompactRawRow,
-      OrderedRanges::of(0, static_cast<uint32_t>(kCompactRawValues.size())));
+  auto kLegacyCompactBytes = ser.serialize(
+      kLegacyCompactRow,
+      OrderedRanges::of(0, static_cast<uint32_t>(kLegacyCompactValues.size())));
 
   DeserializerOptions deserOptions;
   deserOptions.hasHeader = true;
@@ -886,15 +886,16 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
       std::string_view(
           reinterpret_cast<const char*>(tabletOwned.data()),
           tabletOwned.length()),
-      kCompactRawBytes,
+      kLegacyCompactBytes,
   };
   VectorPtr output;
   deserializer.deserialize(batches, output);
 
   // Over-fetch: kTablet batch decodes its full 100 stripe rows;
-  // kCompactRaw batch contributes 5 rows. Concatenation = 105 rows. The
+  // kLegacyCompact batch contributes 5 rows. Concatenation = 105 rows. The
   // in-range subset of the kTablet batch (positions [10, 40) within the
-  // first 100) carries values[10..39]; the kCompactRaw batch's 5 rows follow.
+  // first 100) carries values[10..39]; the kLegacyCompact batch's 5 rows
+  // follow.
   ASSERT_EQ(output->size(), 105u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
@@ -903,8 +904,8 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
         << "kTablet i=" << i;
   }
   for (uint32_t i = 0; i < 5; ++i) {
-    EXPECT_EQ(valueVec->valueAt(100 + i), kCompactRawValues[i])
-        << "kCompactRaw i=" << i;
+    EXPECT_EQ(valueVec->valueAt(100 + i), kLegacyCompactValues[i])
+        << "kLegacyCompact i=" << i;
   }
 }
 

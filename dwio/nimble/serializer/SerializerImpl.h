@@ -113,241 +113,168 @@ inline uint32_t readTrailerSize(const char* end) {
   return encoding::readUint32(pos);
 }
 
-/// Returns an upper-bound estimate of the trailer size.
-size_t estimateTrailerSize(size_t numStreams, EncodingType encodingType);
+/// Returns an upper-bound estimate of the trailer size for the two-array
+/// sparse layout. Conservatively assumes every stream slot is non-zero
+/// (worst case for sparseness) and that sizes can be up to UINT32_MAX.
+size_t estimateTrailerSize(
+    size_t numStreams,
+    EncodingType indicesEncodingType,
+    EncodingType sizesEncodingType);
 
 /// Overload that accepts SerializationVersion for API compatibility.
 inline size_t estimateTrailerSize(
     SerializationVersion /* outputVersion */,
     size_t numStreams,
-    std::optional<EncodingType> encodingType = std::nullopt) {
+    std::optional<EncodingType> indicesEncodingType = std::nullopt,
+    std::optional<EncodingType> sizesEncodingType = std::nullopt) {
   return estimateTrailerSize(
-      numStreams, encodingType.value_or(EncodingType::FixedBitWidth));
+      numStreams,
+      indicesEncodingType.value_or(EncodingType::FixedBitWidth),
+      sizesEncodingType.value_or(EncodingType::FixedBitWidth));
 }
 
-/// Writes the Trivial trailer: raw u32 memcpy.
-/// Wire: [encodingType:1B][size_0:u32]...[size_N:u32][trailer_size:u32]
+/// Writes the Trivial section payload: count varint + raw u32 array.
+/// Wire: [count:varint][v_0:u32]...[v_N:u32]
 template <typename T>
-void writeTrivialTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
-  const auto streamCount = streamSizes.size();
-  const uint32_t payloadSize = streamCount * sizeof(uint32_t);
-  const uint32_t trailerSize = sizeof(uint8_t) + payloadSize;
-  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-  *pos++ = static_cast<char>(EncodingType::Trivial);
-  if (payloadSize > 0) {
-    std::memcpy(pos, streamSizes.data(), payloadSize);
-    pos += payloadSize;
+void writeTrivialSection(const std::vector<uint32_t>& values, T& buffer) {
+  const auto count = static_cast<uint32_t>(values.size());
+  const auto countVarintSize = varint::varintSize(count);
+  const uint32_t payloadBytes = count * sizeof(uint32_t);
+  auto* pos = extend(buffer, countVarintSize + payloadBytes);
+  varint::writeVarint(count, &pos);
+  if (payloadBytes > 0) {
+    std::memcpy(pos, values.data(), payloadBytes);
   }
-  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the Varint trailer: each stream size as a varint.
-/// Wire: [encodingType:1B][count:varint][v_0:varint]...[trailer_size:u32]
+/// Writes the Varint section payload: count varint + each value as varint.
+/// Wire: [count:varint][v_0:varint]...[v_N:varint]
 template <typename T>
-void writeVarintTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
-  const auto streamCount = streamSizes.size();
-  const auto countVarintSize =
-      varint::varintSize(static_cast<uint32_t>(streamCount));
-  const auto dataVarintSize = varint::bulkVarintSize32(streamSizes);
-  const uint32_t trailerSize =
-      sizeof(uint8_t) + countVarintSize + dataVarintSize;
-  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-  *pos++ = static_cast<char>(EncodingType::Varint);
-  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
-  for (const auto size : streamSizes) {
-    varint::writeVarint(size, &pos);
+void writeVarintSection(const std::vector<uint32_t>& values, T& buffer) {
+  const auto count = static_cast<uint32_t>(values.size());
+  const auto countVarintSize = varint::varintSize(count);
+  const auto dataVarintSize =
+      static_cast<uint32_t>(varint::bulkVarintSize32(values));
+  auto* pos = extend(buffer, countVarintSize + dataVarintSize);
+  varint::writeVarint(count, &pos);
+  for (const auto v : values) {
+    varint::writeVarint(v, &pos);
   }
-  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the Delta trailer: first value + deltas as varints.
-/// Wire: [encodingType:1B][count:varint][first:varint]
-///       [delta_1:varint]...[delta_N:varint][trailer_size:u32]
+/// Writes the Delta section payload: count varint + first value + per-element
+/// deltas. Wire: [count:varint][first:varint][delta_1:varint]...
 template <typename T>
-void writeDeltaTrailer(const std::vector<uint32_t>& streamSizes, T& buffer) {
-  const auto streamCount = streamSizes.size();
-  const auto countVarintSize =
-      varint::varintSize(static_cast<uint32_t>(streamCount));
-  uint64_t dataVarintSize = 0;
-  if (streamCount > 0) {
-    dataVarintSize = varint::varintSize(streamSizes[0]);
-    for (size_t i = 1; i < streamCount; ++i) {
-      const auto delta = streamSizes[i] - streamSizes[i - 1];
+void writeDeltaSection(const std::vector<uint32_t>& values, T& buffer) {
+  const auto count = static_cast<uint32_t>(values.size());
+  const auto countVarintSize = varint::varintSize(count);
+  uint32_t dataVarintSize = 0;
+  if (count > 0) {
+    dataVarintSize = varint::varintSize(values[0]);
+    for (uint32_t i = 1; i < count; ++i) {
+      const auto delta = values[i] - values[i - 1];
       dataVarintSize += varint::varintSize(delta);
     }
   }
-  const uint32_t trailerSize =
-      sizeof(uint8_t) + countVarintSize + dataVarintSize;
-  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-  *pos++ = static_cast<char>(EncodingType::Delta);
-  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
-  if (streamCount > 0) {
-    varint::writeVarint(streamSizes[0], &pos);
-    for (size_t i = 1; i < streamCount; ++i) {
-      const auto delta = streamSizes[i] - streamSizes[i - 1];
+  auto* pos = extend(buffer, countVarintSize + dataVarintSize);
+  varint::writeVarint(count, &pos);
+  if (count > 0) {
+    varint::writeVarint(values[0], &pos);
+    for (uint32_t i = 1; i < count; ++i) {
+      const auto delta = values[i] - values[i - 1];
       varint::writeVarint(delta, &pos);
     }
   }
-  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the FixedBitWidth trailer: bit-packed stream sizes.
-/// Wire: [encodingType:1B][bitWidth:1B][count:varint]
-///       [bit-packed data][trailer_size:u32]
+/// Writes the FixedBitWidth section payload: bitWidth + count + bit-packed.
+/// Wire: [bitWidth:1B][count:varint][bit-packed data]
 template <typename T>
-void writeFixedBitWidthTrailer(
-    const std::vector<uint32_t>& streamSizes,
-    T& buffer) {
-  const auto streamCount = streamSizes.size();
+void writeFixedBitWidthSection(const std::vector<uint32_t>& values, T& buffer) {
+  const auto count = static_cast<uint32_t>(values.size());
   uint32_t maxVal = 0;
-  for (const auto size : streamSizes) {
-    maxVal = std::max(maxVal, size);
+  for (const auto v : values) {
+    maxVal = std::max(maxVal, v);
   }
   const uint8_t bitWidth =
       maxVal == 0 ? 0 : static_cast<uint8_t>(std::bit_width(maxVal));
-  const uint32_t packedBytes = (bitWidth > 0 && streamCount > 0)
-      ? static_cast<uint32_t>(FixedBitArray::bufferSize(streamCount, bitWidth))
+  const uint32_t packedBytes = (bitWidth > 0 && count > 0)
+      ? static_cast<uint32_t>(FixedBitArray::bufferSize(count, bitWidth))
       : 0;
-  const auto countVarintSize =
-      varint::varintSize(static_cast<uint32_t>(streamCount));
-  const uint32_t trailerSize =
-      sizeof(uint8_t) + sizeof(uint8_t) + countVarintSize + packedBytes;
-  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-  *pos++ = static_cast<char>(EncodingType::FixedBitWidth);
+  const auto countVarintSize = varint::varintSize(count);
+  auto* pos = extend(buffer, sizeof(uint8_t) + countVarintSize + packedBytes);
   *pos++ = static_cast<char>(bitWidth);
-  varint::writeVarint(static_cast<uint32_t>(streamCount), &pos);
-  if (bitWidth > 0 && streamCount > 0) {
+  varint::writeVarint(count, &pos);
+  if (bitWidth > 0 && count > 0) {
     std::memset(pos, 0, packedBytes);
     FixedBitArray arr{pos, static_cast<int>(bitWidth)};
-    arr.bulkSet32(0, streamCount, streamSizes.data());
-    pos += packedBytes;
+    arr.bulkSet32(0, count, values.data());
   }
-  encoding::writeUint32(trailerSize, pos);
 }
 
-/// Writes the MainlyConstant trailer: assumes 0 is the dominant value and
-/// writes a sparse list of (index, value) pairs for non-zero slots. Optimized
-/// for trailers dominated by zero (e.g., empty slots in flat-map schemas with
-/// many absent keys). Callers should pick a different trailer encoding for
-/// inputs not dominated by zero.
-///
-/// Wire (when nonZeroCount > 0):
-///   [encodingType:1B][streamCount:varint][nonZeroCount:varint]
-///   [idxBitWidth:1B][indices packed nonZeroCount*idxBitWidth bits]
-///   [valBitWidth:1B][values packed nonZeroCount*valBitWidth bits]
-///   [trailer_size:u32]
-///
-/// Wire (when nonZeroCount == 0):
-///   [encodingType:1B][streamCount:varint][nonZeroCount=0:varint]
-///   [trailer_size:u32]
-///
-/// Where nonZeroCount = number of slots whose size != 0. The constant is
-/// fixed at 0 and not stored on the wire.
+/// Dispatches a section write to the encoding-specific writer.
 template <typename T>
-void writeMainlyConstantTrailer(
-    const std::vector<uint32_t>& streamSizes,
-    T& buffer) {
-  const auto streamCount = static_cast<uint32_t>(streamSizes.size());
-
-  // Collect non-zero (index, value) pairs. Reserve the upper bound
-  // (streamCount) so the emplace_back loop never reallocates.
-  std::vector<uint32_t> indices;
-  std::vector<uint32_t> values;
-  indices.reserve(streamCount);
-  values.reserve(streamCount);
-  for (uint32_t i = 0; i < streamCount; ++i) {
-    if (streamSizes[i] != 0) {
-      indices.emplace_back(i);
-      values.emplace_back(streamSizes[i]);
-    }
-  }
-  const uint32_t nonZeroCount = static_cast<uint32_t>(indices.size());
-
-  // idxBitWidth covers indices in [0, streamCount). When nonZeroCount == 0
-  // there are no indices to pack, so width is 0. Otherwise clamp to a
-  // minimum of 1 because FixedBitArray::bulkSet32 LOG(FATAL)s on bitWidth=0
-  // (this only matters for streamCount == 1, where bit_width(0) would be 0).
-  const uint8_t idxBitWidth = (nonZeroCount == 0)
-      ? 0
-      : static_cast<uint8_t>(
-            std::max<size_t>(1, std::bit_width(streamCount - 1)));
-
-  auto maxValues = [](const std::vector<uint32_t>& vals) {
-    uint32_t maxVal = 0;
-    for (const auto v : vals) {
-      maxVal = std::max(maxVal, v);
-    }
-    return maxVal;
-  };
-  const uint32_t maxValue = nonZeroCount == 0 ? 0 : maxValues(values);
-  const uint8_t valBitWidth =
-      nonZeroCount == 0 ? 0 : static_cast<uint8_t>(std::bit_width(maxValue));
-
-  const auto streamCountVarintSize = varint::varintSize(streamCount);
-  const auto nonZeroCountVarintSize = varint::varintSize(nonZeroCount);
-  const uint32_t packedIndicesBytes = (nonZeroCount == 0)
-      ? 0
-      : static_cast<uint32_t>(
-            FixedBitArray::bufferSize(nonZeroCount, idxBitWidth));
-  const uint32_t packedValuesBytes = (nonZeroCount == 0)
-      ? 0
-      : static_cast<uint32_t>(
-            FixedBitArray::bufferSize(nonZeroCount, valBitWidth));
-
-  // When nonZeroCount == 0 the idxBitWidth/valBitWidth bytes and packed
-  // arrays are all omitted from the wire.
-  const uint32_t trailerSize = /*encodingType=*/sizeof(uint8_t) +
-      streamCountVarintSize + nonZeroCountVarintSize +
-      (nonZeroCount == 0 ? 0 : /*idxBitWidth=*/sizeof(uint8_t) +
-               packedIndicesBytes +
-               /*valBitWidth=*/sizeof(uint8_t) + packedValuesBytes);
-
-  auto* pos = extend(buffer, trailerSize + sizeof(uint32_t));
-  *pos++ = static_cast<char>(EncodingType::MainlyConstant);
-  varint::writeVarint(streamCount, &pos);
-  varint::writeVarint(nonZeroCount, &pos);
-  if (nonZeroCount > 0) {
-    *pos++ = static_cast<char>(idxBitWidth);
-    std::memset(pos, 0, packedIndicesBytes);
-    FixedBitArray idxArr{pos, static_cast<int>(idxBitWidth)};
-    idxArr.bulkSet32(0, nonZeroCount, indices.data());
-    pos += packedIndicesBytes;
-    *pos++ = static_cast<char>(valBitWidth);
-    std::memset(pos, 0, packedValuesBytes);
-    FixedBitArray valArr{pos, static_cast<int>(valBitWidth)};
-    valArr.bulkSet32(0, nonZeroCount, values.data());
-    pos += packedValuesBytes;
-  }
-  encoding::writeUint32(trailerSize, pos);
-}
-
-/// Writes the stream sizes trailer using the specified encoding type.
-template <typename T>
-void writeTrailer(
-    const std::vector<uint32_t>& streamSizes,
+void writeSection(
     EncodingType encodingType,
+    const std::vector<uint32_t>& values,
     T& buffer) {
   switch (getTrailerEncodingType(encodingType)) {
     case EncodingType::Trivial:
-      writeTrivialTrailer(streamSizes, buffer);
+      writeTrivialSection(values, buffer);
       break;
     case EncodingType::Varint:
-      writeVarintTrailer(streamSizes, buffer);
+      writeVarintSection(values, buffer);
       break;
     case EncodingType::Delta:
-      writeDeltaTrailer(streamSizes, buffer);
+      writeDeltaSection(values, buffer);
       break;
     case EncodingType::FixedBitWidth:
-      writeFixedBitWidthTrailer(streamSizes, buffer);
-      break;
-    case EncodingType::MainlyConstant:
-      writeMainlyConstantTrailer(streamSizes, buffer);
+      writeFixedBitWidthSection(values, buffer);
       break;
     default:
       NIMBLE_FAIL(
-          "Unsupported EncodingType for stream sizes trailer: {}",
+          "Unsupported EncodingType for stream sizes trailer section: {}",
           encodingType);
   }
+}
+
+/// Writes the two-array sparse stream-sizes trailer. Walks
+/// `denseStreamSizes` once to collect the stream IDs of non-zero entries and
+/// their sizes, then encodes each section with the caller-specified encoding
+/// type.
+/// Wire: [indicesEncType:1B][indicesPayload]
+///       [sizesEncType:1B][sizesPayload][trailer_size:u32]
+template <typename T>
+void writeTrailer(
+    const std::vector<uint32_t>& denseStreamSizes,
+    EncodingType indicesEncodingType,
+    EncodingType sizesEncodingType,
+    T& buffer) {
+  const auto streamCount = denseStreamSizes.size();
+  std::vector<uint32_t> streamIds;
+  std::vector<uint32_t> streamSizes;
+  streamIds.reserve(streamCount);
+  streamSizes.reserve(streamCount);
+  for (uint32_t i = 0; i < streamCount; ++i) {
+    if (denseStreamSizes[i] != 0) {
+      streamIds.emplace_back(i);
+      streamSizes.emplace_back(denseStreamSizes[i]);
+    }
+  }
+
+  const auto trailerStartOffset = buffer.size();
+  auto* indicesTypePos = extend(buffer, sizeof(uint8_t));
+  *indicesTypePos = static_cast<char>(indicesEncodingType);
+  writeSection(indicesEncodingType, streamIds, buffer);
+
+  auto* sizesTypePos = extend(buffer, sizeof(uint8_t));
+  *sizesTypePos = static_cast<char>(sizesEncodingType);
+  writeSection(sizesEncodingType, streamSizes, buffer);
+
+  const uint32_t trailerSize =
+      static_cast<uint32_t>(buffer.size() - trailerStartOffset);
+  auto* sizePos = extend(buffer, sizeof(uint32_t));
+  encoding::writeUint32(trailerSize, sizePos);
 }
 
 /// Writes a single stream to the buffer.
@@ -410,40 +337,35 @@ void skipStream(const char*& pos) {
   pos += size;
 }
 
-/// Reads stream sizes from the trailer. The last 4 bytes store the trailer
-/// size. The trailer starts with an EncodingType byte followed by the
-/// encoding-specific payload.
-std::vector<uint32_t> readTrailerStreamSizes(const char* end);
-
-/// Caller-fills overload of readTrailerStreamSizes that picks a sparse or
-/// dense representation off the encoding-type byte:
-///   - MainlyConstant: fills `sparseIndices` + `sparseSizes` with only the
-///     non-zero stream slots and returns `true`. The dense
-///     `streamCount`-zero-filled scatter is skipped entirely; the caller
-///     iterates the sparse arrays to visit non-empty streams.
-///   - All other encodings (Trivial/Varint/Delta/FixedBitWidth): fills
-///     `denseSizes` and returns `false`. Caller iterates `denseSizes` as
-///     usual.
-/// All three out vectors must be reusable buffers owned by the caller
-/// (e.g. members on `StreamDataReader`) to keep the per-blob hot path
-/// alloc-free across invocations.
-bool readTrailerStreamSizes(
+/// Reads the two-array sparse stream-sizes trailer from the end of a
+/// contiguous buffer. Fills `streamIndices` (offsets of non-zero stream
+/// slots, sorted ascending) and `streamSizes` (their byte sizes), parallel
+/// arrays of identical length. Both vectors are reusable buffers owned by
+/// the caller (e.g. members on `StreamDataReader`) to keep the per-blob hot
+/// path alloc-free across invocations.
+void readTrailerStreamMetadata(
     const char* end,
-    std::vector<uint32_t>& denseSizes,
-    std::vector<uint32_t>& sparseIndices,
-    std::vector<uint32_t>& sparseSizes);
+    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamSizes);
 
-/// IOBuf overload: reads stream sizes from the trailer of a (possibly
-/// chained) IOBuf. Tries the fast path first: if the tail segment contains the
-/// entire trailer, delegates to the contiguous overload. Falls back to
+/// Value-returning convenience overload for cold-path consumers
+/// (tests, dump tools). Returns parallel (streamIndices, streamSizes) arrays.
+std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
+readTrailerStreamMetadata(const char* end);
+
+/// IOBuf overload: reads the trailer from a (possibly chained) IOBuf.
+/// Tries the fast path first: if the tail segment contains the entire
+/// trailer, delegates to the contiguous overload. Falls back to
 /// cursor + pull() when the trailer spans a chain boundary.
-std::vector<uint32_t> readTrailerStreamSizes(const folly::IOBuf& input);
+std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
+readTrailerStreamMetadata(const folly::IOBuf& input);
 
 /// Parses all streams from a serialized buffer.
 /// Returns a vector of stream data indexed by their original offset.
 ///
 /// For kLegacy: Returns streams in order with inline u32 sizes.
-/// For kCompactRaw: Returns streams indexed by their offset from sizes header.
+/// For kLegacyCompact: Returns streams indexed by their offset from sizes
+/// header.
 ///
 /// @param pos Pointer past the header (version + rowCount already read)
 /// @param end End of buffer
@@ -532,8 +454,8 @@ std::string_view encodeScalar(
 template <typename T>
 class StreamDataWriter {
  public:
-  /// Constructor. For kLegacy, writes the header immediately. For kCompactRaw,
-  /// writes the header prefix (version + rowCount).
+  /// Constructor. For kLegacy, writes the header immediately. For
+  /// kLegacyCompact, writes the header prefix (version + rowCount).
   ///
   /// @param pool Memory pool for encoding buffer allocation.
   /// @param streamEncodingLayouts Optional encoding layouts for replaying
@@ -549,11 +471,11 @@ class StreamDataWriter {
 
   /// Write encoded data for a single stream.
   /// For both formats, writes directly to buffer.
-  /// For kCompactRaw, also tracks stream sizes for the trailer.
+  /// For kLegacyCompact, also tracks stream sizes for the trailer.
   void writeData(const nimble::StreamData& streamData);
 
   /// Close the writer. For kLegacy, fills trailing zeros up to nodeCount.
-  /// For kCompactRaw, writes the trailer (encoded sizes).
+  /// For kLegacyCompact, writes the trailer (encoded sizes).
   void close(uint32_t nodeCount = 0);
 
  private:
@@ -689,7 +611,10 @@ template <typename T>
 void StreamDataWriter<T>::close(uint32_t nodeCount) {
   if (options_.enableEncoding()) {
     detail::writeTrailer(
-        streamSizes_, options_.streamSizesEncodingType, buffer_);
+        streamSizes_,
+        options_.streamIndicesEncodingType,
+        options_.streamSizesEncodingType,
+        buffer_);
   } else {
     // kLegacy: fill trailing zeros up to nodeCount.
     detail::writeMissingStreams(buffer_, lastStream_, nodeCount);

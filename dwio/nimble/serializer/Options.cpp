@@ -24,10 +24,14 @@ std::string toString(SerializationVersion version) {
   switch (version) {
     case SerializationVersion::kLegacy:
       return "kLegacy";
-    case SerializationVersion::kCompactRaw:
-      return "kCompactRaw";
+    case SerializationVersion::kLegacyCompact:
+      return "kLegacyCompact";
     case SerializationVersion::kTablet:
       return "kTablet";
+    case SerializationVersion::kSerialization:
+      return "kSerialization";
+    case SerializationVersion::kProjection:
+      return "kProjection";
     default:
       NIMBLE_FAIL(
           "Unknown SerializationVersion: {}", static_cast<int>(version));
@@ -40,7 +44,6 @@ EncodingType getTrailerEncodingType(EncodingType encodingType) {
     case EncodingType::Varint:
     case EncodingType::Delta:
     case EncodingType::FixedBitWidth:
-    case EncodingType::MainlyConstant:
       return encodingType;
     default:
       NIMBLE_FAIL(

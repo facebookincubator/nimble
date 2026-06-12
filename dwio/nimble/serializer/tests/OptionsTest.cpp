@@ -24,13 +24,15 @@ using namespace facebook::nimble;
 TEST(OptionsTest, serializationVersionEnumValues) {
   // Verify enum underlying values match expected wire format versions.
   EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kLegacy), 0);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kCompactRaw), 2);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTablet), 3);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kLegacyCompact), 2);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kSerialization), 3);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kProjection), 4);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTablet), 5);
 }
 
 TEST(OptionsTest, toStringVersion) {
   EXPECT_EQ(toString(SerializationVersion::kLegacy), "kLegacy");
-  EXPECT_EQ(toString(SerializationVersion::kCompactRaw), "kCompactRaw");
+  EXPECT_EQ(toString(SerializationVersion::kLegacyCompact), "kLegacyCompact");
   EXPECT_EQ(toString(SerializationVersion::kTablet), "kTablet");
 }
 
@@ -42,7 +44,8 @@ TEST(OptionsTest, streamOperator) {
 
 TEST(OptionsTest, fmtFormatter) {
   EXPECT_EQ(
-      fmt::format("{}", SerializationVersion::kCompactRaw), "kCompactRaw");
+      fmt::format("{}", SerializationVersion::kLegacyCompact),
+      "kLegacyCompact");
   EXPECT_EQ(fmt::format("{}", SerializationVersion::kTablet), "kTablet");
 }
 
@@ -85,7 +88,7 @@ TEST(OptionsTest, serializerOptionsWithFlatMapColumns) {
   SerializerOptions options{
       .compressionType = CompressionType::Zstd,
       .compressionLevel = 3,
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kLegacyCompact,
       .flatMapColumns = {{"col1", {}}, {"col2", {}}},
   };
 
@@ -112,22 +115,23 @@ TEST(OptionsTest, deserializerOptionsWithVersion) {
 }
 
 TEST(OptionsTest, serializerOptionsWithCompactRawVersion) {
-  SerializerOptions options{.version = SerializationVersion::kCompactRaw};
+  SerializerOptions options{.version = SerializationVersion::kLegacyCompact};
 
   EXPECT_TRUE(options.hasVersionHeader());
-  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kCompactRaw);
+  EXPECT_EQ(
+      options.serializationVersion(), SerializationVersion::kLegacyCompact);
   EXPECT_TRUE(options.enableEncoding());
 }
 
 TEST(OptionsTest, nonLegacyFormat) {
   EXPECT_FALSE(nonLegacyFormat(SerializationVersion::kLegacy));
-  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kCompactRaw));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kLegacyCompact));
   EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kTablet));
 }
 
 TEST(OptionsTest, isCompactFormat) {
   EXPECT_FALSE(isCompactFormat(SerializationVersion::kLegacy));
-  EXPECT_TRUE(isCompactFormat(SerializationVersion::kCompactRaw));
+  EXPECT_TRUE(isCompactFormat(SerializationVersion::kLegacyCompact));
   EXPECT_FALSE(isCompactFormat(SerializationVersion::kTablet));
 }
 
@@ -135,13 +139,13 @@ TEST(OptionsTest, isCompactFormatOptional) {
   EXPECT_FALSE(isCompactFormat(std::nullopt));
   EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kLegacy}));
   EXPECT_TRUE(
-      isCompactFormat(std::optional{SerializationVersion::kCompactRaw}));
+      isCompactFormat(std::optional{SerializationVersion::kLegacyCompact}));
   EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kTablet}));
 }
 
 TEST(OptionsTest, isTabletVersion) {
   EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacy));
-  EXPECT_FALSE(isTabletVersion(SerializationVersion::kCompactRaw));
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacyCompact));
   EXPECT_TRUE(isTabletVersion(SerializationVersion::kTablet));
 }
 
@@ -149,13 +153,13 @@ TEST(OptionsTest, isTabletVersionOptional) {
   EXPECT_FALSE(isTabletVersion(std::nullopt));
   EXPECT_FALSE(isTabletVersion(std::optional{SerializationVersion::kLegacy}));
   EXPECT_FALSE(
-      isTabletVersion(std::optional{SerializationVersion::kCompactRaw}));
+      isTabletVersion(std::optional{SerializationVersion::kLegacyCompact}));
   EXPECT_TRUE(isTabletVersion(std::optional{SerializationVersion::kTablet}));
 }
 
 TEST(OptionsTest, usesVarintRowCount) {
   EXPECT_FALSE(usesVarintRowCount(SerializationVersion::kLegacy));
-  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kCompactRaw));
+  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kLegacyCompact));
   EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kTablet));
 }
 
@@ -164,7 +168,7 @@ TEST(OptionsTest, usesVarintRowCountOptional) {
   EXPECT_FALSE(
       usesVarintRowCount(std::optional{SerializationVersion::kLegacy}));
   EXPECT_TRUE(
-      usesVarintRowCount(std::optional{SerializationVersion::kCompactRaw}));
+      usesVarintRowCount(std::optional{SerializationVersion::kLegacyCompact}));
   EXPECT_TRUE(usesVarintRowCount(std::optional{SerializationVersion::kTablet}));
 }
 
@@ -173,6 +177,9 @@ TEST(OptionsTest, getTrailerEncodingTypeBasic) {
       getTrailerEncodingType(EncodingType::Trivial), EncodingType::Trivial);
   EXPECT_EQ(getTrailerEncodingType(EncodingType::Varint), EncodingType::Varint);
   EXPECT_EQ(getTrailerEncodingType(EncodingType::Delta), EncodingType::Delta);
+  EXPECT_EQ(
+      getTrailerEncodingType(EncodingType::FixedBitWidth),
+      EncodingType::FixedBitWidth);
 }
 
 TEST(OptionsTest, getTrailerEncodingTypeError) {
@@ -182,7 +189,7 @@ TEST(OptionsTest, getTrailerEncodingTypeError) {
   NIMBLE_ASSERT_THROW(
       getTrailerEncodingType(EncodingType::Dictionary),
       "Unsupported EncodingType for stream sizes trailer");
-  EXPECT_EQ(
-      getTrailerEncodingType(EncodingType::FixedBitWidth),
-      EncodingType::FixedBitWidth);
+  NIMBLE_ASSERT_THROW(
+      getTrailerEncodingType(EncodingType::MainlyConstant),
+      "Unsupported EncodingType for stream sizes trailer");
 }

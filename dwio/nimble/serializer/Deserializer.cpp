@@ -783,7 +783,7 @@ void Deserializer::deserialize(
   // (the producer of row-range-bearing slices), this over-fetch is bounded
   // by stripe boundaries and never crosses users: each chunk slice covers
   // exactly one (request × stripe) intersection. For non-kTablet inputs
-  // (kCompactRaw/kLegacy) there's no embedded row range, so
+  // (kLegacyCompact/kLegacy) there's no embedded row range, so
   // "over-fetch" doesn't apply — the full batch is decoded as intended.
   //
   // Callers that want only the in-range rows of a kTablet slice can read

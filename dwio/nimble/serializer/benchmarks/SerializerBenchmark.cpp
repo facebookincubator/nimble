@@ -181,7 +181,7 @@ BenchmarkState prepareBenchmark(
   auto makeOptions = [&]() -> SerializerOptions {
     if (forcedEncoding.has_value()) {
       return SerializerOptions{
-          .version = SerializationVersion::kCompactRaw,
+          .version = SerializationVersion::kSerialization,
           .flatMapColumns = {{"features", {}}},
           .encodingLayoutTree =
               buildForcedEncodingLayout(numKeys, forcedEncoding.value()),
@@ -189,7 +189,7 @@ BenchmarkState prepareBenchmark(
       };
     }
     return SerializerOptions{
-        .version = SerializationVersion::kCompactRaw,
+        .version = SerializationVersion::kSerialization,
         .flatMapColumns = {{"features", {}}},
     };
   };
