@@ -1515,6 +1515,137 @@ void BlockBitPackingEncoding&lt;T&gt;::readWithVisitor(V&amp; visitor, ReadWithV
   </div>
 </div>
 
+<!-- Section: Lazy Column Loading -->
+<div class="section ani d11">
+  <div class="section-head"><span class="section-num" style="background:var(--text-muted)">4</span> Lazy Column Loading</div>
+  <div class="step">
+
+    <h3>Why lazy loading exists</h3>
+    <p>Column pruning (compile-time) removes columns not in the query. Lazy loading (runtime) defers reading columns that <em>are</em> in the query but <strong>might not be accessed</strong> for every batch. It is an inter-operator optimization &mdash; the TableScan does not know what downstream operators will do, so it defers non-filtered columns and lets the pipeline decide.</p>
+
+    <!-- LIMIT example -->
+    <div style="border:1.5px solid var(--col0);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col0-bg);margin-bottom:0.4rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col0);margin-bottom:0.2rem">SELECT a, b FROM t WHERE a &gt; 100 LIMIT 10</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        a: has filter &rarr; read eagerly<br>
+        b: no filter &rarr; <span style="color:var(--text-muted)">lazy</span><br><br>
+        Batch 1: a filter passes 50 rows. Downstream takes 10 &rarr; LIMIT satisfied.<br>
+        &nbsp;&nbsp;b loaded for batch 1 only (lazy load triggered).<br>
+        Batch 2, 3, ...: <span style="color:var(--kill);font-weight:600">next() never called</span> &rarr; b never loaded.
+      </div>
+    </div>
+
+    <!-- Pipeline elimination example -->
+    <div style="border:1.5px solid var(--col2);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col2-bg);margin-bottom:0.4rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col2);margin-bottom:0.2rem">SELECT sum(c) FROM t WHERE a &gt; 100 AND expensive_udf(b) &gt; 0</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        <span style="font-weight:600">Pipeline: TableScan &rarr; Filter &rarr; Aggregate</span><br><br>
+        Batch 1: a filter passes 50 rows. b,c = lazy.<br>
+        &nbsp;&nbsp;Filter operator loads b, evaluates udf &rarr; 3 pass<br>
+        &nbsp;&nbsp;Aggregate loads c for 3 rows &rarr; <span style="color:var(--pass)">c loaded</span><br><br>
+        Batch 2: a filter passes 30 rows. b,c = lazy.<br>
+        &nbsp;&nbsp;Filter operator loads b, evaluates udf &rarr; 0 pass<br>
+        &nbsp;&nbsp;c is <span style="color:var(--kill);font-weight:600">NEVER loaded</span> &rarr; zero I/O for c in this batch
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:0.5rem;margin-bottom:0.8rem">
+      <span style="flex-shrink:0">&#128161;</span>
+      <div>Lazy loading is a <strong>speculative optimization</strong>. It bets that some downstream operator might eliminate the entire batch, saving the column read. If every batch has at least one passing row, lazy provides no benefit. The benefit is proportional to how often downstream operators eliminate entire batches.</div>
+    </div>
+
+    <h3>When columns become lazy</h3>
+    <p>During <code>SelectiveStructColumnReaderBase::read()</code>, each child column is checked against four conditions. If all hold, the column is <strong>not read</strong> during this call &mdash; it becomes a <code>LazyVector</code>.</p>
+
+    <div style="border:1.5px solid var(--border);border-radius:8px;padding:0.5rem 0.7rem;background:var(--bg-alt);margin:0.5rem 0;font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:var(--text-secondary);line-height:1.8;">
+      <span style="color:var(--text-muted)">// SelectiveStructColumnReader.cpp:454-458</span><br>
+      if (reader-&gt;isTopLevel() &amp;&amp; childSpec-&gt;projectOut() &amp;&amp;<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;!childSpec-&gt;<span style="color:var(--accent);font-weight:600">hasFilter()</span> &amp;&amp; generateLazyChildren_) {<br>
+      &nbsp;&nbsp;continue; <span style="color:var(--text-muted)">// &rarr; wrapped as LazyVector in getValues()</span><br>
+      }
+    </div>
+
+    <div style="display:flex;gap:0.5rem;margin:0.6rem 0;">
+      <div class="dec-card" style="flex:1;border-color:var(--border)"><h4 style="color:var(--text-secondary)">isTopLevel()</h4><p>Root-level column</p></div>
+      <div class="dec-card" style="flex:1;border-color:var(--border)"><h4 style="color:var(--text-secondary)">projectOut()</h4><p>Column is in SELECT list</p></div>
+      <div class="dec-card" style="flex:1;border-color:var(--accent)"><h4 style="color:var(--accent)">!hasFilter()</h4><p>No predicate on this column</p></div>
+      <div class="dec-card" style="flex:1;border-color:var(--border)"><h4 style="color:var(--text-secondary)">generateLazyChildren_</h4><p>Default: true</p></div>
+    </div>
+
+    <h3>Decode path implications</h3>
+
+    <div style="display:flex;gap:1rem;margin-top:0.5rem;">
+      <div style="flex:1;border:1.5px solid var(--border);border-radius:8px;padding:0.6rem 0.7rem;">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.3rem">Lazy (no filter on column)</h4>
+        <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
+          <strong>Load trigger:</strong> downstream operator accesses values<br>
+          <strong>RowSet:</strong> dense <code>[0, 1, ..., N-1]</code> (renumbered)<br>
+          <strong>bulkScan path:</strong> <code>V::dense = true</code><br><br>
+          <strong>Benefit:</strong> if a downstream operator (LIMIT, join, filter) eliminates the entire batch, the column is <em>never loaded</em> &mdash; zero I/O<br><br>
+          <span style="color:var(--text-muted)">The ColumnLoader renumbers rows to [0..N-1], so the original sparse positions from the filter column are lost</span>
+        </div>
+      </div>
+
+      <div style="flex:1;border:1.5px solid var(--border);border-radius:8px;padding:0.6rem 0.7rem;">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.3rem">Eager (has filter on column)</h4>
+        <div style="font-size:0.6rem;color:var(--text-secondary);line-height:1.5">
+          <strong>Load trigger:</strong> during <code>read()</code>, immediately<br>
+          <strong>RowSet:</strong> sparse <code>[3, 17, 42, ...]</code> from prior filter<br>
+          <strong>bulkScan path:</strong> <code>V::dense = false</code><br><br>
+          <strong>Scenario:</strong> multi-predicate query<br>
+          <code>WHERE a=5 AND b&gt;100</code><br>
+          b gets sparse rows directly from a's filter output<br><br>
+          <span style="color:var(--text-muted)">Sparse bulkScan can skip unneeded rows/blocks</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:0.5rem">
+      <span style="flex-shrink:0">&#9888;</span>
+      <div>Lazy columns <strong>always take the dense bulkScan path</strong> even though the table scan selected sparse rows. Sparse decode optimizations (e.g., per-element access, block skipping) only apply to <strong>eager columns with filters</strong>.</div>
+    </div>
+
+    <h3>Concrete examples</h3>
+
+    <!-- Example 1: single-predicate, lazy columns -->
+    <div style="border:1.5px solid var(--col0);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col0-bg);margin-bottom:0.4rem;">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col0);margin-bottom:0.2rem">SELECT a, b, c FROM t WHERE a = 5 &mdash; b, c are lazy</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        <span style="color:var(--pass);font-weight:600">read() phase &mdash; StructColumnReader loops over children:</span><br>
+        &nbsp;&nbsp;a: hasFilter=true &rarr; <span style="color:var(--pass)">read eagerly</span>, dense rows [0..1023]<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; filter: 1024 &rarr; 50 passing &rarr; activeRows = [3, 17, 42, ...]<br>
+        &nbsp;&nbsp;b: hasFilter=false &rarr; <span style="color:var(--text-muted)">continue (LazyVector)</span><br>
+        &nbsp;&nbsp;c: hasFilter=false &rarr; <span style="color:var(--text-muted)">continue (LazyVector)</span><br>
+        <br>
+        <span style="color:var(--pass);font-weight:600">getValues() &mdash; build output RowVector:</span><br>
+        &nbsp;&nbsp;a: FlatVector (50 materialized values)<br>
+        &nbsp;&nbsp;b: LazyVector (callback &rarr; ColumnLoader)<br>
+        &nbsp;&nbsp;c: LazyVector (callback &rarr; ColumnLoader)<br>
+        <br>
+        <span style="color:var(--text-muted);font-weight:600">Downstream access (Project operator touches b):</span><br>
+        &nbsp;&nbsp;b-&gt;loadedVector() &rarr; ColumnLoader::loadRows()<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; columnReader-&gt;read(offset, <span style="color:var(--text-muted)">dense [0..49]</span>)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; readWithVisitor(AlwaysTrue, isDense=<span style="font-weight:600">true</span>)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; bulkScan <span style="font-weight:600">dense</span> path<br>
+      </div>
+    </div>
+
+    <!-- Example 2: multi-predicate, eager sparse -->
+    <div style="border:1.5px solid var(--col2);border-radius:8px;padding:0.5rem 0.6rem;background:var(--col2-bg);">
+      <div style="font-size:0.65rem;font-weight:600;color:var(--col2);margin-bottom:0.2rem">SELECT a, b FROM t WHERE a = 5 AND b &gt; 100 &mdash; b is eager, sparse</div>
+      <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.7;font-family:'JetBrains Mono',monospace;">
+        <span style="color:var(--pass);font-weight:600">read() phase &mdash; StructColumnReader loops over children:</span><br>
+        &nbsp;&nbsp;a: hasFilter=true &rarr; <span style="color:var(--pass)">read eagerly</span>, dense rows [0..1023]<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; filter: 1024 &rarr; 50 passing &rarr; activeRows = [3, 17, 42, ...]<br>
+        &nbsp;&nbsp;b: hasFilter=true &rarr; <span style="color:var(--pass)">read eagerly</span>, <span style="font-weight:600">sparse</span> rows [3, 17, 42, ...]<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; readWithVisitor(BigintRange &gt; 100, isDense=<span style="font-weight:600">false</span>)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&rarr; bulkScan <span style="font-weight:600">sparse</span> path<br>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <!-- Legend -->
 <div class="legend ani d11">
   <div class="legend-item"><div class="legend-dot" style="background:var(--col0)"></div> col1 (int32)</div>
