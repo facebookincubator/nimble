@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/common/time/CpuWallTimer.h"
 
 #include <cstddef>
 
@@ -57,6 +58,7 @@ bool ChunkedDecoder::loadNextChunk(
     return buffer->asMutable<void>();
   };
   auto data = std::string_view(chunkData, chunkSize);
+  velox::DeltaCpuWallTimeStopWatch stopWatch;
   if (preserveDictionaryEncoding) {
     auto options = encodingFactory_->options();
     options.preserveDictionaryEncoding = true;
@@ -64,6 +66,10 @@ bool ChunkedDecoder::loadNextChunk(
         EncodingFactory(options).create(*pool_, data, stringBufferFactory);
   } else {
     encoding_ = encodingFactory_->create(*pool_, data, stringBufferFactory);
+  }
+  const auto timing = stopWatch.elapsed();
+  if (decompressCounter_ != nullptr) {
+    decompressCounter_->increment(timing.cpuNanos);
   }
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
