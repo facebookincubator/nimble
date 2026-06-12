@@ -2658,9 +2658,22 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   auto* col1 = stats.columnReaderStats.columnMetricsSet->getOrCreate(1);
   EXPECT_GT(col1->decodeCPUTimeNanos.count(), 0)
       << "column 1 decode count should be > 0";
+  EXPECT_GT(col1->decompressCPUTimeNanos.count(), 0)
+      << "column 1 decompress count should be > 0";
+  EXPECT_LE(col1->decompressCPUTimeNanos.sum(), col1->decodeCPUTimeNanos.sum())
+      << "decompress time should be <= decode time (it is a subset)";
   auto* col2 = stats.columnReaderStats.columnMetricsSet->getOrCreate(2);
   EXPECT_GT(col2->decodeCPUTimeNanos.count(), 0)
       << "column 2 decode count should be > 0";
+  EXPECT_GT(col2->decompressCPUTimeNanos.count(), 0)
+      << "column 2 decompress count should be > 0";
+
+  // Verify exported metric names match the expected format.
+  auto runtimeMetrics = stats.toRuntimeMetricMap();
+  EXPECT_TRUE(runtimeMetrics.count("column_1.BIGINT.decompressCPUTimeNanos"))
+      << "should export column_1.BIGINT.decompressCPUTimeNanos";
+  EXPECT_TRUE(runtimeMetrics.count("column_2.VARCHAR.decompressCPUTimeNanos"))
+      << "should export column_2.VARCHAR.decompressCPUTimeNanos";
 }
 
 // Tests for FixedBitWidthEncoding fast path.
