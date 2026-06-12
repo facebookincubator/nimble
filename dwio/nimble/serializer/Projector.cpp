@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/serializer/Projector.h"
 
+#include <glog/logging.h>
+
 #include <algorithm>
 #include <numeric>
 
@@ -250,6 +252,22 @@ std::shared_ptr<const Type> updateColumnNames(
   }
 }
 
+// kLegacyCompact is read-only post the two-array trailer change. Callers that
+// still pass it (e.g., not-yet-migrated tests or downstream code we can't
+// update in this diff due to directory branching) are silently upgraded to
+// kProjection so the round-trip still works on the new wire format. A
+// LOG(WARNING) flags the migration so the caller can switch.
+Projector::Options upgradeReadOnlyProjectVersion(Projector::Options options) {
+  if (options.projectVersion == SerializationVersion::kLegacyCompact) {
+    LOG_FIRST_N(WARNING, 10)
+        << "Projector constructed with projectVersion=kLegacyCompact "
+           "(read-only post the two-array trailer change); silently upgrading "
+           "to kProjection. Migrate the caller to pass kProjection explicitly.";
+    options.projectVersion = SerializationVersion::kProjection;
+  }
+  return options;
+}
+
 } // namespace
 
 Projector::Projector(
@@ -258,7 +276,7 @@ Projector::Projector(
     velox::memory::MemoryPool* pool,
     Options options)
     : pool_(pool),
-      options_(std::move(options)),
+      options_(upgradeReadOnlyProjectVersion(std::move(options))),
       inputSchema_(std::move(inputSchema)) {
   NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
   NIMBLE_CHECK_NOT_NULL(inputSchema_, "Input schema cannot be null");
@@ -268,8 +286,8 @@ Projector::Projector(
       inputSchema_->kind());
   NIMBLE_CHECK(!projectSubfields.empty(), "Must project at least one subfield");
   NIMBLE_CHECK(
-      isCompactFormat(options_.projectVersion),
-      "Projection output version must be kCompactRaw, got: {}",
+      options_.projectVersion == SerializationVersion::kProjection,
+      "Projection output version must be kProjection. Got: {}",
       options_.projectVersion);
 
   // Update inputSchema_ with projectType names for schema evolution.
@@ -303,12 +321,15 @@ Projector::Projector(
 
 namespace {
 
-// Validates the input version header is kCompactRaw.
+// Validates the input version header is a supported compact format
+// (kLegacyCompact via legacy reader, or kSerialization/kProjection via new
+// reader). kTablet is rejected — chunk headers are not handled by the
+// Projector.
 SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
   const auto version = static_cast<SerializationVersion>(*input.data());
   NIMBLE_CHECK(
       isCompactFormat(version),
-      "Input must be kCompactRaw format, got: {}",
+      "Input must be a compact format (kLegacyCompact/kSerialization/kProjection), got: {}",
       version);
   return version;
 }
@@ -316,26 +337,35 @@ SerializationVersion getAndValidateInputVersion(const folly::IOBuf& input) {
 } // namespace
 
 // Projects selected streams from a contiguous IOBuf into the output chain.
-// Streams are output in the order of selectedIndices (output stream order),
-// which may differ from sorted input order for interleaved schemas (e.g.,
-// multiple FlatMap columns). Merges adjacent output entries that are contiguous
-// in the input into a single zero-copy IOBuf clone to minimize IOBuf
-// allocations. The input IOBuf must outlive the output chain.
+// Streams are output in the order of selectedStreamIndices (output stream
+// order), which may differ from sorted input order for interleaved schemas
+// (e.g., multiple FlatMap columns). Walks selectedStreamIndices in output
+// order; for each selected input stream, binary-searches the sparse
+// (streamIndices, streamSizes) trailer for its position. Merges adjacent
+// output entries that are contiguous in the input into a single zero-copy
+// IOBuf clone to minimize IOBuf allocations. The input IOBuf must outlive the
+// output chain.
 // static
 std::vector<uint32_t> Projector::projectStreamsContiguousUnsorted(
     const folly::IOBuf& input,
     size_t dataOffset,
+    const std::vector<uint32_t>& streamIndices,
     const std::vector<uint32_t>& streamSizes,
-    const std::vector<uint32_t>& selectedIndices,
+    const std::vector<uint32_t>& selectedStreamIndices,
     std::unique_ptr<folly::IOBuf>& output) {
-  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+  std::vector<uint32_t> outputSizes(selectedStreamIndices.size(), 0);
 
-  // Pre-compute byte offset for each input stream.
-  std::vector<size_t> streamOffsets(streamSizes.size());
-  size_t streamOffset = dataOffset;
-  for (size_t i = 0; i < streamSizes.size(); ++i) {
-    streamOffsets[i] = streamOffset;
-    streamOffset += streamSizes[i];
+  // Precompute byte offset of each sparse pair (input-order prefix sum of
+  // sizes). streamOffsets[sparsePosition] is the byte offset of
+  // streamIndices[sparsePosition] within input.
+  std::vector<size_t> streamOffsets(streamIndices.size());
+  size_t offset = dataOffset;
+  for (size_t sparsePosition = 0; sparsePosition < streamIndices.size();
+       ++sparsePosition) {
+    // NOLINTBEGIN(facebook-hte-LocalUncheckedArrayBounds)
+    streamOffsets[sparsePosition] = offset;
+    offset += streamSizes[sparsePosition];
+    // NOLINTEND(facebook-hte-LocalUncheckedArrayBounds)
   }
 
   // Track the start offset and byte count of a contiguous run.
@@ -346,7 +376,6 @@ std::vector<uint32_t> Projector::projectStreamsContiguousUnsorted(
     if (numRunBytes == 0) {
       return;
     }
-    // Zero-copy: clone the input and trim to the run's sub-range.
     auto buf = input.cloneOne();
     buf->trimStart(runStart);
     buf->trimEnd(buf->length() - numRunBytes);
@@ -354,23 +383,30 @@ std::vector<uint32_t> Projector::projectStreamsContiguousUnsorted(
     numRunBytes = 0;
   };
 
-  // Output streams in output order, merging entries that are contiguous in
-  // input.
-  for (size_t i = 0; i < selectedIndices.size(); ++i) {
-    const auto streamIdx = selectedIndices[i];
-    // Streams beyond streamSizes are treated as empty. This happens when the
-    // serializer omits constant in-map boolean streams (all-true/all-false),
-    // making the serialized stream count smaller than the schema's max offset.
-    if (streamIdx >= streamSizes.size() || streamSizes[streamIdx] == 0) {
+  // Walk selectedStreamIndices in output order; binary-search sparse
+  // streamIndices for each. Selected streams absent from the sparse trailer
+  // keep outputSizes at 0 and contribute zero bytes, so they can sit inside
+  // a run without breaking byte-contiguity for the next present selected
+  // stream.
+  for (size_t i = 0; i < selectedStreamIndices.size(); ++i) {
+    const auto inputStreamIdx = selectedStreamIndices[i];
+    const auto it = std::lower_bound(
+        streamIndices.begin(), streamIndices.end(), inputStreamIdx);
+    if (it == streamIndices.end() || *it != inputStreamIdx) {
       continue;
     }
-    outputSizes[i] = streamSizes[streamIdx];
-    if (numRunBytes > 0 && streamOffsets[streamIdx] == runStart + numRunBytes) {
-      numRunBytes += streamSizes[streamIdx];
+    const auto sparsePosition = static_cast<size_t>(it - streamIndices.begin());
+    // NOLINTBEGIN(facebook-hte-LocalUncheckedArrayBounds)
+    const auto streamSize = streamSizes[sparsePosition];
+    const auto streamOffset = streamOffsets[sparsePosition];
+    outputSizes[i] = streamSize;
+    // NOLINTEND(facebook-hte-LocalUncheckedArrayBounds)
+    if (numRunBytes > 0 && streamOffset == runStart + numRunBytes) {
+      numRunBytes += streamSize;
     } else {
       flushRun();
-      runStart = streamOffsets[streamIdx];
-      numRunBytes = streamSizes[streamIdx];
+      runStart = streamOffset;
+      numRunBytes = streamSize;
     }
   }
   flushRun();
@@ -379,19 +415,19 @@ std::vector<uint32_t> Projector::projectStreamsContiguousUnsorted(
 }
 
 // Fast path for projectStreamsContiguousUnsorted when inputStreamIndices are
-// sorted (no FlatMap key reordering). Avoids pre-computing byte offsets for all
-// streams — instead uses a single forward scan tracking the current offset.
+// sorted (no FlatMap key reordering). Single forward two-pointer merge over
+// the sparse (streamIndices, streamSizes) trailer and selectedStreamIndices.
 // static
 std::vector<uint32_t> Projector::projectStreamsContiguousSorted(
     const folly::IOBuf& input,
     size_t dataOffset,
+    const std::vector<uint32_t>& streamIndices,
     const std::vector<uint32_t>& streamSizes,
-    const std::vector<uint32_t>& selectedIndices,
+    const std::vector<uint32_t>& selectedStreamIndices,
     std::unique_ptr<folly::IOBuf>& output) {
-  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
+  std::vector<uint32_t> outputSizes(selectedStreamIndices.size(), 0);
 
-  size_t curOffset = dataOffset;
-  size_t nextSelected = 0;
+  size_t currentOffset = dataOffset;
 
   // Track the start offset and byte count of a contiguous run.
   size_t runStart = 0;
@@ -409,23 +445,40 @@ std::vector<uint32_t> Projector::projectStreamsContiguousSorted(
     numRunBytes = 0;
   };
 
-  for (size_t i = 0;
-       i < streamSizes.size() && nextSelected < selectedIndices.size();
-       ++i) {
-    if (i == selectedIndices[nextSelected]) {
-      if (streamSizes[i] > 0) {
-        outputSizes[nextSelected] = streamSizes[i];
-        if (numRunBytes > 0 && curOffset == runStart + numRunBytes) {
-          numRunBytes += streamSizes[i];
-        } else {
-          flushRun();
-          runStart = curOffset;
-          numRunBytes = streamSizes[i];
-        }
-      }
-      ++nextSelected;
+  size_t sparsePosition = 0;
+  size_t selectedPosition = 0;
+  while (sparsePosition < streamIndices.size() &&
+         selectedPosition < selectedStreamIndices.size()) {
+    if (selectedStreamIndices[selectedPosition] <
+        streamIndices[sparsePosition]) {
+      // Selected stream absent from sparse trailer (size 0); outputSizes
+      // already 0.
+      ++selectedPosition;
+      continue;
     }
-    curOffset += streamSizes[i];
+    if (selectedStreamIndices[selectedPosition] >
+        streamIndices[sparsePosition]) {
+      // Non-selected stream; advance past its bytes. The next match's
+      // run-extension check will detect the byte-gap and flush via its else
+      // branch, so no explicit flush is needed here.
+      currentOffset += streamSizes[sparsePosition];
+      ++sparsePosition;
+      continue;
+    }
+    // Match.
+    // NOLINTBEGIN(facebook-hte-LocalUncheckedArrayBounds)
+    outputSizes[selectedPosition] = streamSizes[sparsePosition];
+    if (numRunBytes > 0 && currentOffset == runStart + numRunBytes) {
+      numRunBytes += streamSizes[sparsePosition];
+    } else {
+      flushRun();
+      runStart = currentOffset;
+      numRunBytes = streamSizes[sparsePosition];
+    }
+    currentOffset += streamSizes[sparsePosition];
+    // NOLINTEND(facebook-hte-LocalUncheckedArrayBounds)
+    ++sparsePosition;
+    ++selectedPosition;
   }
   flushRun();
 
@@ -433,18 +486,19 @@ std::vector<uint32_t> Projector::projectStreamsContiguousSorted(
 }
 
 // Fast path for projectStreamsChainedUnsorted when inputStreamIndices are
-// sorted (no FlatMap key reordering). Single forward pass with run merging — no
-// sorting or reordering needed since input and output order already match.
+// sorted (no FlatMap key reordering). Two-pointer merge over the sparse
+// (streamIndices, streamSizes) trailer and selectedStreamIndices, with run
+// merging for contiguous-in-input selected streams.
 // static
 std::vector<uint32_t> Projector::projectStreamsChainedSorted(
     folly::io::Cursor& cursor,
+    const std::vector<uint32_t>& streamIndices,
     const std::vector<uint32_t>& streamSizes,
-    const std::vector<uint32_t>& selectedIndices,
+    const std::vector<uint32_t>& selectedStreamIndices,
     std::unique_ptr<folly::IOBuf>& output) {
-  std::vector<uint32_t> outputSizes(selectedIndices.size(), 0);
-  size_t nextSelected = 0;
+  std::vector<uint32_t> outputSizes(selectedStreamIndices.size(), 0);
 
-  // Track how many contiguous selected streams we can merge.
+  // Track how many contiguous selected stream bytes we can merge.
   size_t numRunBytes = 0;
 
   auto flushRun = [&](std::unique_ptr<folly::IOBuf>& out) {
@@ -457,22 +511,35 @@ std::vector<uint32_t> Projector::projectStreamsChainedSorted(
     numRunBytes = 0;
   };
 
-  for (size_t i = 0;
-       i < streamSizes.size() && nextSelected < selectedIndices.size();
-       ++i) {
-    if (i == selectedIndices[nextSelected]) {
-      outputSizes[nextSelected] = streamSizes[i];
-      if (streamSizes[i] > 0) {
-        numRunBytes += streamSizes[i];
-      }
-      ++nextSelected;
+  size_t sparsePosition = 0;
+  size_t selectedPosition = 0;
+  while (sparsePosition < streamIndices.size() &&
+         selectedPosition < selectedStreamIndices.size()) {
+    if (selectedStreamIndices[selectedPosition] <
+        streamIndices[sparsePosition]) {
+      // Selected stream absent from sparse trailer (size 0); outputSizes
+      // already 0.
+      ++selectedPosition;
       continue;
     }
-    // Not selected — flush any pending run and skip this stream.
-    flushRun(output);
-    if (streamSizes[i] > 0) {
-      cursor.skip(streamSizes[i]);
+    if (selectedStreamIndices[selectedPosition] >
+        streamIndices[sparsePosition]) {
+      // Non-selected stream; flush any pending run and skip its bytes via
+      // cursor. Flush is required for cursor correctness: cursor.skip moves
+      // the cursor forward, so we must clone the pending run bytes (which
+      // sit at the cursor's current position) before skipping past them.
+      flushRun(output);
+      cursor.skip(streamSizes[sparsePosition]);
+      ++sparsePosition;
+      continue;
     }
+    // Match: accumulate into the current run.
+    // NOLINTBEGIN(facebook-hte-LocalUncheckedArrayBounds)
+    outputSizes[selectedPosition] = streamSizes[sparsePosition];
+    numRunBytes += streamSizes[sparsePosition];
+    // NOLINTEND(facebook-hte-LocalUncheckedArrayBounds)
+    ++sparsePosition;
+    ++selectedPosition;
   }
   flushRun(output);
 
@@ -480,15 +547,15 @@ std::vector<uint32_t> Projector::projectStreamsChainedSorted(
 }
 
 // Projects selected streams from a chained IOBuf via cursor.
-// Streams are output in the order of selectedIndices (output stream order).
-// Uses a sorted forward pass to extract IOBufs via cursor, merging contiguous
-// runs that are also adjacent in output order into single zero-copy clones.
-// Non-mergeable streams are extracted individually and reordered in a second
-// pass.
-
+// Streams are output in the order of selectedStreamIndices (output stream
+// order). Walks the sparse (streamIndices, streamSizes) trailer in lockstep
+// with the sorted-by-input mapping; merges contiguous-in-input runs that are
+// also adjacent in output order into single zero-copy clones, then sorts and
+// chains by output index.
 // static
 std::vector<uint32_t> Projector::projectStreamsChainedUnsorted(
     folly::io::Cursor& cursor,
+    const std::vector<uint32_t>& streamIndices,
     const std::vector<uint32_t>& streamSizes,
     const std::vector<StreamMapping>& sortedStreamMappings,
     std::unique_ptr<folly::IOBuf>& output) {
@@ -502,54 +569,57 @@ std::vector<uint32_t> Projector::projectStreamsChainedUnsorted(
     std::unique_ptr<folly::IOBuf> buf;
   };
 
-  // Forward pass: extract selected streams via cursor in sorted input order.
-  // Merges contiguous input streams that are also adjacent in output order into
-  // a single cursor.clone() call, reducing allocations. Each merged run
-  // produces one OutputStreamBuffer entry — typically far fewer than the total
-  // number of selected streams.
   std::vector<OutputStreamBuffer> outputStreamBufs;
   outputStreamBufs.reserve(sortedStreamMappings.size());
-  size_t nextSortedIdx = 0;
-  for (size_t i = 0;
-       i < streamSizes.size() && nextSortedIdx < sortedStreamMappings.size();) {
-    if (i != sortedStreamMappings[nextSortedIdx].inputStreamIdx) {
-      if (streamSizes[i] > 0) {
-        cursor.skip(streamSizes[i]);
-      }
-      ++i;
+
+  size_t sparsePosition = 0;
+  size_t mappingPosition = 0;
+  while (sparsePosition < streamIndices.size() &&
+         mappingPosition < sortedStreamMappings.size()) {
+    const auto wantInputStreamIdx =
+        sortedStreamMappings[mappingPosition].inputStreamIdx;
+    if (wantInputStreamIdx < streamIndices[sparsePosition]) {
+      // Selected input stream absent from sparse trailer (size 0).
+      ++mappingPosition;
+      continue;
+    }
+    if (wantInputStreamIdx > streamIndices[sparsePosition]) {
+      // Non-selected input stream; skip its bytes via cursor.
+      cursor.skip(streamSizes[sparsePosition]);
+      ++sparsePosition;
       continue;
     }
 
-    // Found a selected stream. Try to extend a contiguous run: consecutive
-    // in input AND adjacent in output order.
+    // Match: try to extend a run while consecutive in input AND adjacent in
+    // output AND present in sparse.
     const auto runOutputStreamIdx =
-        sortedStreamMappings[nextSortedIdx].outputStreamIdx;
+        sortedStreamMappings[mappingPosition].outputStreamIdx;
     size_t numRunBytes = 0;
-    size_t numRunOutputStreams = 0;
-    while (nextSortedIdx + numRunOutputStreams < sortedStreamMappings.size() &&
-           sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
-                   .inputStreamIdx == i + numRunOutputStreams &&
-           i + numRunOutputStreams < streamSizes.size() &&
-           sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
-                   .outputStreamIdx ==
-               runOutputStreamIdx + numRunOutputStreams) {
-      const auto inputStreamIdx =
-          sortedStreamMappings[nextSortedIdx + numRunOutputStreams]
-              .inputStreamIdx;
-      outputSizes[runOutputStreamIdx + numRunOutputStreams] =
-          streamSizes[inputStreamIdx];
-      numRunBytes += streamSizes[inputStreamIdx];
-      ++numRunOutputStreams;
+    size_t numRunStreams = 0;
+    while (
+        mappingPosition + numRunStreams < sortedStreamMappings.size() &&
+        sparsePosition + numRunStreams < streamIndices.size() &&
+        streamIndices[sparsePosition + numRunStreams] ==
+            streamIndices[sparsePosition] + numRunStreams &&
+        sortedStreamMappings[mappingPosition + numRunStreams].inputStreamIdx ==
+            streamIndices[sparsePosition] + numRunStreams &&
+        sortedStreamMappings[mappingPosition + numRunStreams].outputStreamIdx ==
+            runOutputStreamIdx + numRunStreams) {
+      // NOLINTBEGIN(facebook-hte-LocalUncheckedArrayBounds)
+      const auto streamSize = streamSizes[sparsePosition + numRunStreams];
+      outputSizes[runOutputStreamIdx + numRunStreams] = streamSize;
+      // NOLINTEND(facebook-hte-LocalUncheckedArrayBounds)
+      numRunBytes += streamSize;
+      ++numRunStreams;
     }
 
     if (numRunBytes > 0) {
-      // Zero-copy: clone the merged run.
       std::unique_ptr<folly::IOBuf> buf;
       cursor.clone(buf, numRunBytes);
       outputStreamBufs.push_back({runOutputStreamIdx, std::move(buf)});
     }
-    nextSortedIdx += numRunOutputStreams;
-    i += numRunOutputStreams;
+    mappingPosition += numRunStreams;
+    sparsePosition += numRunStreams;
   }
 
   // Sort by output stream index and chain in order.
@@ -572,9 +642,13 @@ folly::IOBuf Projector::buildProjectedOutput(
       detail::estimateTrailerSize(
           options_.projectVersion,
           outputStreamSizes.size(),
+          options_.streamIndicesEncodingType,
           options_.streamSizesEncodingType));
   detail::writeTrailer(
-      outputStreamSizes, options_.streamSizesEncodingType, trailer);
+      outputStreamSizes,
+      options_.streamIndicesEncodingType,
+      options_.streamSizesEncodingType,
+      trailer);
   output->appendToChain(std::move(trailer).build());
   return std::move(*output);
 }
@@ -602,23 +676,30 @@ folly::IOBuf Projector::projectContiguous(
   writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  // Dispatch on the version byte: legacy kCompactRaw / kTablet blobs go
-  // through the frozen legacy reader; the else branch is scaffolding for the
-  // next change that will introduce a sibling reader for a new wire format.
-  std::vector<uint32_t> inputStreamSizes;
-  if (usesLegacyTrailer(inputVersion)) {
-    inputStreamSizes = legacy::readLegacyTrailerStreamSizesDense(input);
-  } else {
-    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
-  }
+  // Dispatch on input version: legacy kLegacyCompact blobs are read via the
+  // frozen legacy reader (normalized to sparse pairs internally); all newer
+  // versions use the new two-array sparse trailer reader.
+  auto [streamIndices, streamSizes] = usesLegacyTrailer(inputVersion)
+      ? legacy::readLegacyTrailerStreamMetadata(input)
+      : detail::readTrailerStreamMetadata(input);
 
   // Extract selected streams as zero-copy sub-range clones.
   const auto dataOffset = static_cast<size_t>(pos - data);
   auto outputStreamSizes = inputStreamsSorted_
       ? projectStreamsContiguousSorted(
-            input, dataOffset, inputStreamSizes, inputStreamIndices_, output)
+            input,
+            dataOffset,
+            streamIndices,
+            streamSizes,
+            inputStreamIndices_,
+            output)
       : projectStreamsContiguousUnsorted(
-            input, dataOffset, inputStreamSizes, inputStreamIndices_, output);
+            input,
+            dataOffset,
+            streamIndices,
+            streamSizes,
+            inputStreamIndices_,
+            output);
 
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }
@@ -637,22 +718,19 @@ folly::IOBuf Projector::projectChained(
   writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  // Dispatch on the version byte: legacy kCompactRaw / kTablet blobs go
-  // through the frozen legacy reader; the else branch is scaffolding for the
-  // next change that will introduce a sibling reader for a new wire format.
-  std::vector<uint32_t> inputStreamSizes;
-  if (usesLegacyTrailer(inputVersion)) {
-    inputStreamSizes = legacy::readLegacyTrailerStreamSizesDense(input);
-  } else {
-    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
-  }
+  // Dispatch on input version: legacy kLegacyCompact blobs are read via the
+  // frozen legacy reader (normalized to sparse pairs internally); all newer
+  // versions use the new two-array sparse trailer reader.
+  auto [streamIndices, streamSizes] = usesLegacyTrailer(inputVersion)
+      ? legacy::readLegacyTrailerStreamMetadata(input)
+      : detail::readTrailerStreamMetadata(input);
 
   // Extract selected streams as zero-copy clones via cursor.
   auto outputStreamSizes = inputStreamsSorted_
       ? projectStreamsChainedSorted(
-            cursor, inputStreamSizes, inputStreamIndices_, output)
+            cursor, streamIndices, streamSizes, inputStreamIndices_, output)
       : projectStreamsChainedUnsorted(
-            cursor, inputStreamSizes, sortedStreamMappings_, output);
+            cursor, streamIndices, streamSizes, sortedStreamMappings_, output);
 
   return buildProjectedOutput(outputStreamSizes, std::move(output));
 }

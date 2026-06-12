@@ -68,38 +68,35 @@ SerializationDump::SerializationStats SerializationDump::serializationStats(
   info.version =
       static_cast<SerializationVersion>(static_cast<uint8_t>(*pos++));
 
-  // Read row count (varint for kCompactRaw).
+  // Read row count (varint for kLegacyCompact).
   info.rowCount = varint::readVarint32(&pos);
 
-  // Parse stream sizes from trailer. Dispatch on the version byte: legacy
-  // kCompactRaw / kTablet blobs go through the frozen legacy reader; the
-  // else branch is scaffolding for the next change that will introduce a
-  // sibling reader for a new wire format.
-  std::vector<uint32_t> streamSizes;
-  if (usesLegacyTrailer(info.version)) {
-    streamSizes = serde::legacy::readLegacyTrailerStreamSizesDense(end);
-  } else {
-    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
-  }
+  // Walk the sparse (indices, sizes) trailer directly. Emit "empty" entries
+  // for gaps between non-zero slots so the offset-indexed view is preserved.
+  // Legacy kLegacyCompact blobs are decoded via the frozen legacy reader.
+  auto [indices, sizes] = usesLegacyTrailer(info.version)
+      ? serde::legacy::readLegacyTrailerStreamMetadata(end)
+      // NOLINTNEXTLINE(facebook-hte-DetailCall)
+      : serde::detail::readTrailerStreamMetadata(end);
+  const uint32_t numStreams = indices.empty() ? 0 : indices.back() + 1;
+  info.streams.reserve(numStreams);
 
-  // Walk streams and extract encoding info.
-  info.streams.reserve(streamSizes.size());
-
-  for (size_t i = 0; i < streamSizes.size(); ++i) {
+  size_t k = 0;
+  for (uint32_t i = 0; i < numStreams; ++i) {
     StreamStats si{};
-    si.streamIndex = static_cast<uint32_t>(i);
+    si.streamIndex = i;
 
     auto label = streamLabels_.streamLabel(static_cast<offset_size>(i));
     if (!label.empty()) {
       si.schemaLabel = std::string(label);
     }
 
-    const auto streamSize = streamSizes[i];
-    if (streamSize == 0) {
+    if (k >= indices.size() || indices[k] != i) {
       si.empty = true;
       info.streams.push_back(std::move(si));
       continue;
     }
+    const uint32_t streamSize = sizes[k++];
 
     si.encodingType = static_cast<EncodingType>(static_cast<uint8_t>(pos[0]));
     si.dataType = static_cast<DataType>(static_cast<uint8_t>(pos[1]));

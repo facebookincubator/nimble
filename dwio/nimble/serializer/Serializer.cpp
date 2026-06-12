@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/serializer/Serializer.h"
 
+#include <glog/logging.h>
+
 namespace facebook::nimble {
 
 namespace {
@@ -32,13 +34,30 @@ class FlatmapEncodingLayoutContext : public TypeBuilderContext {
       keyEncodings_;
 };
 
+// kLegacyCompact is read-only post the two-array trailer change. Callers that
+// still pass it (e.g., not-yet-migrated tests or downstream code we can't
+// update in this diff due to directory branching) are silently upgraded to
+// kSerialization so the round-trip still works on the new wire format. A
+// LOG(WARNING) flags the migration so the caller can switch.
+SerializerOptions upgradeReadOnlyVersion(SerializerOptions options) {
+  if (options.version.has_value() &&
+      options.version.value() == SerializationVersion::kLegacyCompact) {
+    LOG_FIRST_N(WARNING, 10)
+        << "Serializer constructed with kLegacyCompact (read-only post the "
+           "two-array trailer change); silently upgrading to kSerialization. "
+           "Migrate the caller to pass kSerialization explicitly.";
+    options.version = SerializationVersion::kSerialization;
+  }
+  return options;
+}
+
 } // namespace
 
 Serializer::Serializer(
     SerializerOptions options,
     const std::shared_ptr<const velox::Type>& type,
     velox::memory::MemoryPool* pool)
-    : options_{std::move(options)},
+    : options_{upgradeReadOnlyVersion(std::move(options))},
       pool_{pool},
       context_{*pool_},
       buffer_{context_.bufferMemoryPool().get()} {

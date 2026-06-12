@@ -416,7 +416,11 @@ folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
   }
 
   std::string trailerBuf;
-  serde::detail::writeTrailer(streamSizes, EncodingType::Trivial, trailerBuf);
+  serde::detail::writeTrailer(
+      streamSizes,
+      EncodingType::FixedBitWidth,
+      EncodingType::FixedBitWidth,
+      trailerBuf);
 
   NIMBLE_CHECK_NOT_NULL(chain);
   auto trailer = folly::IOBuf::copyBuffer(trailerBuf);

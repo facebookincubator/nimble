@@ -46,7 +46,7 @@ TEST_F(SerializerDumpLibTest, BasicStats) {
   auto type = velox::ROW({"a", "b"}, {velox::INTEGER(), velox::BIGINT()});
 
   SerializerOptions options{
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kSerialization,
   };
   Serializer serializer{options, type, leafPool_.get()};
 
@@ -99,7 +99,7 @@ TEST_F(SerializerDumpLibTest, MultipleSerializations) {
   auto type = velox::ROW({"x"}, {velox::INTEGER()});
 
   SerializerOptions options{
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kSerialization,
   };
   Serializer serializer{options, type, leafPool_.get()};
 
@@ -142,7 +142,7 @@ TEST_F(SerializerDumpLibTest, Reset) {
   auto type = velox::ROW({"v"}, {velox::INTEGER()});
 
   SerializerOptions options{
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kSerialization,
   };
   Serializer serializer{options, type, leafPool_.get()};
 
@@ -170,14 +170,15 @@ TEST_F(SerializerDumpLibTest, Reset) {
 }
 
 // Verifies that SerializationDump handles varying stream counts across
-// serializations. With flat maps in kCompactRaw format, different rows can have
-// different keys, producing different numbers of streams per serialization.
+// serializations. With flat maps in kLegacyCompact format, different rows can
+// have different keys, producing different numbers of streams per
+// serialization.
 TEST_F(SerializerDumpLibTest, varyingStreamCountsWithFlatMap) {
   auto type =
       velox::ROW({{"features", velox::MAP(velox::INTEGER(), velox::BIGINT())}});
 
   const SerializerOptions options{
-      .version = SerializationVersion::kCompactRaw,
+      .version = SerializationVersion::kSerialization,
       .flatMapColumns = {{"features", {}}},
   };
   Serializer serializer{options, type, leafPool_.get()};

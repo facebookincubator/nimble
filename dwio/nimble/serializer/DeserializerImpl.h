@@ -149,7 +149,7 @@ class StreamData {
   velox::memory::MemoryPool* const pool_{nullptr};
   // Whether nimble encoding is enabled. Non-const to allow reset() to change.
   bool encodingEnabled_{false};
-  // Whether encoding headers use varint row counts (true for kCompactRaw) or
+  // Whether encoding headers use varint row counts (true for kLegacyCompact) or
   // fixed u32 (false for kTablet). Non-const to allow
   // reset() to change.
   bool useVarintRowCount_{true};
@@ -201,7 +201,7 @@ class StreamDataReader {
 
   /// Walks every non-empty stream in the current blob, invoking
   /// `callback(offset, data)` per stream. For kTablet, `data` is the
-  /// chunk-stripped (and decompressed, if needed) payload; for kCompactRaw
+  /// chunk-stripped (and decompressed, if needed) payload; for kLegacyCompact
   /// and kLegacy it is the raw stream bytes. Empty streams are skipped.
   /// Must be called at most once per `initialize()` (consumes the per-blob
   /// cursor).
@@ -217,18 +217,17 @@ class StreamDataReader {
   template <typename Callback>
   void iterateStreams(Callback&& callback) {
     if (nonLegacyFormat(version_)) {
-      // kCompactRaw/kTablet (and any future non-legacy versions): the
-      // stream-size trailer at the end of the blob is dispatched on the
-      // version byte. Today every defined non-legacy version returns true
-      // from `usesLegacyTrailer`, so all blobs flow through the frozen
-      // legacy reader; the else branch is scaffolding for the next diff,
-      // which will introduce a new wire format and a sibling reader.
-      // Reusable member buffers keep the hot path alloc-free across blobs.
+      // kLegacyCompact/kTablet/kSerialization/kProjection: stream sizes are
+      // packed into a sparse trailer at the end of the blob. Production blobs
+      // at kLegacyCompact are decoded via the legacy reader (frozen snapshot of
+      // the pre-two-array wire format); all newer versions go through the new
+      // two-array sparse trailer reader. Reusable member buffers keep this
+      // path alloc-free across blobs.
       if (usesLegacyTrailer(version_)) {
         legacy::readLegacyTrailerStreamMetadata(
             end_, streamIndices_, streamSizes_);
       } else {
-        NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+        detail::readTrailerStreamMetadata(end_, streamIndices_, streamSizes_);
       }
       const bool isTablet = isTabletVersion(version_);
       const size_t numStreams = streamIndices_.size();
@@ -236,7 +235,8 @@ class StreamDataReader {
         const uint32_t streamOffset = streamIndices_[entryIdx];
         const uint32_t streamSize = streamSizes_[entryIdx];
         // Writer invariant: the sparse trailer only encodes non-zero stream
-        // slots. Debug-only assert documents that invariant; release elides it.
+        // slots (SerializerImpl.h writeTrailer skips streamSizes[i]==0).
+        // Debug-only assert documents that invariant; release elides it.
         NIMBLE_DCHECK_GT(
             streamSize, 0, "Sparse trailer must not encode zero-sized stream");
         std::string_view streamData(pos_, streamSize);
@@ -327,11 +327,11 @@ class StreamDataReader {
   // Reusable buffer for chunk header stripping (compressed/multi-chunk case).
   Vector<char> chunkStrippingBuffer_;
   // Reusable parallel buffers for the per-blob sparse trailer. Refilled by
-  // iterateStreams() on the kCompactRaw/kTablet path: streamIndices_ holds
-  // the offsets of non-zero stream slots (sorted ascending); streamSizes_
-  // holds the corresponding byte sizes. Sized to the same length, cleared
-  // and filled in place each blob to keep the hot path alloc-free across
-  // invocations.
+  // iterateStreams() on the kLegacyCompact/kTablet path: streamIndices_
+  // holds the offsets of non-zero stream slots (sorted ascending);
+  // streamSizes_ holds the corresponding byte sizes. Sized to the same
+  // length, cleared+filled in place each blob to keep the hot path
+  // alloc-free across invocations.
   std::vector<uint32_t> streamIndices_;
   std::vector<uint32_t> streamSizes_;
 };

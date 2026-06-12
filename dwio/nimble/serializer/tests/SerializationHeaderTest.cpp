@@ -39,11 +39,11 @@ TEST(SerializationHeaderTest, writeReadRoundtripLegacy) {
 
 TEST(SerializationHeaderTest, writeReadRoundtripCompactRaw) {
   std::string buffer;
-  writeSerializationHeader(buffer, SerializationVersion::kCompactRaw, 1000);
+  writeSerializationHeader(buffer, SerializationVersion::kLegacyCompact, 1000);
 
   const char* pos = buffer.data();
   auto header = readSerializationHeader(pos, pos + buffer.size(), true);
-  EXPECT_EQ(header.version, SerializationVersion::kCompactRaw);
+  EXPECT_EQ(header.version, SerializationVersion::kLegacyCompact);
   EXPECT_EQ(header.rowCount, 1000);
   EXPECT_FALSE(header.rowRange.has_value());
 }
@@ -99,7 +99,7 @@ TEST(SerializationHeaderTest, estimateSizeMatchesActual) {
   for (auto version :
        {std::optional<SerializationVersion>{std::nullopt},
         std::optional{SerializationVersion::kLegacy},
-        std::optional{SerializationVersion::kCompactRaw}}) {
+        std::optional{SerializationVersion::kLegacyCompact}}) {
     for (uint32_t rowCount : {0u, 1u, 127u, 128u, 16383u, 1000000u}) {
       std::string buffer;
       writeSerializationHeader(buffer, version, rowCount);

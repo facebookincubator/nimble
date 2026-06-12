@@ -22,7 +22,7 @@
 
 #include <folly/io/IOBuf.h>
 
-// Read-only legacy reader for the original kCompactRaw trailer wire format
+// Read-only legacy reader for the original kLegacyCompact trailer wire format
 // (single encoding-type byte + dense payload, or MainlyConstant-special-case
 // sparse pair). Used by callers that need to decode existing production hybrid
 // Nimble blobs after the main serializer trailer wire format evolves.
@@ -34,7 +34,7 @@
 
 namespace facebook::nimble::serde::legacy {
 
-/// Reads the legacy kCompactRaw trailer from the end of a contiguous buffer.
+/// Reads the legacy kLegacyCompact trailer from the end of a contiguous buffer.
 /// Fills `streamIndices` (offsets of non-zero stream slots, sorted ascending)
 /// and `streamSizes` (their byte sizes), parallel arrays of identical length.
 /// Both vectors are reusable buffers owned by the caller (e.g. members on
