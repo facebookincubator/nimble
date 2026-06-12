@@ -85,6 +85,30 @@ inline bool isRawFormat(SerializationVersion version) {
       version == SerializationVersion::kTablet;
 }
 
+/// Returns true if the version was written using the (now frozen) legacy
+/// trailer wire format decoded by `nimble::serde::legacy::`. All currently
+/// defined non-legacy versions (kCompactRaw, kTablet) share that format;
+/// future writer versions that emit a different trailer wire format will
+/// return false from this helper so dispatchers route them to a different
+/// reader.
+///
+/// kTablet is included here today because in master kTablet and kCompactRaw
+/// produce byte-identical trailer layouts (single encoding-type byte +
+/// payload + trailer-size u32) and the same reader code path handles both.
+/// Treating kTablet as legacy in this diff keeps the refactor purely
+/// behavior-preserving.
+///
+/// The next diff (the two-array sparse trailer change) migrates kTablet
+/// onto the new trailer wire format alongside the new kSerialization /
+/// kProjection versions, and this helper will be narrowed to return true
+/// only for kCompactRaw. kCompactRaw is the only version frozen forever
+/// here because it is the only one with existing production blobs that
+/// must remain readable.
+inline bool usesLegacyTrailer(SerializationVersion version) {
+  return version == SerializationVersion::kCompactRaw ||
+      version == SerializationVersion::kTablet;
+}
+
 /// Returns true if the optional version uses raw stream sizes.
 inline bool isRawFormat(std::optional<SerializationVersion> version) {
   return version.has_value() && isRawFormat(version.value());
