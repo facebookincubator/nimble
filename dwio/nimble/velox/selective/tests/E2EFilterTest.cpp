@@ -18,7 +18,6 @@
 
 #include <utility>
 
-#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
@@ -299,19 +298,16 @@ class E2EFilterTest
       for (column_index_t col = 0;
            col < static_cast<column_index_t>(rowType_->size());
            ++col) {
-        // Build one Trivial child slot per sub-encoding identifier used by
-        // this encoding type. The count must cover the highest identifier the
-        // encoding will request from ReplayedEncodingSelectionPolicy, or the
-        // policy throws an out-of-range error.
-        std::vector<std::optional<const EncodingLayout>> nestedLayouts(
-            nestedEncodingCount(encodingType),
-            EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed});
         EncodingLayout layout{
             encodingType,
             {},
             CompressionType::Uncompressed,
-            std::move(nestedLayouts)};
+            {EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed},
+             EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed},
+             EncodingLayout{
+                 EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
         children.push_back(
             EncodingLayoutTree{
                 Kind::Scalar,
@@ -334,17 +330,6 @@ class E2EFilterTest
         return factory.createPolicy(dataType);
       };
     }
-
-    // Forwarding the FrequencyPartition index type requires writer-side
-    // plumbing (VeloxWriterOptions::encodingOptions) that is not present, and
-    // the tests that set it are compiled out (FrequencyPartition encoding is
-    // disabled in EncodingFactory). See NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS.
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    if (frequencyPartitionIndexType_.has_value()) {
-      options.encodingOptions.frequencyPartitionIndex =
-          static_cast<uint8_t>(frequencyPartitionIndexType_.value());
-    }
-#endif
 
     auto i = 0;
     options.flushPolicyFactory = [&] {
@@ -625,11 +610,6 @@ class E2EFilterTest
   // Takes precedence over encodingFactors_.
   std::optional<EncodingType> forcedEncodingType_;
 
-  // Optional FrequencyPartitionEncoding index type. When set alongside
-  // forcedEncodingType_ = FrequencyPartition, controls which positional index
-  // is written. Defaults to NoIndex when unset.
-  std::optional<FreqPartIndexType> frequencyPartitionIndexType_;
-
   // Cache infrastructure (only initialized when enableCache is true).
   std::shared_ptr<memory::MallocAllocator> allocator_;
   std::shared_ptr<cache::AsyncDataCache> cache_;
@@ -638,54 +618,6 @@ class E2EFilterTest
   std::shared_ptr<io::IoStatistics> indexIoStats_;
   std::shared_ptr<cache::ScanTracker> scanTracker_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> ioExecutor_;
-
-  // Returns the number of Trivial child EncodingLayout slots to provision when
-  // building a forced EncodingLayoutTree for the given encoding type. The count
-  // must cover every sub-encoding identifier the encoding will request from
-  // ReplayedEncodingSelectionPolicy (highest identifier + 1).
-  static uint32_t nestedEncodingCount(EncodingType encodingType) {
-    switch (encodingType) {
-      case EncodingType::FrequencyPartition:
-        // Identifiers 0 (PartitionOffsets) through 14 (UnencodedValues).
-        return 15;
-      default:
-        // Delta and FOR each use identifiers 0-2; other encodings use ≤ 3.
-        return 3;
-    }
-  }
-
-  // Generates Zipfian-skewed integer data for FrequencyPartition tests: a
-  // small set of very frequent values plus rare outliers, which is the workload
-  // FrequencyPartitionEncoding is optimised for.
-  void makeFrequencyPartitionData() {
-    makeIntDistribution<int8_t>(
-        "byte_val",
-        /*min=*/0,
-        /*max=*/10,
-        /*repeats=*/20,
-        /*rareFrequency=*/5,
-        /*rareMin=*/50,
-        /*rareMax=*/100,
-        /*keepNulls=*/false);
-    makeIntDistribution<int32_t>(
-        "int_val",
-        /*min=*/0,
-        /*max=*/50,
-        /*repeats=*/15,
-        /*rareFrequency=*/5,
-        /*rareMin=*/10000,
-        /*rareMax=*/50000,
-        /*keepNulls=*/false);
-    makeIntDistribution<int64_t>(
-        "long_val",
-        /*min=*/0,
-        /*max=*/100,
-        /*repeats=*/10,
-        /*rareFrequency=*/5,
-        /*rareMin=*/1000000,
-        /*rareMax=*/5000000,
-        /*keepNulls=*/false);
-  }
 
   // Generates encoding factors that strongly favor a specific encoding type.
   // Encodings with lower read factors are preferred (factor represents CPU
@@ -730,10 +662,6 @@ class E2EFilterTest
       case EncodingType::SubIntSplit:
         // SubIntSplit may fall back to Constant for fully-constant data.
         factors.emplace_back(EncodingType::Constant, 100.0);
-        break;
-      case EncodingType::FrequencyPartition:
-      case EncodingType::FOR:
-        // These encodings handle all integer data independently.
         break;
       default:
         break;
@@ -1137,117 +1065,6 @@ TEST_P(E2EFilterTest, integerBiasedDelta) {
   verifyColumnEncodingsOnDisk(EncodingType::Delta);
 }
 
-// FOR and FrequencyPartition encodings are disabled in EncodingFactory, so the
-// tests that force them are compiled out unless experimental encodings are
-// enabled. See encodings/common/EncodingFactory.cpp.
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-// Forces FOR (Frame of Reference) encoding via encoding layout tree and
-// verifies it on disk. FOR excels at bounded-range integer data where
-// per-frame minimum references reduce bit widths.
-TEST_P(E2EFilterTest, integerFOR) {
-  forcedEncodingType_ = EncodingType::FOR;
-  testWithTypes(
-      "short_val:smallint,"
-      "int_val:int,"
-      "long_val:bigint",
-      [&]() {
-        makeIntDistribution<int16_t>(
-            "short_val",
-            /*min=*/100,
-            /*max=*/5000,
-            /*repeats=*/1,
-            /*rareFrequency=*/0,
-            /*rareMin=*/0,
-            /*rareMax=*/0,
-            /*keepNulls=*/false);
-        makeIntDistribution<int32_t>(
-            "int_val",
-            /*min=*/1000,
-            /*max=*/100000,
-            /*repeats=*/1,
-            /*rareFrequency=*/0,
-            /*rareMin=*/0,
-            /*rareMax=*/0,
-            /*keepNulls=*/false);
-        makeIntDistribution<int64_t>(
-            "long_val",
-            /*min=*/10000,
-            /*max=*/10000000,
-            /*repeats=*/1,
-            /*rareFrequency=*/0,
-            /*rareMin=*/0,
-            /*rareMax=*/0,
-            /*keepNulls=*/false);
-      },
-      /*wrapInStruct=*/false,
-      {"short_val", "int_val", "long_val"},
-      /*numCombinations=*/20,
-      /*withRecursiveNulls=*/true);
-  forcedEncodingType_.reset();
-  verifyColumnEncodingsOnDisk(EncodingType::FOR);
-}
-
-// Forces FrequencyPartitionEncoding with PerTierBitmaps positional index.
-// Each tier stores an N-bit bitmap so the decoder can reconstruct the original
-// row order in O(popcount) time, enabling correct filter results.
-TEST_P(E2EFilterTest, integerFrequencyPartitionPerTierBitmaps) {
-  forcedEncodingType_ = EncodingType::FrequencyPartition;
-  frequencyPartitionIndexType_ = FreqPartIndexType::PerTierBitmaps;
-  testWithTypes(
-      "byte_val:tinyint,"
-      "int_val:int,"
-      "long_val:bigint",
-      [&]() { makeFrequencyPartitionData(); },
-      /*wrapInStruct=*/false,
-      {"byte_val", "int_val", "long_val"},
-      /*numCombinations=*/20,
-      /*withRecursiveNulls=*/true);
-  forcedEncodingType_.reset();
-  frequencyPartitionIndexType_.reset();
-  verifyColumnEncodingsOnDisk(EncodingType::FrequencyPartition);
-}
-
-// Forces FrequencyPartitionEncoding with TierTagArray positional index.
-// A compact packed array records which tier each original position belongs to,
-// enabling original-order materialization with a sampled rank index.
-TEST_P(E2EFilterTest, integerFrequencyPartitionTierTagArray) {
-  forcedEncodingType_ = EncodingType::FrequencyPartition;
-  frequencyPartitionIndexType_ = FreqPartIndexType::TierTagArray;
-  testWithTypes(
-      "byte_val:tinyint,"
-      "int_val:int,"
-      "long_val:bigint",
-      [&]() { makeFrequencyPartitionData(); },
-      /*wrapInStruct=*/false,
-      {"byte_val", "int_val", "long_val"},
-      /*numCombinations=*/20,
-      /*withRecursiveNulls=*/true);
-  forcedEncodingType_.reset();
-  frequencyPartitionIndexType_.reset();
-  verifyColumnEncodingsOnDisk(EncodingType::FrequencyPartition);
-}
-
-// Forces FrequencyPartitionEncoding with EliasFano positional index.
-// Per-tier Elias-Fano lists encode the sorted original positions for each tier,
-// decoded at load time for O(log n) random access.
-TEST_P(E2EFilterTest, integerFrequencyPartitionEliasFano) {
-  forcedEncodingType_ = EncodingType::FrequencyPartition;
-  frequencyPartitionIndexType_ = FreqPartIndexType::EliasFano;
-  testWithTypes(
-      "byte_val:tinyint,"
-      "int_val:int,"
-      "long_val:bigint",
-      [&]() { makeFrequencyPartitionData(); },
-      /*wrapInStruct=*/false,
-      {"byte_val", "int_val", "long_val"},
-      /*numCombinations=*/20,
-      /*withRecursiveNulls=*/true);
-  forcedEncodingType_.reset();
-  frequencyPartitionIndexType_.reset();
-  verifyColumnEncodingsOnDisk(EncodingType::FrequencyPartition);
-}
-#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Biased variant that forces SubIntSplit encoding selection.
 // SubIntSplit only applies to 32- and 64-bit types; smallint is excluded.
@@ -1370,7 +1187,7 @@ TEST_P(E2EFilterTest, integerForcedSubIntSplit) {
   forcedEncodingType_.reset();
   verifyColumnEncodingsOnDisk(EncodingType::SubIntSplit);
 }
-#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#endif
 
 TEST_P(E2EFilterTest, float) {
   testWithTypes(
