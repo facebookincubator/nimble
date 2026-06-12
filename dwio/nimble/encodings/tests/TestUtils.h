@@ -21,6 +21,8 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -48,6 +50,12 @@ struct EncodingTypeTraits<nimble::ALPEncoding<T>> {
 };
 
 template <typename T>
+struct EncodingTypeTraits<nimble::BlockBitPackingEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::BlockBitPacking;
+};
+
+template <typename T>
 struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::Constant;
@@ -69,6 +77,18 @@ template <typename T>
 struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::FixedBitWidth;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::FrequencyPartitionEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FrequencyPartition;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::ForEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::FOR;
 };
 
 template <typename T>
@@ -205,93 +225,6 @@ class Encoder {
 
    private:
     CompressionType compressionType_;
-  };
-
-  template <typename Encoding>
-  struct EncodingTypeTraits {};
-
-  template <>
-  struct EncodingTypeTraits<nimble::ALPEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::ALP;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::ConstantEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Constant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Delta;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::DictionaryEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Dictionary;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::FixedBitWidthEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::FixedBitWidth;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::MainlyConstantEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::MainlyConstant;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::RLEEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::RLE;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::SparseBoolEncoding> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SparseBool;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::TrivialEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Trivial;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::VarintEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Varint;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::NullableEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::Nullable;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::BlockBitPackingEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::BlockBitPacking;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::PFOREncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::PFOR;
-  };
-
-  template <>
-  struct EncodingTypeTraits<nimble::SimdForBitpackEncoding<T>> {
-    static constexpr inline nimble::EncodingType encodingType =
-        nimble::EncodingType::SimdForBitpack;
   };
 
  public:

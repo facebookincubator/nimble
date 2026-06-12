@@ -145,6 +145,24 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       }
 #endif
     */
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FOR:
+      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        return f(static_cast<::facebook::nimble::ForEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+    case EncodingType::FrequencyPartition:
+      if constexpr (!std::is_same_v<T, bool>) {
+        return f(static_cast<
+                 ::facebook::nimble::FrequencyPartitionEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+#endif
+    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

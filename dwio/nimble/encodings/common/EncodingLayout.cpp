@@ -375,6 +375,11 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     // SubIntSplit integration is disabled; treat it as a non-nested encoding
     // (zero children) so its layout is captured without nested logic.
     case EncodingType::SubIntSplit:
+    // FOR and FrequencyPartition integration is disabled; treat them as
+    // non-nested encodings (zero children). Their nested-capture logic is
+    // commented out below.
+    case EncodingType::FOR:
+    case EncodingType::FrequencyPartition:
       // Non nested encodings have zero children
       break;
     case EncodingType::Trivial: {
@@ -475,6 +480,36 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       case EncodingType::SubIntSplit:
         return captureSubIntSplit(encoding, compressionType);
       */
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
+    case EncodingType::FOR: {
+      compressionType = encoding::peek<uint8_t, CompressionType>(
+          encoding.data() + kEncodingPrefixSize);
+      const bool enableBitOffsets = encoding::peek<uint8_t, bool>(
+          encoding.data() + kEncodingPrefixSize + 9);
+
+      const char* pos = encoding.data() + kEncodingPrefixSize + 10;
+
+      const uint32_t bitWidthsBytes = encoding::readUint32(pos);
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, bitWidthsBytes}));
+      pos += bitWidthsBytes;
+
+      const uint32_t referencesBytes = encoding::readUint32(pos);
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, referencesBytes}));
+      pos += referencesBytes;
+
+      if (enableBitOffsets) {
+        const uint32_t bitOffsetsBytes = encoding::readUint32(pos);
+        children.emplace_back(
+            EncodingLayoutCapture::capture({pos, bitOffsetsBytes}));
+      }
+      break;
+    }
+    case EncodingType::FrequencyPartition:
+      break;
+    */
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

@@ -64,11 +64,8 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
     }
 
     nimble::CompressionInformation information{
-        .compressionType = nimble::CompressionType::MetaInternal};
-    information.parameters.metaInternal.compressionLevel = 9;
-    information.parameters.metaInternal.decompressionLevel = 2;
-    information.parameters.metaInternal.useVariableBitWidthCompressor =
-        useVariableBitWidthCompressor_;
+        .compressionType = nimble::CompressionType::Zstd};
+    information.parameters.zstd.compressionLevel = 9;
     return information;
   }
 
@@ -206,7 +203,7 @@ class EncodingTestsLegacy : public ::testing::Test {
     auto physicalValues = std::span<const physicalType>(
         reinterpret_cast<const physicalType*>(values.data()), values.size());
     nimble::EncodingSelection<physicalType> selection{
-        {.encodingType = EncodingTypeTraits<C>::encodingType,
+        {.encodingType = LegacyEncodingTypeGetter<C>::value,
          .compressionPolicyFactory =
              [compress, useVariableBitWidthCompressor]() {
                return std::make_unique<TestCompressPolicy>(

@@ -20,6 +20,11 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+// FOR and FrequencyPartition integration commented out (disabled):
+/*
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+*/
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -209,6 +214,30 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           toString(dataType));                              \
   }
 
+#define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)    \
+  switch (dataType) {                                          \
+    case DataType::Int8:                                       \
+      return std::make_unique<Encoding<int8_t>>(pool, data);   \
+    case DataType::Uint8:                                      \
+      return std::make_unique<Encoding<uint8_t>>(pool, data);  \
+    case DataType::Int16:                                      \
+      return std::make_unique<Encoding<int16_t>>(pool, data);  \
+    case DataType::Uint16:                                     \
+      return std::make_unique<Encoding<uint16_t>>(pool, data); \
+    case DataType::Int32:                                      \
+      return std::make_unique<Encoding<int32_t>>(pool, data);  \
+    case DataType::Uint32:                                     \
+      return std::make_unique<Encoding<uint32_t>>(pool, data); \
+    case DataType::Int64:                                      \
+      return std::make_unique<Encoding<int64_t>>(pool, data);  \
+    case DataType::Uint64:                                     \
+      return std::make_unique<Encoding<uint64_t>>(pool, data); \
+    default:                                                   \
+      NIMBLE_UNREACHABLE(                                      \
+          "ForEncoding only supports integer types, got {}.",  \
+          toString(dataType));                                 \
+  }
+
   switch (encodingType) {
     case EncodingType::Trivial: {
       RETURN_ENCODING_BY_LEAF_TYPE(TrivialEncoding, dataType);
@@ -272,6 +301,17 @@ std::unique_ptr<Encoding> EncodingFactory::create(
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
+    }
+#endif
+    */
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FOR: {
+      RETURN_ENCODING_BY_INTEGER_TYPE(ForEncoding, dataType);
+    }
+    case EncodingType::FrequencyPartition: {
+      RETURN_ENCODING_BY_NON_BOOL_TYPE(FrequencyPartitionEncoding, dataType);
     }
 #endif
     */
@@ -381,6 +421,30 @@ std::string_view EncodingFactory::encode(
             selection, castedValues, buffer, options);
       }
     }
+    // FOR and FrequencyPartition integration commented out (disabled):
+    /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::FrequencyPartition: {
+      if constexpr (std::is_same<T, bool>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "FrequencyPartition encoding should not be selected for bool data
+types."); } else { return FrequencyPartitionEncoding<T>::encode( selection,
+castedValues, buffer, options);
+      }
+    }
+    case EncodingType::FOR: {
+      if constexpr (
+          std::is_integral<physicalType>::value &&
+          !std::is_same<T, bool>::value) {
+        return ForEncoding<T>::encode(selection, castedValues, buffer, options);
+      } else {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "For encoding can only be selected for integral data types (not
+bool).");
+      }
+    }
+#endif
+    */
     case EncodingType::SparseBool: {
       if constexpr (!std::is_same<T, bool>::value) {
         NIMBLE_INCOMPATIBLE_ENCODING(
