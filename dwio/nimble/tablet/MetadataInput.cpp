@@ -427,11 +427,13 @@ void CachedMetadataInput::loadFromSsd(
 
     const auto ssdSize = ssdPin.run().size();
     const auto uncompressedSize = resolveUncompressedSize(loaded.section);
-    if (uncompressedSize.has_value()) {
-      NIMBLE_CHECK_EQ(
-          ssdSize,
-          uncompressedSize.value(),
-          "SSD entry size mismatch with expected uncompressed size");
+    if (uncompressedSize.has_value() && ssdSize != uncompressedSize.value()) {
+      LOG(WARNING) << "SSD entry size mismatch: ssdSize=" << ssdSize
+                   << " expected=" << uncompressedSize.value()
+                   << " at offset=" << loaded.section.offset()
+                   << ". Skipping stale SSD entry, will reload from file.";
+      remainingLoadIndices.emplace_back(index);
+      continue;
     }
 
     velox::cache::CachePin pin;
@@ -495,6 +497,14 @@ std::vector<uint32_t> CachedMetadataInput::loadFromCache(
         sections[index].buffer = std::move(buffer);
         continue;
       }
+      auto* entry = pin.checkedEntry();
+      // Fail fast if a stale entry existed at a different size (e.g.
+      // compressed bytes from an older cacheMetadata). findOrCreate
+      // silently evicts smaller entries — verify the new entry matches.
+      NIMBLE_CHECK_EQ(
+          static_cast<uint32_t>(entry->size()),
+          uncompressedSize.value(),
+          "Cache entry size mismatch with expected uncompressed size");
       cachePins[index] = std::move(pin);
       loadIndices.push_back(index);
     } else {
