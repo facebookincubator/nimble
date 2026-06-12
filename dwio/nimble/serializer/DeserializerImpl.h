@@ -25,6 +25,7 @@
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/legacy/TrailerReader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "velox/buffer/Buffer.h"
@@ -216,56 +217,37 @@ class StreamDataReader {
   template <typename Callback>
   void iterateStreams(Callback&& callback) {
     if (nonLegacyFormat(version_)) {
-      // kCompactRaw/kTablet: stream sizes are packed into a trailer at the
-      // end of the blob. Fill into reusable member buffers — either the
-      // dense form (most encodings) or the sparse (indices, sizes) form
-      // for MainlyConstant.
-      const bool usesSparseSizes = detail::readTrailerStreamSizes(
-          end_,
-          streamSizesBuf_,
-          sparseStreamIndicesBuf_,
-          sparseStreamSizesBuf_);
-      const bool isTablet = isTabletVersion(version_);
-
-      if (usesSparseSizes) {
-        // Sparse iteration: visit only the non-empty stream slots that
-        // MainlyConstant naturally encodes. No dense scatter, no empty-skip
-        // branch per stream — every iteration emits a callback.
-        const size_t numNonEmptyStreams = sparseStreamIndicesBuf_.size();
-        for (size_t entryIdx = 0; entryIdx < numNonEmptyStreams; ++entryIdx) {
-          const uint32_t streamOffset = sparseStreamIndicesBuf_[entryIdx];
-          const uint32_t streamSize = sparseStreamSizesBuf_[entryIdx];
-          // Defensive: writer should never emit a non-zero-indexed entry
-          // with size 0, but guard so the dense empty-skip semantics still
-          // hold if it ever did.
-          if (streamSize == 0) {
-            continue;
-          }
-          std::string_view streamData(pos_, streamSize);
-          pos_ += streamSize;
-          if (isTablet) {
-            callback(streamOffset, stripChunkHeaders(streamData));
-          } else {
-            callback(streamOffset, streamData);
-          }
-        }
+      // kCompactRaw/kTablet (and any future non-legacy versions): the
+      // stream-size trailer at the end of the blob is dispatched on the
+      // version byte. Today every defined non-legacy version returns true
+      // from `usesLegacyTrailer`, so all blobs flow through the frozen
+      // legacy reader; the else branch is scaffolding for the next diff,
+      // which will introduce a new wire format and a sibling reader.
+      // Reusable member buffers keep the hot path alloc-free across blobs.
+      if (usesLegacyTrailer(version_)) {
+        legacy::readLegacyTrailerStreamMetadata(
+            end_, streamIndices_, streamSizes_);
       } else {
-        const uint32_t numStreams = streamSizesBuf_.size();
-        for (uint32_t streamOffset = 0; streamOffset < numStreams;
-             ++streamOffset) {
-          const uint32_t streamSize = streamSizesBuf_[streamOffset];
-          std::string_view streamData(pos_, streamSize);
-          pos_ += streamSize;
-          if (!streamData.empty()) {
-            if (isTablet) {
-              // kTablet: stream data includes tablet chunk headers:
-              // [chunkSize:u32][compressionType:1B][encoded_data...]
-              // Strip headers and decompress if needed before handing off.
-              callback(streamOffset, stripChunkHeaders(streamData));
-            } else {
-              callback(streamOffset, streamData);
-            }
-          }
+        NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+      }
+      const bool isTablet = isTabletVersion(version_);
+      const size_t numStreams = streamIndices_.size();
+      for (size_t entryIdx = 0; entryIdx < numStreams; ++entryIdx) {
+        const uint32_t streamOffset = streamIndices_[entryIdx];
+        const uint32_t streamSize = streamSizes_[entryIdx];
+        // Writer invariant: the sparse trailer only encodes non-zero stream
+        // slots. Debug-only assert documents that invariant; release elides it.
+        NIMBLE_DCHECK_GT(
+            streamSize, 0, "Sparse trailer must not encode zero-sized stream");
+        std::string_view streamData(pos_, streamSize);
+        pos_ += streamSize;
+        if (isTablet) {
+          // kTablet: stream data includes tablet chunk headers:
+          // [chunkSize:u32][compressionType:1B][encoded_data...]
+          // Strip headers and decompress if needed before handing off.
+          callback(streamOffset, stripChunkHeaders(streamData));
+        } else {
+          callback(streamOffset, streamData);
         }
       }
       pos_ = end_; // Skip past trailer.
@@ -344,17 +326,14 @@ class StreamDataReader {
   const char* end_{nullptr};
   // Reusable buffer for chunk header stripping (compressed/multi-chunk case).
   Vector<char> chunkStrippingBuffer_;
-  // Reusable buffer for the per-blob trailer stream-size array. Repopulated
-  // by iterateStreams() on the kCompactRaw/kTablet path; cleared+filled in
-  // place to avoid the fresh malloc/free that the by-value
-  // readTrailerStreamSizes() overload would pay per blob.
-  //
-  // For MainlyConstant trailers, the sparse pair below is populated
-  // instead of `streamSizesBuf_`, letting iterateStreams visit only the
-  // non-empty stream slots directly off the wire encoding.
-  std::vector<uint32_t> streamSizesBuf_;
-  std::vector<uint32_t> sparseStreamIndicesBuf_;
-  std::vector<uint32_t> sparseStreamSizesBuf_;
+  // Reusable parallel buffers for the per-blob sparse trailer. Refilled by
+  // iterateStreams() on the kCompactRaw/kTablet path: streamIndices_ holds
+  // the offsets of non-zero stream slots (sorted ascending); streamSizes_
+  // holds the corresponding byte sizes. Sized to the same length, cleared
+  // and filled in place each blob to keep the hot path alloc-free across
+  // invocations.
+  std::vector<uint32_t> streamIndices_;
+  std::vector<uint32_t> streamSizes_;
 };
 
 } // namespace facebook::nimble::serde

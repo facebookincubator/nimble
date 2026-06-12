@@ -23,6 +23,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/legacy/TrailerReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/io/Cursor.h"
 #include "velox/type/Type.h"
@@ -601,7 +602,15 @@ folly::IOBuf Projector::projectContiguous(
   writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
+  // Dispatch on the version byte: legacy kCompactRaw / kTablet blobs go
+  // through the frozen legacy reader; the else branch is scaffolding for the
+  // next change that will introduce a sibling reader for a new wire format.
+  std::vector<uint32_t> inputStreamSizes;
+  if (usesLegacyTrailer(inputVersion)) {
+    inputStreamSizes = legacy::readLegacyTrailerStreamSizesDense(input);
+  } else {
+    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+  }
 
   // Extract selected streams as zero-copy sub-range clones.
   const auto dataOffset = static_cast<size_t>(pos - data);
@@ -628,7 +637,15 @@ folly::IOBuf Projector::projectChained(
   writeSerializationHeader(header, options_.projectVersion, rowCount);
   auto output = std::move(header).build();
 
-  const auto inputStreamSizes = detail::readTrailerStreamSizes(input);
+  // Dispatch on the version byte: legacy kCompactRaw / kTablet blobs go
+  // through the frozen legacy reader; the else branch is scaffolding for the
+  // next change that will introduce a sibling reader for a new wire format.
+  std::vector<uint32_t> inputStreamSizes;
+  if (usesLegacyTrailer(inputVersion)) {
+    inputStreamSizes = legacy::readLegacyTrailerStreamSizesDense(input);
+  } else {
+    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+  }
 
   // Extract selected streams as zero-copy clones via cursor.
   auto outputStreamSizes = inputStreamsSorted_

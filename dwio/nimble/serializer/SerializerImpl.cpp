@@ -20,6 +20,7 @@
 #include <limits>
 
 #include "dwio/nimble/serializer/SerializationHeader.h"
+#include "dwio/nimble/serializer/legacy/TrailerReader.h"
 
 #include <lz4.h>
 #include <lz4hc.h>
@@ -470,12 +471,25 @@ std::vector<std::string_view> parseStreams(
   std::vector<std::string_view> streams;
 
   if (isCompactFormat(version)) {
-    const auto streamSizes = readTrailerStreamSizes(end);
-    streams.resize(streamSizes.size());
-
-    for (uint32_t i = 0; i < streamSizes.size(); ++i) {
-      streams[i] = std::string_view(pos, streamSizes[i]);
-      pos += streamSizes[i];
+    // Dispatch on the version byte: legacy kCompactRaw blobs go through the
+    // frozen reader; the else branch is scaffolding for the next diff, which
+    // will introduce a new wire format and a sibling reader.
+    std::vector<uint32_t> streamIndices;
+    std::vector<uint32_t> streamSizes;
+    if (usesLegacyTrailer(version)) {
+      std::tie(streamIndices, streamSizes) =
+          legacy::readLegacyTrailerStreamMetadata(end);
+    } else {
+      NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+    }
+    // Sparse-place: streams[streamIndices[k]] = stream bytes; gaps remain
+    // empty string_views, matching master's dense-output behavior.
+    if (!streamIndices.empty()) {
+      streams.resize(streamIndices.back() + 1);
+      for (size_t k = 0; k < streamIndices.size(); ++k) {
+        streams[streamIndices[k]] = std::string_view(pos, streamSizes[k]);
+        pos += streamSizes[k];
+      }
     }
   } else {
     NIMBLE_CHECK_EQ(

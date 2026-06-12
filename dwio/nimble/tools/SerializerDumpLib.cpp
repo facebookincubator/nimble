@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/legacy/TrailerReader.h"
 
 namespace facebook::nimble::tools {
 
@@ -70,8 +71,16 @@ SerializationDump::SerializationStats SerializationDump::serializationStats(
   // Read row count (varint for kCompactRaw).
   info.rowCount = varint::readVarint32(&pos);
 
-  // Parse stream sizes from trailer.
-  auto streamSizes = serde::detail::readTrailerStreamSizes(end);
+  // Parse stream sizes from trailer. Dispatch on the version byte: legacy
+  // kCompactRaw / kTablet blobs go through the frozen legacy reader; the
+  // else branch is scaffolding for the next change that will introduce a
+  // sibling reader for a new wire format.
+  std::vector<uint32_t> streamSizes;
+  if (usesLegacyTrailer(info.version)) {
+    streamSizes = serde::legacy::readLegacyTrailerStreamSizesDense(end);
+  } else {
+    NIMBLE_UNREACHABLE("unexpected non-legacy trailer version");
+  }
 
   // Walk streams and extract encoding info.
   info.streams.reserve(streamSizes.size());

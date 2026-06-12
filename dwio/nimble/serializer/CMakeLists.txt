@@ -23,6 +23,10 @@ target_link_libraries(
   Folly::folly
 )
 
+# Must come after nimble_serializer_options is declared since nimble_legacy
+# links against it.
+add_subdirectory(legacy)
+
 add_library(nimble_serialization_header SerializationHeader.cpp)
 target_link_libraries(
   nimble_serialization_header
@@ -39,6 +43,7 @@ target_link_libraries(
   nimble_serializer_options
   nimble_common
   nimble_encodings
+  nimble_legacy
   nimble_velox_stream_data
   velox_memory
 )
@@ -50,6 +55,7 @@ target_link_libraries(
   nimble_serializer_impl
   nimble_serializer_options
   nimble_encodings
+  nimble_legacy
   nimble_velox_schema
   nimble_common
   velox_memory
@@ -85,6 +91,7 @@ target_link_libraries(
   nimble_serialization_header
   nimble_serializer_options
   nimble_serializer_impl
+  nimble_legacy
   nimble_velox_schema_reader
   nimble_common
   velox_type
