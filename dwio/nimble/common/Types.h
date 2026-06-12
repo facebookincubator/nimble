@@ -121,7 +121,7 @@ enum class EncodingType {
   // its own baseline and bit width. Adapts per-chunk variable bit widths for
   // better compression on data with locally narrow value ranges.
   BlockBitPacking = 15,
-  // Partitions data by value frequency. Frequent values get shorter bit-width
+  // Partitions data by value frequency. Also, frequent values get shorter bit-width
   // codes. Rows are reordered to group values with same code length.
   FrequencyPartition = 17,
   // Frame of Reference: stores offsets from per-frame minimum values.
