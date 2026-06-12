@@ -35,10 +35,13 @@ std::unique_ptr<ChunkIndex> ChunkIndex::create(Section indexSection) {
   groupSections.reserve(indexes->size());
   for (uint32_t i = 0; i < indexes->size(); ++i) {
     const auto* ms = indexes->Get(i);
+    const auto uncompressedSize = ms->uncompressed_size();
     groupSections.emplace_back(
         ms->offset(),
         ms->size(),
-        static_cast<CompressionType>(ms->compression_type()));
+        static_cast<CompressionType>(ms->compression_type()),
+        uncompressedSize > 0 ? std::optional<uint32_t>(uncompressedSize)
+                             : std::nullopt);
   }
 
   return std::unique_ptr<ChunkIndex>(

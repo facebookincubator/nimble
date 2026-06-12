@@ -442,10 +442,13 @@ MetadataSection ClusterIndex::partitionSection(uint32_t partitionId) const {
   const auto* indexPartitions = indexRoot_->index_partitions();
   NIMBLE_CHECK_NOT_NULL(indexPartitions);
   const auto* metadata = indexPartitions->Get(partitionId);
+  const auto uncompressedSize = metadata->uncompressed_size();
   return MetadataSection{
       metadata->offset(),
       metadata->size(),
-      static_cast<CompressionType>(metadata->compression_type())};
+      static_cast<CompressionType>(metadata->compression_type()),
+      uncompressedSize > 0 ? std::optional<uint32_t>(uncompressedSize)
+                           : std::nullopt};
 }
 
 ClusterIndex::IndexPartition::IndexPartition(

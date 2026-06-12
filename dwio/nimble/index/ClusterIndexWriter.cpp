@@ -346,7 +346,9 @@ void ClusterIndexWriter::close(
                 indexRoot_->indexPartitions[i].offset(),
                 indexRoot_->indexPartitions[i].size(),
                 static_cast<serialization::CompressionType>(
-                    indexRoot_->indexPartitions[i].compressionType()));
+                    indexRoot_->indexPartitions[i].compressionType()),
+                indexRoot_->indexPartitions[i].uncompressedSize().value_or(
+                    indexRoot_->indexPartitions[i].size()));
           });
 
   auto partitionKeysVector =

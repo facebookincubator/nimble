@@ -181,7 +181,9 @@ void ChunkIndexWriter::writeRoot(
                 chunkIndexSections_[i].offset(),
                 chunkIndexSections_[i].size(),
                 static_cast<serialization::CompressionType>(
-                    chunkIndexSections_[i].compressionType()));
+                    chunkIndexSections_[i].compressionType()),
+                chunkIndexSections_[i].uncompressedSize().value_or(
+                    chunkIndexSections_[i].size()));
           });
 
   builder.Finish(serialization::CreateChunkIndex(builder, stripeIndexesVector));
