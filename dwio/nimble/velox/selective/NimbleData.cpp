@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 #include "velox/dwio/common/BufferUtil.h"
+#include "velox/dwio/common/Statistics.h"
 
 namespace facebook::nimble {
 
@@ -31,13 +32,15 @@ NimbleData::NimbleData(
     const EncodingFactory& encodingFactory,
     bool stringDecoderZeroCopy,
     bool nimblePreserveDictionaryEncoding,
-    bool lazyColumnIo)
+    bool lazyColumnIo,
+    velox::io::IoCounter* decompressCounter)
     : nimbleType_(nimbleType),
       streams_(&streams),
       pool_(&memoryPool),
       inMapDecoder_(inMapDecoder),
       encodingFactory_(&encodingFactory),
-      lazyColumnIo_(lazyColumnIo) {
+      lazyColumnIo_(lazyColumnIo),
+      decompressCounter_(decompressCounter) {
   switch (nimbleType->kind()) {
     case Kind::Scalar:
       // Nulls in scalar types will be decoded along with values.
@@ -170,7 +173,8 @@ ChunkedDecoder NimbleData::makeScalarDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      stringDecoderZeroCopy_);
+      stringDecoderZeroCopy_,
+      decompressCounter_);
 }
 
 ChunkedDecoder NimbleData::makeMicrosDecoder() {
@@ -183,7 +187,8 @@ ChunkedDecoder NimbleData::makeMicrosDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      stringDecoderZeroCopy_);
+      stringDecoderZeroCopy_,
+      decompressCounter_);
 }
 
 ChunkedDecoder NimbleData::makeNanosDecoder() {
@@ -196,7 +201,8 @@ ChunkedDecoder NimbleData::makeNanosDecoder() {
       /*decodeValuesWithNulls=*/false,
       encodingFactory_,
       pool_,
-      stringDecoderZeroCopy_);
+      stringDecoderZeroCopy_,
+      decompressCounter_);
 }
 
 std::unique_ptr<ChunkedDecoder> NimbleData::makeLengthDecoder() {
@@ -226,12 +232,19 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
       decodeValuesWithNulls,
       encodingFactory_,
       pool_,
-      stringDecoderZeroCopy_);
+      stringDecoderZeroCopy_,
+      decompressCounter_);
 }
 
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
-    const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
+    const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     const velox::common::ScanSpec& /*scanSpec*/) {
+  velox::io::IoCounter* decompressCounter = nullptr;
+  if (runtimeStatistics().columnMetricsSet.has_value()) {
+    auto* metrics = runtimeStatistics().columnMetricsSet->getOrCreate(
+        type->id(), type->type()->kind());
+    decompressCounter = &metrics->decompressCPUTimeNanos;
+  }
   return std::make_unique<NimbleData>(
       nimbleType_,
       *streams_,
@@ -240,7 +253,8 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       *encodingFactory_,
       stringDecoderZeroCopy_,
       nimblePreserveDictionaryEncoding_,
-      lazyColumnIo_);
+      lazyColumnIo_,
+      decompressCounter);
 }
 
 } // namespace facebook::nimble

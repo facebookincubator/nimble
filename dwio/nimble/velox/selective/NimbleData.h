@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
+#include "velox/common/base/IoCounter.h"
 #include "velox/dwio/common/FormatData.h"
 
 namespace facebook::nimble {
@@ -37,7 +38,8 @@ class NimbleData : public velox::dwio::common::FormatData {
       const EncodingFactory& encodingFactory,
       bool stringDecoderZeroCopy,
       bool nimblePreserveDictionaryEncoding = false,
-      bool lazyColumnIo = false);
+      bool lazyColumnIo = false,
+      velox::io::IoCounter* decompressCounter = nullptr);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -118,6 +120,9 @@ class NimbleData : public velox::dwio::common::FormatData {
   const EncodingFactory* const encodingFactory_;
   bool nimblePreserveDictionaryEncoding_{false};
   bool lazyColumnIo_{false};
+  // Per-column counter for decompression time tracking. May be nullptr if
+  // column stats collection is disabled.
+  velox::io::IoCounter* const decompressCounter_{nullptr};
 };
 
 class NimbleParams : public velox::dwio::common::FormatParams {
