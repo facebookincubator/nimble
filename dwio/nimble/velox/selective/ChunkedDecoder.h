@@ -439,6 +439,12 @@ class ChunkedDecoder {
               visitor.reader().readOffset() + params.numScanned);
           return false;
         }
+
+        // onChunkBoundary() rebuilt the per-chunk filter dictionary in the
+        // reader's scan state. Re-snapshot it into the visitor so the next
+        // chunk's filter evaluation uses this chunk's dictionary, not the
+        // stale copy captured when the visitor was constructed.
+        visitor.refreshDictionaryState();
       }
 
       velox::vector_size_t numNulls{0};

@@ -359,6 +359,7 @@ class E2EFilterTest
     // Branch on whether we need forced dictionary encoding, since
     // EncodingLayoutTree is not move-assignable due to const members.
     if (useForcedDictionaryEncoding_) {
+      // Need to set encodingLayoutTree at construction time.
       options.encodingLayoutTree.emplace(
           buildForcedDictionaryEncodingLayoutTree());
     }
@@ -2169,7 +2170,7 @@ TEST_P(E2EFilterTest, stringFilterOnBothColumnsCrossStripeNested) {
 // 2. Forcing the otherValues_ child to use Dictionary encoding via
 // EncodingLayoutTree
 //
-// This scenario is challenging because isDictionaryCompatible() must handle
+// This scenario is challenging because dictionaryEnabled() must handle
 // deeper nesting like MainlyConstant→Dictionary, not just direct Dictionary
 // or Nullable→Dictionary.
 TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
@@ -2329,6 +2330,23 @@ TEST_P(E2EFilterTest, dictionaryVectorReturned) {
   std::vector<std::string> stringData(kRowCount);
   for (vector_size_t i = 0; i < kRowCount; ++i) {
     stringData[i] = alphabet[gen() % numDistinct];
+  }
+
+  rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  verifyDictionaryVectorReturned(
+      buildForcedDictionaryEncodingLayoutTree(), stringData);
+}
+
+// Regression test: the FlatVector backing the dictionary alphabet must hold
+// the decoder's string buffers so that non-inline StringViews point into
+// the vector's own buffers. FlatVector::validate() (debug mode) checks this
+// invariant. Non-inline strings (>12 bytes) are the only ones affected since
+// inline strings are stored directly in the StringView.
+TEST_P(E2EFilterTest, dictionaryVectorNonInlineAlphabet) {
+  const vector_size_t kRowCount = 1000;
+  std::vector<std::string> stringData(kRowCount);
+  for (vector_size_t i = 0; i < kRowCount; ++i) {
+    stringData[i] = fmt::format("LONG_DICTIONARY_VALUE_NUMBER_{}", i % 10);
   }
 
   rowType_ = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
@@ -3133,5 +3151,610 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         E2EFilterTestParams{false, false, false, false, false, false, false},
         E2EFilterTestParams{false, false, false, false, false, true, false}));
+// Exercises multi-chunk dictionary reads where each chunk has a distinct
+// alphabet. All batches are dictionary-encoded and placed in a single stripe
+// (each batch = one chunk). The reader requests 1000 rows per next() call,
+// forcing the dictionary read path to merge alphabets across 5 chunks.
+//
+// This test guards against two bugs found in the original implementation:
+// 1. Chunk-transition detection via pointer comparison was unreliable (the
+//    allocator reused the same address after destroying the old encoding).
+// 2. The onChunkLoad_ callback cleared the accumulated mergedAlphabet_
+//    during the read, destroying previously merged alphabet entries.
+TEST_P(E2EFilterTest, multiChunkDictionaryWithDifferentAlphabets) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 8;
+  std::vector<RowVectorPtr> batches;
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringStorage(kRowsPerBatch);
+    std::vector<int64_t> longVals(kRowsPerBatch);
+
+    // Each batch has a unique alphabet prefix so multi-chunk merging is
+    // exercised (identical alphabets would trivially work).
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      stringStorage[i] = fmt::format("BATCH{}_VAL_{}", batchIdx, i % 5);
+      longVals[i] = batchIdx * kRowsPerBatch + i;
+    }
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringStorage[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, longVector}));
+  }
+
+  // Write directly with flushLambda=false (no stripe flush → single stripe)
+  // and chunkLambda=true (each batch = one chunk). This creates multiple
+  // dictionary-encoded chunks within a single stripe.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedDictionaryEncodingLayoutTree());
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Read with batch size (1000) > chunk size (200), forcing cross-chunk reads.
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    if (param().stringDecoderZeroCopy) {
+      ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
+          << "Expected DICTIONARY encoding for string column, got "
+          << stringChild->encoding();
+    }
+
+    velox::DecodedVector decodedString(*stringChild);
+    velox::DecodedVector decodedLong(*rowResult->childAt(1));
+
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto globalRow = decodedLong.valueAt<int64_t>(i);
+      auto batchIdx = globalRow / kRowsPerBatch;
+      auto rowInBatch = globalRow % kRowsPerBatch;
+      auto expected = fmt::format("BATCH{}_VAL_{}", batchIdx, rowInBatch % 5);
+      ASSERT_EQ(decodedString.valueAt<velox::StringView>(i).str(), expected)
+          << "Mismatch at globalRow=" << globalRow;
+    }
+  }
+
+  EXPECT_EQ(totalRows, kNumBatches * kRowsPerBatch);
+}
+
+// Regression test for two bugs in the dictionary reactive fallback path:
+//   Bug 1: expandDictionaryToFlat was called after mergedAlphabet_.clear(),
+//          causing out-of-bounds access when expanding dictionary indices.
+//   Bug 2: The flat fallback's visitor added 0-based row numbers to
+//          outputRows_ without biasing by the number of rows consumed during
+//          the dictionary phase. This causes wrong cross-column row mapping.
+//
+// Both bugs require the reactive fallback: the string column starts with
+// dictionary-compatible chunks but encounters a non-dictionary chunk mid-read.
+// Bug 2 further requires hasFilter()=true so that useOutputRows()=true.
+//
+// The test verifies cross-column consistency: long_val encodes the original
+// row position, so we can reconstruct the expected string_val from it. If
+// Bug 2 causes wrong outputRows_, long_val maps to the wrong row, and the
+// reconstructed string_val won't match the actual string_val.
+TEST_P(E2EFilterTest, reactiveEncodingFallbackOutputRowsBias) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 4;
+  std::vector<RowVectorPtr> batches;
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringStorage(kRowsPerBatch);
+    std::vector<int64_t> longVals(kRowsPerBatch);
+
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      longVals[i] = batchIdx * kRowsPerBatch + i;
+      if (batchIdx % 2 == 0) {
+        stringStorage[i] = fmt::format("DICT_VAL_{}", i % 5);
+      } else {
+        stringStorage[i] = fmt::format("UNIQUE_BATCH{}_ROW{}_PAD", batchIdx, i);
+      }
+    }
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringStorage[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, longVector}));
+  }
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // Accept values from both dictionary and non-dictionary chunks so the
+  // reactive fallback produces output rows from both phases.
+  std::vector<std::string> accepted = {
+      "DICT_VAL_0", "UNIQUE_BATCH1_ROW0_PAD", "UNIQUE_BATCH3_ROW0_PAD"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+
+  size_t expectedRows = 0;
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      std::string val;
+      if (batchIdx % 2 == 0) {
+        val = fmt::format("DICT_VAL_{}", i % 5);
+      } else {
+        val = fmt::format("UNIQUE_BATCH{}_ROW{}_PAD", batchIdx, i);
+      }
+      if (acceptedSet.count(val)) {
+        ++expectedRows;
+      }
+    }
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    velox::DecodedVector decodedString(*rowResult->childAt(0)->loadedVector());
+    velox::DecodedVector decodedLong(*rowResult->childAt(1)->loadedVector());
+
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto str = decodedString.valueAt<velox::StringView>(i).str();
+      auto longVal = decodedLong.valueAt<int64_t>(i);
+
+      ASSERT_TRUE(acceptedSet.count(str))
+          << "Value didn't pass filter: " << str;
+
+      // Verify cross-column consistency. long_val encodes the original row
+      // position, from which we can reconstruct the expected string_val.
+      auto batchIdx = longVal / kRowsPerBatch;
+      auto rowInBatch = longVal % kRowsPerBatch;
+      std::string expectedStr;
+      if (batchIdx % 2 == 0) {
+        expectedStr = fmt::format("DICT_VAL_{}", rowInBatch % 5);
+      } else {
+        expectedStr =
+            fmt::format("UNIQUE_BATCH{}_ROW{}_PAD", batchIdx, rowInBatch);
+      }
+      ASSERT_EQ(str, expectedStr)
+          << "Cross-column row mapping mismatch at result row " << i
+          << ", long_val=" << longVal << " (batch " << batchIdx << ", row "
+          << rowInBatch << ")";
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedRows);
+}
+
+// Exercises multi-chunk dictionary reads with different alphabets AND a filter
+// on the string column. This validates that:
+// 1. populateScanState() correctly re-populates the filter cache as chunks
+//    are merged (new alphabet entries must be kUnknown, not stale).
+// 2. DictionaryColumnVisitor::refreshState() correctly re-syncs after
+//    chunk boundary alphabet growth.
+// 3. Index offsetting (alphabetOffset) interacts correctly with filter cache
+//    lookups — the visitor uses merged indices, not per-chunk indices.
+TEST_P(E2EFilterTest, multiChunkDictionaryWithFilter) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 8;
+  std::vector<RowVectorPtr> batches;
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringStorage(kRowsPerBatch);
+    std::vector<int64_t> longVals(kRowsPerBatch);
+
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      stringStorage[i] = fmt::format("BATCH{}_VAL_{}", batchIdx, i % 5);
+      longVals[i] = batchIdx * kRowsPerBatch + i;
+    }
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringStorage[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, longVector}));
+  }
+
+  // Single stripe, each batch = one chunk, forced dictionary encoding.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedDictionaryEncodingLayoutTree());
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // Apply a BytesValues filter that matches entries from multiple chunks.
+  // BATCH0_VAL_2 is in chunk 0, BATCH3_VAL_1 is in chunk 3, BATCH7_VAL_4 is
+  // in chunk 7 — the filter cache must be correctly extended at each boundary.
+  std::vector<std::string> accepted = {
+      "BATCH0_VAL_2", "BATCH3_VAL_1", "BATCH7_VAL_4"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    velox::DecodedVector decodedString(*rowResult->childAt(0)->loadedVector());
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto str = decodedString.valueAt<velox::StringView>(i).str();
+      ASSERT_TRUE(acceptedSet.count(str))
+          << "Unexpected value passed filter: " << str;
+    }
+  }
+
+  // Each accepted value appears in exactly one batch with kRowsPerBatch/5
+  // repetitions (200/5 = 40 rows each).
+  EXPECT_EQ(totalRows, accepted.size() * (kRowsPerBatch / 5));
+}
+
+// Exercises the reactive fallback path (dictionary → flat mid-batch) with an
+// active filter on the string column. The test creates alternating dictionary
+// and trivial chunks. When the reader encounters a trivial chunk mid-read, it
+// must:
+// 1. Correctly expand already-filtered dictionary indices to flat StringViews
+//    via expandDictionaryToFlat().
+// 2. Continue reading remaining rows as flat strings with the filter still
+//    applied.
+// 3. Produce correct filtered output combining both phases.
+TEST_P(E2EFilterTest, crossChunkEncodingChangeWithFilter) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 8;
+  std::vector<RowVectorPtr> batches;
+
+  // Accumulate all expected string values for verification.
+  std::vector<std::string> allStringVals;
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringVals;
+    std::vector<int64_t> longVals;
+    stringVals.reserve(kRowsPerBatch);
+    longVals.reserve(kRowsPerBatch);
+
+    if (batchIdx % 2 == 0) {
+      // Even batches: repetitive → dictionary encoding.
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        stringVals.push_back(fmt::format("DICT_VAL_{}", i % 5));
+        longVals.push_back(batchIdx * kRowsPerBatch + i);
+      }
+    } else {
+      // Odd batches: unique → trivial encoding.
+      for (size_t i = 0; i < kRowsPerBatch; ++i) {
+        stringVals.push_back(
+            fmt::format("UNIQUE_VAL_BATCH{}_ROW{}_EXTRA_PADDING", batchIdx, i));
+        longVals.push_back(batchIdx * kRowsPerBatch + i);
+      }
+    }
+
+    allStringVals.insert(
+        allStringVals.end(), stringVals.begin(), stringVals.end());
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringVals[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, longVector}));
+  }
+
+  // Write with per-batch chunking, single stripe.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  // Filter: accept "DICT_VAL_0" (from dictionary chunks) and anything
+  // starting with "UNIQUE_VAL_BATCH1" (from trivial chunk 1). Use BytesRange
+  // to catch the unique values: ["UNIQUE_VAL_BATCH1", "UNIQUE_VAL_BATCH1~").
+  // We test with BytesValues for the dictionary value and verify correctness
+  // across the encoding transition.
+  std::vector<std::string> accepted = {"DICT_VAL_0"};
+  // Also include one unique value to verify the flat path works with filter.
+  accepted.push_back("UNIQUE_VAL_BATCH1_ROW0_EXTRA_PADDING");
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+
+  // Compute expected count.
+  size_t expectedRows = 0;
+  for (const auto& val : allStringVals) {
+    if (acceptedSet.count(val)) {
+      ++expectedRows;
+    }
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    velox::DecodedVector decodedString(*rowResult->childAt(0)->loadedVector());
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto str = decodedString.valueAt<velox::StringView>(i).str();
+      ASSERT_TRUE(acceptedSet.count(str))
+          << "Unexpected value passed filter: " << str;
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedRows);
+}
+
+// Exercises the IsNull filter guard: when a null-accepting filter (e.g. IsNull)
+// is combined with NullableEncoding wrapping Dictionary, the reader must bypass
+// the dictionary path. NullableEncoding::materializeNullsForVisitor writes
+// encoding-level nulls to the bitmap but doesn't call processNull() for
+// individual null rows, so null-accepting filters would produce incorrect
+// results if the dictionary path were used.
+TEST_P(E2EFilterTest, isNullFilterWithNullableDictionary) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowCount = 1000;
+  std::vector<std::string> stringStorage;
+  std::vector<std::optional<velox::StringView>> stringVals;
+  std::vector<int64_t> longVals;
+  stringStorage.reserve(kRowCount);
+  stringVals.reserve(kRowCount);
+  longVals.reserve(kRowCount);
+
+  size_t expectedNullCount = 0;
+  for (size_t i = 0; i < kRowCount; ++i) {
+    longVals.push_back(i);
+    if (i % 7 == 0) {
+      // ~14% nulls.
+      stringVals.push_back(std::nullopt);
+      stringStorage.push_back("");
+      ++expectedNullCount;
+    } else {
+      stringStorage.push_back(fmt::format("VAL_{}", i % 10));
+      stringVals.push_back(velox::StringView(stringStorage.back()));
+    }
+  }
+
+  auto stringVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVectorNullable<velox::StringView>(stringVals);
+  auto longVector = velox::test::VectorMaker(leafPool_.get())
+                        .flatVector<int64_t>(
+                            kRowCount, [&](auto row) { return longVals[row]; });
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kRowCount,
+      std::vector<VectorPtr>{stringVector, longVector});
+
+  // Write with forced dictionary encoding. With nulls, the writer will produce
+  // Nullable → Dictionary.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedDictionaryEncodingLayoutTree());
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(std::make_unique<velox::common::IsNull>());
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(kRowCount, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    // Every returned row should have a null string value.
+    auto* stringChild = rowResult->childAt(0).get();
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      ASSERT_TRUE(stringChild->isNullAt(i))
+          << "Expected null at result row " << i;
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedNullCount);
+}
 
 } // namespace facebook::nimble

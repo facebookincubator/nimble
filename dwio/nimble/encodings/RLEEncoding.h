@@ -346,8 +346,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
         this->dictionaryEnabled(),
         "readIndicesWithVisitor requires dictionary-enabled inner encoding");
     NIMBLE_CHECK(
-        !IndicesVisitor::kHasFilter && !IndicesVisitor::kHasHook,
-        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+        !IndicesVisitor::kHasHook,
+        "readIndicesWithVisitor does not support value hooks");
     const auto numReadRows =
         visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
     auto* rawNulls = visitor.reader().rawNullsInReadRange();
@@ -361,6 +361,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
           visitor.rowAt(visitor.numRows() - 1),
           visitor.rowAt(0) + visitor.numRows() - 1,
           "Dense visitor must have contiguous rows");
+      detail::prepareResultNullsForDenseFilter<IndicesVisitor>(
+          params, rawNulls);
       detail::readDenseMaterializedIndices(
           *this,
           visitor,

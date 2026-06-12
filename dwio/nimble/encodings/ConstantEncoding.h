@@ -110,8 +110,7 @@ class ConstantEncodingBase
   template <typename V>
   void readIndicesWithVisitor(V& visitor, ReadWithVisitorParams& params) {
     NIMBLE_CHECK(
-        !V::kHasFilter && !V::kHasHook,
-        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+        !V::kHasHook, "readIndicesWithVisitor does not support value hooks");
     const auto numReadRows =
         visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
     auto* rawNulls = visitor.reader().rawNullsInReadRange();
@@ -125,6 +124,7 @@ class ConstantEncodingBase
           visitor.rowAt(visitor.numRows() - 1),
           visitor.rowAt(0) + visitor.numRows() - 1,
           "Dense visitor must have contiguous rows");
+      detail::prepareResultNullsForDenseFilter<V>(params, rawNulls);
       detail::readDenseMaterializedIndices(
           *this,
           visitor,
