@@ -122,11 +122,11 @@ class ReaderBase {
   ReaderBase(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
       std::shared_ptr<TabletReader> tablet,
-      velox::memory::MemoryPool* pool,
       const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip,
       const std::shared_ptr<velox::common::ScanSpec>& scanSpec,
       std::shared_ptr<const Type> nimbleSchema,
-      velox::RowTypePtr fileSchema);
+      velox::RowTypePtr fileSchema,
+      velox::memory::MemoryPool* pool);
 
   const std::unique_ptr<velox::dwio::common::BufferedInput> input_;
   const std::shared_ptr<TabletReader> tablet_;
