@@ -511,6 +511,45 @@ TEST_F(DirectMetadataInputTest, ioError) {
   }
 }
 
+TEST_F(DirectMetadataInputTest, readRawTracksIoStats) {
+  const std::string fileContent(4096, 'Z');
+  auto innerFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
+  auto readFile =
+      std::make_shared<nimble::testing::TrackingReadFile>(innerFile);
+  constexpr uint64_t kInjectedDelayUs = 5'000;
+  readFile->setReadDelayUs(kInjectedDelayUs);
+
+  const auto options = makeMetadataInputOptions();
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
+
+  const auto readCountBefore = metadataIoStats_->read().count();
+  const auto rawBytesBefore = metadataIoStats_->rawBytesRead();
+  const auto totalScanTimeBefore = metadataIoStats_->totalScanTimeNs();
+  const auto storageLatencyCountBefore =
+      metadataIoStats_->storageReadLatencyUs().count();
+  const auto queryIoLatencyCountBefore =
+      metadataIoStats_->queryThreadIoLatencyUs().count();
+
+  std::vector<char> dest(1024);
+  input->readRaw(0, dest.size(), dest.data());
+
+  EXPECT_EQ(metadataIoStats_->read().count() - readCountBefore, 1);
+  EXPECT_EQ(metadataIoStats_->rawBytesRead() - rawBytesBefore, dest.size());
+  EXPECT_GE(
+      metadataIoStats_->totalScanTimeNs() - totalScanTimeBefore,
+      kInjectedDelayUs * 1'000);
+  EXPECT_GT(
+      metadataIoStats_->storageReadLatencyUs().count(),
+      storageLatencyCountBefore);
+  EXPECT_GT(
+      metadataIoStats_->queryThreadIoLatencyUs().count(),
+      queryIoLatencyCountBefore);
+
+  EXPECT_EQ(
+      std::string(dest.data(), dest.size()),
+      fileContent.substr(0, dest.size()));
+}
+
 // --- CachedMetadataInput tests ---
 // Parameterized by whether SSD cache is enabled.
 

@@ -67,15 +67,6 @@ void ensureBuffer(
   }
 }
 
-// Reads raw bytes from file into a caller-provided destination.
-void rawRead(
-    velox::ReadFile* file,
-    uint64_t offset,
-    uint64_t size,
-    void* dest) {
-  file->pread(offset, size, dest);
-}
-
 } // namespace
 
 TabletReader::Options TabletReader::configureOptions(
@@ -354,11 +345,8 @@ void TabletReader::loadFooter(
     footerIoSize = std::min(maxFooterIoBytes, fileSize_);
     footerOffset = fileSize_ - footerIoSize;
     ensureBuffer(footerBuf, footerIoSize, pool_);
-    rawRead(
-        file_.get(),
-        footerOffset,
-        footerBuf->size(),
-        footerBuf->asMutable<char>());
+    metadataInput_->readRaw(
+        footerOffset, footerBuf->size(), footerBuf->asMutable<char>());
 
     ps_ = Postscript::parse(
         std::string_view{
@@ -373,11 +361,8 @@ void TabletReader::loadFooter(
       footerIoSize = requiredSize;
       footerOffset = fileSize_ - footerIoSize;
       ensureBuffer(footerBuf, footerIoSize, pool_);
-      rawRead(
-          file_.get(),
-          footerOffset,
-          footerBuf->size(),
-          footerBuf->asMutable<char>());
+      metadataInput_->readRaw(
+          footerOffset, footerBuf->size(), footerBuf->asMutable<char>());
     } else {
       stats_.footerBufferOverread =
           static_cast<int64_t>(footerIoSize - requiredSize);
@@ -393,8 +378,7 @@ void TabletReader::loadFooter(
   } else {
     // Adaptive mode: read PS first, then footer.
     ensureBuffer(footerBuf, Postscript::kSize, pool_);
-    rawRead(
-        file_.get(),
+    metadataInput_->readRaw(
         fileSize_ - Postscript::kSize,
         Postscript::kSize,
         footerBuf->asMutable<char>());
@@ -405,11 +389,8 @@ void TabletReader::loadFooter(
     footerOffset = fileSize_ - footerIoSize;
 
     ensureBuffer(footerBuf, ps_.footerSize(), pool_);
-    rawRead(
-        file_.get(),
-        footerOffset,
-        ps_.footerSize(),
-        footerBuf->asMutable<char>());
+    metadataInput_->readRaw(
+        footerOffset, ps_.footerSize(), footerBuf->asMutable<char>());
     footer_ = std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
         std::move(footerBuf), ps_.footerCompressionType(), pool_));
   }
@@ -570,11 +551,8 @@ void TabletReader::loadStripes(
     footerIoSize = requiredSize;
     footerOffset = fileSize_ - footerIoSize;
     ensureBuffer(footerBuf, footerIoSize, pool_);
-    rawRead(
-        file_.get(),
-        footerOffset,
-        footerBuf->size(),
-        footerBuf->asMutable<char>());
+    metadataInput_->readRaw(
+        footerOffset, footerBuf->size(), footerBuf->asMutable<char>());
   }
   const auto footerView = footerBuf != nullptr
       ? std::string_view{footerBuf->as<char>(), footerBuf->size()}

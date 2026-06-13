@@ -3657,7 +3657,12 @@ TEST_P(TabletWithIndexTest, loadClusterIndex) {
       EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
     } else {
       EXPECT_EQ(tablet->clusterIndex(), nullptr);
-      EXPECT_EQ(metadataIoStats_->rawBytesRead(), metadataBytesReadBefore);
+      // The speculative footer read is now tracked in metadataIoStats. With no
+      // cluster index requested, that single tail read (covering this small
+      // file in full) is the only metadata IO; no index section is read.
+      EXPECT_EQ(
+          metadataIoStats_->rawBytesRead() - metadataBytesReadBefore,
+          file.size());
       EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
     }
   }
@@ -3726,7 +3731,13 @@ TEST_P(TabletWithIndexTest, preloadClusterIndex) {
     options.preloadIndex = true;
     auto tablet = TabletTest::createTabletReader(readFile, options);
     EXPECT_EQ(tablet->clusterIndex(), nullptr);
-    EXPECT_EQ(metadataIoStats_->rawBytesRead(), metadataBytesReadBefore);
+    // loadClusterIndex=false performs no index IO. The only metadata IO is the
+    // speculative footer read (now tracked), which is served from the metadata
+    // cache (no IO) when caching is enabled.
+    const uint64_t expectedMetadataBytes = expectHasCache() ? 0 : file.size();
+    EXPECT_EQ(
+        metadataIoStats_->rawBytesRead() - metadataBytesReadBefore,
+        expectedMetadataBytes);
     EXPECT_EQ(indexIoStats_->rawBytesRead(), indexBytesReadBefore);
   }
 }
@@ -5142,6 +5153,69 @@ TEST_P(TabletWithIndexTest, metadataSectionUncompressedSize) {
     ASSERT_TRUE(section.uncompressedSize().has_value());
     EXPECT_GT(section.uncompressedSize().value(), 0);
     EXPECT_GE(section.uncompressedSize().value(), section.size());
+  }
+}
+
+TEST_P(TabletTest, footerReadTrackedInMetadataIoStats) {
+  // Write a simple Nimble file using TabletWriter.
+  std::string file;
+  {
+    velox::InMemoryWriteFile writeFile(&file);
+    std::mt19937 rng(42);
+    nimble::Buffer buffer(*pool_);
+    auto stripesData = createStripesData(
+        rng,
+        {{.rowCount = 100, .streamOffsets = {0, 1, 2}},
+         {.rowCount = 200, .streamOffsets = {0, 1, 2}}},
+        buffer);
+    auto writer =
+        nimble::TabletWriter::create(&writeFile, *pool_, /*options=*/{});
+    for (auto& stripe : stripesData) {
+      writer->writeStripe(stripe.rowCount, stripe.streams);
+    }
+    writer->close();
+  }
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  // Speculative mode (default 8MB): single tail read covers everything.
+  {
+    auto ioStats = std::make_shared<velox::io::IoStatistics>();
+    nimble::TabletReader::Options options;
+    options.ioOptions.emplace(pool_.get()).setMetadataIoStats(ioStats);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
+    EXPECT_GT(ioStats->read().count(), 0);
+    EXPECT_GT(ioStats->read().sum(), 0);
+    EXPECT_GT(ioStats->rawBytesRead(), 0);
+    EXPECT_GT(ioStats->storageReadLatencyUs().count(), 0);
+    EXPECT_GT(ioStats->queryThreadIoLatencyUs().count(), 0);
+    EXPECT_GT(ioStats->totalScanTimeNs(), 0);
+  }
+
+  // Adaptive mode (maxFooterIoBytes=0): two separate reads (PS + footer).
+  {
+    auto ioStats = std::make_shared<velox::io::IoStatistics>();
+    nimble::TabletReader::Options options;
+    options.maxFooterIoBytes = 0;
+    options.ioOptions.emplace(pool_.get()).setMetadataIoStats(ioStats);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
+    EXPECT_GE(ioStats->read().count(), 2);
+    EXPECT_GT(ioStats->read().sum(), 0);
+    EXPECT_GT(ioStats->rawBytesRead(), 0);
+    EXPECT_GT(ioStats->storageReadLatencyUs().count(), 0);
+    EXPECT_GT(ioStats->queryThreadIoLatencyUs().count(), 0);
+  }
+
+  // Speculative read bytes equals min(maxFooterIoBytes, fileSize) for
+  // files smaller than the speculative buffer.
+  {
+    auto ioStats = std::make_shared<velox::io::IoStatistics>();
+    nimble::TabletReader::Options options;
+    options.maxFooterIoBytes = 8 * 1024 * 1024;
+    options.ioOptions.emplace(pool_.get()).setMetadataIoStats(ioStats);
+    auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
+    EXPECT_EQ(ioStats->read().count(), 1);
+    EXPECT_EQ(ioStats->read().sum(), file.size());
   }
 }
 
