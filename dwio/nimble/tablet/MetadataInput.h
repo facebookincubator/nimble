@@ -83,6 +83,11 @@ class MetadataInput {
   /// DirectMetadataInput always returns nullptr.
   virtual std::unique_ptr<MetadataBuffer> findCachedMetadata(uint64_t offset);
 
+  /// Raw tracked read for bootstrap IO (e.g. speculative footer read)
+  /// before section boundaries are known. Records bytes and latency into
+  /// the same ioStats used by load().
+  void readRaw(uint64_t offset, uint64_t size, void* dest);
+
   /// Caches data at the given offset from multiple contiguous ranges.
   /// Ranges are written sequentially into a single cache entry.
   virtual void cacheMetadata(

@@ -70,6 +70,19 @@ std::vector<std::shared_ptr<MetadataBuffer>> MetadataInput::extractResults(
   return results;
 }
 
+void MetadataInput::readRaw(uint64_t offset, uint64_t size, void* dest) {
+  uint64_t storageReadUs{0};
+  {
+    velox::MicrosecondTimer timer{&storageReadUs};
+    file_->pread(offset, size, static_cast<char*>(dest));
+  }
+  ioStats_->queryThreadIoLatencyUs().increment(storageReadUs);
+  ioStats_->storageReadLatencyUs().increment(storageReadUs);
+  ioStats_->incTotalScanTimeNs(storageReadUs * 1'000);
+  ioStats_->read().increment(size);
+  ioStats_->incRawBytesRead(size);
+}
+
 std::unique_ptr<MetadataBuffer> MetadataInput::findCachedMetadata(
     uint64_t /*offset*/) {
   NIMBLE_UNREACHABLE("findCachedMetadata requires CachedMetadataInput");
