@@ -19,6 +19,9 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
+#include "velox/buffer/Buffer.h"
+#include "velox/common/file/File.h"
+#include "velox/dwio/common/InputStream.h"
 #include "velox/dwio/common/Reader.h"
 
 namespace facebook::nimble {
@@ -45,15 +48,49 @@ TypePtr getFileSchema(
   return dwio::common::Reader::updateColumnNames(
       fileSchema, options.fileSchema());
 }
+
+// Reads a small file fully in one storage round trip into an owning in-memory
+// ReadFile that backs both the footer and stripe reads. Returns nullptr if the
+// file is empty, over the threshold, or an AsyncDataCache is present.
+std::shared_ptr<velox::ReadFile> maybePreloadFile(
+    velox::dwio::common::BufferedInput& input,
+    const velox::dwio::common::ReaderOptions& options) {
+  const auto originalFile = input.getReadFile();
+  const auto fileSize = originalFile->size();
+  if (fileSize == 0 || fileSize > options.filePreloadThreshold() ||
+      options.cache() != nullptr) {
+    return nullptr;
+  }
+  auto buffer = velox::AlignedBuffer::allocateExact<char>(
+      fileSize, &options.memoryPool());
+  velox::dwio::common::ReadFileInputStream(
+      originalFile,
+      velox::dwio::common::MetricsLog::voidLog(),
+      options.dataIoStats().get())
+      .read(
+          buffer->asMutable<char>(),
+          fileSize,
+          /*offset=*/0,
+          velox::dwio::common::LogType::FILE);
+  return std::make_shared<velox::InMemoryReadFile>(std::move(buffer));
+}
 } // namespace
 
 std::shared_ptr<ReaderBase> ReaderBase::create(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     const velox::dwio::common::ReaderOptions& options) {
+  std::shared_ptr<velox::ReadFile> readFile = maybePreloadFile(*input, options);
+  if (readFile != nullptr) {
+    input = std::make_unique<velox::dwio::common::BufferedInput>(
+        readFile, options.memoryPool());
+  } else {
+    readFile = input->getReadFile();
+  }
+
   auto tabletOptions = TabletReader::configureOptions(options);
 
   auto tablet = TabletReader::create(
-      input->getReadFile(), &options.memoryPool(), tabletOptions);
+      std::move(readFile), &options.memoryPool(), tabletOptions);
 
   auto* pool = &options.memoryPool();
   const auto& randomSkip = options.randomSkip();
@@ -65,11 +102,11 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
   return std::shared_ptr<ReaderBase>(new ReaderBase(
       std::move(input),
       std::move(tablet),
-      pool,
       randomSkip,
       scanSpec,
       nimbleSchema,
-      std::move(fileSchema)));
+      std::move(fileSchema),
+      pool));
 }
 
 std::shared_ptr<ReaderBase> ReaderBase::create(
@@ -85,21 +122,21 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
   return std::shared_ptr<ReaderBase>(new ReaderBase(
       std::move(input),
       std::move(cachedTablet.tablet),
-      pool,
       randomSkip,
       scanSpec,
       std::move(cachedTablet.nimbleSchema),
-      std::move(fileSchema)));
+      std::move(fileSchema),
+      pool));
 }
 
 ReaderBase::ReaderBase(
     std::unique_ptr<velox::dwio::common::BufferedInput> input,
     std::shared_ptr<TabletReader> tablet,
-    velox::memory::MemoryPool* pool,
     const std::shared_ptr<velox::random::RandomSkipTracker>& randomSkip,
     const std::shared_ptr<velox::common::ScanSpec>& scanSpec,
     std::shared_ptr<const Type> nimbleSchema,
-    velox::RowTypePtr fileSchema)
+    velox::RowTypePtr fileSchema,
+    velox::memory::MemoryPool* pool)
     : input_{std::move(input)},
       tablet_{std::move(tablet)},
       pool_{pool},
