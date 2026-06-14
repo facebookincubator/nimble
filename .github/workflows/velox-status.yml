@@ -78,7 +78,7 @@ jobs:
           CURRENT=$(curl -sf "https://gist.githubusercontent.com/srsuryadev/e3263c7396c5b33486ac167d8b52ec02/raw/velox-status.json?$(date +%s)" || echo "{}")
           CURRENT_MESSAGE=$(echo "$CURRENT" | jq -r '.message // ""')
           CURRENT_COLOR=$(echo "$CURRENT" | jq -r '.color // ""')
-
+          echo "skip=false" >> $GITHUB_OUTPUT
           if [ "$CURRENT_MESSAGE" = "$MESSAGE" ] && [ "$CURRENT_COLOR" = "$COLOR" ]; then
             echo "Badge is already up to date, skipping."
             echo "skip=true" >> $GITHUB_OUTPUT
@@ -98,6 +98,7 @@ jobs:
           auth: ${{ secrets.GIST_TOKEN }}
           # TODO: Update this after creating the Gist.
           gistID: e3263c7396c5b33486ac167d8b52ec02
+          forceUpdate: true
           filename: velox-status.json
           label: velox
           message: ${{ steps.velox.outputs.message }}
