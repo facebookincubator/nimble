@@ -49,7 +49,10 @@ class PFOREncodingTest : public ::testing::Test {
 
   std::unique_ptr<EncodingSelectionPolicy<T>> createSelectionPolicy() {
     EncodingLayout layout{
-        EncodingType::PFOR, {}, CompressionType::Uncompressed};
+        EncodingType::PFOR,
+        {},
+        CompressionType::Uncompressed,
+        {std::nullopt, std::nullopt}};
     return std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(layout),
         CompressionOptions{},
@@ -280,7 +283,10 @@ class PFOREncodingFuzzerTest : public ::testing::Test {
 
       Buffer buffer{*pool_};
       EncodingLayout layout{
-          EncodingType::PFOR, {}, CompressionType::Uncompressed};
+          EncodingType::PFOR,
+          {},
+          CompressionType::Uncompressed,
+          {std::nullopt, std::nullopt}};
       auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
           std::move(layout), CompressionOptions{}, factory);
       auto encoded = EncodingFactory::encode<T>(
@@ -350,7 +356,11 @@ TEST_F(PFOREncodingFuzzerTest, fuzzerUint64) {
 
 TEST_F(PFOREncodingFuzzerTest, encodeRejectsEmpty) {
   Buffer buffer{*pool_};
-  EncodingLayout layout{EncodingType::PFOR, {}, CompressionType::Uncompressed};
+  EncodingLayout layout{
+      EncodingType::PFOR,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
   ManualEncodingSelectionPolicyFactory manualFactory;
   EncodingSelectionPolicyFactory factory = [&manualFactory](DataType dataType) {
     return manualFactory.createPolicy(dataType);

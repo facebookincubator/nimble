@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 
 namespace facebook::nimble::tools {
 namespace {
@@ -113,12 +114,33 @@ void traverseEncodings(
     case EncodingType::Prefix:
     case EncodingType::ALP:
     case EncodingType::BlockBitPacking:
-    case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
     // SubIntSplit integration is disabled; treat it as having no nested
     // encoding to traverse.
     case EncodingType::SubIntSplit: {
       // don't have any nested encoding
+      break;
+    }
+    case EncodingType::PFOR: {
+      // Layout after the common prefix: baseline [dataTypeSize bytes],
+      // baseBitWidth [1 byte], numExceptions [4 bytes], then two
+      // self-describing nested sub-streams, each preceded by a 4-byte size:
+      // the exception positions and the exception residual values.
+      const char* pos = stream.data() + kEncodingPrefixSize;
+      pos += detail::dataTypeSize(dataType); // baseline
+      encoding::readChar(pos); // baseBitWidth
+      encoding::readUint32(pos); // numExceptions
+      const uint32_t positionsSize = encoding::readUint32(pos);
+      if (positionsSize > 0) {
+        traverseEncodings(
+            {pos, positionsSize}, level + 1, 0, "ExceptionPositions", visitor);
+      }
+      pos += positionsSize;
+      const uint32_t valuesSize = encoding::readUint32(pos);
+      if (valuesSize > 0) {
+        traverseEncodings(
+            {pos, valuesSize}, level + 1, 1, "ExceptionValues", visitor);
+      }
       break;
     }
     case EncodingType::Trivial: {
