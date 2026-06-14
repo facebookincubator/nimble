@@ -342,7 +342,8 @@ TEST_F(BlockBitPackingEncodingTest, sparseBoolWithCbpIndices) {
       {nimble::EncodingLayout{
           nimble::EncodingType::BlockBitPacking,
           {},
-          nimble::CompressionType::Uncompressed}}};
+          nimble::CompressionType::Uncompressed,
+          {std::nullopt, std::nullopt, std::nullopt}}}};
   nimble::Buffer cbpBuffer(*pool_);
   auto cbpPolicy =
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<bool>>(
@@ -425,7 +426,8 @@ TEST_F(BlockBitPackingEncodingTest, sparseBoolWithCbpIndicesLargeIrregular) {
       {nimble::EncodingLayout{
           nimble::EncodingType::BlockBitPacking,
           {},
-          nimble::CompressionType::Uncompressed}}};
+          nimble::CompressionType::Uncompressed,
+          {std::nullopt, std::nullopt, std::nullopt}}}};
   nimble::Buffer cbpBuffer(*pool_);
   auto cbpPolicy =
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<bool>>(

@@ -278,6 +278,37 @@ TEST(EncodingLayoutTests, Pfor) {
   EXPECT_TRUE(captured.child(1).has_value());
 }
 
+TEST(EncodingLayoutTests, BlockBitPacking) {
+  // BlockBitPacking nests three per-block metadata sub-streams (baselines, bit
+  // widths, data offsets). Capture records each present sub-stream recursively,
+  // like the compound encodings, so a captured layout reproduces the full tree.
+  nimble::EncodingLayout bbpLayout{
+      nimble::EncodingType::BlockBitPacking,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt, std::nullopt}};
+
+  // Serialization preserves the BlockBitPacking node and its three child slots.
+  testSerialization(bbpLayout);
+
+  // Locally narrow per-block ranges so blocks get distinct baselines / widths.
+  std::vector<uint32_t> data;
+  data.reserve(1000);
+  for (uint32_t i = 0; i < 1000; ++i) {
+    data.push_back((i / 200) * 1000 + (i % 37));
+  }
+
+  // The nullopt children drive selection to BlockBitPacking while letting each
+  // sub-stream re-select; capture must then record all three sub-streams'
+  // encodings (not nullopt), proving recursive capture of the nested layout.
+  auto captured = encodeAndCapture<uint32_t>(bbpLayout, data);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::BlockBitPacking);
+  ASSERT_EQ(captured.childrenCount(), 3);
+  EXPECT_TRUE(captured.child(0).has_value());
+  EXPECT_TRUE(captured.child(1).has_value());
+  EXPECT_TRUE(captured.child(2).has_value());
+}
+
 TEST(EncodingLayoutTests, SparseBool) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::SparseBool,

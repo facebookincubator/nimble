@@ -111,6 +111,40 @@ class EncodingUtilitiesTest : public ::testing::Test {
     return buf;
   }
 
+  // Build a BlockBitPacking-encoded stream wrapping the given per-block
+  // metadata sub-streams. The packed data region is omitted since
+  // traverseEncodings does not read it. Layout:
+  //   bytes 0-5: prefix (EncodingType::BlockBitPacking, DataType::Uint32,
+  //              rowCount)
+  //   byte 6: compressionType (Uncompressed)
+  //   bytes 7-8: blockSize (uint16)
+  //   bytes 9-10: numBlocks (uint16)
+  //   then the baselines / bitWidths / offsets sub-streams, each preceded by a
+  //   4-byte size.
+  std::string buildBlockBitPackingUint32Stream(
+      const std::string& baselines,
+      const std::string& bitWidths,
+      const std::string& offsets) {
+    const size_t totalSize = 6 + 1 /* compressionType */ + 2 /* blockSize */ +
+        2 /* numBlocks */ + sizeof(uint32_t) + baselines.size() +
+        sizeof(uint32_t) + bitWidths.size() + sizeof(uint32_t) + offsets.size();
+    std::string buf(totalSize, '\0');
+    char* pos = buf.data();
+    encoding::writeChar(static_cast<char>(EncodingType::BlockBitPacking), pos);
+    encoding::writeChar(static_cast<char>(DataType::Uint32), pos);
+    encoding::writeUint32(/* rowCount */ 100, pos);
+    encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
+    encoding::write<uint16_t>(/* blockSize */ 64, pos);
+    encoding::write<uint16_t>(/* numBlocks */ 2, pos);
+    encoding::writeUint32(static_cast<uint32_t>(baselines.size()), pos);
+    encoding::writeBytes(baselines, pos);
+    encoding::writeUint32(static_cast<uint32_t>(bitWidths.size()), pos);
+    encoding::writeBytes(bitWidths, pos);
+    encoding::writeUint32(static_cast<uint32_t>(offsets.size()), pos);
+    encoding::writeBytes(offsets, pos);
+    return buf;
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
 
@@ -359,6 +393,55 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelPfor) {
   EXPECT_NE(label.find("PFOR"), std::string::npos);
   EXPECT_NE(label.find("ExceptionPositions:Trivial"), std::string::npos);
   EXPECT_NE(label.find("ExceptionValues:Trivial"), std::string::npos);
+}
+
+// --- BlockBitPacking nested metadata sub-streams ---
+
+TEST_F(EncodingUtilitiesTest, TraverseEncodingsBlockBitPackingChildren) {
+  auto baselines = buildTrivialUint32Stream({0, 64});
+  auto bitWidths = buildTrivialUint32Stream({4, 5});
+  auto offsets = buildTrivialUint32Stream({0, 32});
+  auto stream = buildBlockBitPackingUint32Stream(baselines, bitWidths, offsets);
+
+  EncodingType rootType = EncodingType::Constant; // init to something else
+  std::vector<std::string> nestedNames;
+  traverseEncodings(
+      stream,
+      [&](EncodingType encodingType,
+          DataType /* dataType */,
+          uint32_t level,
+          uint32_t /* index */,
+          const std::string& nestedEncodingName,
+          const std::unordered_map<EncodingPropertyType, EncodingProperty>&
+          /* properties */) -> bool {
+        if (level == 0) {
+          rootType = encodingType;
+        } else {
+          nestedNames.push_back(nestedEncodingName);
+        }
+        return true;
+      });
+
+  EXPECT_EQ(rootType, EncodingType::BlockBitPacking);
+  const std::vector<std::string> expected{
+      "Baselines", "BitWidths", "DataOffsets"};
+  EXPECT_EQ(nestedNames, expected);
+}
+
+TEST_F(EncodingUtilitiesTest, GetEncodingLabelBlockBitPacking) {
+  // The rendered label surfaces the picked sub-encodings for the per-block
+  // metadata, e.g. BlockBitPacking<Uint32>[Baselines:Trivial<...>,
+  // BitWidths:Trivial<...>,DataOffsets:Trivial<...>].
+  auto baselines = buildTrivialUint32Stream({0, 64});
+  auto bitWidths = buildTrivialUint32Stream({4, 5});
+  auto offsets = buildTrivialUint32Stream({0, 32});
+  auto stream = buildBlockBitPackingUint32Stream(baselines, bitWidths, offsets);
+
+  auto label = getEncodingLabel(stream);
+  EXPECT_NE(label.find("BlockBitPacking"), std::string::npos);
+  EXPECT_NE(label.find("Baselines:Trivial"), std::string::npos);
+  EXPECT_NE(label.find("BitWidths:Trivial"), std::string::npos);
+  EXPECT_NE(label.find("DataOffsets:Trivial"), std::string::npos);
 }
 
 } // namespace facebook::nimble::tools::test
