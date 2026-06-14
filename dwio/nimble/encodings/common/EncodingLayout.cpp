@@ -23,6 +23,7 @@
 // SubIntSplit integration commented out (disabled):
 // #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingUtils.h"
 
 namespace facebook::nimble {
 
@@ -370,7 +371,6 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::Prefix:
     case EncodingType::ALP:
     case EncodingType::BlockBitPacking:
-    case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
     // SubIntSplit integration is disabled; treat it as a non-nested encoding
     // (zero children) so its layout is captured without nested logic.
@@ -382,6 +382,28 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::FrequencyPartition:
       // Non nested encodings have zero children
       break;
+    case EncodingType::PFOR: {
+      const auto dataType =
+          encoding::peek<uint8_t, DataType>(encoding.data() + 1);
+      const char* pos = encoding.data() + kEncodingPrefixSize;
+      pos += detail::dataTypeSize(dataType); // baseline
+      encoding::readChar(pos); // baseBitWidth
+      encoding::readUint32(pos); // numExceptions
+
+      auto captureChild = [&](const char*& cursor) {
+        const uint32_t size = encoding::readUint32(cursor);
+        children.emplace_back(
+            size > 0 ? std::optional<const EncodingLayout>(
+                           EncodingLayoutCapture::capture({cursor, size}))
+                     : std::nullopt);
+        cursor += size;
+      };
+
+      children.reserve(2);
+      captureChild(pos); // exception positions
+      captureChild(pos); // exception values
+      break;
+    }
     case EncodingType::Trivial: {
       const auto dataType =
           encoding::peek<uint8_t, DataType>(encoding.data() + 1);

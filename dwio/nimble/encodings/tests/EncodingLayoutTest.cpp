@@ -26,6 +26,7 @@
 #include "velox/common/memory/Memory.h"
 
 #include <unordered_map>
+#include <utility>
 
 using namespace facebook;
 
@@ -41,15 +42,16 @@ void verifyEncodingLayout(
   }
 
   ASSERT_EQ(expected->encodingType(), actual->encodingType());
-  
+
   // When MetaInternal is not available, it gets redirected to Zstd.
   // For tests, we need to account for this mapping.
   auto expectedCompression = expected->compressionType();
   auto actualCompression = actual->compressionType();
-  
+
 #ifdef DISABLE_META_INTERNAL_COMPRESSOR
-  // If expected is MetaInternal but we don't have it, accept Zstd or Uncompressed
-  // (Uncompressed can happen if the data is too small to benefit from compression)
+  // If expected is MetaInternal but we don't have it, accept Zstd or
+  // Uncompressed (Uncompressed can happen if the data is too small to benefit
+  // from compression)
   if (expectedCompression == nimble::CompressionType::MetaInternal) {
     ASSERT_TRUE(
         actualCompression == nimble::CompressionType::Zstd ||
@@ -62,7 +64,7 @@ void verifyEncodingLayout(
 #else
   ASSERT_EQ(expectedCompression, actualCompression);
 #endif
-  
+
   ASSERT_EQ(expected->childrenCount(), actual->childrenCount());
 
   for (auto i = 0; i < expected->childrenCount(); ++i) {
@@ -80,7 +82,9 @@ void testSerialization(nimble::EncodingLayout expected) {
 }
 
 template <typename T, typename TCollection = std::vector<T>>
-void testCapture(nimble::EncodingLayout expected, TCollection data) {
+nimble::EncodingLayout encodeAndCapture(
+    nimble::EncodingLayout encodingLayout,
+    TCollection data) {
   nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
@@ -92,15 +96,20 @@ void testCapture(nimble::EncodingLayout expected, TCollection data) {
   nimble::Buffer buffer{*defaultPool};
   auto encoding = nimble::EncodingFactory::encode<T>(
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<T>>(
-          expected,
+          std::move(encodingLayout),
           nimble::CompressionOptions{
               .compressionAcceptRatio = 100, .internalMinCompressionSize = 0},
           encodingSelectionPolicyFactory),
       data,
       buffer);
 
-  auto actual = nimble::EncodingLayoutCapture::capture(encoding);
-  verifyEncodingLayout(expected, actual);
+  return nimble::EncodingLayoutCapture::capture(encoding);
+}
+
+template <typename T, typename TCollection = std::vector<T>>
+void testCapture(nimble::EncodingLayout expected, TCollection data) {
+  verifyEncodingLayout(
+      expected, encodeAndCapture<T>(expected, std::move(data)));
 }
 
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
@@ -139,7 +148,9 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
 TEST(EncodingLayoutTests, Trivial) {
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, {}, nimble::CompressionType::Uncompressed};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::Uncompressed};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -147,7 +158,9 @@ TEST(EncodingLayoutTests, Trivial) {
 
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, {}, nimble::CompressionType::MetaInternal};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::MetaInternal};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -232,6 +245,37 @@ TEST(EncodingLayoutTests, Constant) {
 
   testSerialization(expected);
   testCapture<uint32_t>(expected, {1, 1, 1});
+}
+
+TEST(EncodingLayoutTests, Pfor) {
+  // PFOR nests two exception sub-streams (positions, residual values). Capture
+  // records each present sub-stream recursively, like the compound encodings,
+  // so a captured layout reproduces the full PFOR tree.
+  nimble::EncodingLayout pforLayout{
+      nimble::EncodingType::PFOR,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+
+  // Serialization preserves the PFOR node and its two child slots.
+  testSerialization(pforLayout);
+
+  // Sparse outliers so the encoding emits exceptions and both nested
+  // sub-streams are present.
+  std::vector<uint32_t> data;
+  data.reserve(500);
+  for (uint32_t i = 0; i < 500; ++i) {
+    data.push_back(i % 10 == 7 ? 100000 + i : 50 + (i % 50));
+  }
+
+  // The nullopt children drive selection to PFOR while letting each sub-stream
+  // re-select; capture must then record both sub-streams' encodings (not
+  // nullopt), proving recursive capture of the nested layout.
+  auto captured = encodeAndCapture<uint32_t>(pforLayout, data);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::PFOR);
+  ASSERT_EQ(captured.childrenCount(), 2);
+  EXPECT_TRUE(captured.child(0).has_value());
+  EXPECT_TRUE(captured.child(1).has_value());
 }
 
 TEST(EncodingLayoutTests, SparseBool) {
@@ -360,11 +404,11 @@ TEST(EncodingLayoutTests, Nullable) {
       nimble::CompressionType::Uncompressed,
       {nimble::EncodingLayout{
            nimble::EncodingType::FixedBitWidth,
-            {},
+           {},
            nimble::CompressionType::Uncompressed},
        nimble::EncodingLayout{
            nimble::EncodingType::SparseBool,
-            {},
+           {},
            nimble::CompressionType::Uncompressed,
            {
                nimble::EncodingLayout{
