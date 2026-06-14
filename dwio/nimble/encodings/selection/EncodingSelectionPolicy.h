@@ -738,7 +738,11 @@ class ReplayedEncodingSelectionPolicy
 
  private:
   const std::optional<CompressionOptions> compressionOptions_;
-  const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory_;
+  // Held by value, not reference: createImpl() invokes this factory lazily
+  // (only for re-selected sub-encodings, i.e. nullopt children), which can
+  // happen long after construction and deep in the nested encoding recursion.
+  // Callers commonly pass a temporary lambda, so a reference would dangle.
+  const EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_;
   EncodingLayout encodingLayout_;
 };
 

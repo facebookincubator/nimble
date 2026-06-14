@@ -2132,12 +2132,18 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt}}}},
            ""},
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt}}}},
            ""},
       }};
 
@@ -2160,6 +2166,85 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
         i, i % 10 == 0 ? 1'000'000 + i : i % 100);
     longVals->asFlatVector<int64_t>()->set(
         i, i % 10 == 0 ? 9'000'000'000LL + i : i * 60);
+  }
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<velox::VectorPtr>{intVals, longVals});
+
+  auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserializerOptions()};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    ASSERT_TRUE(vectorEquals(output, input, i))
+        << "Content mismatch at index " << i;
+  }
+}
+
+// Columnar reader-level round-trip for BlockBitPackingEncoding. Forces
+// BlockBitPacking via EncodingLayoutTree on integer columns and verifies data
+// integrity through the full Serializer → Deserializer path, exercising the
+// nested per-block metadata sub-streams (baselines, bit widths, data offsets).
+TEST_P(SerializationTest, blockBitPackingColumnarRoundTrip) {
+  auto type = velox::ROW({
+      {"int_val", velox::INTEGER()},
+      {"long_val", velox::BIGINT()},
+  });
+
+  EncodingLayoutTree layoutTree{
+      Kind::Row,
+      {},
+      "",
+      {
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::BlockBitPacking,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt, std::nullopt}}}},
+           ""},
+          {Kind::Scalar,
+           {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+             EncodingLayout{
+                 EncodingType::BlockBitPacking,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt, std::nullopt}}}},
+           ""},
+      }};
+
+  SerializerOptions options{
+      .version = version(),
+      .encodingLayoutTree = layoutTree,
+      .compressionOptions = compressionOptions(),
+  };
+
+  Serializer serializer{options, type, pool_.get()};
+
+  // Enough rows to span multiple blocks; per-block-varying ranges so blocks get
+  // distinct baselines and bit widths.
+  const velox::vector_size_t numRows = 3000;
+  auto intVals =
+      velox::BaseVector::create(velox::INTEGER(), numRows, pool_.get());
+  auto longVals =
+      velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    intVals->asFlatVector<int32_t>()->set(i, (i / 256) * 1000 + (i % 37));
+    longVals->asFlatVector<int64_t>()->set(
+        i, (i / 256) * 1'000'000LL + (i % 37));
   }
 
   auto input = std::make_shared<velox::RowVector>(
