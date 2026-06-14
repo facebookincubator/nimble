@@ -17,17 +17,18 @@
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/BitUtil.h"
 
@@ -35,7 +36,9 @@
 // Each value is decomposed as `value = baseline + residual`, where the
 // residuals are bitpacked at a base bit width chosen so that ~90% of the
 // residuals fit. Values whose residual overflows the base width are recorded
-// as (position, value) "exceptions" stored separately as varints.
+// as (position, value) "exceptions" stored separately as two self-describing
+// nested sub-encodings (one for the positions, one for the values), each
+// chosen by Nimble's recursive encoding selection.
 //
 // Decode uses a branchless two-pass strategy (ported from AusIntListPfor):
 //   Pass 1: Unpack all base residuals in a tight branchless loop.
@@ -54,9 +57,14 @@ namespace facebook::nimble {
 ///   1 byte                    : baseBitWidth (bits per bitpacked residual;
 ///                               range [0, 64])
 ///   4 bytes                   : numExceptions (uint32_t, fixed width)
-///   numExceptions varints     : exception positions, strictly ascending
-///   numExceptions varints     : exception values (full residual, i.e.
-///                               value - baseline)
+///   4 bytes + N bytes         : exception positions sub-stream -- a 4-byte
+///                               size prefix followed by a nested encoding of
+///                               the strictly ascending positions (size 0 and
+///                               no encoding when there are no exceptions)
+///   4 bytes + N bytes         : exception values sub-stream -- a 4-byte size
+///                               prefix followed by a nested encoding of the
+///                               full residuals, i.e. value - baseline (size 0
+///                               and no encoding when there are no exceptions)
 ///   FixedBitArray::bufferSize(rowCount, baseBitWidth) bytes:
 ///                               bitpacked base residuals (omitted when
 ///                               baseBitWidth == 0)
@@ -102,15 +110,19 @@ class PFOREncoding final
     const uint64_t baseValuesSize = baseBitWidth == 0
         ? 0
         : FixedBitArray::bufferSize(rowCount, baseBitWidth);
-    const uint64_t valueVarintBytes =
-        varint::maxVarintSizeForBitWidth(maxBitWidth);
-    const uint64_t positionVarintBytes =
-        varint::maxVarintSizeForBitWidth(std::numeric_limits<uint32_t>::digits);
-    const uint64_t exceptionsSize =
-        numExceptions * (positionVarintBytes + valueVarintBytes);
+    // The exception side-channels are stored as nested encodings. Dumping real
+    // files shows selection picks Trivial for both (the streams are small, so
+    // Trivial's raw layout beats bit-packing), so we estimate them as Trivial
+    // sub-encodings -- mirroring how Dictionary estimates its alphabet child.
+    // This is an approximation (the actual nested encoding is data-dependent);
+    // the estimate-vs-actual test allows a 2x band.
+    const uint64_t positionsSize =
+        TrivialEncoding<uint32_t>::estimateSize(numExceptions);
+    const uint64_t valuesSize =
+        TrivialEncoding<physicalType>::estimateSize(numExceptions);
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + kPrefixSize;
-    return outerEncodingSize + baseValuesSize + exceptionsSize;
+    return outerEncodingSize + baseValuesSize + positionsSize + valuesSize;
   }
 
  private:
@@ -191,7 +203,7 @@ template <typename T>
 PFOREncoding<T>::PFOREncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    const std::function<void*(uint32_t)>& /* stringBufferFactory */,
+    const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
       exceptionPositions_{this->pool_},
@@ -213,10 +225,21 @@ PFOREncoding<T>::PFOREncoding(
         this->rowCount_,
         "Pfor exception count exceeds row count.");
 
-    // Eagerly decode exception positions (varint-encoded, ascending order).
-    exceptionPositions_.resize(numExceptions_);
+    auto readExceptionStream = [&](auto& target) {
+      target.resize(numExceptions_);
+      const uint32_t size = encoding::readUint32(pos);
+      if (numExceptions_ > 0) {
+        auto subEncoding = EncodingFactory(options).create(
+            pool, {pos, size}, stringBufferFactory);
+        subEncoding->materialize(numExceptions_, target.data());
+      }
+      pos += size;
+    };
+    readExceptionStream(exceptionPositions_); // exception positions
+    readExceptionStream(exceptionValues_); // exception values
+
+    // Validate the materialized positions (strictly ascending, in range).
     for (uint32_t i = 0; i < numExceptions_; ++i) {
-      exceptionPositions_[i] = varint::readVarint32(&pos);
       NIMBLE_CHECK_LT(
           exceptionPositions_[i],
           this->rowCount_,
@@ -226,19 +249,6 @@ PFOREncoding<T>::PFOREncoding(
             exceptionPositions_[i],
             exceptionPositions_[i - 1],
             "Pfor exception positions must be strictly ascending.");
-      }
-    }
-
-    // Eagerly decode exception values (varint-encoded full residuals).
-    exceptionValues_.resize(numExceptions_);
-    for (uint32_t i = 0; i < numExceptions_; ++i) {
-      if constexpr (
-          isFourByteIntegralType<physicalType>() || sizeof(physicalType) < 4) {
-        exceptionValues_[i] =
-            static_cast<physicalType>(varint::readVarint32(&pos));
-      } else {
-        exceptionValues_[i] =
-            static_cast<physicalType>(varint::readVarint64(&pos));
       }
     }
 
@@ -415,23 +425,36 @@ std::string_view PFOREncoding<T>::encode(
     const uint32_t numExceptions =
         static_cast<uint32_t>(exceptionPositions.size());
 
-    // Compute varint sizes for the exception side-channel.
-    uint64_t exceptionPositionBytes{0};
-    uint64_t exceptionValueBytes{0};
-    for (uint32_t i = 0; i < numExceptions; ++i) {
-      exceptionPositionBytes += varint::varintSize(exceptionPositions[i]);
-      exceptionValueBytes += varint::varintSize(exceptionValues[i]);
-    }
     const uint64_t bitpackedSize = baseBitWidth == 0
         ? 0
         : FixedBitArray::bufferSize(rowCount, baseBitWidth);
-    const uint32_t encodingSize =
-        Encoding::serializePrefixSize(rowCount, useVarint) +
-        PFOREncoding<T>::kPrefixSize +
-        static_cast<uint32_t>(
-            exceptionPositionBytes + exceptionValueBytes + bitpackedSize);
 
-    // Serialize into the output buffer.
+    // PFOR encodes the exception side-channels through recursive encoding
+    // selection so Nimble can pick the best sub-encoding.
+    // The bulk base residuals always stay raw to preserve the fast decode path.
+    Buffer tempBuffer{buffer.getMemoryPool()};
+    std::string_view exceptionPositionsEncoded{};
+    std::string_view exceptionValuesEncoded{};
+    if (numExceptions > 0) {
+      exceptionPositionsEncoded = selection.template encodeNested<uint32_t>(
+          EncodingIdentifiers::Pfor::ExceptionPositions,
+          std::span<const uint32_t>(exceptionPositions.data(), numExceptions),
+          tempBuffer,
+          options);
+      exceptionValuesEncoded = selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::Pfor::ExceptionValues,
+          std::span<const physicalType>(exceptionValues.data(), numExceptions),
+          tempBuffer,
+          options);
+    }
+    // Two size-prefixed nested streams (positions, values) carry the exception
+    // side-channel.
+    const uint32_t encodingSize = Encoding::serializePrefixSize(
+                                      rowCount, useVarint) +
+        PFOREncoding<T>::kPrefixSize +
+        static_cast<uint32_t>(2 * sizeof(uint32_t) +
+                              exceptionPositionsEncoded.size() +
+                              exceptionValuesEncoded.size() + bitpackedSize);
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
@@ -439,21 +462,11 @@ std::string_view PFOREncoding<T>::encode(
     encoding::write(baseline, pos);
     encoding::writeChar(static_cast<char>(baseBitWidth), pos);
     encoding::writeUint32(numExceptions, pos);
-
-    // Write exception positions (ascending varint sequence).
-    for (uint32_t i = 0; i < numExceptions; ++i) {
-      varint::writeVarint(exceptionPositions[i], &pos);
-    }
-    // Write exception values (full residual varints).
-    for (uint32_t i = 0; i < numExceptions; ++i) {
-      varint::writeVarint(exceptionValues[i], &pos);
-    }
-
-    // Bitpack the masked residuals.
+    encoding::writeString(exceptionPositionsEncoded, pos);
+    encoding::writeString(exceptionValuesEncoded, pos);
     if (baseBitWidth > 0) {
-      char* bitpackedStart = pos;
-      std::memset(bitpackedStart, 0, bitpackedSize);
-      FixedBitArray fba(bitpackedStart, baseBitWidth);
+      std::memset(pos, 0, bitpackedSize);
+      FixedBitArray fba(pos, baseBitWidth);
       fba.bulkSetWithBaseline(
           /*start=*/0,
           /*length=*/rowCount,
@@ -461,7 +474,6 @@ std::string_view PFOREncoding<T>::encode(
           /*baseline=*/physicalType{0});
       pos += bitpackedSize;
     }
-
     NIMBLE_CHECK_EQ(
         pos - reserved, encodingSize, "Pfor encoding size mismatch.");
     return {reserved, encodingSize};

@@ -2132,12 +2132,18 @@ TEST_P(SerializationTest, pforColumnarRoundTrip) {
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt}}}},
            ""},
           {Kind::Scalar,
            {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
              EncodingLayout{
-                 EncodingType::PFOR, {}, CompressionType::Uncompressed}}},
+                 EncodingType::PFOR,
+                 {},
+                 CompressionType::Uncompressed,
+                 {std::nullopt, std::nullopt}}}},
            ""},
       }};
 
