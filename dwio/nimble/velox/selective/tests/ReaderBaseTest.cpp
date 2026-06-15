@@ -24,6 +24,7 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
+#include "velox/common/file/tests/TestUtils.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
@@ -329,4 +330,37 @@ TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
           stripeInfo.offset + stripeInfo.size);
     }
   }
+}
+
+TEST_F(StripeStreamsMultiStripeTest, preloadCollapsesStripeReads) {
+  constexpr uint32_t kStripeCount = 3;
+
+  auto preadsReadingAllStripes = [&](uint64_t preloadThreshold) {
+    auto countingFile =
+        std::make_shared<velox::tests::utils::CountingReadFile>(fileData_);
+    auto opts = makeReaderOptions();
+    opts.setFilePreloadThreshold(preloadThreshold);
+    auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+        countingFile, *pool_);
+    auto reader = ReaderBase::create(std::move(input), opts);
+    EXPECT_EQ(reader->tablet().stripeCount(), kStripeCount);
+
+    StripeStreams streams(reader);
+    const auto numStreams = reader->nimbleSchema()->asRow().childrenCount() + 1;
+    for (uint32_t stripe = 0; stripe < kStripeCount; ++stripe) {
+      streams.setStripe(stripe);
+      std::vector<std::unique_ptr<velox::dwio::common::SeekableInputStream>>
+          enqueued;
+      for (uint32_t streamId = 0; streamId < numStreams; ++streamId) {
+        if (streams.hasStream(streamId)) {
+          enqueued.push_back(streams.enqueue(streamId));
+        }
+      }
+      streams.load();
+    }
+    return countingFile->numReads();
+  };
+
+  EXPECT_EQ(preadsReadingAllStripes(fileData_.size() + 1), 1);
+  EXPECT_GE(preadsReadingAllStripes(0), kStripeCount);
 }

@@ -35,6 +35,7 @@
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
+#include "velox/common/file/tests/TestUtils.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/dwio/common/CachedBufferedInput.h"
@@ -129,7 +130,9 @@ class SelectiveNimbleReaderTest
 
  protected:
   static void SetUpTestCase() {
-    memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
+    if (!memory::MemoryManager::testInstance()) {
+      memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
+    }
     registerSelectiveNimbleReaderFactory();
   }
 
@@ -187,6 +190,7 @@ class SelectiveNimbleReaderTest
     options.setScanSpec(scanSpec);
     options.setPinMetadata(GetParam().pinMetadata);
     options.setCacheMetadata(GetParam().enableCache);
+    options.setFilePreloadThreshold(0);
     std::unique_ptr<dwio::common::BufferedInput> input;
     auto& ids = fileIds();
     const auto readerId = readerIdCounter_++;
@@ -3923,6 +3927,159 @@ INSTANTIATE_TEST_CASE_P(
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return info.param.debugString();
     });
+
+class SmallFilePreloadTest : public ::testing::Test,
+                             public velox::test::VectorTestBase {
+ protected:
+  static void SetUpTestCase() {
+    if (!memory::MemoryManager::testInstance()) {
+      memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
+    }
+    registerSelectiveNimbleReaderFactory();
+  }
+
+  static void TearDownTestCase() {
+    unregisterSelectiveNimbleReaderFactory();
+  }
+};
+
+TEST_F(SmallFilePreloadTest, preloadReducesPreadCalls) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(500, folly::identity),
+      makeFlatVector<int64_t>(500, [](auto i) { return i * 10; }),
+  });
+  auto nimbleFile = test::createNimbleFile(*rootPool_, input);
+  ASSERT_LE(nimbleFile.size(), 8 << 20);
+
+  auto factory =
+      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+
+  auto preadsWithThreshold = [&](uint64_t preloadThreshold) {
+    auto countingFile =
+        std::make_shared<velox::tests::utils::CountingReadFile>(nimbleFile);
+    auto bufferedInput =
+        std::make_unique<dwio::common::BufferedInput>(countingFile, *pool());
+    dwio::common::ReaderOptions options(pool());
+    auto ioStats = std::make_shared<io::IoStatistics>();
+    options.setDataIoStats(ioStats);
+    options.setMetadataIoStats(ioStats);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    options.setScanSpec(scanSpec);
+    options.setFilePreloadThreshold(preloadThreshold);
+
+    auto reader = factory->createReader(std::move(bufferedInput), options);
+    dwio::common::RowReaderOptions rowOptions;
+    rowOptions.setScanSpec(scanSpec);
+    auto rowReader = reader->createRowReader(rowOptions);
+    VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+    EXPECT_EQ(rowReader->next(1'000, result), 500);
+    velox::test::assertEqualVectors(input, result);
+    return countingFile->numReads();
+  };
+
+  EXPECT_EQ(preadsWithThreshold(nimbleFile.size() + 1), 1);
+  EXPECT_GT(preadsWithThreshold(0), 1);
+}
+
+TEST_F(SmallFilePreloadTest, preloadAttributesSingleReadToData) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(500, folly::identity),
+      makeFlatVector<int64_t>(500, [](auto i) { return i * 10; }),
+  });
+  auto nimbleFile = test::createNimbleFile(*rootPool_, input);
+  ASSERT_LE(nimbleFile.size(), 8 << 20);
+
+  auto factory =
+      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+
+  auto dataStats = std::make_shared<io::IoStatistics>();
+  auto metadataStats = std::make_shared<io::IoStatistics>();
+
+  auto countingFile =
+      std::make_shared<velox::tests::utils::CountingReadFile>(nimbleFile);
+  auto bufferedInput =
+      std::make_unique<dwio::common::BufferedInput>(countingFile, *pool());
+  dwio::common::ReaderOptions options(pool());
+  options.setDataIoStats(dataStats);
+  options.setMetadataIoStats(metadataStats);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  options.setScanSpec(scanSpec);
+  options.setFilePreloadThreshold(nimbleFile.size() + 1);
+
+  auto reader = factory->createReader(std::move(bufferedInput), options);
+  dwio::common::RowReaderOptions rowOptions;
+  rowOptions.setScanSpec(scanSpec);
+  auto rowReader = reader->createRowReader(rowOptions);
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  ASSERT_EQ(rowReader->next(1'000, result), 500);
+  velox::test::assertEqualVectors(input, result);
+
+  EXPECT_EQ(countingFile->numReads(), 1);
+  EXPECT_EQ(dataStats->rawBytesRead(), nimbleFile.size());
+}
+
+// Preload must skip when a cache is present, else it bypasses the data cache.
+TEST_F(SmallFilePreloadTest, cachePresentSkipsPreload) {
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(500, folly::identity),
+      makeFlatVector<int64_t>(500, [](auto i) { return i * 10; }),
+  });
+  auto nimbleFile = test::createNimbleFile(*rootPool_, input);
+  ASSERT_LE(nimbleFile.size(), 8 << 20);
+
+  auto allocator = std::make_shared<memory::MallocAllocator>(
+      memory::MemoryAllocator::Options{
+          .capacity = 512 << 20, .reservationByteLimit = 0});
+  auto cache = cache::AsyncDataCache::create(allocator.get());
+  auto scanTracker =
+      std::make_shared<cache::ScanTracker>("preloadGate", nullptr, 256 << 10);
+  folly::CPUThreadPoolExecutor ioExecutor(1);
+  auto ioStats = std::make_shared<io::IoStatistics>();
+
+  auto countingFile =
+      std::make_shared<velox::tests::utils::CountingReadFile>(nimbleFile);
+
+  auto factory =
+      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+  {
+    auto& ids = fileIds();
+    io::ReaderOptions ioReaderOpts(pool());
+    ioReaderOpts.setDataIoStats(ioStats);
+    auto cachedInput = std::make_unique<dwio::common::CachedBufferedInput>(
+        countingFile,
+        dwio::common::MetricsLog::voidLog(),
+        StringIdLease(ids, "preloadGateFile"),
+        cache.get(),
+        scanTracker,
+        StringIdLease(ids, "preloadGateGroup"),
+        ioStats,
+        nullptr,
+        &ioExecutor,
+        ioReaderOpts);
+
+    dwio::common::ReaderOptions options(pool());
+    options.setDataIoStats(ioStats);
+    options.setMetadataIoStats(ioStats);
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    options.setScanSpec(scanSpec);
+    options.setFilePreloadThreshold(nimbleFile.size() + 1);
+    options.setCache(cache.get());
+
+    auto reader = factory->createReader(std::move(cachedInput), options);
+    dwio::common::RowReaderOptions rowOptions;
+    rowOptions.setScanSpec(scanSpec);
+    auto rowReader = reader->createRowReader(rowOptions);
+    VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+    ASSERT_EQ(rowReader->next(1'000, result), 500);
+    velox::test::assertEqualVectors(input, result);
+  }
+  cache->shutdown();
+
+  EXPECT_GT(countingFile->numReads(), 1);
+}
 
 } // namespace
 } // namespace facebook::nimble
