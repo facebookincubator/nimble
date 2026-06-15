@@ -738,7 +738,7 @@ class ReplayedEncodingSelectionPolicy
 
  private:
   const std::optional<CompressionOptions> compressionOptions_;
-  const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory_;
+  const EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_;
   EncodingLayout encodingLayout_;
 };
 

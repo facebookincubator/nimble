@@ -65,7 +65,10 @@ SparseBoolEnc::operator EncodingLayout() const {
 
 BlockBitPackingEnc::operator EncodingLayout() const {
   return EncodingLayout(
-      EncodingType::BlockBitPacking, {}, CompressionType::Uncompressed);
+      EncodingType::BlockBitPacking,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt, std::nullopt});
 }
 
 DeltaEnc::operator EncodingLayout() const {

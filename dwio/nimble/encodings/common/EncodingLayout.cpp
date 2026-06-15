@@ -121,6 +121,19 @@ constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
   NIMBLE_CHECK_EQ(pos, end, "Invalid encoding layout config length.");
   return EncodingLayout::Config{std::move(configs)};
 }
+
+// Captures one size-prefixed nested sub-stream into `children` (nullopt when
+// the sub-stream is empty)
+void captureSizedChild(
+    std::vector<std::optional<const EncodingLayout>>& children,
+    const char*& cursor) {
+  const uint32_t size = encoding::readUint32(cursor);
+  children.emplace_back(
+      size > 0 ? std::optional<const EncodingLayout>(
+                     EncodingLayoutCapture::capture({cursor, size}))
+               : std::nullopt);
+  cursor += size;
+}
 } // namespace
 
 std::optional<std::string> EncodingLayout::Config::get(
@@ -370,7 +383,6 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::Constant:
     case EncodingType::Prefix:
     case EncodingType::ALP:
-    case EncodingType::BlockBitPacking:
     case EncodingType::SimdForBitpack:
     // SubIntSplit integration is disabled; treat it as a non-nested encoding
     // (zero children) so its layout is captured without nested logic.
@@ -390,18 +402,23 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       encoding::readChar(pos); // baseBitWidth
       encoding::readUint32(pos); // numExceptions
 
-      auto captureChild = [&](const char*& cursor) {
-        const uint32_t size = encoding::readUint32(cursor);
-        children.emplace_back(
-            size > 0 ? std::optional<const EncodingLayout>(
-                           EncodingLayoutCapture::capture({cursor, size}))
-                     : std::nullopt);
-        cursor += size;
-      };
-
       children.reserve(2);
-      captureChild(pos); // exception positions
-      captureChild(pos); // exception values
+      captureSizedChild(children, pos); // exception positions
+      captureSizedChild(children, pos); // exception values
+      break;
+    }
+    case EncodingType::BlockBitPacking: {
+      // BlockBitPacking nests three per-block metadata sub-streams: baselines,
+      // bit widths, and data offsets.
+      const char* pos = encoding.data() + kEncodingPrefixSize;
+      encoding::readChar(pos); // compressionType
+      encoding::read<uint16_t>(pos); // blockSize
+      encoding::read<uint16_t>(pos); // numBlocks
+
+      children.reserve(3);
+      captureSizedChild(children, pos); // baselines
+      captureSizedChild(children, pos); // bit widths
+      captureSizedChild(children, pos); // data offsets
       break;
     }
     case EncodingType::Trivial: {
