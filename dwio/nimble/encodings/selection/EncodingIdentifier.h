@@ -74,7 +74,8 @@ struct EncodingIdentifiers {
 
   struct FrequencyPartition {
     // Partition metadata
-    // Eventually we may want to allow for non-power-of-two bit partitions, but for now we can just define constants for the power-of-two cases.
+    // Eventually we may want to allow for non-power-of-two bit partitions, but
+    // for now we can just define constants for the power-of-two cases.
     static constexpr NestedEncodingIdentifier PartitionOffsets = 0;
     static constexpr NestedEncodingIdentifier PartitionSizes = 1;
     // Per-tier dictionaries (1-bit, 2-bit, 4-bit, 8-bit, etc.)
@@ -100,6 +101,15 @@ struct EncodingIdentifiers {
     // exception residual values.
     static constexpr NestedEncodingIdentifier ExceptionPositions = 0;
     static constexpr NestedEncodingIdentifier ExceptionValues = 1;
+  };
+
+  struct BlockBitPacking {
+    // Nested per-block metadata sub-streams for BlockBitPacking: the per-block
+    // baselines, the per-block bit widths, and the ascending per-block data
+    // offsets.
+    static constexpr NestedEncodingIdentifier Baselines = 0;
+    static constexpr NestedEncodingIdentifier BitWidths = 1;
+    static constexpr NestedEncodingIdentifier Offsets = 2;
   };
 };
 

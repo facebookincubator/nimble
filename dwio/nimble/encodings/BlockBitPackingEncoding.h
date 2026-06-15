@@ -25,9 +25,12 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
+#include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/dwio/common/DecoderUtil.h"
@@ -81,27 +84,31 @@ class BlockBitPackingEncoding final
       const Encoding::Options& options = {});
 
   /// Estimates the uncompressed encoded size using the same per-block packing
-  /// decisions as encode().
+  /// decisions as encode(). The per-block metadata is routed through nested
+  /// encoding selection (data-dependent size), so it is estimated as Trivial
+  /// sub-encodings; the estimate is approximate, not exact.
   static uint64_t estimateSize(
       std::span<const physicalType> values,
       uint16_t blockSize = kBlockBitPackingBlockSize);
 
-  /// Returns the metadata overhead in bytes for the encoding header.
-  /// Shared by encode() and EncodingSizeEstimation to keep the two in sync.
-  static uint32_t encodingOverhead(uint32_t numBlocks) {
-    return 1 /* compressionType */ + 2 /* blockSize */ + 2 /* numBlocks */ +
-        numBlocks *
-        (sizeof(physicalType) + 1) /* per-block baseline + bitWidth */
-        + numBlocks * sizeof(uint32_t) /* per-block data offsets */;
-  }
-
   std::string debugString(int offset) const final;
 
  private:
-  // Per-block metadata stored in the header: baseline (minimum) value,
-  // bit width for the packed representation, and whether this block
-  // falls back to storing raw uncompressed values.
+  // Fixed metadata header written before the three nested sub-streams:
+  // compressionType + blockSize + numBlocks + three 4-byte sub-stream size
+  // prefixes. Shared by encode() and estimateSize() so the two stay in sync.
+  static constexpr uint32_t kMetadataHeaderSize =
+      sizeof(uint8_t) /*compressionType=*/ + sizeof(uint16_t) /*blockSize=*/ +
+      sizeof(uint16_t) /*numBlocks=*/ +
+      3 * sizeof(uint32_t) /*subStreamSizePrefixes=*/;
+
+  // Per-block metadata, materialized from the nested baselines / bit-widths /
+  // data-offsets sub-streams: baseline (minimum) value, bit width for the
+  // packed representation, and whether this block falls back to storing raw
+  // uncompressed values.
   struct BlockMeta {
+    // Raw block bit width indicates that the block stores raw values.
+    static constexpr uint8_t kRawBlockBitWidth = 255;
     // Minimum value in the block; packed values are stored as
     // (value - baseline).
     physicalType baseline;
@@ -153,7 +160,7 @@ class BlockBitPackingEncoding final
   uint16_t blockSize_;
   uint16_t numBlocks_;
   Vector<BlockMeta> blocksMetadata_;
-  Vector<uint32_t> blockDataOffsets_;
+  Vector<uint32_t> blockOffsets_;
   const char* packedData_;
   uint32_t row_ = 0;
   velox::BufferPtr uncompressedData_;
@@ -176,8 +183,17 @@ uint64_t BlockBitPackingEncoding<T>::estimateSize(
     const auto end = std::min<uint32_t>(start + blockSize, rowCount);
     packedSize += makeBlockInfo(values, start, end - start).packedSize;
   }
-  return EncodingPrefix::kFixedPrefixSize + encodingOverhead(numBlocks) +
-      packedSize;
+  // Per-block metadata (baselines, bit widths, data offsets) is stored as
+  // nested encodings; dumping real files shows selection picks Trivial for all
+  // three, so estimate them as Trivial sub-encodings -- mirroring how
+  // Dictionary estimates its alphabet child. This is an approximation (the
+  // actual nested encoding is data-dependent); the estimate-vs-actual test
+  // allows a 2x band.
+  const uint64_t metadataSize = kMetadataHeaderSize +
+      TrivialEncoding<physicalType>::estimateSize(numBlocks) +
+      TrivialEncoding<uint8_t>::estimateSize(numBlocks) +
+      TrivialEncoding<uint32_t>::estimateSize(numBlocks);
+  return EncodingPrefix::kFixedPrefixSize + metadataSize + packedSize;
 }
 
 template <typename T>
@@ -221,11 +237,11 @@ template <typename T>
 BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
     velox::memory::MemoryPool& pool,
     std::string_view data,
-    const std::function<void*(uint32_t)>& /* stringBufferFactory */,
+    const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
       blocksMetadata_{&pool},
-      blockDataOffsets_{&pool},
+      blockOffsets_{&pool},
       packedData_{nullptr},
       buffer_(this->template getVectorBuffer<physicalType>()) {
   auto pos = data.data() + this->dataOffset();
@@ -237,17 +253,36 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
   NIMBLE_CHECK_EQ(numBlocks_, (this->rowCount() + blockSize_ - 1) / blockSize_);
 
   blocksMetadata_.resize(numBlocks_);
-  for (uint16_t i = 0; i < numBlocks_; ++i) {
-    blocksMetadata_[i].baseline = encoding::read<const physicalType>(pos);
-    const auto bitWidth = static_cast<uint8_t>(encoding::readChar(pos));
-    blocksMetadata_[i].skipEncoding = (bitWidth == 255);
-    blocksMetadata_[i].bitWidth =
-        blocksMetadata_[i].skipEncoding ? 0 : bitWidth;
-  }
+  blockOffsets_.resize(numBlocks_);
 
-  blockDataOffsets_.resize(numBlocks_);
+  // BlockBitPacking stores the per-block metadata (baselines, bit widths, data
+  // offsets) as self-describing nested encodings, letting Nimble's recursive
+  // encoding selection pick the best encoding for each metadata stream. The
+  // packed block data stays raw.
+  Vector<physicalType> baselines{&pool};
+  baselines.resize(numBlocks_);
+  Vector<uint8_t> bitWidths{&pool};
+  bitWidths.resize(numBlocks_);
+
+  // Each metadata stream: read its 4-byte size, decode the nested sub-encoding
+  // into the target, then advance past it.
+  auto readMetadataStream = [&](auto& subStream) {
+    const uint32_t size = encoding::readUint32(pos);
+    EncodingFactory(options)
+        .create(pool, {pos, size}, stringBufferFactory)
+        ->materialize(numBlocks_, subStream.data());
+    pos += size;
+  };
+  readMetadataStream(baselines); // per-block baselines
+  readMetadataStream(bitWidths); // per-block bit widths
+  readMetadataStream(blockOffsets_); // per-block data offsets
+
   for (uint16_t i = 0; i < numBlocks_; ++i) {
-    blockDataOffsets_[i] = encoding::read<const uint32_t>(pos);
+    blocksMetadata_[i].baseline = baselines[i];
+    blocksMetadata_[i].skipEncoding =
+        (bitWidths[i] == BlockMeta::kRawBlockBitWidth);
+    blocksMetadata_[i].bitWidth =
+        blocksMetadata_[i].skipEncoding ? 0 : bitWidths[i];
   }
 
   if (compressionType != CompressionType::Uncompressed) {
@@ -288,7 +323,7 @@ BlockBitPackingEncoding<T>::readSingleValue(uint32_t row) const {
   const auto& blockMetadata = blocksMetadata_[blockIndex];
   if (blockMetadata.skipEncoding) {
     const auto* rawValues = reinterpret_cast<const physicalType*>(
-        packedData_ + blockDataOffsets_[blockIndex]);
+        packedData_ + blockOffsets_[blockIndex]);
     return rawValues[blockOffset];
   }
   if (blockMetadata.bitWidth == 0) {
@@ -296,7 +331,7 @@ BlockBitPackingEncoding<T>::readSingleValue(uint32_t row) const {
   }
   const auto numRows = blockRowCount(blockIndex);
   FixedBitArray fba{
-      {packedData_ + blockDataOffsets_[blockIndex],
+      {packedData_ + blockOffsets_[blockIndex],
        FixedBitArray::bufferSize(numRows, blockMetadata.bitWidth)},
       blockMetadata.bitWidth};
   return static_cast<physicalType>(fba.get(blockOffset)) +
@@ -310,7 +345,7 @@ void BlockBitPackingEncoding<T>::materializeBlockRange(
     uint32_t blockValueCount,
     physicalType* output) const {
   const auto& blockMetadata = blocksMetadata_[blockIndex];
-  const auto* blockData = packedData_ + blockDataOffsets_[blockIndex];
+  const auto* blockData = packedData_ + blockOffsets_[blockIndex];
 
   if (blockMetadata.skipEncoding) {
     const auto* rawValues = reinterpret_cast<const physicalType*>(blockData);
@@ -558,8 +593,8 @@ void BlockBitPackingEncoding<T>::bulkScan(
       }
 
       physicalType tmp[kMaxBlockSize];
-      const auto numRows = blockRowCount(blockIndex);
-      materializeBlockRange(blockIndex, 0, numRows, tmp);
+      const auto blockRows = blockRowCount(blockIndex);
+      materializeBlockRange(blockIndex, 0, blockRows, tmp);
       for (vector_size_t j = i; j < runEnd; ++j) {
         const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
             static_cast<uint32_t>(offset) - blockStart;
@@ -635,12 +670,10 @@ std::string_view BlockBitPackingEncoding<T>::encode(
     totalPackedSize += blocks[blockIndex].packedSize;
   }
 
-  const uint32_t metaOverhead = encodingOverhead(numBlocks);
-
-  // Note: if totalPackedSize + metaOverhead >= rawSize, this encoding is not
-  // beneficial. The encoding selection policy should avoid selecting it in that
-  // case. We still encode correctly so the round-trip contract holds.
-
+  // Note: if the encoded size (packed data + nested metadata sub-streams +
+  // header) >= rawSize, this encoding is not beneficial. The encoding selection
+  // policy should avoid selecting it in that case. We still encode correctly so
+  // the round-trip contract holds.
   Vector<char> packedVector{&buffer.getMemoryPool()};
   auto dataCompressionPolicy = selection.compressionPolicy();
   CompressionEncoder<T> compressionEncoder{
@@ -711,8 +744,52 @@ std::string_view BlockBitPackingEncoding<T>::encode(
         return pos;
       }};
 
+  // BlockBitPacking routes the per-block metadata (baselines, bit widths, data
+  // offsets) through recursive encoding selection so Nimble can pick the best
+  // encoding for each (e.g. Constant/Delta for correlated baselines, Delta for
+  // the ascending offsets). The packed block data stays raw (still optionally
+  // Zstd-compressed via the compression encoder).
+  Vector<physicalType> baselines{&buffer.getMemoryPool()};
+  baselines.resize(numBlocks);
+  Vector<uint8_t> bitWidths{&buffer.getMemoryPool()};
+  bitWidths.resize(numBlocks);
+  Vector<uint32_t> blockOffsets{&buffer.getMemoryPool()};
+  blockOffsets.resize(numBlocks);
+  uint32_t runningOffset{0};
+  for (uint16_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
+    baselines[blockIndex] = blocks[blockIndex].baseline;
+    bitWidths[blockIndex] = blocks[blockIndex].skipEncoding
+        ? BlockMeta::kRawBlockBitWidth
+        : blocks[blockIndex].bitWidth;
+    blockOffsets[blockIndex] = runningOffset;
+    runningOffset += blocks[blockIndex].packedSize;
+  }
+
+  Buffer tempBuffer{buffer.getMemoryPool()};
+  const std::string_view baselinesEncoded =
+      selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::BlockBitPacking::Baselines,
+          baselines,
+          tempBuffer,
+          options);
+  const std::string_view bitWidthsEncoded =
+      selection.template encodeNested<uint8_t>(
+          EncodingIdentifiers::BlockBitPacking::BitWidths,
+          bitWidths,
+          tempBuffer,
+          options);
+  const std::string_view offsetsEncoded =
+      selection.template encodeNested<uint32_t>(
+          EncodingIdentifiers::BlockBitPacking::Offsets,
+          blockOffsets,
+          tempBuffer,
+          options);
+
+  const uint32_t metaHeaderSize = kMetadataHeaderSize +
+      static_cast<uint32_t>(baselinesEncoded.size() + bitWidthsEncoded.size() +
+                            offsetsEncoded.size());
   const uint32_t encodingSize =
-      Encoding::serializePrefixSize(rowCount, useVarint) + metaOverhead +
+      Encoding::serializePrefixSize(rowCount, useVarint) + metaHeaderSize +
       compressionEncoder.getSize();
 
   char* reserved = buffer.reserve(encodingSize);
@@ -727,19 +804,9 @@ std::string_view BlockBitPackingEncoding<T>::encode(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   encoding::write(blockSize, pos);
   encoding::write(static_cast<uint16_t>(numBlocks), pos);
-
-  uint32_t runningOffset = 0;
-  for (uint16_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
-    encoding::write(blocks[blockIndex].baseline, pos);
-    const uint8_t bwOnDisk =
-        blocks[blockIndex].skipEncoding ? 255 : blocks[blockIndex].bitWidth;
-    encoding::writeChar(static_cast<char>(bwOnDisk), pos);
-  }
-  for (uint16_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
-    encoding::write(runningOffset, pos);
-    runningOffset += blocks[blockIndex].packedSize;
-  }
-
+  encoding::writeString(baselinesEncoded, pos);
+  encoding::writeString(bitWidthsEncoded, pos);
+  encoding::writeString(offsetsEncoded, pos);
   compressionEncoder.write(pos);
 
   NIMBLE_DCHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
