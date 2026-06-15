@@ -187,17 +187,20 @@ class FrequencyPartitionEncoding
   // ---------------------------------------------------------------------------
 
   static constexpr uint8_t ceilLog2WithMinOne(uint32_t x) {
-    if (x <= 1u)
+    if (x <= 1u) {
       return 1u;
+    }
     return static_cast<uint8_t>(std::bit_width(x - 1u));
   }
 
   static uint8_t chooseEliasFanoLowBits(uint64_t universe, uint64_t n) {
-    if (n == 0 || universe <= n)
+    if (n == 0 || universe <= n) {
       return 0;
+    }
     const uint64_t ratio = universe / n;
-    if (ratio <= 1)
+    if (ratio <= 1) {
       return 0;
+    }
     return static_cast<uint8_t>(
         std::min<uint64_t>(31, std::bit_width(ratio) - 1));
   }
@@ -229,8 +232,9 @@ class FrequencyPartitionEncoding
   // Extract `keyBits`-wide value at zero-based rank `r` from a LSB-first
   // packed byte array. Safe bounded read (no padding required).
   static uint32_t unpackBits(const uint8_t* base, uint32_t r, uint8_t keyBits) {
-    if (keyBits == 0)
+    if (keyBits == 0) {
       return 0;
+    }
     const size_t bitPos = static_cast<size_t>(r) * keyBits;
     const size_t byteIdx = bitPos >> 3;
     const uint32_t bitOff = static_cast<uint32_t>(bitPos & 7);
@@ -238,8 +242,9 @@ class FrequencyPartitionEncoding
     // At most ceil((7+31)/8) = 5 bytes needed; read only those.
     const uint32_t bytesNeeded = (bitOff + keyBits + 7) / 8;
     uint64_t buf = 0;
-    for (uint32_t b = 0; b < bytesNeeded; ++b)
+    for (uint32_t b = 0; b < bytesNeeded; ++b) {
       buf |= static_cast<uint64_t>(base[byteIdx + b]) << (b * 8);
+    }
     return static_cast<uint32_t>((buf >> bitOff) & mask);
   }
 
@@ -249,8 +254,9 @@ class FrequencyPartitionEncoding
       const uint32_t* keys,
       uint32_t count,
       uint8_t keyBits) {
-    if (keyBits == 0 || count == 0)
+    if (keyBits == 0 || count == 0) {
       return;
+    }
     const size_t byteCount = (static_cast<size_t>(count) * keyBits + 7) / 8;
     const size_t base = out.size();
     out.resize(base + byteCount, '\0');
@@ -282,8 +288,9 @@ class FrequencyPartitionEncoding
     const size_t bitOff = bitPos % 8;
     const uint8_t mask = static_cast<uint8_t>((1u << tagBits) - 1u);
     uint16_t buf = static_cast<uint16_t>(base[byteIdx]);
-    if (bitOff + tagBits > 8)
+    if (bitOff + tagBits > 8) {
       buf |= static_cast<uint16_t>(base[byteIdx + 1]) << 8;
+    }
     return static_cast<uint8_t>((buf >> bitOff) & mask);
   }
 
@@ -298,11 +305,13 @@ class FrequencyPartitionEncoding
     const uint32_t wordOff = (pos % 512) / 64;
     const uint32_t bitOff = pos % 64;
     uint32_t rank = tier.rankSuperblock[blk];
-    for (uint32_t w = blk * 8; w < blk * 8 + wordOff; ++w)
+    for (uint32_t w = blk * 8; w < blk * 8 + wordOff; ++w) {
       rank += static_cast<uint32_t>(__builtin_popcountll(tier.bitmap[w]));
-    if (bitOff)
+    }
+    if (bitOff) {
       rank += static_cast<uint32_t>(__builtin_popcountll(
           tier.bitmap[blk * 8 + wordOff] & ((uint64_t{1} << bitOff) - 1)));
+    }
     return rank;
   }
 
@@ -328,8 +337,9 @@ class FrequencyPartitionEncoding
     for (uint32_t j = scanStart; j < pos; ++j) {
       const uint8_t t = unpackTagAt(tagBase, j, tagBits_);
       const uint32_t b = (t < numActiveTiers) ? t : numActiveTiers;
-      if (b == tierIdx)
+      if (b == tierIdx) {
         ++rank;
+      }
     }
     return rank;
   }
@@ -499,8 +509,9 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
         case FreqPartIndexType::PerTierBitmaps: {
           coveredBitmap_.resize(numWords, 0);
           for (auto& tier : tiers_) {
-            if (tier.size == 0)
+            if (tier.size == 0) {
               continue;
+            }
             const uint32_t bitmapByteCount = encoding::readUint32(pos);
             NIMBLE_CHECK(
                 bitmapByteCount == numWords * 8,
@@ -515,22 +526,25 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
             for (uint32_t blk = 0; blk < numBlocks; ++blk) {
               tier.rankSuperblock[blk + 1] = tier.rankSuperblock[blk];
               const uint32_t wEnd = std::min((blk + 1) * 8u, numWords);
-              for (uint32_t w = blk * 8; w < wEnd; ++w)
+              for (uint32_t w = blk * 8; w < wEnd; ++w) {
                 tier.rankSuperblock[blk + 1] +=
                     static_cast<uint32_t>(__builtin_popcountll(tier.bitmap[w]));
+              }
             }
 
             // OR into covered bitmap.
-            for (uint32_t w = 0; w < numWords; ++w)
+            for (uint32_t w = 0; w < numWords; ++w) {
               coveredBitmap_[w] |= tier.bitmap[w];
+            }
           }
 
           // Build fallback prefix-popcount table.
           fallbackWordPrefix_.resize(numWords + 1, 0);
           for (uint32_t w = 0; w < numWords; ++w) {
             uint64_t uncov = ~coveredBitmap_[w];
-            if (w == numWords - 1 && (totalRowCount_ % 64) != 0)
+            if (w == numWords - 1 && (totalRowCount_ % 64) != 0) {
               uncov &= (uint64_t{1} << (totalRowCount_ % 64)) - 1;
+            }
             fallbackWordPrefix_[w + 1] = fallbackWordPrefix_[w] +
                 static_cast<uint32_t>(__builtin_popcountll(uncov));
           }
@@ -557,8 +571,9 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
           for (uint32_t i = 0; i < totalRowCount_; ++i) {
             if (i % kRankSampleStride == 0) {
               const uint32_t si = i / kRankSampleStride;
-              for (uint32_t t = 0; t < numBuckets; ++t)
+              for (uint32_t t = 0; t < numBuckets; ++t) {
                 tierRankSamples_[t][si] = counts[t];
+              }
             }
             const uint8_t tag = unpackTagAt(tagArray_.data(), i, tagBits_);
             const uint32_t bucket =
@@ -568,12 +583,14 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
           // Sentinel sample past the last stride.
           const uint32_t lastSi =
               (totalRowCount_ + kRankSampleStride - 1) / kRankSampleStride;
-          for (uint32_t t = 0; t < numBuckets; ++t)
+          for (uint32_t t = 0; t < numBuckets; ++t) {
             tierRankSamples_[t][lastSi] = counts[t];
+          }
 
           // Set tierCount from the scan.
-          for (uint32_t t = 0; t < numActiveTiers; ++t)
+          for (uint32_t t = 0; t < numActiveTiers; ++t) {
             tiers_[t].tierCount = counts[t];
+          }
           break;
         }
 
@@ -584,8 +601,9 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
           }
 
           for (auto& tier : tiers_) {
-            if (tier.size == 0)
+            if (tier.size == 0) {
               continue;
+            }
             const uint8_t lowBits = encoding::read<uint8_t>(pos);
             pos += 3; // padding
             const uint32_t lowByteCount = encoding::readUint32(pos);
@@ -605,8 +623,9 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
                 tier.efPositions);
 
             if (hasFallback) {
-              for (uint32_t p : tier.efPositions)
+              for (uint32_t p : tier.efPositions) {
                 coveredBitmap_[p / 64] |= uint64_t{1} << (p % 64);
+              }
             }
           }
 
@@ -614,8 +633,9 @@ FrequencyPartitionEncoding<T>::FrequencyPartitionEncoding(
             fallbackWordPrefix_.resize(numWords + 1, 0);
             for (uint32_t w = 0; w < numWords; ++w) {
               uint64_t uncov = ~coveredBitmap_[w];
-              if (w == numWords - 1 && (totalRowCount_ % 64) != 0)
+              if (w == numWords - 1 && (totalRowCount_ % 64) != 0) {
                 uncov &= (uint64_t{1} << (totalRowCount_ % 64)) - 1;
+              }
               fallbackWordPrefix_[w + 1] = fallbackWordPrefix_[w] +
                   static_cast<uint32_t>(__builtin_popcountll(uncov));
             }
@@ -648,10 +668,12 @@ void FrequencyPartitionEncoding<T>::reset() {
 template <typename T>
 uint32_t FrequencyPartitionEncoding<T>::getTierForRow(uint32_t rowIndex) const {
   for (uint32_t i = 0; i < tiers_.size(); ++i) {
-    if (rowIndex < tiers_[i].startRow)
+    if (rowIndex < tiers_[i].startRow) {
       break; // tiers are contiguous and ordered
-    if (rowIndex < tiers_[i].startRow + tiers_[i].size)
+    }
+    if (rowIndex < tiers_[i].startRow + tiers_[i].size) {
       return i;
+    }
   }
   return tiers_.size();
 }
@@ -691,8 +713,9 @@ template <FreqPartIndexType I>
 T FrequencyPartitionEncoding<T>::decodeAtOriginalIndexImpl(uint32_t u) const {
   if constexpr (I == FreqPartIndexType::PerTierBitmaps) {
     for (const auto& tier : tiers_) {
-      if (tier.bitmap.empty())
+      if (tier.bitmap.empty()) {
         continue;
+      }
       if (tier.bitmap[u / 64] & (uint64_t{1} << (u % 64))) {
         const uint32_t rank = popcountPrefixFast(tier, u);
         return tier.dictionary[tier.indices[rank]];
@@ -712,8 +735,9 @@ T FrequencyPartitionEncoding<T>::decodeAtOriginalIndexImpl(uint32_t u) const {
 
   } else if constexpr (I == FreqPartIndexType::EliasFano) {
     for (const auto& tier : tiers_) {
-      if (tier.efPositions.empty())
+      if (tier.efPositions.empty()) {
         continue;
+      }
       auto it =
           std::lower_bound(tier.efPositions.begin(), tier.efPositions.end(), u);
       if (it != tier.efPositions.end() && *it == u) {
@@ -1064,8 +1088,9 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   if (indexType == FreqPartIndexType::PerTierBitmaps) {
     // Build per-tier bitmaps from tierRows (already in ascending row order).
     for (uint32_t t = 0; t < numTiers; ++t) {
-      if (tierRows[t].empty())
+      if (tierRows[t].empty()) {
         continue;
+      }
       std::vector<uint64_t> bitmap(numWords, 0);
       for (uint32_t row : tierRows[t]) {
         bitmap[row / 64] |= uint64_t{1} << (row % 64);
@@ -1124,8 +1149,9 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   } else if (indexType == FreqPartIndexType::EliasFano) {
     // Build per-tier Elias-Fano position encodings.
     for (uint32_t t = 0; t < numTiers; ++t) {
-      if (tierRows[t].empty())
+      if (tierRows[t].empty()) {
         continue;
+      }
       const std::vector<uint32_t>& positions = tierRows[t]; // ascending order
       const uint32_t tierCount = static_cast<uint32_t>(positions.size());
 
@@ -1137,8 +1163,9 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
       // Build low array
       std::vector<uint32_t> lows;
       lows.reserve(tierCount);
-      for (uint32_t pos : positions)
+      for (uint32_t pos : positions) {
         lows.push_back(pos & lowMask);
+      }
 
       const size_t lowByteCount =
           (static_cast<size_t>(tierCount) * lowBits + 7) / 8;
@@ -1186,12 +1213,14 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
       static_cast<uint32_t>(serializedSizes.size());
 
   for (const auto& dict : serializedDicts) {
-    if (!dict.empty())
+    if (!dict.empty()) {
       encodingSize += 4 + static_cast<uint32_t>(dict.size());
+    }
   }
   for (const auto& keys : serializedKeys) {
-    if (!keys.empty())
+    if (!keys.empty()) {
       encodingSize += 4 + static_cast<uint32_t>(keys.size());
+    }
   }
   if (!serializedUnencoded.empty()) {
     encodingSize += 4 + static_cast<uint32_t>(serializedUnencoded.size());

@@ -490,14 +490,16 @@ std::string_view ForEncoding<T>::encode(
   constexpr std::array<uint8_t, 7> BIT_WIDTHS = {1, 2, 4, 8, 16, 32, 64};
 
   auto findMinBitWidth = [&](uint64_t maxValue) -> uint8_t {
-    if (maxValue == 0)
+    if (maxValue == 0) {
       return 1;
+    }
 
     size_t bitsNeeded = 64 - __builtin_clzll(maxValue);
 
     for (uint8_t width : BIT_WIDTHS) {
-      if (width >= bitsNeeded)
+      if (width >= bitsNeeded) {
         return width;
+      }
     }
 
     return 64;
