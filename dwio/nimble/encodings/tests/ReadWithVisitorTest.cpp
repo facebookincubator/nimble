@@ -29,10 +29,12 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
+#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
@@ -108,6 +110,70 @@ class StringColumnReaderTestAccessor : public StringColumnReader {
     readOffset_ += rows.back() + 1;
   }
 };
+
+// ---------------------------------------------------------------------------
+// SubIntSplit test support.
+//
+// SubIntSplit is not yet wired into the EncodingFactory dispatch, so we build
+// the encoding directly: encode via the static encode() with a policy that
+// never recurses back into SubIntSplit for the section sub-streams, then
+// construct the typed encoding (its constructor decodes the sections via the
+// regular factory) and call readWithVisitor on it directly.
+// ---------------------------------------------------------------------------
+template <typename T>
+class NonRecursiveSubIntSplitPolicy final : public EncodingSelectionPolicy<T> {
+  using physicalType = typename TypeTraits<T>::physicalType;
+
+ public:
+  EncodingSelectionResult select(
+      std::span<const physicalType> /* values */,
+      const Statistics<physicalType>& /* statistics */) override {
+    return {.encodingType = EncodingType::SubIntSplit};
+  }
+
+  EncodingSelectionResult selectNullable(
+      std::span<const physicalType> /* values */,
+      std::span<const bool> /* nulls */,
+      const Statistics<physicalType>& /* statistics */) override {
+    return {.encodingType = EncodingType::Nullable};
+  }
+
+  std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
+      EncodingType /* encodingType */,
+      NestedEncodingIdentifier /* identifier */,
+      DataType type) override {
+    auto readFactors =
+        ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+    readFactors.erase(
+        std::remove_if(
+            readFactors.begin(),
+            readFactors.end(),
+            [](const auto& factor) {
+              return factor.first == EncodingType::SubIntSplit;
+            }),
+        readFactors.end());
+    ManualEncodingSelectionPolicyFactory factory{
+        std::move(readFactors), std::nullopt};
+    return factory.createPolicy(type);
+  }
+};
+
+template <typename T>
+std::unique_ptr<SubIntSplitEncoding<T>> makeSubIntSplitEncoding(
+    const std::vector<T>& data,
+    Buffer& buffer,
+    velox::memory::MemoryPool& memPool) {
+  using PhysicalType = typename TypeTraits<T>::physicalType;
+  auto span = std::span<const PhysicalType>(
+      reinterpret_cast<const PhysicalType*>(data.data()), data.size());
+  EncodingSelection<PhysicalType> selection{
+      {.encodingType = EncodingType::SubIntSplit},
+      Statistics<PhysicalType>::create(span),
+      std::make_unique<NonRecursiveSubIntSplitPolicy<T>>()};
+  auto encoded = SubIntSplitEncoding<T>::encode(selection, span, buffer);
+  return std::make_unique<SubIntSplitEncoding<T>>(
+      memPool, encoded, [](uint32_t) { return nullptr; });
+}
 
 // ---------------------------------------------------------------------------
 // Test fixture
@@ -4364,6 +4430,189 @@ TEST_P(
   for (int i = 0; i < numSelected; ++i) {
     EXPECT_EQ(values[i], data[rowVec[i]])
         << "selected row " << rowVec[i] << " at index " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SubIntSplitEncoding<int64_t> + AlwaysTrue + dense
+// Exercises the no-filter dense fast path for the 8-byte physical type.
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevelSubIntSplitAlwaysTrueDense) {
+  constexpr int kRows = 500;
+
+  // Values share a high prefix so the splitter produces multiple sections.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = static_cast<int64_t>(0x1234560000000000LL + i);
+  }
+
+  auto input = makeRowVector({makeFlatVector<int64_t>(
+      kRows, [](auto i) { return 0x1234560000000000LL + i; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = makeSubIntSplitEncoding<int64_t>(data, buffer, *pool());
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int64_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  encoding->readWithVisitor(visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], data[i]) << "row " << i;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SubIntSplitEncoding<int64_t> + BigintRange + sparse
+// Exercises the sparse gather + filter fast path.
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevelSubIntSplitBigintRangeSparse) {
+  constexpr int kRows = 500;
+
+  // Small-range data so a BigintRange filter selects a meaningful subset.
+  std::vector<int64_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = i % 16;
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kRows, [](auto i) { return i % 16; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(5, 10, false));
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  // Sparse RowSet: every other row.
+  std::vector<vector_size_t> rowVec;
+  for (int i = 0; i < kRows; i += 2) {
+    rowVec.push_back(i);
+  }
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int64_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = makeSubIntSplitEncoding<int64_t>(data, buffer, *pool());
+
+  common::BigintRange filter(5, 10, false);
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = false;
+  DecoderVisitor<
+      int64_t,
+      common::BigintRange,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  encoding->readWithVisitor(visitor, params);
+
+  int expected = 0;
+  for (int i = 0; i < kRows; i += 2) {
+    if (data[i] >= 5 && data[i] <= 10) {
+      ++expected;
+    }
+  }
+  EXPECT_EQ(reader->numValues(), expected);
+  auto values = getValues<int64_t>(reader);
+  for (int i = 0; i < reader->numValues(); ++i) {
+    EXPECT_GE(values[i], 5);
+    EXPECT_LE(values[i], 10);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SubIntSplitEncoding<int32_t> + AlwaysTrue + dense
+// Exercises the dense fast path for the 4-byte physical type.
+// ---------------------------------------------------------------------------
+TEST_P(ReadWithVisitorTest, encodingLevelSubIntSplitInt32AlwaysTrueDense) {
+  constexpr int kRows = 500;
+
+  std::vector<int32_t> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = static_cast<int32_t>(0x12340000 + i);
+  }
+
+  auto input = makeRowVector(
+      {makeFlatVector<int32_t>(kRows, [](auto i) { return 0x12340000 + i; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  auto encoding = makeSubIntSplitEncoding<int32_t>(data, buffer, *pool());
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  encoding->readWithVisitor(visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  auto values = getValues<int32_t>(reader);
+  for (int i = 0; i < kRows; ++i) {
+    EXPECT_EQ(values[i], data[i]) << "row " << i;
   }
 }
 
