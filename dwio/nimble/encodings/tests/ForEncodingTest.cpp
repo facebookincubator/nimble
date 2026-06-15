@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/ForEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -21,7 +22,6 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
-#include "dwio/nimble/encodings/ForEncoding.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
@@ -100,24 +100,25 @@ TEST_F(ForEncodingTest, ConstantValue) {
   encoding->materialize(500, result.data());
 
   for (size_t i = 0; i < data.size(); ++i) {
-    ASSERT_EQ(result[i], constantValue) << "Expected " << constantValue << " at index " << i;
+    ASSERT_EQ(result[i], constantValue)
+        << "Expected " << constantValue << " at index " << i;
   }
 }
 
 // Test with values requiring different bit widths
 TEST_F(ForEncodingTest, MixedBitWidths) {
   nimble::Vector<int32_t> data(pool_.get());
-  
+
   // Frame 1: small range (1-bit)
   for (int i = 0; i < 128; ++i) {
     data.push_back(100 + (i % 2));
   }
-  
+
   // Frame 2: medium range (4-bit)
   for (int i = 0; i < 128; ++i) {
     data.push_back(200 + (i % 16));
   }
-  
+
   // Frame 3: larger range (8-bit)
   for (int i = 0; i < 128; ++i) {
     data.push_back(300 + (i % 256));
@@ -170,16 +171,16 @@ TEST_F(ForEncodingTest, SelectiveRead) {
   // Read first 100
   nimble::Vector<int32_t> result1(pool_.get(), 100);
   encoding->materialize(100, result1.data());
-  
+
   for (size_t i = 0; i < 100; ++i) {
     ASSERT_EQ(result1[i], data[i]) << "Mismatch at index " << i;
   }
-  
+
   // Skip 200, then read next 100
   encoding->skip(200);
   nimble::Vector<int32_t> result2(pool_.get(), 100);
   encoding->materialize(100, result2.data());
-  
+
   for (size_t i = 0; i < 100; ++i) {
     ASSERT_EQ(result2[i], data[300 + i]) << "Mismatch at index " << (300 + i);
   }
@@ -249,9 +250,9 @@ TEST_F(ForEncodingTest, UnsignedTypes) {
 TEST_F(ForEncodingTest, LargeValues) {
   nimble::Vector<int64_t> data(pool_.get());
   data.push_back(0);
-  data.push_back(1LL << 30);  // ~1 billion
-  data.push_back(1LL << 31);  // ~2 billion
-  data.push_back(1LL << 32);  // ~4 billion
+  data.push_back(1LL << 30); // ~1 billion
+  data.push_back(1LL << 31); // ~2 billion
+  data.push_back(1LL << 32); // ~4 billion
   data.push_back((1LL << 33) - 1);
 
   auto encoding = createEncoding(data);
@@ -273,16 +274,16 @@ TEST_F(ForEncodingTest, Skip) {
   }
 
   auto encoding = createEncoding(data);
-  
+
   // Skip first 100 elements
   encoding->skip(100);
-  
+
   // Read next 50
   nimble::Vector<int32_t> result(pool_.get(), 50);
   encoding->materialize(50, result.data());
 
   for (size_t i = 0; i < 50; ++i) {
-    ASSERT_EQ(result[i], data[100 + i]) 
+    ASSERT_EQ(result[i], data[100 + i])
         << "Mismatch at index " << (100 + i) << " after skip";
   }
 }
@@ -295,20 +296,20 @@ TEST_F(ForEncodingTest, Reset) {
   }
 
   auto encoding = createEncoding(data);
-  
+
   // Read first 50
   nimble::Vector<int32_t> result1(pool_.get(), 50);
   encoding->materialize(50, result1.data());
 
   // Reset
   encoding->reset();
-  
+
   // Read first 50 again
   nimble::Vector<int32_t> result2(pool_.get(), 50);
   encoding->materialize(50, result2.data());
 
   for (size_t i = 0; i < 50; ++i) {
-    ASSERT_EQ(result1[i], result2[i]) 
+    ASSERT_EQ(result1[i], result2[i])
         << "Reset failed - mismatch at index " << i;
   }
 }
@@ -317,16 +318,16 @@ TEST_F(ForEncodingTest, Reset) {
 TEST_F(ForEncodingTest, WithCompression) {
   nimble::Vector<int32_t> data(pool_.get());
   for (int i = 0; i < 1000; ++i) {
-    data.push_back(i % 100);  // Repeating pattern
+    data.push_back(i % 100); // Repeating pattern
   }
 
-  auto encoding = nimble::test::Encoder<nimble::ForEncoding<int32_t>>::
-      createEncoding(
+  auto encoding =
+      nimble::test::Encoder<nimble::ForEncoding<int32_t>>::createEncoding(
           *buffer_,
           data,
           [](uint32_t) -> void* { return nullptr; },
           nimble::CompressionType::Zstd);
-  
+
   ASSERT_EQ(encoding->rowCount(), 1000);
 
   nimble::Vector<int32_t> result(pool_.get(), 1000);
@@ -359,7 +360,7 @@ TEST_F(ForEncodingTest, SmallData) {
 TEST_F(ForEncodingTest, ExactFrameBoundary) {
   nimble::Vector<int32_t> data(pool_.get());
   // Default frame size is 128
-  for (int i = 0; i < 256; ++i) {  // Exactly 2 frames
+  for (int i = 0; i < 256; ++i) { // Exactly 2 frames
     data.push_back(i);
   }
 
@@ -424,7 +425,7 @@ TEST_F(ForEncodingTest, Uint64Type) {
 TEST_F(ForEncodingTest, SelectiveReadsWithPattern) {
   nimble::Vector<int32_t> data(pool_.get());
   for (int i = 0; i < 1000; ++i) {
-    data.push_back(i * 7);  // Some pattern
+    data.push_back(i * 7); // Some pattern
   }
 
   auto encoding = createEncoding(data);
@@ -442,7 +443,7 @@ TEST_F(ForEncodingTest, SelectiveReadsWithPattern) {
   for (int i = 0; i < 100; ++i) {
     // Read one value
     encoding->materialize(1, &results[resultIdx++]);
-    
+
     // Skip next 9 (unless last iteration)
     if (i < 99) {
       encoding->skip(9);
@@ -450,7 +451,7 @@ TEST_F(ForEncodingTest, SelectiveReadsWithPattern) {
   }
 
   for (size_t i = 0; i < expected.size(); ++i) {
-    ASSERT_EQ(results[i], expected[i]) 
+    ASSERT_EQ(results[i], expected[i])
         << "Mismatch at selective index " << i << " (row " << (i * 10) << ")";
   }
 }
@@ -494,7 +495,7 @@ TEST_F(ForEncodingTest, RandomAccessWithResets) {
 TEST_F(ForEncodingTest, SparseSelectiveReads) {
   nimble::Vector<uint32_t> data(pool_.get());
   for (uint32_t i = 0; i < 1000; ++i) {
-    data.push_back(i * i);  // Quadratic values
+    data.push_back(i * i); // Quadratic values
   }
 
   auto encoding = createEncoding(data);
@@ -507,25 +508,24 @@ TEST_F(ForEncodingTest, SparseSelectiveReads) {
   }
 
   nimble::Vector<uint32_t> results(pool_.get(), indices.size());
-  
+
   // Read index 0
   encoding->materialize(1, &results[0]);
-  
+
   // Skip to 100, read it
   encoding->skip(99);
   encoding->materialize(1, &results[1]);
-  
+
   // Skip to 500, read it
   encoding->skip(399);
   encoding->materialize(1, &results[2]);
-  
+
   // Skip to 999, read it
   encoding->skip(498);
   encoding->materialize(1, &results[3]);
 
   for (size_t i = 0; i < indices.size(); ++i) {
-    ASSERT_EQ(results[i], expected[i]) 
-        << "Mismatch for index " << indices[i];
+    ASSERT_EQ(results[i], expected[i]) << "Mismatch for index " << indices[i];
   }
 }
 
@@ -542,24 +542,24 @@ TEST_F(ForEncodingTest, SelectiveAcrossFrameBoundaries) {
   // Read values at frame boundaries
   // Frame 0: 0-127, Frame 1: 128-255, Frame 2: 256-383
   std::vector<uint32_t> testIndices = {
-      0,    // Start of frame 0
-      63,   // Middle of frame 0
-      127,  // End of frame 0
-      128,  // Start of frame 1
-      191,  // Middle of frame 1  
-      255,  // End of frame 1
-      256,  // Start of frame 2
-      319,  // Middle of frame 2
-      383   // End of frame 2
+      0, // Start of frame 0
+      63, // Middle of frame 0
+      127, // End of frame 0
+      128, // Start of frame 1
+      191, // Middle of frame 1
+      255, // End of frame 1
+      256, // Start of frame 2
+      319, // Middle of frame 2
+      383 // End of frame 2
   };
 
   encoding->reset();
   nimble::Vector<int32_t> results(pool_.get(), testIndices.size());
-  
+
   uint32_t currentPos = 0;
   for (size_t i = 0; i < testIndices.size(); ++i) {
     uint32_t targetIdx = testIndices[i];
-    
+
     if (targetIdx > currentPos) {
       encoding->skip(targetIdx - currentPos);
       currentPos = targetIdx;
@@ -569,13 +569,13 @@ TEST_F(ForEncodingTest, SelectiveAcrossFrameBoundaries) {
       encoding->skip(targetIdx);
       currentPos = targetIdx;
     }
-    
+
     encoding->materialize(1, &results[i]);
     currentPos++;
   }
 
   for (size_t i = 0; i < testIndices.size(); ++i) {
-    ASSERT_EQ(results[i], static_cast<int32_t>(testIndices[i])) 
+    ASSERT_EQ(results[i], static_cast<int32_t>(testIndices[i]))
         << "Mismatch at frame boundary index " << testIndices[i];
   }
 }
@@ -583,41 +583,40 @@ TEST_F(ForEncodingTest, SelectiveAcrossFrameBoundaries) {
 // Test selective read with varying bit widths across frames
 TEST_F(ForEncodingTest, SelectiveWithVaryingBitWidths) {
   nimble::Vector<int64_t> data(pool_.get());
-  
+
   // Frame 0: small range (1-bit width)
   for (int i = 0; i < 128; ++i) {
     data.push_back(1000 + (i % 2));
   }
-  
+
   // Frame 1: medium range (8-bit width)
   for (int i = 0; i < 128; ++i) {
     data.push_back(2000 + (i % 200));
   }
-  
+
   // Frame 2: large range (32-bit width)
   for (int i = 0; i < 128; ++i) {
     data.push_back(1000000000LL + i);
   }
 
   auto encoding = createEncoding(data);
-  
+
   // Selectively read from each frame
   std::vector<std::pair<uint32_t, int64_t>> tests = {
-      {50, 1000 + (50 % 2)},              // From frame 0
-      {150, 2000 + (22 % 200)},            // From frame 1 (150 - 128 = 22)
-      {300, 1000000000LL + (300 - 256)}    // From frame 2 (300 - 256 = 44)
+      {50, 1000 + (50 % 2)}, // From frame 0
+      {150, 2000 + (22 % 200)}, // From frame 1 (150 - 128 = 22)
+      {300, 1000000000LL + (300 - 256)} // From frame 2 (300 - 256 = 44)
   };
 
   encoding->reset();
   for (const auto& [index, expectedValue] : tests) {
     encoding->reset();
     encoding->skip(index);
-    
+
     nimble::Vector<int64_t> result(pool_.get(), 1);
     encoding->materialize(1, result.data());
-    
-    ASSERT_EQ(result[0], expectedValue) 
-        << "Mismatch at index " << index;
+
+    ASSERT_EQ(result[0], expectedValue) << "Mismatch at index " << index;
   }
 }
 
@@ -632,16 +631,15 @@ TEST_F(ForEncodingTest, BatchSelectiveReads) {
 
   // Read batches: [0-9], [100-109], [500-509], [900-909]
   std::vector<std::pair<uint32_t, uint32_t>> ranges = {
-      {0, 10}, {100, 10}, {500, 10}, {900, 10}
-  };
+      {0, 10}, {100, 10}, {500, 10}, {900, 10}};
 
   for (const auto& [start, count] : ranges) {
     encoding->reset();
     encoding->skip(start);
-    
+
     nimble::Vector<int32_t> result(pool_.get(), count);
     encoding->materialize(count, result.data());
-    
+
     for (uint32_t i = 0; i < count; ++i) {
       uint32_t expectedIdx = start + i;
       ASSERT_EQ(result[i], static_cast<int32_t>(expectedIdx * 3))

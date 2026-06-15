@@ -179,8 +179,7 @@ void writeFile(
   }
 
   for (auto compressionType :
-       {nimble::CompressionType::Uncompressed,
-        nimble::CompressionType::Zstd}) {
+       {nimble::CompressionType::Uncompressed, nimble::CompressionType::Zstd}) {
     std::string_view encoded;
     if constexpr (
         nimble::test::Encoder<E>::encodingType() ==

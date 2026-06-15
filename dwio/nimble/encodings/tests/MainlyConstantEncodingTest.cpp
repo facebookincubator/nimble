@@ -56,7 +56,8 @@ struct MainlyConstantValuesPreparer<double, TestClass> {
         test->toVector({0.0}),
         test->toVector({0.0, 0.00, 0.12}),
         test->toVector({-2.1, -2.1, -2.3, -2.1, -2.1}),
-        test->toVector({test->dNaN0, test->dNaN0, test->dNaN1, test->dNaN2, test->dNaN0})};
+        test->toVector(
+            {test->dNaN0, test->dNaN0, test->dNaN1, test->dNaN2, test->dNaN0})};
   }
 };
 
@@ -67,7 +68,8 @@ struct MainlyConstantValuesPreparer<float, TestClass> {
         test->toVector({0.0f}),
         test->toVector({0.0f, 0.00f, 0.12f}),
         test->toVector({-2.1f, -2.1f, -2.3f, -2.1f, -2.1f}),
-        test->toVector({test->fNaN0, test->fNaN0, test->fNaN1, test->fNaN2, test->fNaN2})};
+        test->toVector(
+            {test->fNaN0, test->fNaN0, test->fNaN1, test->fNaN2, test->fNaN2})};
   }
 };
 
