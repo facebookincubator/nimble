@@ -212,6 +212,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     readerOptions.setCacheData(false);
     readerOptions.setCacheMetadata(GetParam().cacheMetadata);
     readerOptions.setPinMetadata(GetParam().pinMetadata);
+    readerOptions.setFilePreloadThreshold(0);
     readerOptions.setIOExecutor(ioExecutor_);
     ensureTabletReaderCache();
     return NimbleIndexProjector::create(
@@ -1791,6 +1792,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     readerOptions.setMaxCoalesceDistance(maxCoalesceDistance);
     readerOptions.setCacheData(false);
     readerOptions.setIOExecutor(ioExecutor_);
+    readerOptions.setFilePreloadThreshold(0);
 
     TabletReaderCache::testingReset();
     ensureTabletReaderCache();
