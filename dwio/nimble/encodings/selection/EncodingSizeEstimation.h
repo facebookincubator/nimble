@@ -21,6 +21,9 @@
 #include <optional>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
+#endif
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -97,8 +100,18 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
-      // SubIntSplit integration commented out (disabled):
-      /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+      case EncodingType::BlockBitPacking: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return BlockBitPackingEncoding<physicalType>::estimateSize(
+              entryCount, statistics);
+        } else {
+          return std::nullopt;
+        }
+      }
+#endif
+      // SubIntSplit integration (re-enabled for
+      // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
       case EncodingType::SubIntSplit: {
         if constexpr (
@@ -127,7 +140,6 @@ struct EncodingSizeEstimation {
         }
       }
 #endif
-      */
       default: {
         return std::nullopt;
       }
