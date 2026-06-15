@@ -55,7 +55,8 @@ inline constexpr uint8_t storageWidthBits(int bw) noexcept {
 
 // Union of MetricFlags needed across all cost models below.
 inline MetricFlags allCostModelRequiredFlags() noexcept {
-  return MetricFlag::MinMax | MetricFlag::RunStats | MetricFlag::UniqueCount;
+  return MetricFlag::MinMax | MetricFlag::RunStats | MetricFlag::UniqueCount |
+      MetricFlag::DominantValue;
 }
 
 // Trivial: store each value at its native storage width.
@@ -110,6 +111,55 @@ inline double constantCostBits(
   const double headerBits =
       (6.0 + static_cast<double>(storageWidthBits(bitWidth)) / 8.0) * 8.0;
   return headerBits;
+}
+
+// MainlyConstant: store one dominant value, a SparseBool mask marking the
+// exception rows, and the exception values as a FixedBitWidth child. Effective
+// when one value dominates the segment (say >=50%).
+// Required: DominantValue, MinMax
+inline double mainlyConstantCostBits(
+    const SegmentMetrics& m,
+    size_t numValues,
+    int bitWidth) noexcept {
+  if (numValues == 0) {
+    return 0.0;
+  }
+  // Without a reliable dominant-value count (cardinality exceeded the cap)
+  // there is no dominant value and MainlyConstant cannot help.
+  if (m.dominantCountCapped || m.dominantCount == 0) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  const double storageBits = static_cast<double>(storageWidthBits(bitWidth));
+  const double storageBytes = storageBits / 8.0;
+  const size_t uncommonCount =
+      m.dominantCount >= numValues ? 0 : numValues - m.dominantCount;
+
+  // Outer: prefix(6) + two child-size fields(4 each) + the common value.
+  const double outerBits = (6.0 + 4.0 + 4.0) * 8.0 + storageBits;
+
+  // otherValues: FixedBitWidth over the uncommon values (observed range),
+  // packed bits rounded up to a byte boundary.
+  const uint8_t rangeWidth =
+      m.range == 0 ? uint8_t{0} : static_cast<uint8_t>(std::bit_width(m.range));
+  const uint8_t packedBits = static_cast<uint8_t>(
+      (std::min<uint8_t>(static_cast<uint8_t>(bitWidth), rangeWidth) + 7u) &
+      ~7u);
+
+  const double otherHeaderBits = (7.0 + storageBytes + 1.0) * 8.0;
+  const double otherValuesBits = otherHeaderBits +
+      static_cast<double>(packedBits) * static_cast<double>(uncommonCount);
+
+  const uint32_t indexWidth =
+      numValues <= 1 ? 1u : static_cast<uint32_t>(std::bit_width(numValues));
+  const double roundedIndexBits = static_cast<double>((indexWidth + 7u) & ~7u);
+  // SparseBool: prefix(6) + tag(1) + FixedBitWidth header(7 + uint32 baseline +
+  // 1)
+  const double sparseHeaderBits = (6.0 + 1.0 + 7.0 + 4.0 + 1.0) * 8.0;
+  const double isCommonBits = sparseHeaderBits +
+      roundedIndexBits * static_cast<double>(uncommonCount + 1);
+
+  return outerBits + otherValuesBits + isCommonBits;
 }
 
 // Dictionary: unique value table + bit-packed indices.
@@ -220,6 +270,9 @@ inline double bestCostBits(
       fixedBitWidthCostBits(m, numValues, bitWidth),
       EncodingType::FixedBitWidth);
   consider(constantCostBits(m, numValues, bitWidth), EncodingType::Constant);
+  consider(
+      mainlyConstantCostBits(m, numValues, bitWidth),
+      EncodingType::MainlyConstant);
   consider(rleCostBits(m, numValues, bitWidth), EncodingType::RLE);
   consider(varintCostBits(m, numValues, bitWidth), EncodingType::Varint);
   // Dictionary only when cardinality << numValues

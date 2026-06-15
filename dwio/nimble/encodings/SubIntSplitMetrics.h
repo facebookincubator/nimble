@@ -36,7 +36,8 @@ enum class MetricFlag : uint32_t {
   MinMax = 1u << 0, // min, max, range
   RunStats = 1u << 1, // runCount, avgRunLength
   UniqueCount = 1u << 2, // uniqueCount (raw, capped)
-  All = (1u << 3) - 1,
+  DominantValue = 1u << 3, // dominantCount (most-frequent value's frequency)
+  All = (1u << 4) - 1,
 };
 using MetricFlags = uint32_t;
 
@@ -58,6 +59,11 @@ struct SegmentMetrics {
   size_t uniqueCount{0};
   bool uniqueCountCapped{false};
 
+  // Frequency of the most common value. Used by the MainlyConstant cost model.
+  // Unreliable (and flagged capped) once cardinality exceeds the unique cap.
+  size_t dominantCount{0};
+  bool dominantCountCapped{false};
+
   size_t runCount{0};
   double avgRunLength{0.0};
 };
@@ -76,6 +82,9 @@ class MetricCollector {
     const bool doMin = hasFlag(flags, MetricFlag::MinMax);
     const bool doRun = hasFlag(flags, MetricFlag::RunStats);
     const bool doUniq = hasFlag(flags, MetricFlag::UniqueCount);
+    const bool doDominant = hasFlag(flags, MetricFlag::DominantValue);
+    // Unique count and dominant value share a single frequency map pass.
+    const bool doFreq = doUniq || doDominant;
 
     SegmentMetrics out;
     const size_t n = values.size();
@@ -92,11 +101,13 @@ class MetricCollector {
       out.runCount = 1;
     }
 
-    absl::flat_hash_map<uint64_t, uint8_t> uniqSet;
+    absl::flat_hash_map<uint64_t, uint32_t> freqMap;
     bool capped = false;
-    if (doUniq) {
-      uniqSet.reserve(std::min(n, kUniqueCountCap));
-      uniqSet.emplace(v0, 1);
+    uint32_t maxCount = 0;
+    if (doFreq) {
+      freqMap.reserve(std::min(n, kUniqueCountCap));
+      freqMap.emplace(v0, 1u);
+      maxCount = 1;
     }
 
     uint64_t prev = v0;
@@ -113,9 +124,13 @@ class MetricCollector {
       if (doRun && v != prev) {
         ++out.runCount;
       }
-      if (doUniq && !capped) {
-        uniqSet.emplace(v, 1);
-        if (uniqSet.size() > kUniqueCountCap) {
+      if (doFreq && !capped) {
+        auto [it, inserted] = freqMap.try_emplace(v, 0u);
+        const uint32_t count = ++it->second;
+        if (count > maxCount) {
+          maxCount = count;
+        }
+        if (inserted && freqMap.size() > kUniqueCountCap) {
           capped = true;
         }
       }
@@ -130,8 +145,12 @@ class MetricCollector {
           static_cast<double>(n) / static_cast<double>(out.runCount);
     }
     if (doUniq) {
-      out.uniqueCount = capped ? (kUniqueCountCap + 1) : uniqSet.size();
+      out.uniqueCount = capped ? (kUniqueCountCap + 1) : freqMap.size();
       out.uniqueCountCapped = capped;
+    }
+    if (doDominant) {
+      out.dominantCount = maxCount;
+      out.dominantCountCapped = capped;
     }
 
     return out;
