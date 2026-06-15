@@ -65,7 +65,8 @@ struct ValuesPreparer<double, TestClass> {
         test->toVector({test->dNaN1, test->dNaN1, test->dNaN1}),
         test->toVector({test->dNaN2, test->dNaN2, test->dNaN2})};
   }
-  static std::vector<nimble::Vector<double>> prepareFailureValues(TestClass* test) {
+  static std::vector<nimble::Vector<double>> prepareFailureValues(
+      TestClass* test) {
     return {
         test->toVector({-0.0, -0.00, -0.0000001}),
         test->toVector({-2.1, -2.1, -2.1, -2.1, -2.2}),
@@ -85,7 +86,8 @@ struct ValuesPreparer<float, TestClass> {
         test->toVector({test->fNaN1, test->fNaN1, test->fNaN1}),
         test->toVector({test->fNaN2, test->fNaN2, test->fNaN2})};
   }
-  static std::vector<nimble::Vector<float>> prepareFailureValues(TestClass* test) {
+  static std::vector<nimble::Vector<float>> prepareFailureValues(
+      TestClass* test) {
     return {
         test->toVector({-0.0f, -0.00f, -0.0000001f}),
         test->toVector({-2.1f, -2.1f, -2.1f, -2.1f, -2.2f}),
@@ -98,7 +100,8 @@ struct ValuesPreparer<int32_t, TestClass> {
   static std::vector<nimble::Vector<int32_t>> prepareValues(TestClass* test) {
     return {test->toVector({1}), test->toVector({3, 3, 3})};
   }
-  static std::vector<nimble::Vector<int32_t>> prepareFailureValues(TestClass* test) {
+  static std::vector<nimble::Vector<int32_t>> prepareFailureValues(
+      TestClass* test) {
     return {test->toVector({3, 2, 3})};
   }
 };

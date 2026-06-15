@@ -74,7 +74,8 @@ struct EncodingIdentifiers {
 
   struct FrequencyPartition {
     // Partition metadata
-    // Eventually we may want to allow for non-power-of-two bit partitions, but for now we can just define constants for the power-of-two cases.
+    // Eventually we may want to allow for non-power-of-two bit partitions, but
+    // for now we can just define constants for the power-of-two cases.
     static constexpr NestedEncodingIdentifier PartitionOffsets = 0;
     static constexpr NestedEncodingIdentifier PartitionSizes = 1;
     // Per-tier dictionaries (1-bit, 2-bit, 4-bit, 8-bit, etc.)
