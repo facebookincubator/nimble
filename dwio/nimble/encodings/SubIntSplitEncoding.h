@@ -37,6 +37,7 @@
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/dwio/common/DecoderUtil.h"
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -93,6 +94,17 @@ class SubIntSplitEncoding
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
+  // Bulk scan method for the readWithVisitor fast path. Decodes the contiguous
+  // span covering the selected rows once, then gathers/scatters the requested
+  // positions through the visitor. Invoked by detail::readWithVisitorFast.
+  template <bool kScatter, typename Visitor>
+  void bulkScan(
+      Visitor& visitor,
+      vector_size_t currentRow,
+      const vector_size_t* selectedRows,
+      vector_size_t numSelected,
+      const vector_size_t* scatterRows);
+
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
@@ -115,6 +127,15 @@ class SubIntSplitEncoding
   // Persistent scratch buffer reused across materialize() calls. Sized to
   // kMaterializeChunkSize * sizeof(physicalType) bytes on first use.
   Vector<uint8_t> scratchBuf_;
+
+  // Logical read cursor (rows consumed so far). Maintained across skip(),
+  // materialize(), and the readWithVisitor slow path so the fast path can map
+  // external row numbers onto the section cursors.
+  uint32_t row_{0};
+
+  // Scratch buffer for the readWithVisitor fast path. Holds the decoded span of
+  // physical values before they are gathered/widened into the reader output.
+  Vector<physicalType> decodeBuf_;
 
   // Return the storage byte width for a section of the given bit width.
   static constexpr uint8_t sectionStorageBytes(int bitWidth) noexcept {
@@ -171,7 +192,8 @@ SubIntSplitEncoding<T>::SubIntSplitEncoding(
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
       sections_{},
-      scratchBuf_{&pool} {
+      scratchBuf_{&pool},
+      decodeBuf_{&pool} {
   const EncodingFactory factory{options};
   const auto* pos = data.data() + this->dataOffset();
 
@@ -209,6 +231,7 @@ void SubIntSplitEncoding<T>::reset() {
   for (auto& sec : sections_) {
     sec.encoding->reset();
   }
+  row_ = 0;
 }
 
 template <typename T>
@@ -216,6 +239,7 @@ void SubIntSplitEncoding<T>::skip(uint32_t rowCount) {
   for (auto& sec : sections_) {
     sec.encoding->skip(rowCount);
   }
+  row_ += rowCount;
 }
 
 // accumulateSection: widen narrow section values into the physicalType output.
@@ -504,13 +528,42 @@ void SubIntSplitEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
       }
     }
   }
+
+  row_ += rowCount;
 }
 
 template <typename T>
-template <typename DecoderVisitor>
+template <typename V>
 void SubIntSplitEncoding<T>::readWithVisitor(
-    DecoderVisitor& visitor,
+    V& visitor,
     ReadWithVisitorParams& params) {
+  using OutputType = detail::ValueType<typename V::DataType>;
+  constexpr bool kIsSuitableWidth =
+      (isFourByteIntegralType<physicalType>() ||
+       isEightByteIntegralType<physicalType>());
+  constexpr bool kIsFluidCast = sizeof(OutputType) >= sizeof(physicalType) &&
+      std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
+
+  // Fast path: bulk-decode for integral 4/8-byte physical types extracted into
+  // the reader with a compatible (at-least-as-wide integral) output type.
+  // Float/double fall through here (kIsFluidCast is false for them) and use the
+  // slow path, which applies castFromPhysicalType. The runtime useFastPath
+  // check additionally requires a deterministic filter, AVX2, and the bulk path
+  // being enabled with null+filter/hook compatibility.
+  if constexpr (
+      kIsSuitableWidth &&
+      std::is_same_v<
+          typename V::Extract,
+          velox::dwio::common::ExtractToReader> &&
+      kIsFluidCast) {
+    auto* nulls = visitor.reader().rawNullsInReadRange();
+    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+      detail::readWithVisitorFast(*this, visitor, params, nulls);
+      return;
+    }
+  }
+
+  // Slow path: reconstruct one value at a time from the section encodings.
   detail::readWithVisitorSlow(
       visitor,
       params,
@@ -552,8 +605,114 @@ void SubIntSplitEncoding<T>::readWithVisitor(
             }
           }
         }
+        // Keep row_ in sync so a subsequent fast-path chunk maps rows
+        // correctly.
+        ++row_;
         return value;
       });
+}
+
+template <typename T>
+template <bool kScatter, typename V>
+void SubIntSplitEncoding<T>::bulkScan(
+    V& visitor,
+    vector_size_t currentRow,
+    const vector_size_t* selectedRows,
+    vector_size_t numSelected,
+    const vector_size_t* scatterRows) {
+  using OutputType = detail::ValueType<typename V::DataType>;
+  static_assert(
+      isFourByteIntegralType<physicalType>() ||
+          isEightByteIntegralType<physicalType>(),
+      "bulkScan only supports 4-byte or 8-byte integral types");
+
+  if (numSelected == 0) {
+    return;
+  }
+
+  const auto numRows = visitor.numRows() - visitor.rowIndex();
+
+  // Map external row numbers onto the section cursors. Nulls can make the
+  // encoding (non-null) position lag the logical row number.
+  const auto offset =
+      static_cast<int32_t>(row_) - static_cast<int32_t>(currentRow);
+
+  // The selected rows all lie within one contiguous span of stored (non-null)
+  // values. Decode that whole span once, then gather the selected positions.
+  const vector_size_t spanStart = selectedRows[0] + offset;
+  const vector_size_t spanEnd = selectedRows[numSelected - 1] + offset;
+  const uint32_t spanLength = static_cast<uint32_t>(spanEnd - spanStart + 1);
+
+  // Advance the section cursors to the start of the span.
+  if (spanStart > static_cast<vector_size_t>(row_)) {
+    skip(static_cast<uint32_t>(spanStart - static_cast<vector_size_t>(row_)));
+  }
+
+  auto* values = detail::mutableValues<OutputType>(visitor, numRows);
+
+  // Same-size integral output shares the physical bit pattern, so we can decode
+  // straight into the reader buffer; otherwise stage in decodeBuf_ and widen.
+  constexpr bool kSameSize = sizeof(physicalType) == sizeof(OutputType);
+
+  if constexpr (V::dense) {
+    // Dense: the span is exactly the selected rows (spanLength == numSelected).
+    if constexpr (kSameSize) {
+      materialize(spanLength, values);
+    } else {
+      decodeBuf_.resize(spanLength);
+      materialize(spanLength, decodeBuf_.data());
+      for (vector_size_t i = 0; i < numSelected; ++i) {
+        values[i] = static_cast<OutputType>(decodeBuf_[i]);
+      }
+    }
+  } else {
+    // Sparse: decode the span, then gather the selected positions.
+    decodeBuf_.resize(spanLength);
+    materialize(spanLength, decodeBuf_.data());
+    for (vector_size_t i = 0; i < numSelected; ++i) {
+      values[i] = static_cast<OutputType>(
+          decodeBuf_[selectedRows[i] - selectedRows[0]]);
+    }
+  }
+
+  // No scatter, filter, or hook: values are already in the output buffer.
+  if constexpr (!kScatter && !V::kHasFilter && !V::kHasHook) {
+    visitor.addNumValues(numRows);
+    visitor.setRowIndex(visitor.numRows());
+    return;
+  }
+
+  // processFixedWidthRun handles scatter (null gaps), filter evaluation, and
+  // hook forwarding. For non-hook paths it operates in place on the reader's
+  // rawValues; for hooks, values stays as the staged buffer.
+  if constexpr (!V::kHasHook) {
+    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+  }
+
+  auto numValues = visitor.reader().numValues();
+  int32_t* filterHits = nullptr;
+  if constexpr (V::kHasFilter) {
+    filterHits = visitor.outputRows(numSelected) - numValues;
+  }
+
+  velox::dwio::common::
+      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+          velox::RowSet(selectedRows, numSelected),
+          0,
+          numSelected,
+          scatterRows,
+          values,
+          filterHits,
+          numValues,
+          visitor.filter(),
+          visitor.hook());
+
+  if constexpr (!V::kHasHook) {
+    // Filter: count passing rows; no filter: all rows produce values.
+    visitor.addNumValues(
+        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+  }
+  visitor.setRowIndex(visitor.numRows());
 }
 
 template <typename T>
