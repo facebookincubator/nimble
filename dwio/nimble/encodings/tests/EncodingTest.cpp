@@ -413,22 +413,26 @@ struct EncodingTypeGetter<nimble::ConstantEncoding<T>> {
 
 template <typename T>
 struct EncodingTypeGetter<nimble::DictionaryEncoding<T>> {
-  static constexpr nimble::EncodingType value = nimble::EncodingType::Dictionary;
+  static constexpr nimble::EncodingType value =
+      nimble::EncodingType::Dictionary;
 };
 
 template <typename T>
 struct EncodingTypeGetter<nimble::FixedBitWidthEncoding<T>> {
-  static constexpr nimble::EncodingType value = nimble::EncodingType::FixedBitWidth;
+  static constexpr nimble::EncodingType value =
+      nimble::EncodingType::FixedBitWidth;
 };
 
 template <typename T>
 struct EncodingTypeGetter<nimble::FrequencyPartitionEncoding<T>> {
-  static constexpr nimble::EncodingType value = nimble::EncodingType::FrequencyPartition;
+  static constexpr nimble::EncodingType value =
+      nimble::EncodingType::FrequencyPartition;
 };
 
 template <typename T>
 struct EncodingTypeGetter<nimble::MainlyConstantEncoding<T>> {
-  static constexpr nimble::EncodingType value = nimble::EncodingType::MainlyConstant;
+  static constexpr nimble::EncodingType value =
+      nimble::EncodingType::MainlyConstant;
 };
 
 template <typename T>
@@ -438,7 +442,8 @@ struct EncodingTypeGetter<nimble::RLEEncoding<T>> {
 
 template <>
 struct EncodingTypeGetter<nimble::SparseBoolEncoding> {
-  static constexpr nimble::EncodingType value = nimble::EncodingType::SparseBool;
+  static constexpr nimble::EncodingType value =
+      nimble::EncodingType::SparseBool;
 };
 
 template <typename T>

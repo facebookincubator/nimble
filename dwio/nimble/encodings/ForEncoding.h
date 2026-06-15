@@ -20,14 +20,14 @@
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
-#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
 // Frame of Reference encoding. Divides data into fixed-size frames, storing
@@ -63,8 +63,8 @@ class ForEncoding final
   ForEncoding(
       velox::memory::MemoryPool& memoryPool,
       std::string_view data,
-    std::function<void*(uint32_t)> stringBufferFactory = nullptr,
-    const Encoding::Options& options = {});
+      std::function<void*(uint32_t)> stringBufferFactory = nullptr,
+      const Encoding::Options& options = {});
 
   ~ForEncoding() override {
     this->releaseBuffer(uncompressedData_);
@@ -80,8 +80,8 @@ class ForEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
-    Buffer& buffer,
-    const Encoding::Options& options = {});
+      Buffer& buffer,
+      const Encoding::Options& options = {});
 
   std::string debugString(int offset) const final;
 
@@ -110,10 +110,8 @@ class ForEncoding final
     return row % frameSize_;
   }
 
-  void decodeRange(
-      uint32_t startRow,
-      uint32_t rowCount,
-      physicalType* output) const;
+  void decodeRange(uint32_t startRow, uint32_t rowCount, physicalType* output)
+      const;
 
   physicalType decodeValue(uint32_t row) const;
 };
@@ -125,9 +123,9 @@ template <typename T>
 ForEncoding<T>::ForEncoding(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
-  std::function<void*(uint32_t)> stringBufferFactory,
-  const Encoding::Options& options)
-  : TypedEncoding<T, physicalType>{memoryPool, data, options},
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& options)
+    : TypedEncoding<T, physicalType>{memoryPool, data, options},
       frames_{&memoryPool},
       currentRow_(0),
       buffer_{&memoryPool} {
@@ -137,10 +135,11 @@ ForEncoding<T>::ForEncoding(
 
   const char* pos = data.data() + kCompressionOffset;
   const EncodingFactory encodingFactory(options);
-  const auto nullStringBufferFactory =
-    [](uint32_t /*size*/) -> void* { return nullptr; };
+  const auto nullStringBufferFactory = [](uint32_t /*size*/) -> void* {
+    return nullptr;
+  };
   const auto& decodeStringBufferFactory =
-    stringBufferFactory ? stringBufferFactory : nullStringBufferFactory;
+      stringBufferFactory ? stringBufferFactory : nullStringBufferFactory;
 
   CompressionType compressionType =
       static_cast<CompressionType>(encoding::readChar(pos));
@@ -152,7 +151,9 @@ ForEncoding<T>::ForEncoding(
   // Read BitWidths array
   const uint32_t bitWidthsSize = encoding::readUint32(pos);
   auto bitWidthsEncoding = encodingFactory.create(
-      *this->pool_, std::string_view(pos, bitWidthsSize), decodeStringBufferFactory);
+      *this->pool_,
+      std::string_view(pos, bitWidthsSize),
+      decodeStringBufferFactory);
   pos += bitWidthsSize;
 
   Vector<uint8_t> bitWidths(&memoryPool, numFrames_);
@@ -161,7 +162,9 @@ ForEncoding<T>::ForEncoding(
   // Read References array
   const uint32_t referencesSize = encoding::readUint32(pos);
   auto referencesEncoding = encodingFactory.create(
-      *this->pool_, std::string_view(pos, referencesSize), decodeStringBufferFactory);
+      *this->pool_,
+      std::string_view(pos, referencesSize),
+      decodeStringBufferFactory);
   pos += referencesSize;
 
   Vector<physicalType> references(&memoryPool, numFrames_);
@@ -172,7 +175,9 @@ ForEncoding<T>::ForEncoding(
   if (enableBitOffsets_) {
     const uint32_t bitOffsetsSize = encoding::readUint32(pos);
     auto bitOffsetsEncoding = encodingFactory.create(
-        *this->pool_, std::string_view(pos, bitOffsetsSize), decodeStringBufferFactory);
+        *this->pool_,
+        std::string_view(pos, bitOffsetsSize),
+        decodeStringBufferFactory);
     pos += bitOffsetsSize;
 
     bitOffsets.resize(numFrames_);
@@ -198,8 +203,7 @@ ForEncoding<T>::ForEncoding(
     FrameInfo frame;
     frame.reference = references[i];
     frame.bitWidth = bitWidths[i];
-    frame.bitOffset =
-        enableBitOffsets_ ? bitOffsets[i] : cumulativeBitOffset;
+    frame.bitOffset = enableBitOffsets_ ? bitOffsets[i] : cumulativeBitOffset;
 
     uint32_t startRow = i * frameSize_;
     uint32_t endRow = std::min(startRow + frameSize_, this->rowCount_);
@@ -232,18 +236,16 @@ void ForEncoding<T>::decodeRange(
     uint32_t rowCount,
     physicalType* output) const {
   NIMBLE_DCHECK(
-      startRow + rowCount <= this->rowCount_,
-      "Decoding past end of encoding");
+      startRow + rowCount <= this->rowCount_, "Decoding past end of encoding");
 
-  // Streaming bit-cursor decoder: reads rowsToDecode values of frame.bitWidth bits
-  // from byteCursor at bitOffsetInByte, writing results via decodeException.
-  auto decodeBitStream = [](
-      const uint8_t* byteCursor,
-      uint8_t bitOffsetInByte,
-      uint8_t bitWidth,
-      uint32_t rowsToDecode,
-      auto&& decodeException) {
-
+  // Streaming bit-cursor decoder: reads rowsToDecode values of frame.bitWidth
+  // bits from byteCursor at bitOffsetInByte, writing results via
+  // decodeException.
+  auto decodeBitStream = [](const uint8_t* byteCursor,
+                            uint8_t bitOffsetInByte,
+                            uint8_t bitWidth,
+                            uint32_t rowsToDecode,
+                            auto&& decodeException) {
     uint64_t bitBuffer = 0;
     uint32_t bitsInBuffer = 0;
 
@@ -258,7 +260,8 @@ void ForEncoding<T>::decodeRange(
 
     for (uint32_t i = 0; i < rowsToDecode; ++i) {
       while (bitsInBuffer < bitWidth) {
-        bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(*byteCursor)) << bitsInBuffer;
+        bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(*byteCursor))
+            << bitsInBuffer;
         ++byteCursor;
         bitsInBuffer += 8;
       }
@@ -277,13 +280,15 @@ void ForEncoding<T>::decodeRange(
     const auto& frame = frames_[frameIndex];
     const uint32_t positionInFrame = getPositionInFrame(currentRow);
     const uint32_t rowsAvailableInFrame = frame.size - positionInFrame;
-    const uint32_t rowsToDecode = std::min(remainingRowCount, rowsAvailableInFrame);
+    const uint32_t rowsToDecode =
+        std::min(remainingRowCount, rowsAvailableInFrame);
 
     // Per-frame reference application — captures frame by ref
     auto decodeException = [&](uint32_t i, uint64_t residual) {
       if constexpr (std::is_signed_v<physicalType>) {
         output[outputOffset + i] = static_cast<physicalType>(
-            static_cast<int64_t>(residual) + static_cast<int64_t>(frame.reference));
+            static_cast<int64_t>(residual) +
+            static_cast<int64_t>(frame.reference));
       } else {
         output[outputOffset + i] =
             static_cast<physicalType>(residual + frame.reference);
@@ -292,17 +297,21 @@ void ForEncoding<T>::decodeRange(
 
     if (frame.bitWidth == 0) {
       // All values in frame are identical to reference
-      std::fill(output + outputOffset, output + outputOffset + rowsToDecode, frame.reference);
+      std::fill(
+          output + outputOffset,
+          output + outputOffset + rowsToDecode,
+          frame.reference);
 
     } else {
-      const uint64_t bitPosition =
-          frame.bitOffset + static_cast<uint64_t>(positionInFrame) * frame.bitWidth;
+      const uint64_t bitPosition = frame.bitOffset +
+          static_cast<uint64_t>(positionInFrame) * frame.bitWidth;
       const uint8_t bitOffsetInByte = static_cast<uint8_t>(bitPosition & 7U);
       const uint8_t* byteCursor =
           reinterpret_cast<const uint8_t*>(packedData_) + (bitPosition / 8);
 
       if (bitOffsetInByte == 0) {
-        // Byte-aligned: use typed loads for power-of-two widths, bit-stream otherwise
+        // Byte-aligned: use typed loads for power-of-two widths, bit-stream
+        // otherwise
         switch (frame.bitWidth) {
           case 8:
             for (uint32_t i = 0; i < rowsToDecode; ++i) {
@@ -312,32 +321,41 @@ void ForEncoding<T>::decodeRange(
           case 16:
             for (uint32_t i = 0; i < rowsToDecode; ++i) {
               uint16_t v;
-              std::memcpy(&v, byteCursor + i * sizeof(uint16_t), sizeof(uint16_t));
+              std::memcpy(
+                  &v, byteCursor + i * sizeof(uint16_t), sizeof(uint16_t));
               decodeException(i, v);
             }
             break;
           case 32:
             for (uint32_t i = 0; i < rowsToDecode; ++i) {
               uint32_t v;
-              std::memcpy(&v, byteCursor + i * sizeof(uint32_t), sizeof(uint32_t));
+              std::memcpy(
+                  &v, byteCursor + i * sizeof(uint32_t), sizeof(uint32_t));
               decodeException(i, v);
             }
             break;
           case 64:
             for (uint32_t i = 0; i < rowsToDecode; ++i) {
               uint64_t v;
-              std::memcpy(&v, byteCursor + i * sizeof(uint64_t), sizeof(uint64_t));
+              std::memcpy(
+                  &v, byteCursor + i * sizeof(uint64_t), sizeof(uint64_t));
               decodeException(i, v);
             }
             break;
           default:
             // Non-power-of-two width, byte-aligned start: bitOffsetInByte == 0
-            decodeBitStream(byteCursor, 0, frame.bitWidth, rowsToDecode, decodeException);
+            decodeBitStream(
+                byteCursor, 0, frame.bitWidth, rowsToDecode, decodeException);
             break;
         }
       } else {
         // Unaligned: always use the bit-streaming path
-        decodeBitStream(byteCursor, bitOffsetInByte, frame.bitWidth, rowsToDecode, decodeException);
+        decodeBitStream(
+            byteCursor,
+            bitOffsetInByte,
+            frame.bitWidth,
+            rowsToDecode,
+            decodeException);
       }
     }
 
@@ -398,8 +416,8 @@ std::string ForEncoding<T>::debugString(int offset) const {
     bitWidthCounts[frame.bitWidth]++;
   }
 
-  log += fmt::format(
-      "\n{}bitWidth distribution: ", std::string(offset + 2, ' '));
+  log +=
+      fmt::format("\n{}bitWidth distribution: ", std::string(offset + 2, ' '));
   for (const auto& [width, count] : bitWidthCounts) {
     log += fmt::format("{}b:{} ", width, count);
   }
@@ -425,8 +443,9 @@ std::string_view ForEncoding<T>::encode(
   }
 
   // Configuration (TODO: make configurable via policy)
-  const bool enableBitOffsets = true;  // Default: enable for O(1) random access
-  const uint32_t frameSize = 128;      // Default frame size (TODO: adaptive selection)
+  const bool enableBitOffsets = true; // Default: enable for O(1) random access
+  const uint32_t frameSize =
+      128; // Default frame size (TODO: adaptive selection)
 
   const uint32_t numFrames = (rowCount + frameSize - 1) / frameSize;
 
@@ -443,17 +462,18 @@ std::string_view ForEncoding<T>::encode(
 
   auto writeBits = [&](uint64_t value, uint8_t numBits) {
     size_t bitsToWrite = numBits;
-    
+
     while (bitsToWrite > 0) {
       size_t spaceInBuffer = 64 - bitBufferLen;
       size_t bitsThisRound = std::min(bitsToWrite, spaceInBuffer);
-      
-      uint64_t mask = (bitsThisRound == 64) ? ~0ULL : ((1ULL << bitsThisRound) - 1);
+
+      uint64_t mask =
+          (bitsThisRound == 64) ? ~0ULL : ((1ULL << bitsThisRound) - 1);
       uint64_t chunk = value & mask;
-      
+
       bitBuffer |= (chunk << bitBufferLen);
       bitBufferLen += bitsThisRound;
-      
+
       // Shifting by the full width (64) is undefined behavior, so guard it the
       // same way as the mask computation above.
       value = (bitsThisRound == 64) ? 0 : (value >> bitsThisRound);
@@ -470,12 +490,14 @@ std::string_view ForEncoding<T>::encode(
   constexpr std::array<uint8_t, 7> BIT_WIDTHS = {1, 2, 4, 8, 16, 32, 64};
 
   auto findMinBitWidth = [&](uint64_t maxValue) -> uint8_t {
-    if (maxValue == 0) return 1;
+    if (maxValue == 0)
+      return 1;
 
     size_t bitsNeeded = 64 - __builtin_clzll(maxValue);
 
     for (uint8_t width : BIT_WIDTHS) {
-      if (width >= bitsNeeded) return width;
+      if (width >= bitsNeeded)
+        return width;
     }
 
     return 64;
@@ -532,22 +554,20 @@ std::string_view ForEncoding<T>::encode(
 
   Buffer tempBuffer{buffer.getMemoryPool()};
 
-  std::string_view serializedBitWidths = selection.template encodeNested<uint8_t>(
-      0,  // identifier - TODO: define proper identifiers
-      {bitWidths},
-      tempBuffer);
+  std::string_view serializedBitWidths =
+      selection.template encodeNested<uint8_t>(
+          0, // identifier - TODO: define proper identifiers
+          {bitWidths},
+          tempBuffer);
 
-  std::string_view serializedReferences = selection.template encodeNested<physicalType>(
-      1,
-      {references},
-      tempBuffer);
+  std::string_view serializedReferences =
+      selection.template encodeNested<physicalType>(
+          1, {references}, tempBuffer);
 
   std::string_view serializedBitOffsets;
   if (enableBitOffsets) {
-    serializedBitOffsets = selection.template encodeNested<uint64_t>(
-        2,
-        {bitOffsets},
-        tempBuffer);
+    serializedBitOffsets =
+        selection.template encodeNested<uint64_t>(2, {bitOffsets}, tempBuffer);
   }
 
   auto dataCompressionPolicy = selection.compressionPolicy();
@@ -555,7 +575,7 @@ std::string_view ForEncoding<T>::encode(
       buffer.getMemoryPool(),
       *dataCompressionPolicy,
       DataType::Undefined,
-      0,  // bitWidth not applicable
+      0, // bitWidth not applicable
       static_cast<uint32_t>(packedData.size()),
       [&]() { return std::span<char>{packedData}; },
       [&](char*& pos) {
@@ -564,26 +584,21 @@ std::string_view ForEncoding<T>::encode(
         return pos;
       }};
 
-  uint32_t encodingSize =
-    Encoding::serializePrefixSize(rowCount, useVarint) +
-    // FOR-specific fixed fields only; the standard prefix is accounted for
-    // separately above via serializePrefixSize (kPrefixSize already includes
-    // Encoding::kPrefixSize, so subtract it to avoid double-counting).
-    (ForEncoding<T>::kPrefixSize - Encoding::kPrefixSize) +
-      4 + serializedBitWidths.size() +       // BitWidths
-      4 + serializedReferences.size() +      // References
-      (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) +
-      4 + compressionEncoder.getSize();
+  uint32_t encodingSize = Encoding::serializePrefixSize(rowCount, useVarint) +
+      // FOR-specific fixed fields only; the standard prefix is accounted for
+      // separately above via serializePrefixSize (kPrefixSize already includes
+      // Encoding::kPrefixSize, so subtract it to avoid double-counting).
+      (ForEncoding<T>::kPrefixSize - Encoding::kPrefixSize) + 4 +
+      serializedBitWidths.size() + // BitWidths
+      4 + serializedReferences.size() + // References
+      (enableBitOffsets ? 4 + serializedBitOffsets.size() : 0) + 4 +
+      compressionEncoder.getSize();
 
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
 
   Encoding::serializePrefix(
-    EncodingType::FOR,
-    TypeTraits<T>::dataType,
-    rowCount,
-    useVarint,
-    pos);
+      EncodingType::FOR, TypeTraits<T>::dataType, rowCount, useVarint, pos);
 
   encoding::writeChar(
       static_cast<char>(compressionEncoder.compressionType()), pos);
