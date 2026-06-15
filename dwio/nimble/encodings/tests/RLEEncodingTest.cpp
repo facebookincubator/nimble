@@ -54,12 +54,24 @@ struct RleValuesPreparer<double, TestClass> {
   static std::vector<nimble::Vector<double>> prepareValues(TestClass* test) {
     return {
         test->toVector({0.0, -0.0}),
-        test->toVector({-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
-        test->toVector({-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
-        test->toVector({-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
-        test->toVector({0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
         test->toVector(
-            {test->dNaN0, test->dNaN0, test->dNaN0, test->dNaN1, test->dNaN1, test->dNaN2, test->dNaN3, test->dNaN3, test->dNaN0})};
+            {-0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0}),
+        test->toVector(
+            {-0.0, -0.0, -0.0, +0.0, -0.0, +0.0, -0.0, -0.0, -0.0, -0.0}),
+        test->toVector(
+            {-2.1, -0.0, -0.0, 3.54, 9.87, -0.0, -0.0, -0.0, -0.0, 10.6}),
+        test->toVector(
+            {0.00, 1.11, 2.22, 3.33, 4.44, 5.55, 6.66, 7.77, 8.88, 9.99}),
+        test->toVector(
+            {test->dNaN0,
+             test->dNaN0,
+             test->dNaN0,
+             test->dNaN1,
+             test->dNaN1,
+             test->dNaN2,
+             test->dNaN3,
+             test->dNaN3,
+             test->dNaN0})};
   }
 };
 
@@ -113,14 +125,24 @@ struct RleValuesPreparer<float, TestClass> {
              8.88f,
              9.99f}),
         test->toVector(
-            {test->fNaN0, test->fNaN0, test->fNaN0, test->fNaN1, test->fNaN1, test->fNaN2, test->fNaN3, test->fNaN3, test->fNaN0})};
+            {test->fNaN0,
+             test->fNaN0,
+             test->fNaN0,
+             test->fNaN1,
+             test->fNaN1,
+             test->fNaN2,
+             test->fNaN3,
+             test->fNaN3,
+             test->fNaN0})};
   }
 };
 
 template <typename TestClass>
 struct RleValuesPreparer<int32_t, TestClass> {
   static std::vector<nimble::Vector<int32_t>> prepareValues(TestClass* test) {
-    return {test->toVector({2, 3, 3}), test->toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
+    return {
+        test->toVector({2, 3, 3}),
+        test->toVector({1, 2, 2, 3, 3, 3, 4, 4, 4, 4})};
   }
 };
 

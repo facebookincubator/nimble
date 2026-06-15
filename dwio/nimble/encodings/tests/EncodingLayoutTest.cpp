@@ -42,15 +42,16 @@ void verifyEncodingLayout(
   }
 
   ASSERT_EQ(expected->encodingType(), actual->encodingType());
-  
+
   // When MetaInternal is not available, it gets redirected to Zstd.
   // For tests, we need to account for this mapping.
   auto expectedCompression = expected->compressionType();
   auto actualCompression = actual->compressionType();
-  
+
 #ifdef DISABLE_META_INTERNAL_COMPRESSOR
-  // If expected is MetaInternal but we don't have it, accept Zstd or Uncompressed
-  // (Uncompressed can happen if the data is too small to benefit from compression)
+  // If expected is MetaInternal but we don't have it, accept Zstd or
+  // Uncompressed (Uncompressed can happen if the data is too small to benefit
+  // from compression)
   if (expectedCompression == nimble::CompressionType::MetaInternal) {
     ASSERT_TRUE(
         actualCompression == nimble::CompressionType::Zstd ||
@@ -63,7 +64,7 @@ void verifyEncodingLayout(
 #else
   ASSERT_EQ(expectedCompression, actualCompression);
 #endif
-  
+
   ASSERT_EQ(expected->childrenCount(), actual->childrenCount());
 
   for (auto i = 0; i < expected->childrenCount(); ++i) {
@@ -147,7 +148,9 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
 TEST(EncodingLayoutTests, Trivial) {
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, {}, nimble::CompressionType::Uncompressed};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::Uncompressed};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -155,7 +158,9 @@ TEST(EncodingLayoutTests, Trivial) {
 
   {
     nimble::EncodingLayout expected{
-        nimble::EncodingType::Trivial, {}, nimble::CompressionType::MetaInternal};
+        nimble::EncodingType::Trivial,
+        {},
+        nimble::CompressionType::MetaInternal};
 
     testSerialization(expected);
     testCapture<uint32_t>(expected, {1, 2, 3});
@@ -430,11 +435,11 @@ TEST(EncodingLayoutTests, Nullable) {
       nimble::CompressionType::Uncompressed,
       {nimble::EncodingLayout{
            nimble::EncodingType::FixedBitWidth,
-            {},
+           {},
            nimble::CompressionType::Uncompressed},
        nimble::EncodingLayout{
            nimble::EncodingType::SparseBool,
-            {},
+           {},
            nimble::CompressionType::Uncompressed,
            {
                nimble::EncodingLayout{

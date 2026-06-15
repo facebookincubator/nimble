@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -21,7 +22,6 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
-#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
@@ -37,9 +37,9 @@ class FrequencyPartitionEncodingTest : public ::testing::Test {
   template <typename T>
   std::unique_ptr<nimble::Encoding> createEncoding(
       const nimble::Vector<T>& data) {
-    return nimble::test::Encoder<
-               nimble::FrequencyPartitionEncoding<T>>::createEncoding(
-        *buffer_, data, nullptr, nimble::CompressionType::Uncompressed);
+    return nimble::test::Encoder<nimble::FrequencyPartitionEncoding<T>>::
+        createEncoding(
+            *buffer_, data, nullptr, nimble::CompressionType::Uncompressed);
   }
 
   template <typename T>
@@ -48,9 +48,13 @@ class FrequencyPartitionEncodingTest : public ::testing::Test {
       nimble::FreqPartIndexType indexType) {
     nimble::Encoding::Options opts{};
     opts.frequencyPartitionIndex = static_cast<uint8_t>(indexType);
-    return nimble::test::Encoder<
-               nimble::FrequencyPartitionEncoding<T>>::createEncoding(
-        *buffer_, data, nullptr, nimble::CompressionType::Uncompressed, opts);
+    return nimble::test::Encoder<nimble::FrequencyPartitionEncoding<T>>::
+        createEncoding(
+            *buffer_,
+            data,
+            nullptr,
+            nimble::CompressionType::Uncompressed,
+            opts);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -84,7 +88,8 @@ TEST_F(FrequencyPartitionEncodingTest, BasicEncodeDecode) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Mismatch at sorted index " << i;
   }
 }
 
@@ -98,7 +103,7 @@ TEST_F(FrequencyPartitionEncodingTest, ZipfianDistribution) {
   const int numUniqueValues = 100;
 
   nimble::Vector<int64_t> data(pool_.get());
-  
+
   // Create Zipfian distribution: first values appear much more frequently
   std::vector<int> frequencies(numUniqueValues);
   for (int i = 0; i < numUniqueValues; ++i) {
@@ -133,7 +138,8 @@ TEST_F(FrequencyPartitionEncodingTest, ZipfianDistribution) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Mismatch at sorted index " << i;
   }
 }
 
@@ -146,7 +152,7 @@ TEST_F(FrequencyPartitionEncodingTest, UniformDistribution) {
 
   const int numValues = 5000;
   nimble::Vector<uint32_t> data(pool_.get());
-  
+
   for (int i = 0; i < numValues; ++i) {
     data.push_back(dist(rng));
   }
@@ -165,7 +171,8 @@ TEST_F(FrequencyPartitionEncodingTest, UniformDistribution) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Mismatch at sorted index " << i;
   }
 }
 
@@ -173,7 +180,7 @@ TEST_F(FrequencyPartitionEncodingTest, UniformDistribution) {
 TEST_F(FrequencyPartitionEncodingTest, AllIdenticalValues) {
   const int numValues = 1000;
   nimble::Vector<int32_t> data(pool_.get());
-  
+
   for (int i = 0; i < numValues; ++i) {
     data.push_back(42);
   }
@@ -215,41 +222,43 @@ TEST_F(FrequencyPartitionEncodingTest, IncrementalMaterialization) {
 
   // Read all data at once
   encoding->materialize(100, result.data());
-  
+
   // Verify all values are present (compare sorted)
   std::vector<uint64_t> sortedData(data.begin(), data.end());
   std::vector<uint64_t> sortedResult(result.begin(), result.end());
   std::sort(sortedData.begin(), sortedData.end());
   std::sort(sortedResult.begin(), sortedResult.end());
-  
+
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Mismatch at sorted index " << i;
   }
 
   // Test reset functionality
   encoding->reset();
   encoding->materialize(100, result.data());
-  
+
   // Verify reset works - should get same reordered data again
   std::vector<uint64_t> sortedResult2(result.begin(), result.end());
   std::sort(sortedResult2.begin(), sortedResult2.end());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult2[i], sortedData[i]) << "Reset mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult2[i], sortedData[i])
+        << "Reset mismatch at sorted index " << i;
   }
 }
 
 // Test with large values (to test different tier sizes)
 TEST_F(FrequencyPartitionEncodingTest, LargeValues) {
   nimble::Vector<uint64_t> data(pool_.get());
-  
+
   // Add values that require different bit widths
-  data.push_back(1ULL);                    // 1 bit
-  data.push_back(255ULL);                  // 8 bits
-  data.push_back(65535ULL);                // 16 bits
-  data.push_back(4294967295ULL);           // 32 bits
+  data.push_back(1ULL); // 1 bit
+  data.push_back(255ULL); // 8 bits
+  data.push_back(65535ULL); // 16 bits
+  data.push_back(4294967295ULL); // 32 bits
   data.push_back(18446744073709551615ULL); // 64 bits
-  data.push_back(1ULL);                    // Repeat small value
+  data.push_back(1ULL); // Repeat small value
 
   auto encoding = createEncoding(data);
   ASSERT_EQ(encoding->rowCount(), 6);
@@ -265,7 +274,8 @@ TEST_F(FrequencyPartitionEncodingTest, LargeValues) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Large value mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Large value mismatch at sorted index " << i;
   }
 }
 
@@ -293,7 +303,8 @@ TEST_F(FrequencyPartitionEncodingTest, FloatValues) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Float mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Float mismatch at sorted index " << i;
   }
 }
 
@@ -320,7 +331,8 @@ TEST_F(FrequencyPartitionEncodingTest, DoubleValues) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Double mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Double mismatch at sorted index " << i;
   }
 }
 
@@ -332,10 +344,10 @@ TEST_F(FrequencyPartitionEncodingTest, EncodingLayout) {
   }
 
   auto encoding = createEncoding(data);
-  
+
   // Verify the encoding type is correct
   ASSERT_EQ(encoding->encodingType(), nimble::EncodingType::FrequencyPartition);
-  
+
   // The encoding should have nested encodings for:
   // - Tier assignments
   // - Tier dictionaries
@@ -346,7 +358,7 @@ TEST_F(FrequencyPartitionEncodingTest, EncodingLayout) {
 // Test with edge case: maximum tier count
 TEST_F(FrequencyPartitionEncodingTest, MaximumTiers) {
   nimble::Vector<uint8_t> data(pool_.get());
-  
+
   // Create data with many unique values to potentially trigger maximum tiers
   for (int i = 0; i < 256; ++i) {
     data.push_back(static_cast<uint8_t>(i));
@@ -366,7 +378,8 @@ TEST_F(FrequencyPartitionEncodingTest, MaximumTiers) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Max tiers mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Max tiers mismatch at sorted index " << i;
   }
 }
 
@@ -397,7 +410,8 @@ TEST_F(FrequencyPartitionEncodingTest, SparseData) {
 
   ASSERT_EQ(sortedData.size(), sortedResult.size());
   for (size_t i = 0; i < sortedData.size(); ++i) {
-    ASSERT_EQ(sortedResult[i], sortedData[i]) << "Sparse data mismatch at sorted index " << i;
+    ASSERT_EQ(sortedResult[i], sortedData[i])
+        << "Sparse data mismatch at sorted index " << i;
   }
 }
 
@@ -416,8 +430,8 @@ static void testIndexedRoundTrip(
     nimble::FreqPartIndexType indexType) {
   nimble::Encoding::Options opts{};
   opts.frequencyPartitionIndex = static_cast<uint8_t>(indexType);
-  auto encoding =
-      nimble::test::Encoder<nimble::FrequencyPartitionEncoding<T>>::createEncoding(
+  auto encoding = nimble::test::Encoder<nimble::FrequencyPartitionEncoding<T>>::
+      createEncoding(
           buffer, data, nullptr, nimble::CompressionType::Uncompressed, opts);
 
   const uint32_t N = static_cast<uint32_t>(data.size());
@@ -427,8 +441,7 @@ static void testIndexedRoundTrip(
   nimble::Vector<T> result(pool, N);
   encoding->materialize(N, result.data());
   for (uint32_t i = 0; i < N; ++i) {
-    ASSERT_EQ(result[i], data[i])
-        << "Full materialize mismatch at index " << i;
+    ASSERT_EQ(result[i], data[i]) << "Full materialize mismatch at index " << i;
   }
 
   // 2. Reset and partial reads.
@@ -440,9 +453,11 @@ static void testIndexedRoundTrip(
     encoding->materialize(half, first.data());
     encoding->materialize(N - half, second.data());
     for (uint32_t i = 0; i < half; ++i)
-      ASSERT_EQ(first[i], data[i]) << "Partial read (first half) mismatch at " << i;
+      ASSERT_EQ(first[i], data[i])
+          << "Partial read (first half) mismatch at " << i;
     for (uint32_t i = 0; i < N - half; ++i)
-      ASSERT_EQ(second[i], data[half + i]) << "Partial read (second half) mismatch at " << i;
+      ASSERT_EQ(second[i], data[half + i])
+          << "Partial read (second half) mismatch at " << i;
   }
 
   // 3. Skip + materialize.
@@ -499,9 +514,11 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedEliasFano_int32) {
 }
 
 TEST_F(FrequencyPartitionEncodingTest, IndexedNoIndex_preservesTierOrder) {
-  // NoIndex stays backward-compatible (sorted-multiset equality, not exact order).
+  // NoIndex stays backward-compatible (sorted-multiset equality, not exact
+  // order).
   nimble::Vector<int32_t> data(pool_.get());
-  for (int i = 0; i < 200; ++i) data.push_back(i % 5);
+  for (int i = 0; i < 200; ++i)
+    data.push_back(i % 5);
 
   auto encoding = createEncoding(data); // default = NoIndex
   ASSERT_EQ(encoding->rowCount(), 200u);
@@ -537,7 +554,8 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedEliasFano_uint64) {
 TEST_F(FrequencyPartitionEncodingTest, IndexedAllIdentical_PerTierBitmaps) {
   // Edge case: all same value → one tier, no fallback.
   nimble::Vector<int32_t> data(pool_.get());
-  for (int i = 0; i < 100; ++i) data.push_back(7);
+  for (int i = 0; i < 100; ++i)
+    data.push_back(7);
   testIndexedRoundTrip(
       pool_.get(), *buffer_, data, nimble::FreqPartIndexType::PerTierBitmaps);
 }
@@ -545,7 +563,8 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedAllIdentical_PerTierBitmaps) {
 TEST_F(FrequencyPartitionEncodingTest, IndexedAllUnique_EliasFano) {
   // Edge case: all unique values → no tiers, all fallback.
   nimble::Vector<int32_t> data(pool_.get());
-  for (int i = 0; i < 50; ++i) data.push_back(i * 1000);
+  for (int i = 0; i < 50; ++i)
+    data.push_back(i * 1000);
   testIndexedRoundTrip(
       pool_.get(), *buffer_, data, nimble::FreqPartIndexType::EliasFano);
 }
@@ -578,14 +597,16 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedLargeSkewed_AllThreeModes) {
             opts);
   };
 
-  enc(nimble::FreqPartIndexType::PerTierBitmaps)->materialize(N, resultBitmaps.data());
-  enc(nimble::FreqPartIndexType::TierTagArray)->materialize(N, resultTags.data());
+  enc(nimble::FreqPartIndexType::PerTierBitmaps)
+      ->materialize(N, resultBitmaps.data());
+  enc(nimble::FreqPartIndexType::TierTagArray)
+      ->materialize(N, resultTags.data());
   enc(nimble::FreqPartIndexType::EliasFano)->materialize(N, resultEF.data());
 
   for (uint32_t i = 0; i < N; ++i) {
     ASSERT_EQ(resultBitmaps[i], data[i]) << "Bitmaps mismatch at " << i;
-    ASSERT_EQ(resultTags[i], data[i])    << "TagArray mismatch at "  << i;
-    ASSERT_EQ(resultEF[i], data[i])      << "EliasFano mismatch at " << i;
+    ASSERT_EQ(resultTags[i], data[i]) << "TagArray mismatch at " << i;
+    ASSERT_EQ(resultEF[i], data[i]) << "EliasFano mismatch at " << i;
   }
 }
 
@@ -597,14 +618,17 @@ TEST_F(FrequencyPartitionEncodingTest, IndexedLargeSkewed_AllThreeModes) {
 //   Fallback: none; row 15 is past the end → returns tiers_.size() == 2
 TEST_F(FrequencyPartitionEncodingTest, GetTierForRow) {
   nimble::Vector<int32_t> data(pool_.get());
-  for (int i = 0; i < 8; ++i) data.push_back(1);
-  for (int i = 0; i < 4; ++i) data.push_back(2);
-  for (int i = 0; i < 2; ++i) data.push_back(3);
+  for (int i = 0; i < 8; ++i)
+    data.push_back(1);
+  for (int i = 0; i < 4; ++i)
+    data.push_back(2);
+  for (int i = 0; i < 2; ++i)
+    data.push_back(3);
   data.push_back(4);
 
   auto encoding = createEncoding(data);
-  auto* fpe = static_cast<nimble::FrequencyPartitionEncoding<int32_t>*>(
-      encoding.get());
+  auto* fpe =
+      static_cast<nimble::FrequencyPartitionEncoding<int32_t>*>(encoding.get());
 
   // Tier 0: encoded rows 0–11
   EXPECT_EQ(fpe->getTierForRow(0), 0u);
