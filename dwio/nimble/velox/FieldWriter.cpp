@@ -2748,7 +2748,7 @@ size_t DecodingContextPool::size() const {
 std::unique_ptr<FieldWriter> FieldWriter::create(
     FieldWriterContext& context,
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
-    std::function<void(const TypeBuilder&)> typeAddedHandler) {
+    std::function<void(TypeBuilder&, uint32_t)> typeAddedHandler) {
   context.setTypeAddedHandler(std::move(typeAddedHandler));
   return create(context, type);
 }
@@ -2845,7 +2845,7 @@ std::unique_ptr<FieldWriter> FieldWriter::create(
     default:
       NIMBLE_UNSUPPORTED("Unsupported kind: {}.", type->type()->kind());
   }
-  context.handleAddedType(*field->typeBuilder());
+  context.handleAddedType(*field->typeBuilder(), type->id());
   return field;
 }
 

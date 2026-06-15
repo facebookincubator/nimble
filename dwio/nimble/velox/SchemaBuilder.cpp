@@ -482,6 +482,11 @@ void SchemaBuilder::addNode(
     std::vector<SchemaNode>& nodes,
     const TypeBuilder& type,
     std::optional<std::string> name) const {
+  // Attributes are owned by the main TypeBuilder and are emitted onto the
+  // first (primary) SchemaNode for that TypeBuilder. Synthetic child stream
+  // descriptor nodes (e.g. nanos for TimestampMicroNano, offsets for
+  // ArrayWithOffsets, lengths for SlidingWindowMap, in-map nodes for
+  // FlatMap) do not carry attributes.
   switch (type.kind()) {
     case Kind::Scalar: {
       const auto& scalar = type.asScalar();
@@ -489,7 +494,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           scalar.scalarDescriptor().offset(),
           scalar.scalarDescriptor().scalarKind(),
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       break;
     }
 
@@ -499,7 +506,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           timestampMicroNano.microsDescriptor().offset(),
           ScalarKind::Int64,
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       nodes.emplace_back(
           Kind::Scalar,
           timestampMicroNano.nanosDescriptor().offset(),
@@ -513,7 +522,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           array.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       addNode(nodes, array.elements());
       break;
     }
@@ -523,7 +534,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           array.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       nodes.emplace_back(
           Kind::Scalar,
           array.offsetsDescriptor().offset(),
@@ -539,7 +552,8 @@ void SchemaBuilder::addNode(
           row.nullsDescriptor().offset(),
           ScalarKind::Bool,
           std::move(name),
-          row.childrenCount());
+          row.childrenCount(),
+          type.attributes());
       for (auto i = 0; i < row.childrenCount(); ++i) {
         addNode(nodes, row.childAt(i), row.nameAt(i));
       }
@@ -551,7 +565,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           map.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       addNode(nodes, map.keys());
       addNode(nodes, map.values());
       break;
@@ -562,7 +578,9 @@ void SchemaBuilder::addNode(
           type.kind(),
           map.offsetsDescriptor().offset(),
           ScalarKind::UInt32,
-          std::move(name));
+          std::move(name),
+          /*childrenCount*/ 0,
+          type.attributes());
       nodes.emplace_back(
           Kind::Scalar,
           map.lengthsDescriptor().offset(),
@@ -581,7 +599,8 @@ void SchemaBuilder::addNode(
           map.nullsDescriptor().offset(),
           map.keyScalarKind(),
           std::move(name),
-          childrenSize);
+          childrenSize,
+          type.attributes());
       NIMBLE_CHECK_EQ(
           map.inMapDescriptors_.size(),
           childrenSize,

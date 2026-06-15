@@ -16,6 +16,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include <gtest/gtest.h>
 #include "dwio/nimble/velox/SchemaBuilder.h"
+#include "dwio/nimble/velox/SchemaGenerated.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/tests/SchemaUtils.h"
 
@@ -231,4 +232,240 @@ TEST(SchemaSerializationTest, NestedComplex) {
   EXPECT_EQ(
       ScalarKind::Int64,
       map.values()->asScalar().scalarDescriptor().scalarKind());
+}
+
+// ---------------------------------------------------------------------------
+// Per-SchemaNode attributes round-trip (Iceberg V3 interop).
+//
+// The flatbuffer wire format for `SchemaNode.attributes` is already validated
+// in NimbleSchemaAttributesTest. These tests cover the C++ plumbing:
+// TypeBuilder::setAttributes(...) -> SchemaBuilder::addNode ->
+// SchemaSerializer -> flatbuffer -> SchemaDeserializer ->
+// SchemaReader::getSchema -> Type::attributes().
+// ---------------------------------------------------------------------------
+
+TEST(SchemaSerializationTest, AttributesRoundTripOnLeaf) {
+  // Set the canonical Iceberg V3 keys on the leaf TypeBuilder before it is
+  // attached to the row. The keys must survive serialize -> deserialize and
+  // surface on the deserialized Type with insertion order preserved.
+  const std::vector<std::pair<std::string, std::string>> kAttrs = {
+      {"iceberg.id", "12"},
+      {"iceberg.required", "true"},
+      {"iceberg.long-type", "LONG"},
+  };
+
+  SchemaBuilder schemaBuilder;
+  auto leaf = schemaBuilder.createScalarTypeBuilder(ScalarKind::Int64);
+  leaf->setAttributes(kAttrs);
+  auto row = schemaBuilder.createRowTypeBuilder(1);
+  row->addChild("field", leaf);
+
+  auto root = roundTrip(schemaBuilder);
+  ASSERT_EQ(Kind::Row, root->kind());
+  // Row itself was not annotated.
+  EXPECT_TRUE(root->attributes().empty());
+
+  const auto& child = root->asRow().childAt(0);
+  EXPECT_EQ(Kind::Scalar, child->kind());
+  EXPECT_EQ(kAttrs, child->attributes());
+}
+
+TEST(SchemaSerializationTest, AttributesRoundTripOnParentAndChild) {
+  // Both a nested struct (RowType) and one of its leaves carry distinct
+  // attribute bags. Verify each set lands on the corresponding deserialized
+  // Type independently and does not bleed between nodes.
+  const std::vector<std::pair<std::string, std::string>> kParentAttrs = {
+      {"iceberg.id", "1"},
+      {"iceberg.struct-type", "Variant"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kChildAttrs = {
+      {"iceberg.id", "2"},
+      {"iceberg.binary-type", "UUID"},
+      {"iceberg.length", "16"},
+  };
+
+  SchemaBuilder schemaBuilder;
+  auto leaf = schemaBuilder.createScalarTypeBuilder(ScalarKind::Binary);
+  leaf->setAttributes(kChildAttrs);
+  auto innerRow = schemaBuilder.createRowTypeBuilder(1);
+  innerRow->addChild("uuid", leaf);
+  innerRow->setAttributes(kParentAttrs);
+  auto outerRow = schemaBuilder.createRowTypeBuilder(1);
+  outerRow->addChild("variant", innerRow);
+
+  auto root = roundTrip(schemaBuilder);
+  ASSERT_EQ(Kind::Row, root->kind());
+  EXPECT_TRUE(root->attributes().empty());
+
+  const auto& inner = root->asRow().childAt(0);
+  ASSERT_EQ(Kind::Row, inner->kind());
+  EXPECT_EQ(kParentAttrs, inner->attributes());
+
+  const auto& innerLeaf = inner->asRow().childAt(0);
+  EXPECT_EQ(Kind::Scalar, innerLeaf->kind());
+  EXPECT_EQ(kChildAttrs, innerLeaf->attributes());
+}
+
+TEST(SchemaSerializationTest, AttributesEmptyByDefault) {
+  // A builder without setAttributes(...) must produce a deserialized Type
+  // tree where every node exposes an empty (not throwing, not null) vector.
+  // This is the no-op upgrade path for every NIMBLE writer that does not
+  // know about attributes.
+  SchemaBuilder schemaBuilder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({{"a", NIMBLE_INTEGER()}, {"b", NIMBLE_STRING()}}));
+
+  auto root = roundTrip(schemaBuilder);
+  ASSERT_EQ(Kind::Row, root->kind());
+  EXPECT_TRUE(root->attributes().empty());
+  const auto& row = root->asRow();
+  ASSERT_EQ(2, row.childrenCount());
+  EXPECT_TRUE(row.childAt(0)->attributes().empty());
+  EXPECT_TRUE(row.childAt(1)->attributes().empty());
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compatibility regressions.
+//
+// These tests pin invariants that protect every NIMBLE file produced before
+// the `attributes` plumbing landed. They are written to FAIL if a future
+// refactor either:
+//   (a) stops accepting legacy flatbuffer buffers that omit the
+//       `attributes` vtable slot, or
+//   (b) starts emitting an `attributes` vtable slot for nodes whose
+//       TypeBuilder never called setAttributes, which would silently change
+//       on-disk bytes for callers that haven't opted in to attributes.
+// ---------------------------------------------------------------------------
+
+TEST(SchemaSerializationTest, LegacyWireBufferDeserializesWithEmptyAttributes) {
+  // Construct a flatbuffer Schema with NO `attributes` vtable slot on any
+  // node -- byte-for-byte the wire format used by every NIMBLE writer
+  // before this stack landed. SchemaDeserializer must accept it, produce
+  // a correct Type tree, and surface empty attributes on every node.
+  //
+  // Schema shape: ROW{"a": Int32, "b": String}
+  // DFS node layout (matches SchemaBuilder::addNode emit order):
+  //   nodes[0] = ROW(name="root_field", offset=0, children=2)
+  //   nodes[1] = Int32(name="a",        offset=1)
+  //   nodes[2] = String(name="b",       offset=2)
+  namespace fbs = facebook::nimble::serialization;
+  flatbuffers::FlatBufferBuilder builder;
+
+  auto makeNode = [&](fbs::Kind kind,
+                      uint32_t offset,
+                      uint32_t children,
+                      const std::string& name) {
+    auto nameOffset = builder.CreateString(name);
+    fbs::SchemaNodeBuilder nodeBuilder(builder);
+    nodeBuilder.add_kind(kind);
+    nodeBuilder.add_children(children);
+    nodeBuilder.add_name(nameOffset);
+    nodeBuilder.add_offset(offset);
+    // Deliberately NOT calling add_attributes(...) so the legacy vtable
+    // shape is preserved.
+    return nodeBuilder.Finish();
+  };
+
+  std::vector<flatbuffers::Offset<fbs::SchemaNode>> nodeOffsets;
+  // The Row is always wrapped at the top by the writer; the root passed to
+  // the deserializer is the row itself, which has no enclosing name from
+  // SchemaBuilder's perspective. Mirror that here with an empty name on the
+  // root.
+  {
+    fbs::SchemaNodeBuilder nodeBuilder(builder);
+    nodeBuilder.add_kind(fbs::Kind_Row);
+    nodeBuilder.add_children(2);
+    nodeBuilder.add_offset(0);
+    nodeOffsets.push_back(nodeBuilder.Finish());
+  }
+  nodeOffsets.push_back(makeNode(fbs::Kind_Int32, 1, 0, "a"));
+  nodeOffsets.push_back(makeNode(fbs::Kind_String, 2, 0, "b"));
+
+  auto nodesVector = builder.CreateVector(nodeOffsets);
+  builder.Finish(fbs::CreateSchema(builder, nodesVector));
+
+  // Sanity-check that the legacy buffer truly omits the attributes slot
+  // on every node -- if a future refactor changes that, the rest of this
+  // test becomes meaningless and we want to know.
+  const auto* schema = fbs::GetSchema(builder.GetBufferPointer());
+  ASSERT_NE(schema, nullptr);
+  ASSERT_NE(schema->nodes(), nullptr);
+  ASSERT_EQ(schema->nodes()->size(), 3u);
+  for (const auto* node : *schema->nodes()) {
+    EXPECT_EQ(node->attributes(), nullptr)
+        << "Legacy fixture must not encode attributes vtable slot.";
+  }
+
+  auto serialized = std::string_view(
+      reinterpret_cast<const char*>(builder.GetBufferPointer()),
+      builder.GetSize());
+  auto root = SchemaDeserializer::deserialize(serialized);
+
+  ASSERT_EQ(Kind::Row, root->kind());
+  // The empty attribute bag must surface on every Type, not crash, and not
+  // signal "I have attributes" to callers that branch on size.
+  EXPECT_TRUE(root->attributes().empty());
+
+  const auto& row = root->asRow();
+  ASSERT_EQ(2, row.childrenCount());
+  EXPECT_EQ("a", row.nameAt(0));
+  EXPECT_EQ(Kind::Scalar, row.childAt(0)->kind());
+  EXPECT_EQ(
+      ScalarKind::Int32,
+      row.childAt(0)->asScalar().scalarDescriptor().scalarKind());
+  EXPECT_TRUE(row.childAt(0)->attributes().empty());
+
+  EXPECT_EQ("b", row.nameAt(1));
+  EXPECT_EQ(Kind::Scalar, row.childAt(1)->kind());
+  EXPECT_EQ(
+      ScalarKind::String,
+      row.childAt(1)->asScalar().scalarDescriptor().scalarKind());
+  EXPECT_TRUE(row.childAt(1)->attributes().empty());
+}
+
+TEST(SchemaSerializationTest, NoAttributesWireShapeMatchesLegacy) {
+  // When no TypeBuilder calls setAttributes(...), the new serializer must
+  // NOT emit the `attributes` vtable slot on any node. This is the
+  // byte-shape invariant for every NIMBLE writer that has not opted in to
+  // attributes: their on-disk files stay structurally identical to
+  // pre-attributes output, so any reader (Velox, external ORC-spec readers
+  // that treat NIMBLE files as ORC) sees the same vtable layout it always
+  // did.
+  namespace fbs = facebook::nimble::serialization;
+  SchemaBuilder schemaBuilder;
+  // Cover one of each non-trivial container kind to guard against a future
+  // change that accidentally stamps an empty attributes vector through one
+  // codepath but not another.
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW(
+          {{"i", NIMBLE_INTEGER()},
+           {"arr", NIMBLE_ARRAY(NIMBLE_BIGINT())},
+           {"m", NIMBLE_MAP(NIMBLE_STRING(), NIMBLE_INTEGER())},
+           {"ts", NIMBLE_TIMESTAMPMICRONANO()}}));
+
+  SchemaSerializer serializer;
+  auto serialized = serializer.serialize(schemaBuilder);
+
+  const auto* schema = fbs::GetSchema(serialized.data());
+  ASSERT_NE(schema, nullptr);
+  ASSERT_NE(schema->nodes(), nullptr);
+  ASSERT_GT(schema->nodes()->size(), 0u);
+  for (const auto* node : *schema->nodes()) {
+    EXPECT_EQ(node->attributes(), nullptr)
+        << "Serializer must not emit attributes vtable slot when no "
+           "TypeBuilder set attributes -- this would silently change "
+           "on-disk bytes for legacy callers.";
+  }
+
+  // Sanity: deserialize still works and produces empty attributes on every
+  // Type. Belt-and-suspenders next to LegacyWireBufferDeserializes... .
+  auto root = SchemaDeserializer::deserialize(serialized);
+  ASSERT_EQ(Kind::Row, root->kind());
+  EXPECT_TRUE(root->attributes().empty());
+  const auto& row = root->asRow();
+  for (size_t i = 0; i < row.childrenCount(); ++i) {
+    EXPECT_TRUE(row.childAt(i)->attributes().empty()) << "child " << i;
+  }
 }
