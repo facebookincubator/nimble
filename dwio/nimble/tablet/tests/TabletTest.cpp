@@ -34,8 +34,12 @@
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
+#include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
+#include "dwio/nimble/tablet/FooterGenerated.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/Postscript.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
@@ -6674,6 +6678,161 @@ TEST_P(TabletWithIndexTest, cacheWarmPathCompressedChunkIndex) {
 
   auto warmCacheStats = cache_->refreshStats();
   EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// E2E backward compatibility: verifies that a file written without
+// uncompressed_size in the footer (simulating old Nimble format) can still
+// be read correctly through the cache path. Both cold and warm readers
+// should produce correct metadata.
+TEST_P(TabletTest, cacheMetadataBackwardCompatOldFileWithoutUncompressedSize) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  // Write a file with compressed metadata (500 streams triggers Zstd).
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  // Patch the footer to remove uncompressed_size (simulate old format).
+  std::string oldFile = file;
+  auto ps = nimble::Postscript::parse(
+      std::string_view(oldFile).substr(oldFile.size() - kPostscriptSize));
+  auto footerStart = oldFile.size() - kPostscriptSize - ps.footerSize();
+  std::string_view footerBytes(oldFile.data() + footerStart, ps.footerSize());
+
+  std::string decompressedFooter;
+  if (ps.footerCompressionType() != nimble::CompressionType::Uncompressed) {
+    auto buf = nimble::MetadataBuffer::decompress(
+        footerBytes, ps.footerCompressionType(), pool_.get());
+    decompressedFooter.assign(buf->as<char>(), buf->size());
+  } else {
+    decompressedFooter.assign(footerBytes.begin(), footerBytes.end());
+  }
+
+  const auto* origFooter = flatbuffers::GetRoot<nimble::serialization::Footer>(
+      decompressedFooter.data());
+
+  flatbuffers::FlatBufferBuilder builder;
+
+  flatbuffers::Offset<nimble::serialization::MetadataSection> stripesOff = 0;
+  if (origFooter->stripes()) {
+    stripesOff = nimble::serialization::CreateMetadataSection(
+        builder,
+        origFooter->stripes()->offset(),
+        origFooter->stripes()->size(),
+        origFooter->stripes()->compression_type(),
+        /*uncompressed_size=*/0);
+  }
+
+  flatbuffers::Offset<flatbuffers::Vector<
+      flatbuffers::Offset<nimble::serialization::MetadataSection>>>
+      sgOff = 0;
+  if (origFooter->stripe_groups() && origFooter->stripe_groups()->size() > 0) {
+    std::vector<flatbuffers::Offset<nimble::serialization::MetadataSection>>
+        sgs;
+    for (uint32_t i = 0; i < origFooter->stripe_groups()->size(); ++i) {
+      auto* sg = origFooter->stripe_groups()->Get(i);
+      sgs.push_back(
+          nimble::serialization::CreateMetadataSection(
+              builder,
+              sg->offset(),
+              sg->size(),
+              sg->compression_type(),
+              /*uncompressed_size=*/0));
+    }
+    sgOff = builder.CreateVector(sgs);
+  }
+
+  builder.Finish(
+      nimble::serialization::CreateFooter(
+          builder, origFooter->row_count(), stripesOff, sgOff));
+
+  auto* newFooterData = builder.GetBufferPointer();
+  auto newFooterSize = builder.GetSize();
+
+  oldFile.resize(footerStart);
+
+  if (ps.footerCompressionType() != nimble::CompressionType::Uncompressed) {
+    auto compressed = nimble::ZstdCompression::compress(
+        {reinterpret_cast<char*>(newFooterData), newFooterSize}, pool_.get());
+    ASSERT_TRUE(compressed.has_value());
+    oldFile.append(
+        (*compressed)->as<char>(), static_cast<size_t>((*compressed)->size()));
+  } else {
+    oldFile.append(
+        reinterpret_cast<char*>(newFooterData),
+        static_cast<size_t>(newFooterSize));
+  }
+
+  auto patchedFooterSize = static_cast<uint32_t>(oldFile.size() - footerStart);
+  nimble::Postscript newPs(
+      patchedFooterSize,
+      ps.footerCompressionType(),
+      ps.checksumType(),
+      ps.majorVersion(),
+      ps.minorVersion());
+  oldFile.append(newPs.serialize());
+
+  // Read the patched "old" file with cache enabled.
+  auto oldReadFile = std::make_shared<velox::InMemoryReadFile>(oldFile);
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold path: verify old-format file reads correctly.
+  {
+    auto coldReader = createTabletReader(oldReadFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(coldReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_EQ(stripeId.stripeGroup()->streamCount(), kNumStreams);
+    }
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm path: verify old-format file reads correctly from cache.
+  {
+    auto warmReader = createTabletReader(oldReadFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_EQ(stripeId.stripeGroup()->streamCount(), kNumStreams);
+    }
+  }
 }
 
 } // namespace
