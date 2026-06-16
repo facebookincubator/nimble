@@ -23,6 +23,7 @@
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 
+#include "dwio/nimble/index/ChunkIndex.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
@@ -552,6 +553,154 @@ TEST_F(ChunkIndexWriterTest, minAvgChunksPerStream) {
       }
     }
   }
+}
+
+TEST_F(ChunkIndexWriterTest, uncompressedSizeRoundtrip) {
+  ChunkIndexWriter writer(*pool_, /*minAvgChunksPerStream=*/0);
+  Buffer buffer{*pool_};
+  TestChunkFileIndex fileIndex;
+
+  uint64_t nextOffset = 1000;
+  auto compressedCallback =
+      [&fileIndex, &nextOffset](std::string_view metadata) -> MetadataSection {
+    fileIndex.groupMetadataSections.emplace_back(metadata);
+    const auto uncompressedSize = static_cast<uint32_t>(metadata.size());
+    const auto compressedSize = uncompressedSize / 2;
+    auto offset = nextOffset;
+    nextOffset += compressedSize;
+    return MetadataSection(
+        offset, compressedSize, CompressionType::Zstd, uncompressedSize);
+  };
+
+  writer.newStripe(2);
+  writer.addStream(0, createChunks(buffer, {{50, 10}, {50, 12}}));
+  writer.addStream(1, createChunks(buffer, {{60, 20}, {40, 12}}));
+  writer.writeGroup(2, 1, compressedCallback);
+
+  writer.newStripe(2);
+  writer.addStream(0, createChunks(buffer, {{80, 20}, {20, 5}}));
+  writer.addStream(1, createChunks(buffer, {{50, 15}, {50, 18}}));
+  writer.writeGroup(2, 1, compressedCallback);
+
+  writer.writeRoot(writeRootCallback(fileIndex));
+
+  ASSERT_EQ(fileIndex.groupMetadataSections.size(), 2);
+  ASSERT_FALSE(fileIndex.rootIndexData.empty());
+
+  auto* root = flatbuffers::GetRoot<serialization::ChunkIndex>(
+      fileIndex.rootIndexData.data());
+  ASSERT_NE(root, nullptr);
+  ASSERT_NE(root->stripe_indexes(), nullptr);
+  ASSERT_EQ(root->stripe_indexes()->size(), 2);
+
+  for (uint32_t i = 0; i < 2; ++i) {
+    auto* entry = root->stripe_indexes()->Get(i);
+    EXPECT_EQ(entry->compression_type(), serialization::CompressionType_Zstd)
+        << "Group " << i;
+    EXPECT_GT(entry->uncompressed_size(), 0) << "Group " << i;
+    EXPECT_GT(entry->uncompressed_size(), entry->size()) << "Group " << i;
+  }
+
+  auto rootBuffer = velox::AlignedBuffer::allocate<char>(
+      fileIndex.rootIndexData.size(), pool_.get());
+  std::memcpy(
+      rootBuffer->asMutable<char>(),
+      fileIndex.rootIndexData.data(),
+      fileIndex.rootIndexData.size());
+  Section rootSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
+
+  auto chunkIndex = index::ChunkIndex::create(std::move(rootSection));
+  ASSERT_NE(chunkIndex, nullptr);
+  ASSERT_EQ(chunkIndex->numGroups(), 2);
+
+  for (uint32_t i = 0; i < 2; ++i) {
+    const auto& section = chunkIndex->groupMetadata(i);
+    EXPECT_EQ(section.compressionType(), CompressionType::Zstd)
+        << "Group " << i;
+    EXPECT_TRUE(section.uncompressedSize().has_value()) << "Group " << i;
+    EXPECT_GT(section.uncompressedSize().value(), section.size())
+        << "Group " << i;
+  }
+}
+
+// Verifies that index metadata without uncompressed_size is rejected.
+// Index is not in production yet, so all files must have the field set.
+TEST_F(ChunkIndexWriterTest, missingUncompressedSizeRejected) {
+  flatbuffers::FlatBufferBuilder builder(256);
+
+  auto section0 = serialization::CreateMetadataSection(
+      builder,
+      /*offset=*/100,
+      /*size=*/200,
+      serialization::CompressionType_Zstd);
+
+  std::vector<flatbuffers::Offset<serialization::MetadataSection>> sections = {
+      section0};
+  auto stripeIndexes = builder.CreateVector(sections);
+  builder.Finish(serialization::CreateChunkIndex(builder, stripeIndexes));
+
+  auto rootBuffer =
+      velox::AlignedBuffer::allocate<char>(builder.GetSize(), pool_.get());
+  std::memcpy(
+      rootBuffer->asMutable<char>(),
+      builder.GetBufferPointer(),
+      builder.GetSize());
+  Section rootSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
+
+  NIMBLE_ASSERT_THROW(
+      index::ChunkIndex::create(std::move(rootSection)), "Uncompressed size");
+}
+
+// Verifies that uncompressed sections get uncompressedSize == size in the
+// FlatBuffer, and the reader correctly recovers it.
+TEST_F(ChunkIndexWriterTest, uncompressedSizeForUncompressedSections) {
+  ChunkIndexWriter writer(*pool_, /*minAvgChunksPerStream=*/0);
+  Buffer buffer{*pool_};
+  TestChunkFileIndex fileIndex;
+
+  writer.newStripe(2);
+  writer.addStream(0, createChunks(buffer, {{50, 10}, {50, 12}}));
+  writer.addStream(1, createChunks(buffer, {{60, 20}, {40, 12}}));
+  writer.writeGroup(2, 1, createMetadataSectionCallback(fileIndex));
+
+  writer.writeRoot(writeRootCallback(fileIndex));
+
+  ASSERT_EQ(fileIndex.groupMetadataSections.size(), 1);
+  ASSERT_FALSE(fileIndex.rootIndexData.empty());
+
+  auto* root = flatbuffers::GetRoot<serialization::ChunkIndex>(
+      fileIndex.rootIndexData.data());
+  ASSERT_NE(root, nullptr);
+  ASSERT_NE(root->stripe_indexes(), nullptr);
+  ASSERT_EQ(root->stripe_indexes()->size(), 1);
+
+  auto* entry = root->stripe_indexes()->Get(0);
+  EXPECT_EQ(
+      entry->compression_type(), serialization::CompressionType_Uncompressed);
+  EXPECT_EQ(entry->uncompressed_size(), entry->size());
+
+  auto rootBuffer = velox::AlignedBuffer::allocate<char>(
+      fileIndex.rootIndexData.size(), pool_.get());
+  std::memcpy(
+      rootBuffer->asMutable<char>(),
+      fileIndex.rootIndexData.data(),
+      fileIndex.rootIndexData.size());
+  Section rootSection{MetadataBuffer(
+      MetadataBuffer::decompress(
+          std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
+
+  auto chunkIndex = index::ChunkIndex::create(std::move(rootSection));
+  ASSERT_NE(chunkIndex, nullptr);
+  ASSERT_EQ(chunkIndex->numGroups(), 1);
+
+  const auto& section = chunkIndex->groupMetadata(0);
+  EXPECT_EQ(section.compressionType(), CompressionType::Uncompressed);
+  EXPECT_TRUE(section.uncompressedSize().has_value());
+  EXPECT_EQ(section.uncompressedSize().value(), section.size());
 }
 
 } // namespace facebook::nimble::test
