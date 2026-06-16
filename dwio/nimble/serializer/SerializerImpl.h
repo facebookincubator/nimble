@@ -21,6 +21,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -121,6 +122,17 @@ size_t estimateTrailerSize(
     size_t numStreams,
     EncodingType indicesEncodingType,
     EncodingType sizesEncodingType);
+
+/// Returns an upper-bound estimate for the kTablet dedup trailer layout:
+/// present stream IDs, per-present-stream size indices, and unique stream
+/// sizes. `numPresentStreams` is the number of present streams;
+/// `numUniqueStreams` is the number of streams with unique content.
+size_t estimateTrailerSize(
+    size_t numPresentStreams,
+    size_t numUniqueStreams,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType);
 
 /// Overload that accepts SerializationVersion for API compatibility.
 inline size_t estimateTrailerSize(
@@ -280,6 +292,51 @@ void writeTrailer(
   encoding::writeUint32(trailerSize, sizePos);
 }
 
+/// Writes the kTablet dedup trailer layout used when projected streams may be
+/// duplicated. The caller supplies the three trailer sections directly:
+/// `streamIds` (present slot ids),
+/// `streamSizeIndices` (per present slot, an index into `uniqueStreamSizes`),
+/// and `uniqueStreamSizes` (the distinct stream sizes in body order). Neither
+/// offsets nor duplicated sizes are stored: offsets are implied by
+/// prefix-summing `uniqueStreamSizes`, and duplicate slots reuse a unique-size
+/// entry through `streamSizeIndices`. The caller chooses the encoding for each
+/// section. Wire:
+/// [streamIdsEncType:1B][streamIdsPayload]
+///       [sizeIndicesEncType:1B][sizeIndicesPayload]
+///       [uniqueSizesEncType:1B][uniqueSizesPayload][trailer_size:u32]
+template <typename T>
+void writeTrailer(
+    const std::vector<uint32_t>& streamIds,
+    const std::vector<uint32_t>& streamSizeIndices,
+    const std::vector<uint32_t>& uniqueStreamSizes,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType,
+    T& buffer) {
+  NIMBLE_CHECK_EQ(
+      streamSizeIndices.size(),
+      streamIds.size(),
+      "Stream ids and size indices must have the same length");
+
+  const auto trailerStartOffset = buffer.size();
+  auto* streamIdsTypePos = extend(buffer, sizeof(uint8_t));
+  *streamIdsTypePos = static_cast<char>(streamIdsEncodingType);
+  writeSection(streamIdsEncodingType, streamIds, buffer);
+
+  auto* sizeIndicesTypePos = extend(buffer, sizeof(uint8_t));
+  *sizeIndicesTypePos = static_cast<char>(sizeIndicesEncodingType);
+  writeSection(sizeIndicesEncodingType, streamSizeIndices, buffer);
+
+  auto* uniqueSizesTypePos = extend(buffer, sizeof(uint8_t));
+  *uniqueSizesTypePos = static_cast<char>(uniqueSizesEncodingType);
+  writeSection(uniqueSizesEncodingType, uniqueStreamSizes, buffer);
+
+  const uint32_t trailerSize =
+      static_cast<uint32_t>(buffer.size() - trailerStartOffset);
+  auto* sizePos = extend(buffer, sizeof(uint32_t));
+  encoding::writeUint32(trailerSize, sizePos);
+}
+
 /// Writes a single stream to the buffer.
 /// Writes [size][data...] where size is varint (useVarint=true) or u32
 /// (useVarint=false).
@@ -341,18 +398,18 @@ void skipStream(const char*& pos) {
 }
 
 /// Reads the two-array sparse stream-sizes trailer from the end of a
-/// contiguous buffer. Fills `streamIndices` (offsets of non-zero stream
-/// slots, sorted ascending) and `streamSizes` (their byte sizes), parallel
-/// arrays of identical length. Both vectors are reusable buffers owned by
+/// contiguous buffer. Fills `streamIds` (non-zero stream slot ids, sorted
+/// ascending) and `streamSizes` (their byte sizes), parallel arrays of
+/// identical length. Both vectors are reusable buffers owned by
 /// the caller (e.g. members on `StreamDataReader`) to keep the per-blob hot
 /// path alloc-free across invocations.
 void readTrailerStreamMetadata(
     const char* end,
-    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamIds,
     std::vector<uint32_t>& streamSizes);
 
 /// Value-returning convenience overload for cold-path consumers
-/// (tests, dump tools). Returns parallel (streamIndices, streamSizes) arrays.
+/// (tests, dump tools). Returns parallel (streamIds, streamSizes) arrays.
 std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
 readTrailerStreamMetadata(const char* end);
 
@@ -362,6 +419,20 @@ readTrailerStreamMetadata(const char* end);
 /// cursor + pull() when the trailer spans a chain boundary.
 std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
 readTrailerStreamMetadata(const folly::IOBuf& input);
+
+/// Reads the kTablet dedup trailer written by the three-section `writeTrailer`
+/// overload and reconstructs the same parallel `streamIds`,
+/// `streamOffsets`, and `streamSizes` arrays used by the kTablet decode path.
+/// `uniqueStreamSizesScratch` is a caller-owned reusable buffer: it receives
+/// the decoded unique-size table and is then transformed in place into the
+/// unique-offset (prefix-sum) table. Keeping it caller-owned keeps the per-blob
+/// hot path alloc-free.
+void readTrailerStreamMetadata(
+    const char* end,
+    std::vector<uint32_t>& streamIds,
+    std::vector<uint32_t>& streamOffsets,
+    std::vector<uint32_t>& streamSizes,
+    std::vector<uint32_t>& uniqueStreamSizesScratch);
 
 /// Parses all streams from a serialized buffer.
 /// Returns a vector of stream data indexed by their original offset.

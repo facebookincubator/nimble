@@ -244,7 +244,8 @@ class NimbleIndexProjector {
     uint32_t numRows{0};
     // Number of projected streams present in this stripe.
     uint32_t numStreams{0};
-    // Total bytes across all projected streams in this stripe.
+    // Total logical bytes across all projected streams in this stripe.
+    // Duplicate regions are counted once per projected stream.
     uint64_t projectedBytes{0};
     // Stream regions for projected columns. Indexed by projected stream
     // offset; nullopt for streams absent in this stripe.
@@ -342,6 +343,32 @@ class NimbleIndexProjector {
     // Serialized stripe bodies, one per StripePlan. Populated by
     // processStripes(), consumed during buildResult().
     std::vector<folly::IOBuf> stripeBodies;
+
+    // Reusable per-stripe inputs for the kTablet trailer. packStripe()
+    // rebuilds these vectors for each stripe and clears them on exit to avoid
+    // repeated allocations across stripes.
+    struct PackScratch {
+      void clear() {
+        streamIds.clear();
+        streamSizeIndices.clear();
+        uniqueStreamSizes.clear();
+      }
+
+      void reserve(uint32_t numProjectedStreams) {
+        streamIds.reserve(numProjectedStreams);
+        streamSizeIndices.reserve(numProjectedStreams);
+        uniqueStreamSizes.reserve(numProjectedStreams);
+      }
+
+      // Present projected stream slots, in projected-stream order.
+      std::vector<uint32_t> streamIds;
+      // For each streamIds entry, the body-order index of the unique stream
+      // bytes used by that slot.
+      std::vector<uint32_t> streamSizeIndices;
+      // Sizes for unique stream byte ranges, in body order.
+      std::vector<uint32_t> uniqueStreamSizes;
+    };
+    PackScratch packScratch;
   };
   ProjectionContext ctx_;
 

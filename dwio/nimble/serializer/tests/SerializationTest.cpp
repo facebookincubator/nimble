@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/serializer/DeserializerImpl.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -103,6 +104,11 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
     std::vector<std::string> serialized;
     // Nimble schema for deserialization.
     std::shared_ptr<const Type> schema;
+    // Populated only for kTablet test assemblies.
+    std::vector<size_t> numTabletStreams;
+    std::vector<size_t> numUniqueTabletStreams;
+    std::vector<uint64_t> tabletBodyBytes;
+    std::vector<uint64_t> tabletUniqueBodyBytes;
   };
 
   // Serializes input vectors using the current test parameter's version.
@@ -121,6 +127,14 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
       const velox::TypePtr& type,
       const std::vector<velox::VectorPtr>& inputs,
       bool enableChunking);
+
+  SerializeResult serializeTablet(
+      const velox::TypePtr& type,
+      const std::vector<velox::VectorPtr>& inputs,
+      bool enableChunking,
+      EncodingType streamIdsEncodingType,
+      EncodingType sizeIndicesEncodingType,
+      EncodingType uniqueSizesEncodingType);
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -371,6 +385,90 @@ TEST_P(SerializationTest, fuzzSimple) {
 
 namespace {
 
+// References one logical stream body while assembling a kTablet test blob.
+struct TabletStream {
+  uint32_t id{0};
+  std::string_view data;
+};
+
+// Reports whether kTablet assembly found exact-duplicate stream bodies.
+struct TabletTrailerWriteResult {
+  size_t numStreams{0};
+  size_t numUniqueStreams{0};
+  uint64_t numBodyBytes{0};
+  uint64_t numUniqueBodyBytes{0};
+
+  bool hasSharedStreamBodies() const {
+    return numUniqueStreams < numStreams;
+  }
+};
+
+std::vector<TabletStream> collectTabletStreams(
+    const std::vector<uint32_t>& streamOffsets,
+    const std::vector<std::unique_ptr<StreamLoader>>& streamLoaders) {
+  std::vector<TabletStream> streams;
+  streams.reserve(streamLoaders.size());
+  for (size_t i = 0; i < streamLoaders.size(); ++i) {
+    if (streamLoaders[i] == nullptr) {
+      continue;
+    }
+    streams.push_back({streamOffsets[i], streamLoaders[i]->getStream()});
+  }
+  return streams;
+}
+
+TabletTrailerWriteResult writeTabletStreamsAndTrailer(
+    const std::vector<TabletStream>& streams,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType,
+    std::string& buffer) {
+  TabletTrailerWriteResult result;
+  std::vector<uint32_t> streamIds;
+  std::vector<uint32_t> streamSizeIndices;
+  std::vector<uint32_t> uniqueStreamSizes;
+  std::vector<std::string_view> uniqueStreams;
+  streamIds.reserve(streams.size());
+  streamSizeIndices.reserve(streams.size());
+  uniqueStreams.reserve(streams.size());
+  uniqueStreamSizes.reserve(streams.size());
+
+  for (const auto& stream : streams) {
+    if (stream.data.empty()) {
+      continue;
+    }
+    streamIds.emplace_back(stream.id);
+    result.numBodyBytes += stream.data.size();
+
+    size_t uniqueStreamIndex{0};
+    for (; uniqueStreamIndex < uniqueStreams.size(); ++uniqueStreamIndex) {
+      if (uniqueStreams[uniqueStreamIndex] == stream.data) {
+        break;
+      }
+    }
+
+    if (uniqueStreamIndex == uniqueStreams.size()) {
+      uniqueStreams.emplace_back(stream.data);
+      uniqueStreamSizes.emplace_back(static_cast<uint32_t>(stream.data.size()));
+      result.numUniqueBodyBytes += stream.data.size();
+      buffer.append(stream.data.data(), stream.data.size());
+    }
+    streamSizeIndices.emplace_back(static_cast<uint32_t>(uniqueStreamIndex));
+  }
+
+  result.numStreams = streamIds.size();
+  result.numUniqueStreams = uniqueStreams.size();
+  serde::detail::writeTrailer(
+      streamIds,
+      streamSizeIndices,
+      uniqueStreamSizes,
+      streamIdsEncodingType,
+      sizeIndicesEncodingType,
+      uniqueSizesEncodingType,
+      buffer);
+  return result;
+}
+
 void collectStreamOffsets(
     const nimble::Type& type,
     std::set<uint32_t>& offsets) {
@@ -502,6 +600,22 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
     const velox::TypePtr& type,
     const std::vector<velox::VectorPtr>& inputs,
     bool enableChunking) {
+  return serializeTablet(
+      type,
+      inputs,
+      enableChunking,
+      EncodingType::Trivial,
+      EncodingType::Trivial,
+      EncodingType::Trivial);
+}
+
+SerializationTest::SerializeResult SerializationTest::serializeTablet(
+    const velox::TypePtr& type,
+    const std::vector<velox::VectorPtr>& inputs,
+    bool enableChunking,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType) {
   // Write all inputs to a single Nimble file.
   std::string fileData;
   {
@@ -550,30 +664,20 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
 
-    const auto maxOffset = streamOffsets.back();
-    std::string streamData;
-    std::vector<uint32_t> streamSizes(maxOffset + 1, 0);
-    for (size_t i = 0; i < streamLoaders.size(); ++i) {
-      if (streamLoaders[i] == nullptr) {
-        continue;
-      }
-      auto stream = streamLoaders[i]->getStream();
-      streamData.append(stream.data(), stream.size());
-      streamSizes[streamOffsets[i]] = static_cast<uint32_t>(stream.size());
-    }
-
-    std::string trailerBuf;
-    serde::detail::writeTrailer(
-        streamSizes,
-        nimble::EncodingType::Trivial,
-        nimble::EncodingType::Trivial,
-        trailerBuf);
-
+    auto streams = collectTabletStreams(streamOffsets, streamLoaders);
     std::string assembled;
-    assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
+    assembled.reserve(headerBuf.size());
     assembled.append(headerBuf);
-    assembled.append(streamData);
-    assembled.append(trailerBuf);
+    auto writeResult = writeTabletStreamsAndTrailer(
+        streams,
+        streamIdsEncodingType,
+        sizeIndicesEncodingType,
+        uniqueSizesEncodingType,
+        assembled);
+    result.numTabletStreams.push_back(writeResult.numStreams);
+    result.numUniqueTabletStreams.push_back(writeResult.numUniqueStreams);
+    result.tabletBodyBytes.push_back(writeResult.numBodyBytes);
+    result.tabletUniqueBodyBytes.push_back(writeResult.numUniqueBodyBytes);
     result.serialized.push_back(std::move(assembled));
   }
   return result;
@@ -3230,6 +3334,76 @@ TEST_F(SerializationTest, tabletDeserialization) {
   }
 }
 
+TEST_F(SerializationTest, tabletTrailerDeserialization) {
+  auto rowType =
+      velox::ROW({{"dup_a", velox::INTEGER()}, {"dup_b", velox::INTEGER()}});
+  const std::vector<EncodingType> encodings = {
+      EncodingType::Trivial,
+      EncodingType::Varint,
+      EncodingType::Delta,
+      EncodingType::FixedBitWidth,
+  };
+
+  constexpr int numRows = 128;
+  auto dupA = velox::BaseVector::create(
+      velox::INTEGER(),
+      static_cast<velox::vector_size_t>(numRows),
+      pool_.get());
+  auto dupB = velox::BaseVector::create(
+      velox::INTEGER(),
+      static_cast<velox::vector_size_t>(numRows),
+      pool_.get());
+  for (velox::vector_size_t i = 0; i < numRows; ++i) {
+    const auto value = static_cast<int32_t>(i * 7);
+    dupA->asFlatVector<int32_t>()->set(i, value);
+    dupB->asFlatVector<int32_t>()->set(i, value);
+  }
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      rowType,
+      nullptr,
+      static_cast<velox::vector_size_t>(numRows),
+      std::vector<velox::VectorPtr>{dupA, dupB});
+
+  for (const auto streamIdsEncodingType : encodings) {
+    for (const auto sizeIndicesEncodingType : encodings) {
+      for (const auto uniqueSizesEncodingType : encodings) {
+        SCOPED_TRACE(
+            fmt::format(
+                "streamIdsEncodingType={} sizeIndicesEncodingType={} uniqueSizesEncodingType={}",
+                toString(streamIdsEncodingType),
+                toString(sizeIndicesEncodingType),
+                toString(uniqueSizesEncodingType)));
+        auto tablet = serializeTablet(
+            rowType,
+            {input},
+            /*enableChunking=*/true,
+            streamIdsEncodingType,
+            sizeIndicesEncodingType,
+            uniqueSizesEncodingType);
+        ASSERT_EQ(tablet.serialized.size(), 1);
+        ASSERT_EQ(tablet.numTabletStreams.size(), 1);
+        ASSERT_GT(tablet.numTabletStreams[0], tablet.numUniqueTabletStreams[0]);
+        ASSERT_LT(tablet.tabletUniqueBodyBytes[0], tablet.tabletBodyBytes[0]);
+
+        nimble::Deserializer deserializer{
+            tablet.schema, pool_.get(), DeserializerOptions{.hasHeader = true}};
+        velox::VectorPtr output;
+        deserializer.deserialize(
+            std::string_view(tablet.serialized[0]), output);
+
+        ASSERT_NE(output, nullptr);
+        ASSERT_EQ(output->size(), numRows);
+        for (velox::vector_size_t i = 0; i < numRows; ++i) {
+          ASSERT_TRUE(input->equalValueAt(output.get(), i, i))
+              << "Mismatch at row " << i << "\nExpected: " << input->toString(i)
+              << "\nActual: " << output->toString(i);
+        }
+      }
+    }
+  }
+}
+
 // Verifies ZSTD decompression round-trips correctly with the thread-local
 // ZSTD_DCtx reuse (always-on). Exercises the StreamDataReader and StreamData
 // decompress paths with kTablet chunked format.
@@ -3394,30 +3568,16 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
 
-    const auto maxOffset = streamOffsets.back();
-    std::string streamData;
-    std::vector<uint32_t> streamSizes(maxOffset + 1, 0);
-    for (size_t i = 0; i < streamLoaders.size(); ++i) {
-      if (streamLoaders[i] == nullptr) {
-        continue;
-      }
-      auto stream = streamLoaders[i]->getStream();
-      streamData.append(stream.data(), stream.size());
-      streamSizes[streamOffsets[i]] = static_cast<uint32_t>(stream.size());
-    }
-
-    std::string trailerBuf;
-    serde::detail::writeTrailer(
-        streamSizes,
-        nimble::EncodingType::Trivial,
-        nimble::EncodingType::Trivial,
-        trailerBuf);
-
+    auto streams = collectTabletStreams(streamOffsets, streamLoaders);
     std::string assembled;
-    assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
+    assembled.reserve(headerBuf.size());
     assembled.append(headerBuf);
-    assembled.append(streamData);
-    assembled.append(trailerBuf);
+    writeTabletStreamsAndTrailer(
+        streams,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        assembled);
     assembledBuffers.push_back(std::move(assembled));
   }
 
@@ -3520,31 +3680,16 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
           reinterpret_cast<const char*>(headerIOBuf.data()),
           headerIOBuf.length());
 
-      const auto maxOffset = streamOffsets.back();
-      std::string streamData;
-      std::vector<uint32_t> streamSizes(maxOffset + 1, 0);
-      for (size_t i = 0; i < streamLoaders.size(); ++i) {
-        if (streamLoaders[i] == nullptr) {
-          continue;
-        }
-        auto stream = streamLoaders[i]->getStream();
-        streamData.append(stream.data(), stream.size());
-        streamSizes[streamOffsets[i]] = static_cast<uint32_t>(stream.size());
-      }
-
-      std::string trailerBuf;
-      serde::detail::writeTrailer(
-          streamSizes,
-          nimble::EncodingType::Trivial,
-          nimble::EncodingType::Trivial,
-          trailerBuf);
-
+      auto streams = collectTabletStreams(streamOffsets, streamLoaders);
       std::string assembled;
-      assembled.reserve(
-          headerBuf.size() + streamData.size() + trailerBuf.size());
+      assembled.reserve(headerBuf.size());
       assembled.append(headerBuf);
-      assembled.append(streamData);
-      assembled.append(trailerBuf);
+      writeTabletStreamsAndTrailer(
+          streams,
+          EncodingType::Trivial,
+          EncodingType::Trivial,
+          EncodingType::Trivial,
+          assembled);
       allAssembled[t].push_back(std::move(assembled));
     }
   }
@@ -3695,30 +3840,16 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
 
-    const auto maxOffset = streamOffsets.back();
-    std::string streamData;
-    std::vector<uint32_t> streamSizes(maxOffset + 1, 0);
-    for (size_t i = 0; i < streamLoaders.size(); ++i) {
-      if (streamLoaders[i] == nullptr) {
-        continue;
-      }
-      auto stream = streamLoaders[i]->getStream();
-      streamData.append(stream.data(), stream.size());
-      streamSizes[streamOffsets[i]] = static_cast<uint32_t>(stream.size());
-    }
-
-    std::string trailerBuf;
-    serde::detail::writeTrailer(
-        streamSizes,
-        nimble::EncodingType::Trivial,
-        nimble::EncodingType::Trivial,
-        trailerBuf);
-
+    auto streams = collectTabletStreams(streamOffsets, streamLoaders);
     std::string assembled;
-    assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
+    assembled.reserve(headerBuf.size());
     assembled.append(headerBuf);
-    assembled.append(streamData);
-    assembled.append(trailerBuf);
+    writeTabletStreamsAndTrailer(
+        streams,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        assembled);
     assembledBuffers.push_back(std::move(assembled));
   }
 
@@ -3819,30 +3950,16 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
 
-    const auto maxOffset = streamOffsets.back();
-    std::string streamData;
-    std::vector<uint32_t> streamSizes(maxOffset + 1, 0);
-    for (size_t i = 0; i < streamLoaders.size(); ++i) {
-      if (streamLoaders[i] == nullptr) {
-        continue;
-      }
-      auto stream = streamLoaders[i]->getStream();
-      streamData.append(stream.data(), stream.size());
-      streamSizes[streamOffsets[i]] = static_cast<uint32_t>(stream.size());
-    }
-
-    std::string trailerBuf;
-    serde::detail::writeTrailer(
-        streamSizes,
-        nimble::EncodingType::Trivial,
-        nimble::EncodingType::Trivial,
-        trailerBuf);
-
+    auto streams = collectTabletStreams(streamOffsets, streamLoaders);
     std::string assembled;
-    assembled.reserve(headerBuf.size() + streamData.size() + trailerBuf.size());
+    assembled.reserve(headerBuf.size());
     assembled.append(headerBuf);
-    assembled.append(streamData);
-    assembled.append(trailerBuf);
+    writeTabletStreamsAndTrailer(
+        streams,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        EncodingType::Trivial,
+        assembled);
     assembledBuffers.push_back(std::move(assembled));
   }
 

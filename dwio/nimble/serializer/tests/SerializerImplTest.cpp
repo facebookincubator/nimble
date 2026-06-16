@@ -16,6 +16,7 @@
 
 #include <limits>
 #include <random>
+#include <string_view>
 
 #include <gtest/gtest.h>
 #include <lz4.h>
@@ -37,19 +38,109 @@ using namespace facebook::velox;
 
 namespace {
 
-// Test-only helper: scatter the sparse (indices, sizes) trailer into a dense
-// vector sized to max(indices) + 1, matching the legacy dense round-trip view
-// the tests below were written against.
+// Test-only helper: scatter the sparse (stream ids, sizes) trailer into a dense
+// vector sized to max(stream ids) + 1, matching the legacy dense round-trip
+// view the tests below were written against.
 std::vector<uint32_t> readTrailerStreamMetadataDenseForTest(const char* end) {
-  auto [indices, sizes] = serde::detail::readTrailerStreamMetadata(end);
-  if (indices.empty()) {
+  auto [streamIds, sizes] = serde::detail::readTrailerStreamMetadata(end);
+  if (streamIds.empty()) {
     return {};
   }
-  std::vector<uint32_t> dense(indices.back() + 1, 0);
-  for (size_t k = 0; k < indices.size(); ++k) {
-    dense[indices[k]] = sizes[k];
+  std::vector<uint32_t> dense(streamIds.back() + 1, 0);
+  for (size_t i = 0; i < streamIds.size(); ++i) {
+    dense[streamIds[i]] = sizes[i];
   }
   return dense;
+}
+
+// Writes the kTablet trailer for a sequentially-laid-out body: every present
+// slot is its own unique stream, so its stream size index is the running unique
+// index and uniqueStreamSizes equals the present sizes in order. Test
+// scaffolding that assembles kTablet chunks must emit the same trailer layout.
+void writeTabletTrailer(
+    const std::vector<uint32_t>& sizes,
+    std::string& buffer) {
+  std::vector<uint32_t> streamIds;
+  std::vector<uint32_t> streamSizeIndices;
+  std::vector<uint32_t> uniqueStreamSizes;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    const auto streamSize = sizes[i];
+    if (streamSize == 0) {
+      continue;
+    }
+    streamIds.emplace_back(static_cast<uint32_t>(i));
+    streamSizeIndices.emplace_back(
+        static_cast<uint32_t>(uniqueStreamSizes.size()));
+    uniqueStreamSizes.emplace_back(streamSize);
+  }
+  serde::detail::writeTrailer(
+      streamIds,
+      streamSizeIndices,
+      uniqueStreamSizes,
+      EncodingType::Trivial,
+      EncodingType::Trivial,
+      EncodingType::Trivial,
+      buffer);
+}
+
+void skipTrailerSectionPayloadForTest(
+    EncodingType encodingType,
+    const char*& payload) {
+  switch (encodingType) {
+    case EncodingType::Trivial: {
+      const auto count = varint::readVarint32(&payload);
+      payload += count * sizeof(uint32_t);
+      return;
+    }
+    case EncodingType::Varint: {
+      const auto count = varint::readVarint32(&payload);
+      for (uint32_t i = 0; i < count; ++i) {
+        varint::readVarint32(&payload);
+      }
+      return;
+    }
+    case EncodingType::Delta: {
+      const auto count = varint::readVarint32(&payload);
+      for (uint32_t i = 0; i < count; ++i) {
+        varint::readVarint32(&payload);
+      }
+      return;
+    }
+    case EncodingType::FixedBitWidth: {
+      const auto bitWidth = static_cast<uint8_t>(*payload++);
+      const auto count = varint::readVarint32(&payload);
+      if (bitWidth > 0 && count > 0) {
+        payload += FixedBitArray::bufferSize(count, bitWidth);
+      }
+      return;
+    }
+    default:
+      FAIL() << "Unsupported trailer encoding type: " << encodingType;
+  }
+}
+
+void expectTabletTrailerEncodingTypes(
+    const std::string& buffer,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType) {
+  const char* const end = buffer.data() + buffer.size();
+  const auto trailerSize = serde::detail::readTrailerSize(end);
+  const char* payload = end - sizeof(uint32_t) - trailerSize;
+  const char* const trailerEnd = end - sizeof(uint32_t);
+
+  const auto verifySection = [&](EncodingType expectedEncodingType) {
+    ASSERT_LT(payload, trailerEnd);
+    const auto actualEncodingType =
+        static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+    EXPECT_EQ(actualEncodingType, expectedEncodingType);
+    skipTrailerSectionPayloadForTest(actualEncodingType, payload);
+  };
+
+  verifySection(streamIdsEncodingType);
+  verifySection(sizeIndicesEncodingType);
+  verifySection(uniqueSizesEncodingType);
+  EXPECT_EQ(payload, trailerEnd);
 }
 
 } // namespace
@@ -705,6 +796,154 @@ TEST_F(EncodeDecodeTest, readTrailerStreamMetadataRoundtrip) {
     SCOPED_TRACE(testData.debugString());
     auto buffer = buildCompactTrailer(testData.values);
     expectDenseRoundtripEq(testData.values, buffer);
+  }
+}
+
+// Round-trips the kTablet trailer layout (streamIds, sizeIndices, uniqueSizes).
+// Duplicate slots carry the stream size index of the stream they alias, so the
+// reader rebuilds the same (streamIds, offsets, sizes) triple without storing
+// offsets or duplicated sizes.
+TEST_F(EncodeDecodeTest, tabletTrailerRoundtrip) {
+  // Slot 2 aliases slot 0 (size index 0) and slot 4 aliases slot 1
+  // (size index 1). Unique streams in body order are slots 0, 1, 5.
+  const std::vector<uint32_t> streamIds = {0, 1, 2, 4, 5};
+  const std::vector<uint32_t> streamSizeIndices = {0, 1, 0, 1, 2};
+  const std::vector<uint32_t> uniqueStreamSizes = {100, 50, 80};
+  constexpr auto kStreamIdsEncoding = EncodingType::Varint;
+  constexpr auto kSizeIndicesEncoding = EncodingType::Trivial;
+  constexpr auto kUniqueSizesEncoding = EncodingType::FixedBitWidth;
+
+  std::string buffer;
+  serde::detail::writeTrailer(
+      streamIds,
+      streamSizeIndices,
+      uniqueStreamSizes,
+      kStreamIdsEncoding,
+      kSizeIndicesEncoding,
+      kUniqueSizesEncoding,
+      buffer);
+  expectTabletTrailerEncodingTypes(
+      buffer, kStreamIdsEncoding, kSizeIndicesEncoding, kUniqueSizesEncoding);
+  EXPECT_LE(
+      buffer.size(),
+      serde::detail::estimateTrailerSize(
+          streamIds.size(),
+          uniqueStreamSizes.size(),
+          kStreamIdsEncoding,
+          kSizeIndicesEncoding,
+          kUniqueSizesEncoding));
+
+  std::vector<uint32_t> decodedStreamIds;
+  std::vector<uint32_t> offsets;
+  std::vector<uint32_t> sizes;
+  std::vector<uint32_t> uniqueStreamSizesScratch;
+  serde::detail::readTrailerStreamMetadata(
+      buffer.data() + buffer.size(),
+      decodedStreamIds,
+      offsets,
+      sizes,
+      uniqueStreamSizesScratch);
+
+  const std::vector<uint32_t> expectedStreamIds = {0, 1, 2, 4, 5};
+  const std::vector<uint32_t> expectedOffsets = {0, 100, 0, 100, 150};
+  const std::vector<uint32_t> expectedSizes = {100, 50, 100, 50, 80};
+  EXPECT_EQ(decodedStreamIds, expectedStreamIds);
+  EXPECT_EQ(offsets, expectedOffsets);
+  EXPECT_EQ(sizes, expectedSizes);
+}
+
+// Verifies that every kTablet trailer section encoding combination round-trips
+// to the same decoded (streamIds, offsets, sizes) metadata.
+TEST_F(EncodeDecodeTest, tabletTrailerEncodingCombinations) {
+  const std::vector<EncodingType> encodings = {
+      EncodingType::Trivial,
+      EncodingType::Varint,
+      EncodingType::Delta,
+      EncodingType::FixedBitWidth,
+  };
+  struct TestCase {
+    std::string_view label;
+    std::vector<uint32_t> streamIds;
+    std::vector<uint32_t> streamSizeIndices;
+    std::vector<uint32_t> uniqueStreamSizes;
+    std::vector<uint32_t> expectedOffsets;
+    std::vector<uint32_t> expectedSizes;
+  };
+  const std::vector<TestCase> testCases = {
+      {
+          "empty",
+          {},
+          {},
+          {},
+          {},
+          {},
+      },
+      {
+          "no-duplicates",
+          {0, 3, 7},
+          {0, 1, 2},
+          {10, 20, 30},
+          {0, 10, 30},
+          {10, 20, 30},
+      },
+      {
+          "duplicates",
+          {0, 1, 2, 4, 5},
+          {0, 1, 0, 1, 2},
+          {100, 50, 80},
+          {0, 100, 0, 100, 150},
+          {100, 50, 100, 50, 80},
+      },
+  };
+
+  for (const auto streamIdsEnc : encodings) {
+    for (const auto sizeIndicesEnc : encodings) {
+      for (const auto uniqueSizesEnc : encodings) {
+        for (const auto& testCase : testCases) {
+          SCOPED_TRACE(
+              fmt::format(
+                  "streamIdsEnc={} sizeIndicesEnc={} uniqueSizesEnc={} case={}",
+                  toString(streamIdsEnc),
+                  toString(sizeIndicesEnc),
+                  toString(uniqueSizesEnc),
+                  testCase.label));
+          std::string buffer;
+          serde::detail::writeTrailer(
+              testCase.streamIds,
+              testCase.streamSizeIndices,
+              testCase.uniqueStreamSizes,
+              streamIdsEnc,
+              sizeIndicesEnc,
+              uniqueSizesEnc,
+              buffer);
+          expectTabletTrailerEncodingTypes(
+              buffer, streamIdsEnc, sizeIndicesEnc, uniqueSizesEnc);
+
+          const auto estimate = serde::detail::estimateTrailerSize(
+              testCase.streamIds.size(),
+              testCase.uniqueStreamSizes.size(),
+              streamIdsEnc,
+              sizeIndicesEnc,
+              uniqueSizesEnc);
+          EXPECT_LE(buffer.size(), estimate);
+
+          std::vector<uint32_t> decodedStreamIds;
+          std::vector<uint32_t> offsets;
+          std::vector<uint32_t> sizes;
+          std::vector<uint32_t> uniqueStreamSizesScratch;
+          serde::detail::readTrailerStreamMetadata(
+              buffer.data() + buffer.size(),
+              decodedStreamIds,
+              offsets,
+              sizes,
+              uniqueStreamSizesScratch);
+
+          EXPECT_EQ(decodedStreamIds, testCase.streamIds);
+          EXPECT_EQ(offsets, testCase.expectedOffsets);
+          EXPECT_EQ(sizes, testCase.expectedSizes);
+        }
+      }
+    }
   }
 }
 
@@ -1505,8 +1744,7 @@ class TabletChunkStripTest : public ::testing::Test {
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
     buffer.append(streamData);
-    serde::detail::writeTrailer(
-        sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
+    writeTabletTrailer(sizes, buffer);
 
     // Parse via StreamDataReader.
     DeserializerOptions options{.hasHeader = true};
@@ -1717,8 +1955,7 @@ class ZstdDCtxReuseTest : public TabletChunkStripTest {
         reinterpret_cast<const char*>(headerIOBuf.data()),
         headerIOBuf.length());
     buffer.append(streamData);
-    serde::detail::writeTrailer(
-        sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
+    writeTabletTrailer(sizes, buffer);
 
     DeserializerOptions options{.hasHeader = true};
     StreamDataReader reader(pool_.get(), options);

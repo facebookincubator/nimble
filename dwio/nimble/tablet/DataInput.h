@@ -48,6 +48,12 @@ class DataInput {
   struct BufferRef {
     const char* data{nullptr};
     uint64_t length{0};
+    /// Index of the canonical BufferRef for this loaded region.
+    /// Unique regions refer to themselves (`canonicalIndex == i`). Exact
+    /// duplicate regions refer to the first enqueued copy and share that copy's
+    /// `data` pointer, allowing callers to reuse `bufferRef(canonicalIndex)`
+    /// instead of emitting the duplicate again. Only valid after load().
+    uint32_t canonicalIndex{0};
   };
 
   /// Opaque handle keeping all loaded allocations alive.
@@ -73,7 +79,10 @@ class DataInput {
   /// done with all BufferRefs (e.g., capture in IOBuf destructors).
   virtual Handle load() = 0;
 
-  /// Get the loaded buffer for a previously enqueued request.
+  /// Get the loaded buffer for a previously enqueued request. The returned
+  /// BufferRef::canonicalIndex identifies the stored copy when the region is an
+  /// exact duplicate of an earlier enqueued request (see BufferRef). Only valid
+  /// after load().
   virtual const BufferRef& bufferRef(uint32_t index) const = 0;
 
   /// Release all state (loaded buffers, enqueued requests).
@@ -120,7 +129,12 @@ class DirectDataInput : public DataInput {
 
  private:
   struct EnqueuedRegion {
-    uint32_t bufferIndex;
+    bool sameRegionAs(const EnqueuedRegion& other) const {
+      return region.offset == other.region.offset &&
+          region.length == other.region.length;
+    }
+
+    uint32_t enqueueIndex;
     Region region;
   };
 

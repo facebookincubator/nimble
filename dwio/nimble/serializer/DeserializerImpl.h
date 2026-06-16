@@ -216,23 +216,46 @@ class StreamDataReader {
   /// over hundreds of keys).
   template <typename Callback>
   void iterateStreams(Callback&& callback) {
-    if (nonLegacyFormat(version_)) {
-      // kLegacyCompact/kTablet/kSerialization/kProjection: stream sizes are
-      // packed into a sparse trailer at the end of the blob. Production blobs
-      // at kLegacyCompact are decoded via the legacy reader (frozen snapshot of
-      // the pre-two-array wire format); all newer versions go through the new
-      // two-array sparse trailer reader. Reusable member buffers keep this
-      // path alloc-free across blobs.
-      if (usesLegacyTrailer(version_)) {
-        legacy::readLegacyTrailerStreamMetadata(
-            end_, streamIndices_, streamSizes_);
-      } else {
-        detail::readTrailerStreamMetadata(end_, streamIndices_, streamSizes_);
-      }
-      const bool isTablet = isTabletVersion(version_);
-      const size_t numStreams = streamIndices_.size();
+    if (isTabletVersion(version_)) {
+      // kTablet: the trailer stores stream ids, per-stream size indices, and
+      // unique sizes. Per-slot sizes and body offsets are reconstructed from
+      // (sizeIndex, uniqueSizes); duplicate slots resolve to a single body
+      // extent, so streams are addressed by the reconstructed offset rather
+      // than walked sequentially.
+      detail::readTrailerStreamMetadata(
+          end_,
+          streamIds_,
+          streamOffsets_,
+          streamSizes_,
+          uniqueStreamSizesScratch_);
+      const char* const bodyBase = pos_;
+      const size_t numStreams = streamIds_.size();
       for (size_t entryIdx = 0; entryIdx < numStreams; ++entryIdx) {
-        const uint32_t streamOffset = streamIndices_[entryIdx];
+        const uint32_t streamId = streamIds_[entryIdx];
+        const uint32_t streamSize = streamSizes_[entryIdx];
+        std::string_view streamData(
+            bodyBase + streamOffsets_[entryIdx], streamSize);
+        // kTablet stream data includes tablet chunk headers:
+        // [chunkSize:u32][compressionType:1B][encoded_data...]. Strip headers
+        // and decompress if needed before handing off.
+        callback(streamId, stripChunkHeaders(streamData));
+      }
+      pos_ = end_; // Skip past trailer.
+    } else if (nonLegacyFormat(version_)) {
+      // kLegacyCompact/kSerialization/kProjection: sizes-only sparse trailer.
+      // Each stream's body offset is the prefix sum of preceding sizes, so
+      // streams are walked sequentially. Production blobs at kLegacyCompact are
+      // decoded via the legacy reader (frozen snapshot of the pre-two-array
+      // wire format); newer versions use the two-array sparse trailer reader.
+      // Reusable member buffers keep this path alloc-free across blobs.
+      if (usesLegacyTrailer(version_)) {
+        legacy::readLegacyTrailerStreamMetadata(end_, streamIds_, streamSizes_);
+      } else {
+        detail::readTrailerStreamMetadata(end_, streamIds_, streamSizes_);
+      }
+      const size_t numStreams = streamIds_.size();
+      for (size_t entryIdx = 0; entryIdx < numStreams; ++entryIdx) {
+        const uint32_t streamId = streamIds_[entryIdx];
         const uint32_t streamSize = streamSizes_[entryIdx];
         // Writer invariant: the sparse trailer only encodes non-zero stream
         // slots (SerializerImpl.h writeTrailer skips streamSizes[i]==0).
@@ -241,14 +264,7 @@ class StreamDataReader {
             streamSize, 0, "Sparse trailer must not encode zero-sized stream");
         std::string_view streamData(pos_, streamSize);
         pos_ += streamSize;
-        if (isTablet) {
-          // kTablet: stream data includes tablet chunk headers:
-          // [chunkSize:u32][compressionType:1B][encoded_data...]
-          // Strip headers and decompress if needed before handing off.
-          callback(streamOffset, stripChunkHeaders(streamData));
-        } else {
-          callback(streamOffset, streamData);
-        }
+        callback(streamId, streamData);
       }
       pos_ = end_; // Skip past trailer.
     } else {
@@ -326,14 +342,21 @@ class StreamDataReader {
   const char* end_{nullptr};
   // Reusable buffer for chunk header stripping (compressed/multi-chunk case).
   Vector<char> chunkStrippingBuffer_;
-  // Reusable parallel buffers for the per-blob sparse trailer. Refilled by
-  // iterateStreams() on the kLegacyCompact/kTablet path: streamIndices_
-  // holds the offsets of non-zero stream slots (sorted ascending);
-  // streamSizes_ holds the corresponding byte sizes. Sized to the same
-  // length, cleared+filled in place each blob to keep the hot path
-  // alloc-free across invocations.
-  std::vector<uint32_t> streamIndices_;
+  // Reusable parallel buffers for the per-blob trailer. Refilled by
+  // iterateStreams(): streamIds_ holds the ids of non-zero stream slots (sorted
+  // ascending) and streamSizes_ their byte sizes. For kTablet,
+  // streamOffsets_ additionally holds each slot's body offset; with the
+  // kTablet dedup trailer those offsets and sizes are reconstructed from the
+  // per-slot size indices and the unique-size table (duplicate slots resolve
+  // to a shared offset). The sizes-only formats leave streamOffsets_ empty and
+  // derive offsets by prefix-summing sizes. uniqueStreamSizesScratch_ is reused
+  // across blobs for the unique stream table: decoded as sizes, then
+  // transformed in place into unique-offset prefix sums to keep the hot path
+  // alloc-free.
+  std::vector<uint32_t> streamIds_;
+  std::vector<uint32_t> streamOffsets_;
   std::vector<uint32_t> streamSizes_;
+  std::vector<uint32_t> uniqueStreamSizesScratch_;
 };
 
 } // namespace facebook::nimble::serde
