@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <limits>
+
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "folly/container/F14Map.h"
@@ -72,13 +74,25 @@ class Deserializer {
   // the serializer). Only populated for top-level FlatMap types (depth 1).
   folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
 
-  // Precomputed value-stream offsets per top-level FlatMap child, keyed by
-  // the child's inMap stream offset. Populated alongside inMapChildTypes_
-  // via visitValueStreamLeaves(). Used by the per-batch in-map detection in
-  // deserialize() to check whether any of a child's value streams were
-  // present, without re-walking the schema on the hot path.
-  folly::F14FastMap<uint32_t, std::vector<offset_size>>
-      inMapValueStreamOffsets_;
+  // Sentinel for `valueOffsetToInMap_` entries that are NOT a FlatMap-child
+  // value-stream anchor.
+  static constexpr uint32_t kInvalidInMapOffset =
+      std::numeric_limits<uint32_t>::max();
+
+  // Reverse-lookup table used by the per-batch in-map detection in
+  // deserialize(). `valueOffsetToInMap_[off]` is the inMap stream offset of
+  // the FlatMap child whose value-stream lives at `off`, or
+  // `kInvalidInMapOffset` for any offset that isn't a FlatMap-child
+  // value-stream anchor. Populated at construction via
+  // visitValueStreamLeaves() and indexed directly by stream offset. Sized
+  // once to `maxStreamOffset + 1` so the hot path needs no bounds check.
+  //
+  // The hot path iterates `inMapPresentOffsetsList_` (the small set of
+  // present streams in the current blob, typically dozens) and consults
+  // this table to map each present value anchor back to its owning child's
+  // inMap stream — replacing the prior 357-entry forward scan with one
+  // proportional to the number of present streams in the blob.
+  std::vector<uint32_t> valueOffsetToInMap_;
 
   // Flat boolean vector indexed by stream offset for tracking which streams
   // are present in the current batch. Replaces F14FastSet for O(1) access.
