@@ -20,8 +20,11 @@
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
-// SubIntSplit integration commented out (disabled):
-// #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+// SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+// was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#endif
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
@@ -30,11 +33,11 @@ namespace facebook::nimble {
 namespace {
 constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
 
-// SubIntSplit is currently the only encoding that populates an encoding config.
-// These helpers serialize/deserialize that config (extra-data). The call sites
-// are currently commented out, so the functions are marked [[maybe_unused]].
-[[maybe_unused]] uint32_t serializedConfigSize(
-    const EncodingLayout::Config& config) {
+// SubIntSplit is currently the only encoding that populates an encoding
+// config. These helpers serialize/deserialize that config (extra-data), and
+// are only needed when SubIntSplit's capture/replay support is enabled.
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+uint32_t serializedConfigSize(const EncodingLayout::Config& config) {
   if (config.values().empty()) {
     return 0;
   }
@@ -51,9 +54,7 @@ constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
   return size;
 }
 
-[[maybe_unused]] void serializeConfig(
-    const EncodingLayout::Config& config,
-    char*& pos) {
+void serializeConfig(const EncodingLayout::Config& config, char*& pos) {
   std::vector<std::pair<std::string_view, std::string_view>> entries;
   entries.reserve(config.values().size());
   for (const auto& [key, value] : config.values()) {
@@ -73,8 +74,7 @@ constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
   }
 }
 
-[[maybe_unused]] EncodingLayout::Config deserializeConfig(
-    std::string_view extraData) {
+EncodingLayout::Config deserializeConfig(std::string_view extraData) {
   if (extraData.empty()) {
     return {};
   }
@@ -121,6 +121,7 @@ constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
   NIMBLE_CHECK_EQ(pos, end, "Invalid encoding layout config length.");
   return EncodingLayout::Config{std::move(configs)};
 }
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 // Captures one size-prefixed nested sub-stream into `children` (nullopt when
 // the sub-stream is empty)
@@ -172,8 +173,9 @@ int32_t EncodingLayout::serialize(std::span<char> output) const {
   // We store at least kMinEncodingLayoutBufferSize bytes: encoding type,
   // compression type, children count and extra data size (2 bytes), plus one
   // byte per child.
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
+  // SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+  // was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
   const uint32_t extraDataSize = serializedConfigSize(encodingConfig_);
   NIMBLE_CHECK(
       output.size() >=
@@ -193,7 +195,7 @@ int32_t EncodingLayout::serialize(std::span<char> output) const {
     serializeConfig(encodingConfig_, extraPos);
     size += extraDataSize;
   }
-  */
+#else
   NIMBLE_CHECK(
       output.size() >= kMinEncodingLayoutBufferSize + children_.size(),
       "Captured encoding layout buffer too small.");
@@ -205,6 +207,7 @@ int32_t EncodingLayout::serialize(std::span<char> output) const {
   output[3] = output[4] = 0;
 
   int32_t size = kMinEncodingLayoutBufferSize;
+#endif
 
   for (auto i = 0; i < children_.size(); ++i) {
     const auto& child = children_[i];
@@ -230,8 +233,9 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
   const auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
   const auto childrenCount = encoding::read<uint8_t>(pos);
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
+  // SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+  // was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
   const auto extraDataSize = encoding::read<uint16_t>(pos);
 
   NIMBLE_CHECK_GE(
@@ -243,12 +247,13 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
       {encoding.data() + kMinEncodingLayoutBufferSize, extraDataSize});
 
   uint32_t offset = kMinEncodingLayoutBufferSize + extraDataSize;
-  */
+#else
   [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
   NIMBLE_DCHECK_EQ(extraDataSize, 0, "Extra data currently not supported.");
 
   uint32_t offset = kMinEncodingLayoutBufferSize;
+#endif
   std::vector<std::optional<const EncodingLayout>> children;
   children.reserve(childrenCount);
   for (auto i = 0; i < childrenCount; ++i) {
@@ -263,16 +268,18 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
     }
   }
 
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
+  // SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+  // was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
   return {
       {encodingType,
        std::move(encodingConfig),
        compressionType,
        std::move(children)},
       offset};
-  */
+#else
   return {{encodingType, {}, compressionType, std::move(children)}, offset};
+#endif
 }
 
 EncodingType EncodingLayout::encodingType() const {
@@ -305,13 +312,14 @@ namespace {
 
 constexpr uint32_t kEncodingPrefixSize = 6;
 
-// SubIntSplit integration commented out (disabled):
-/*
-Captures the layout of a SubIntSplit encoding by reading its per-section bit
-ranges and recursively capturing each split's nested encoding. The recovered
-bit boundaries are preserved in the encoding config so the same split layout
-can be replayed.
-[[maybe_unused]] EncodingLayout captureSubIntSplit(
+// SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+// was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+// Captures the layout of a SubIntSplit encoding by reading its per-section bit
+// ranges and recursively capturing each split's nested encoding. The recovered
+// bit boundaries are preserved in the encoding config so the same split layout
+// can be replayed.
+EncodingLayout captureSubIntSplit(
     std::string_view encoding,
     CompressionType compressionType) {
   const char* pos = encoding.data() + kEncodingPrefixSize;
@@ -358,7 +366,7 @@ can be replayed.
       compressionType,
       std::move(children)};
 }
-*/
+#endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 
 } // namespace
 
@@ -384,14 +392,14 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::Prefix:
     case EncodingType::ALP:
     case EncodingType::SimdForBitpack:
-    // SubIntSplit integration is disabled; treat it as a non-nested encoding
-    // (zero children) so its layout is captured without nested logic.
+#ifndef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    // SubIntSplit, FOR, and FrequencyPartition integration is disabled in
+    // non-experimental builds; treat them as non-nested encodings (zero
+    // children) so their layout is captured without nested logic.
     case EncodingType::SubIntSplit:
-    // FOR and FrequencyPartition integration is disabled; treat them as
-    // non-nested encodings (zero children). Their nested-capture logic is
-    // commented out below.
     case EncodingType::FOR:
     case EncodingType::FrequencyPartition:
+#endif
       // Non nested encodings have zero children
       break;
     case EncodingType::PFOR: {
@@ -514,13 +522,13 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
-      // SubIntSplit-specific logic commented out to restore original behavior:
-      /*
-      case EncodingType::SubIntSplit:
-        return captureSubIntSplit(encoding, compressionType);
-      */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit:
+      return captureSubIntSplit(encoding, compressionType);
+    // FOR and FrequencyPartition integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
     case EncodingType::FOR: {
       compressionType = encoding::peek<uint8_t, CompressionType>(
           encoding.data() + kEncodingPrefixSize);
@@ -548,7 +556,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     }
     case EncodingType::FrequencyPartition:
       break;
-    */
+#endif
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

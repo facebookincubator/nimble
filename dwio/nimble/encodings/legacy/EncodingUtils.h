@@ -17,12 +17,17 @@
 
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
-// SubIntSplit integration commented out (disabled):
-/*
+// SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+// was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
-*/
+// FOR and FrequencyPartition integration (re-enabled for
+// NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+#endif
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -133,8 +138,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
-    // SubIntSplit integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit:
       if constexpr (isNumericType<T>() && (sizeof(T) == 4 || sizeof(T) == 8)) {
@@ -144,9 +149,8 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
 #endif
-    */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
+    // FOR and FrequencyPartition integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR:
       if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
@@ -162,7 +166,6 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
 #endif
-    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }
