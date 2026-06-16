@@ -38,7 +38,8 @@ std::unique_ptr<ChunkIndex> ChunkIndex::create(Section indexSection) {
     groupSections.emplace_back(
         ms->offset(),
         ms->size(),
-        static_cast<CompressionType>(ms->compression_type()));
+        static_cast<CompressionType>(ms->compression_type()),
+        ms->uncompressed_size());
   }
 
   return std::unique_ptr<ChunkIndex>(

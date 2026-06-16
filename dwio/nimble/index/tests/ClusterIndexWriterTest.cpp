@@ -1095,7 +1095,11 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   auto createMetadataFn =
       [&partitionMetadata](std::string_view metadata) -> MetadataSection {
     partitionMetadata.emplace_back(metadata);
-    return MetadataSection(0, metadata.size(), CompressionType::Uncompressed);
+    return MetadataSection(
+        0,
+        metadata.size(),
+        CompressionType::Uncompressed,
+        static_cast<uint32_t>(metadata.size()));
   };
   writer->flush(writeDataFn, createMetadataFn);
 

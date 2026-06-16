@@ -445,7 +445,8 @@ MetadataSection ClusterIndex::partitionSection(uint32_t partitionId) const {
   return MetadataSection{
       metadata->offset(),
       metadata->size(),
-      static_cast<CompressionType>(metadata->compression_type())};
+      static_cast<CompressionType>(metadata->compression_type()),
+      metadata->uncompressed_size()};
 }
 
 ClusterIndex::IndexPartition::IndexPartition(

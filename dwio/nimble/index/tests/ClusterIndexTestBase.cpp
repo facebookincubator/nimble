@@ -148,7 +148,11 @@ ClusterIndexTestBase::IndexBuffers ClusterIndexTestBase::createTestClusterIndex(
         reinterpret_cast<const char*>(groupBuilder.GetBufferPointer()), size);
 
     auto metadataSection = serialization::CreateMetadataSection(
-        builder, offset, size, serialization::CompressionType_Uncompressed);
+        builder,
+        offset,
+        size,
+        serialization::CompressionType_Uncompressed,
+        size);
     clusterIndexGroupMetadataOffsets.push_back(metadataSection);
 
     const uint32_t numStreams = streamChunkCounts.size() / groupStripeCount;
@@ -319,7 +323,11 @@ ClusterIndexTestBase::createChunkOnlyTestClusterIndex(
         reinterpret_cast<const char*>(groupBuilder.GetBufferPointer()), size);
 
     auto metadataSection = serialization::CreateMetadataSection(
-        builder, offset, size, serialization::CompressionType_Uncompressed);
+        builder,
+        offset,
+        size,
+        serialization::CompressionType_Uncompressed,
+        size);
     clusterIndexGroupMetadataOffsets.push_back(metadataSection);
   }
 

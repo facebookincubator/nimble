@@ -395,7 +395,9 @@ void TestClusterIndexMetadataWriter::writeRoot(
                 indexPartitions_[i].offset(),
                 indexPartitions_[i].size(),
                 static_cast<serialization::CompressionType>(
-                    indexPartitions_[i].compressionType()));
+                    indexPartitions_[i].compressionType()),
+                indexPartitions_[i].uncompressedSize().value_or(
+                    indexPartitions_[i].size()));
           });
 
   // Build partition keys: [firstKey, lastKeyPartition0, lastKeyPartition1, ...]
