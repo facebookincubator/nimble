@@ -707,9 +707,9 @@ Deserializer::Deserializer(
   for (auto& [offset, decoder] : deserializerMap_) {
     deserializers_[offset] = decoder.get();
   }
-  // Size inMapPresentOffsets_ to match for flatmap present tracking.
+  // Size streamPresentBitmap_ to match for flatmap present tracking.
   if (!inMapChildTypes_.empty()) {
-    inMapPresentOffsets_.resize(maxOffset + 1, false);
+    streamPresentBitmap_.resize(maxOffset + 1, false);
   }
 }
 
@@ -800,11 +800,11 @@ void Deserializer::deserialize(
     const auto numRows = reader.initialize(sv);
     const auto version = reader.version();
     // Reset present tracking from previous batch.
-    if (hasInMapChildren && !inMapPresentOffsetsList_.empty()) {
-      for (auto off : inMapPresentOffsetsList_) {
-        inMapPresentOffsets_[off] = false;
+    if (hasInMapChildren && !streamPresentDirtyList_.empty()) {
+      for (auto off : streamPresentDirtyList_) {
+        streamPresentBitmap_[off] = false;
       }
-      inMapPresentOffsetsList_.clear();
+      streamPresentDirtyList_.clear();
     }
     // iterateStreams() is a templated callback walker; the lambda body
     // inlines into the loop, eliminating std::function dispatch on the
@@ -812,8 +812,8 @@ void Deserializer::deserialize(
     reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
       if (offset <= maxStreamOffset) {
         if (hasInMapChildren) {
-          inMapPresentOffsets_[offset] = true;
-          inMapPresentOffsetsList_.emplace_back(offset);
+          streamPresentBitmap_[offset] = true;
+          streamPresentDirtyList_.emplace_back(offset);
         }
         // Null is possible: deserializers_ is sized to maxOffset+1 but only
         // populated for offsets in deserializerMap_. Some serialized stream
@@ -832,11 +832,11 @@ void Deserializer::deserialize(
     // hot path is a flat bitmap scan; no recursive schema walk and no
     // callback dispatch.
     for (const auto& [inMapOffset, valueOffsets] : inMapValueStreamOffsets_) {
-      if (inMapPresentOffsets_[inMapOffset]) {
+      if (streamPresentBitmap_[inMapOffset]) {
         continue;
       }
       for (const auto offset : valueOffsets) {
-        if (offset <= maxStreamOffset && inMapPresentOffsets_[offset]) {
+        if (offset <= maxStreamOffset && streamPresentBitmap_[offset]) {
           DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
               ->addPresentInMapSegment(rowOffset, numRows);
           break;

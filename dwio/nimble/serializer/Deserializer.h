@@ -80,13 +80,15 @@ class Deserializer {
   folly::F14FastMap<uint32_t, std::vector<offset_size>>
       inMapValueStreamOffsets_;
 
-  // Flat boolean vector indexed by stream offset for tracking which streams
-  // are present in the current batch. Replaces F14FastSet for O(1) access.
-  // Only used when inMapChildTypes_ is non-empty.
-  mutable std::vector<bool> inMapPresentOffsets_;
-  // Offsets that were set in inMapPresentOffsets_ this batch (for efficient
-  // reset).
-  mutable std::vector<uint32_t> inMapPresentOffsetsList_;
+  // Flat boolean vector indexed by stream offset, tracking which streams are
+  // present in the current batch. Consumed by the in-map inference pass to
+  // detect dropped inMap streams whose values are still present. Holds ALL
+  // present offsets (value streams, lengths streams, nulls, inMap), not just
+  // inMap ones. Only allocated when inMapChildTypes_ is non-empty.
+  mutable std::vector<bool> streamPresentBitmap_;
+  // Dirty list of offsets flipped to `true` in `streamPresentBitmap_` this
+  // batch, so reset between batches is O(touched) instead of O(maxOffset).
+  mutable std::vector<uint32_t> streamPresentDirtyList_;
 };
 
 } // namespace facebook::nimble
