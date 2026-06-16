@@ -707,9 +707,34 @@ Deserializer::Deserializer(
   for (auto& [offset, decoder] : deserializerMap_) {
     deserializers_[offset] = decoder.get();
   }
-  // Size inMapPresentOffsets_ to match for flatmap present tracking.
+  // Pre-size FlatMap present-tracking state once. Both vectors are bounded
+  // by maxOffset because every value-stream anchor offset is a Type main
+  // descriptor offset already in deserializerMap_. Sizing here (rather than
+  // grow-on-demand inside createDeserializersForType) avoids repeated
+  // reallocations and lets the per-batch hot path skip a bounds check.
   if (!inMapChildTypes_.empty()) {
     inMapPresentOffsets_.resize(maxOffset + 1, false);
+    valueOffsetToInMap_.resize(maxOffset + 1, kInvalidInMapOffset);
+    // Populate the reverse-lookup table: for each top-level FlatMap child,
+    // record its inMap stream offset at every one of its value-stream
+    // anchors. The per-batch in-map inference reads this to map a present
+    // value anchor back to its owning child without re-walking the schema.
+    //
+    // visitValueStreamLeaves visits ALL value-stream offsets in the child
+    // subtree (Row recurses all children; FlatMap recurses all children).
+    // Relies on RowFieldWriter writing every field over the same
+    // OrderedRanges, so sibling Row children populate in lockstep — if any
+    // sibling's value stream is present in a batch, all are. If a future
+    // writer ever made Row children conditionally absent, the in-map
+    // inference below would over-attribute presence to keys whose first
+    // child was absent but a sibling was present.
+    for (const auto& [inMapOffset, childType] : inMapChildTypes_) {
+      visitValueStreamLeaves(
+          *childType, [this, inMapOffset](offset_size valueOffset) {
+            valueOffsetToInMap_[valueOffset] = inMapOffset;
+            return false;
+          });
+    }
   }
 }
 
@@ -737,24 +762,6 @@ void Deserializer::createDeserializersForType(
           options_.bufferPoolCapacity,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
-      // Precompute the value-stream offsets that the per-batch in-map
-      // detection in deserialize() will probe. Built once here so the hot
-      // path is a flat bitmap scan instead of a recursive schema walk.
-      //
-      // Visits ALL value-stream offsets in the child subtree (Row recurses
-      // all children; FlatMap recurses all children). Relies on
-      // RowFieldWriter writing every field over the same OrderedRanges, so
-      // sibling Row children populate in lockstep — if any sibling's value
-      // stream is present in a batch, all are. If a future writer ever made
-      // Row children conditionally absent, the in-map inference below would
-      // over-attribute presence to keys whose first child was absent but a
-      // sibling was present.
-      auto& valueOffsets = inMapValueStreamOffsets_[inMapOffset];
-      visitValueStreamLeaves(
-          *flatMap.childAt(i), [&valueOffsets](offset_size offset) {
-            valueOffsets.push_back(offset);
-            return false;
-          });
     }
   }
 }
@@ -827,21 +834,31 @@ void Deserializer::deserialize(
       }
     });
 
-    // Detect present in-map streams using the precomputed value-stream
-    // offsets table (built once in createDeserializersForType). Per-batch
-    // hot path is a flat bitmap scan; no recursive schema walk and no
-    // callback dispatch.
-    for (const auto& [inMapOffset, valueOffsets] : inMapValueStreamOffsets_) {
-      if (inMapPresentOffsets_[inMapOffset]) {
+    // Detect present in-map streams by driving the scan off the small set
+    // of streams actually present in this blob (inMapPresentOffsetsList_,
+    // typically dozens of entries), rather than the schema's full FlatMap
+    // child cardinality (hundreds). For each present stream offset, the
+    // reverse-lookup table maps it back to its owning FlatMap child's
+    // inMap stream offset; if that child's inMap stream itself was NOT
+    // present, the child's values are implicitly all-present in this blob
+    // and we emit an in-map segment.
+    //
+    // Caveat: if a single child has multiple value-stream anchors (e.g.,
+    // Row<A,B> as a value type) and more than one fires in the same blob,
+    // addPresentInMapSegment will be called once per present anchor — the
+    // resulting segment list may contain duplicate {startRow, endRow}
+    // entries. Downstream fillMissingFlatMapRows overlays 1s onto the
+    // default-0 inMap bitmap and is idempotent over duplicates, so output
+    // correctness is preserved. EBF (Array<Scalar> values, one anchor per
+    // child) never hits this case.
+    for (const auto offset : inMapPresentOffsetsList_) {
+      const auto inMapOffset = valueOffsetToInMap_[offset];
+      if (inMapOffset == kInvalidInMapOffset ||
+          inMapPresentOffsets_[inMapOffset]) {
         continue;
       }
-      for (const auto offset : valueOffsets) {
-        if (offset <= maxStreamOffset && inMapPresentOffsets_[offset]) {
-          DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
-              ->addPresentInMapSegment(rowOffset, numRows);
-          break;
-        }
-      }
+      DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
+          ->addPresentInMapSegment(rowOffset, numRows);
     }
 
     rowOffset += numRows;
