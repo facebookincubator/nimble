@@ -39,6 +39,7 @@
 #include "velox/common/testutil/TempFilePath.h"
 #include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
+#include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::nimble::test {
 
@@ -217,6 +218,61 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     ensureTabletReaderCache();
     return NimbleIndexProjector::create(
         *tabletReaderCache_, fileHandle, projectedSubfields, readerOptions);
+  }
+
+  VectorPtr deserializeProjectedBatches(
+      const NimbleIndexProjector& projector,
+      const std::vector<std::string_view>& batches) {
+    DeserializerOptions deserOptions;
+    deserOptions.hasHeader = true;
+    Deserializer deserializer(
+        projector.projectedNimbleType(), leafPool_.get(), deserOptions);
+    VectorPtr output;
+    deserializer.deserialize(batches, output);
+    return output;
+  }
+
+  VectorPtr deserializeProjectedSlice(
+      const NimbleIndexProjector& projector,
+      const folly::IOBuf& slice) {
+    auto coalesced = coalesceChunkSlice(slice);
+    std::vector<std::string_view> batches{std::string_view(
+        reinterpret_cast<const char*>(coalesced.data()), coalesced.length())};
+    return deserializeProjectedBatches(projector, batches);
+  }
+
+  VectorPtr makeOutputRange(
+      const VectorPtr& output,
+      uint32_t outputOffset,
+      vector_size_t numRows) {
+    if (outputOffset == 0 && output->size() == numRows) {
+      return output;
+    }
+
+    auto indices = allocateIndices(numRows, leafPool_.get());
+    auto* rawIndices = indices->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < numRows; ++i) {
+      rawIndices[i] = static_cast<vector_size_t>(outputOffset) + i;
+    }
+    return BaseVector::wrapInDictionary(nullptr, indices, numRows, output);
+  }
+
+  // Compares decoded output rows with a compact expected vector. The
+  // deserializer returns full stripes, so range tests dictionary-wrap the
+  // selected rows before using Velox's vector equality assertion.
+  void expectVectorRows(
+      const VectorPtr& output,
+      uint32_t expectedRows,
+      const VectorPtr& expected,
+      uint32_t outputOffset = 0) {
+    ASSERT_NE(output, nullptr);
+    ASSERT_NE(expected, nullptr);
+    ASSERT_EQ(output->size(), expectedRows);
+    ASSERT_LE(
+        static_cast<uint64_t>(outputOffset) + expected->size(),
+        static_cast<uint64_t>(output->size()));
+    velox::test::assertEqualVectors(
+        expected, makeOutputRange(output, outputOffset, expected->size()));
   }
 
   // Creates encoded key bounds for a point lookup on a single int64 key.
@@ -600,9 +656,33 @@ TEST_P(NimbleIndexProjectorTest, deduplicatedProjectedStreamsReadOnce) {
   ASSERT_EQ(result.responses[0].slices.size(), 1);
   EXPECT_EQ(projector->stats().numReadStripes, 1);
   EXPECT_EQ(dataIoStats_->read().count(), 1);
-  EXPECT_LE(dataIoStats_->rawBytesRead() * 2, projector->stats().numOutputBytes)
-      << "The physical payload should be one deduplicated stream while the "
-         "projected output still contains both logical streams";
+  // dup_a and dup_b carry identical data, so the source tablet aliases their
+  // streams to one extent. The packed output is now deduplicated too: the body
+  // holds a single physical copy that both logical streams reference via the
+  // kTablet dedup trailer, so the output stays well under the ~2x size it would
+  // be if each logical stream carried its own copy.
+  EXPECT_LT(projector->stats().numOutputBytes, dataIoStats_->rawBytesRead() * 2)
+      << "Deduplicated output must hold a single physical copy of the aliased "
+         "stream, not two";
+
+  // The duplicate streams are reported through IoStatistics (surfaced via the
+  // rexdb benchmark): DirectDataInput coalesces the aliased dup_a/dup_b regions
+  // into one read, so the projector's data IO stats record the duplicate.
+  EXPECT_GT(dataIoStats_->duplicateReadRegions(), 0u)
+      << "dup_a and dup_b should be detected as duplicate read regions";
+  EXPECT_GT(dataIoStats_->duplicateReadBytes(), 0u);
+
+  // Both aliased logical streams must still decode correctly from the single
+  // shared body copy: the kTablet dedup trailer resolves both slots to the same
+  // body extent.
+  auto expected = vectorMaker_->rowVector(
+      {"dup_a", "dup_b"},
+      {vectorMaker_->flatVector<int32_t>(values),
+       vectorMaker_->flatVector<int32_t>(values)});
+  expectVectorRows(
+      deserializeProjectedSlice(*projector, result.responses[0].slices[0]),
+      static_cast<uint32_t>(numRows),
+      expected);
 }
 
 // Round-trips a single-batch deserialize over a key range. The Deserializer
@@ -636,26 +716,17 @@ TEST_P(NimbleIndexProjectorTest, deduplicatedProjectedStreamsReadOnce) {
     request.keyBounds = {bounds};                                              \
     auto result = projector->project(request, {});                             \
     ASSERT_EQ(result.responses[0].slices.size(), 1);                           \
-    auto coalesced = result.responses[0].slices[0].cloneCoalescedAsValue();    \
-    auto bytes = std::string_view(                                             \
-        reinterpret_cast<const char*>(coalesced.data()), coalesced.length());  \
-    DeserializerOptions deserOptions;                                          \
-    deserOptions.hasHeader = true;                                             \
-    Deserializer deserializer(                                                 \
-        projector->projectedNimbleType(), leafPool_.get(), deserOptions);      \
-    std::vector<std::string_view> singleBatch{bytes};                          \
-    VectorPtr output;                                                          \
-    deserializer.deserialize(singleBatch, output);                             \
-    ASSERT_EQ(output->size(), static_cast<uint32_t>(numRows));                 \
-    auto* rowVec = output->as<velox::RowVector>();                             \
-    auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();     \
-    /* Verify the in-range subset has expected values. */                      \
-    for (uint32_t i = static_cast<uint32_t>(lowerKey_);                        \
-         i < static_cast<uint32_t>(upperKey_);                                 \
-         ++i) {                                                                \
-      EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>(i * 10))            \
-          << "i=" << i;                                                        \
-    }                                                                          \
+    const auto expectedOffset = static_cast<size_t>(lowerKey_);                \
+    const auto expectedEnd = static_cast<size_t>(upperKey_);                   \
+    std::vector<int32_t> expectedValues(                                       \
+        values.begin() + expectedOffset, values.begin() + expectedEnd);        \
+    auto expected = vectorMaker_->rowVector(                                   \
+        {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});       \
+    expectVectorRows(                                                          \
+        deserializeProjectedSlice(*projector, result.responses[0].slices[0]),  \
+        static_cast<uint32_t>(numRows),                                        \
+        expected,                                                              \
+        static_cast<uint32_t>(expectedOffset));                                \
   } while (0)
 
 TEST_P(NimbleIndexProjectorTest, deserializerRangeAtStart) {
@@ -1009,6 +1080,7 @@ TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
   constexpr int rowsPerBatch = 128;
   constexpr int numRows = numBatches * rowsPerBatch;
   std::vector<RowVectorPtr> inputBatches;
+  std::vector<int32_t> expectedValues(numRows);
   inputBatches.reserve(numBatches);
   for (int batch = 0; batch < numBatches; ++batch) {
     std::vector<int64_t> keys(rowsPerBatch);
@@ -1017,6 +1089,7 @@ TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
       const auto key = batch * rowsPerBatch + row;
       keys[row] = key;
       values[row] = key * 10;
+      expectedValues[key] = values[row];
     }
     inputBatches.emplace_back(vectorMaker_->rowVector(
         {"key", "value"},
@@ -1100,19 +1173,12 @@ TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
           ownedSlices.back().length());
     }
 
-    DeserializerOptions deserOptions;
-    deserOptions.hasHeader = true;
-    Deserializer deserializer(
-        projector->projectedNimbleType(), leafPool_.get(), deserOptions);
-    VectorPtr output;
-    deserializer.deserialize(serializedBatches, output);
-    ASSERT_EQ(output->size(), static_cast<uint32_t>(numRows));
-    auto* rowVec = output->as<RowVector>();
-    auto* valueVec = rowVec->childAt(0)->as<FlatVector<int32_t>>();
-    for (uint32_t row = 0; row < numRows; ++row) {
-      EXPECT_EQ(valueVec->valueAt(row), static_cast<int32_t>(row * 10))
-          << "row=" << row;
-    }
+    auto expected = vectorMaker_->rowVector(
+        {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});
+    expectVectorRows(
+        deserializeProjectedBatches(*projector, serializedBatches),
+        static_cast<uint32_t>(numRows),
+        expected);
 
     EXPECT_EQ(projector->stats().numReadStripes, numBatches);
     EXPECT_EQ(projector->stats().numReadRows, numRows);

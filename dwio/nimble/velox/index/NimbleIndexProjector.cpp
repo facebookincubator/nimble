@@ -60,6 +60,67 @@ std::string NimbleIndexProjector::Stats::toString() const {
 
 namespace {
 
+// Adapter that lets serializer helpers append directly into an already
+// allocated IOBuf. resize() only advances the IOBuf length within existing
+// tailroom; it never reallocates.
+class IOBufAppender {
+ public:
+  explicit IOBufAppender(folly::IOBuf& buffer) : buffer_{buffer} {}
+
+  size_t size() const {
+    return buffer_.length();
+  }
+
+  void resize(size_t size) {
+    const auto currentSize = buffer_.length();
+    NIMBLE_CHECK_GE(
+        size, currentSize, "IOBufAppender only supports appending data");
+    const auto appendSize = size - currentSize;
+    NIMBLE_CHECK_LE(
+        appendSize,
+        buffer_.tailroom(),
+        "Estimated trailer tailroom is too small: {} > {}",
+        appendSize,
+        buffer_.tailroom());
+    buffer_.append(appendSize);
+  }
+
+  char* data() {
+    return reinterpret_cast<char*>(buffer_.writableData());
+  }
+
+ private:
+  folly::IOBuf& buffer_;
+};
+
+constexpr auto kTabletTrailerEncoding = EncodingType::FixedBitWidth;
+
+size_t estimateTabletTrailerSize(
+    size_t numPresentStreams,
+    size_t numUniqueStreams) {
+  return serde::detail::estimateTrailerSize(
+      numPresentStreams,
+      numUniqueStreams,
+      kTabletTrailerEncoding,
+      kTabletTrailerEncoding,
+      kTabletTrailerEncoding);
+}
+
+void writeTabletTrailer(
+    const std::vector<uint32_t>& streamIds,
+    const std::vector<uint32_t>& streamSizeIndices,
+    const std::vector<uint32_t>& uniqueStreamSizes,
+    IOBufAppender& buffer) {
+  serde::detail::writeTrailer(
+      streamIds,
+      streamSizeIndices,
+      uniqueStreamSizes,
+      kTabletTrailerEncoding,
+      kTabletTrailerEncoding,
+      kTabletTrailerEncoding,
+      buffer);
+}
+
 std::unique_ptr<DataInput> createDataInput(
     const velox::FileHandle& fileHandle,
     const velox::dwio::common::ReaderOptions& options) {
@@ -223,6 +284,7 @@ void NimbleIndexProjector::clearRequest() {
   ctx_.dataInputIndices.clear();
   ctx_.dataHandle.reset();
   ctx_.stripeBodies.clear();
+  ctx_.packScratch.clear();
   dataInput_->clear();
 }
 
@@ -328,14 +390,15 @@ void NimbleIndexProjector::loadStripes() {
   for (size_t stripeOffset = 0; stripeOffset < stripePlans.size();
        ++stripeOffset) {
     dataInput_->startGroup();
-    const auto base = stripeOffset * numProjectedStreams;
+    const auto dataInputBase = stripeOffset * numProjectedStreams;
     const auto& streams = stripePlans[stripeOffset].projectedStreams;
     for (size_t streamIndex = 0; streamIndex < streams.size(); ++streamIndex) {
       const auto& stream = streams[streamIndex];
       if (!stream.has_value()) {
         continue;
       }
-      ctx_.dataInputIndices[base + streamIndex] = dataInput_->enqueue(*stream);
+      ctx_.dataInputIndices[dataInputBase + streamIndex] =
+          dataInput_->enqueue(*stream);
     }
   }
   ctx_.dataHandle = dataInput_->load();
@@ -346,6 +409,7 @@ NimbleIndexProjector::Result NimbleIndexProjector::processStripes() {
   Result result;
   result.responses.resize(ctx_.numRequests);
   ctx_.stripeBodies.resize(ctx_.plan.stripePlans.size());
+
   for (size_t i = 0; i < ctx_.plan.stripePlans.size(); ++i) {
     ++stats_.numReadStripes;
     ctx_.stripeBodies[i] = packStripe(i);
@@ -384,49 +448,129 @@ folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
   const auto& stripePlan = ctx_.plan.stripePlans[stripeOffset];
   const auto numRows = stripeRowCount(stripePlan.stripeIndex);
   const auto numProjectedStreams = projectedStreamOffsets_.size();
-  const auto base = stripeOffset * numProjectedStreams;
 
-  // Build stream sizes from the precomputed projected regions.
-  std::vector<uint32_t> streamSizes(numProjectedStreams, 0);
-  for (size_t i = 0; i < numProjectedStreams; ++i) {
-    if (stripePlan.projectedStreams[i].has_value()) {
-      streamSizes[i] =
-          static_cast<uint32_t>(stripePlan.projectedStreams[i]->length);
-    }
-  }
+  // Deduplicate streams that the source tablet already aliased: multiple
+  // projected slots can resolve to the same physical extent. DataInput detects
+  // those exact duplicates during load(); packStripe consumes that result via
+  // BufferRef::canonicalIndex (below) rather than re-detecting, so each
+  // physical stream is written into the body only once and duplicate slots
+  // reuse the stored copy's stream size index in the kTablet dedup trailer.
+  auto& packScratch = ctx_.packScratch;
+  SCOPE_EXIT {
+    packScratch.clear();
+  };
+  packScratch.reserve(numProjectedStreams);
 
-  // First stream IOBuf holds the DataInput::Handle via takeOwnership,
-  // keeping the loaded data alive. Subsequent streams use wrapBuffer
-  // (no ownership) since the chain is always cloned/destroyed as a unit.
+  // Each unique stream is wrapped zero-copy into the output chain. Streams that
+  // are physically contiguous in the DataInput read buffer are merged into a
+  // single IOBuf node — fewer nodes means cheaper appendToChain here and
+  // cheaper cloneAsValue per request in buildResult. The first node holds the
+  // DataInput::Handle (takeOwnership) to keep the loaded data alive; the rest
+  // wrapBuffer it, since the chain is always cloned/destroyed as a unit.
   std::unique_ptr<folly::IOBuf> chain;
-  for (size_t i = 0; i < numProjectedStreams; ++i) {
-    if (!ctx_.dataInputIndices[base + i].has_value()) {
-      continue;
+  const char* runData = nullptr;
+  uint64_t runLength = 0;
+  const auto flushRun = [&]() {
+    if (runData == nullptr) {
+      return;
     }
-    const auto& ref = dataInput_->bufferRef(*ctx_.dataInputIndices[base + i]);
     if (chain == nullptr) {
       chain = folly::IOBuf::takeOwnership(
-          const_cast<char*>(ref.data),
-          ref.length,
+          const_cast<char*>(runData),
+          runLength,
           freeDataHandle,
           new DataInput::Handle(ctx_.dataHandle));
     } else {
-      chain->appendToChain(folly::IOBuf::wrapBuffer(ref.data, ref.length));
+      chain->appendToChain(folly::IOBuf::wrapBuffer(runData, runLength));
+    }
+    runData = nullptr;
+    runLength = 0;
+  };
+
+  uint32_t bodyOffset{0};
+  uint32_t streamEnqueueBase{0};
+  const auto dataInputBase = stripeOffset * numProjectedStreams;
+  for (size_t i = 0; i < numProjectedStreams; ++i) {
+    if (!stripePlan.projectedStreams[i].has_value()) {
+      continue;
+    }
+    const auto& streamRegion = *stripePlan.projectedStreams[i];
+    NIMBLE_CHECK_GT(
+        streamRegion.length, 0, "Projected stream must not be empty");
+    const auto streamSize = static_cast<uint32_t>(streamRegion.length);
+    packScratch.streamIds.emplace_back(static_cast<uint32_t>(i));
+
+    NIMBLE_CHECK(
+        ctx_.dataInputIndices[dataInputBase + i].has_value(),
+        "Present projected stream must have an enqueued data input index");
+    const auto enqueueIndex = *ctx_.dataInputIndices[dataInputBase + i];
+    if (packScratch.streamSizeIndices.empty()) {
+      streamEnqueueBase = enqueueIndex;
+    }
+    const auto& bufferRef = dataInput_->bufferRef(enqueueIndex);
+    NIMBLE_CHECK_EQ(
+        bufferRef.length,
+        streamRegion.length,
+        "Loaded stream length must match projected stream length");
+    // DataInput already detected exact-duplicate extents during load(). A
+    // duplicate stream's canonicalIndex differs from its own; only the stored
+    // copy appends its bytes, while duplicates reuse the stored copy's stream
+    // size index. Duplicates are confined to a single stripe group, and enqueue
+    // order matches this loop's present-stream order, so the stored copy's
+    // local index has already been written to streamSizeIndices.
+    if (bufferRef.canonicalIndex != enqueueIndex) {
+      NIMBLE_CHECK_GE(
+          bufferRef.canonicalIndex,
+          streamEnqueueBase,
+          "Duplicate stream must refer to the current stripe");
+      const auto canonicalIndexOffset =
+          bufferRef.canonicalIndex - streamEnqueueBase;
+      NIMBLE_CHECK_LT(
+          canonicalIndexOffset,
+          packScratch.streamSizeIndices.size(),
+          "Duplicate stream must refer to an earlier stream in the stripe");
+      packScratch.streamSizeIndices.emplace_back(
+          packScratch.streamSizeIndices[canonicalIndexOffset]);
+      continue;
+    }
+    packScratch.streamSizeIndices.emplace_back(
+        static_cast<uint32_t>(packScratch.uniqueStreamSizes.size()));
+    packScratch.uniqueStreamSizes.emplace_back(streamSize);
+    bodyOffset += streamSize;
+
+    if (runData != nullptr && bufferRef.data == runData + runLength) {
+      // Contiguous in the read buffer: extend the current run rather than
+      // adding another IOBuf node.
+      runLength += bufferRef.length;
+    } else {
+      flushRun();
+      runData = bufferRef.data;
+      runLength = bufferRef.length;
     }
   }
+  flushRun();
 
-  std::string trailerBuf;
-  serde::detail::writeTrailer(
-      streamSizes,
-      EncodingType::FixedBitWidth,
-      EncodingType::FixedBitWidth,
+  const auto estimatedTrailerSize = estimateTabletTrailerSize(
+      packScratch.streamIds.size(), packScratch.uniqueStreamSizes.size());
+  // The trailer is a small standalone node with an estimated upper-bound
+  // capacity. createCombined() keeps the IOBuf object and byte storage in one
+  // allocation, avoiding the extra backing-buffer allocation that create()
+  // would use.
+  auto trailer = folly::IOBuf::createCombined(estimatedTrailerSize);
+  IOBufAppender trailerBuf{*trailer};
+  writeTabletTrailer(
+      packScratch.streamIds,
+      packScratch.streamSizeIndices,
+      packScratch.uniqueStreamSizes,
       trailerBuf);
 
   NIMBLE_CHECK_NOT_NULL(chain);
-  auto trailer = folly::IOBuf::copyBuffer(trailerBuf);
+  const auto trailerSize = trailer->length();
   chain->appendToChain(std::move(trailer));
 
-  const size_t bodySize = stripePlan.projectedBytes + trailerBuf.size();
+  // projectedBytes counts logical projected stream bytes, including duplicate
+  // slots. bodyOffset is the physical body size after deduplication.
+  const size_t bodySize = bodyOffset + trailerSize;
   stats_.numReadRows += numRows;
   stats_.numOutputBytes += bodySize;
   return std::move(*chain);

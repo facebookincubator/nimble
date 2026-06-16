@@ -250,20 +250,20 @@ size_t estimateSectionSize(EncodingType encodingType, size_t count) {
   }
 }
 
-// Decodes a two-array sparse trailer into parallel `streamIndices` and
+// Decodes a two-array sparse trailer into parallel `streamIds` and
 // `streamSizes` arrays. Validates that the per-section decoders consume
-// exactly the trailer payload and that
-// `streamIndices.size() == streamSizes.size()`.
+// exactly the trailer payload and that `streamIds.size() ==
+// streamSizes.size()`.
 void decodeTrailerStreamMetadata(
     const char* trailerStart,
     uint32_t trailerSize,
-    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamIds,
     std::vector<uint32_t>& streamSizes) {
   const auto* trailerEnd = trailerStart + trailerSize;
   const char* payload = trailerStart;
   const auto indicesEncodingType =
       static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
-  decodeSection(indicesEncodingType, payload, trailerEnd, streamIndices);
+  decodeSection(indicesEncodingType, payload, trailerEnd, streamIds);
   const auto sizesEncodingType =
       static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
   decodeSection(sizesEncodingType, payload, trailerEnd, streamSizes);
@@ -274,11 +274,77 @@ void decodeTrailerStreamMetadata(
       payload - trailerStart,
       trailerSize);
   NIMBLE_CHECK_EQ(
-      streamIndices.size(),
+      streamIds.size(),
       streamSizes.size(),
-      "Trailer indices/sizes section count mismatch: indices={} sizes={}",
-      streamIndices.size(),
-      streamSizes.size());
+      "Trailer indices/sizes section count mismatch");
+}
+
+// Decodes the kTablet dedup trailer layout (streamIds, sizeIndices,
+// uniqueSizes) and reconstructs the parallel `streamIds`, `streamOffsets`,
+// and `streamSizes` arrays. The sizeIndices section stores, for each present
+// stream slot, the unique body stream it aliases. `streamOffsets` is reused as
+// scratch for those unique-stream indices before being overwritten with
+// reconstructed body offsets; `uniqueStreamSizes` receives the decoded
+// unique-size table and is then transformed in place into exclusive prefix-sum
+// offsets.
+void decodeTrailerStreamMetadata(
+    const char* trailerStart,
+    uint32_t trailerSize,
+    std::vector<uint32_t>& streamIds,
+    std::vector<uint32_t>& streamOffsets,
+    std::vector<uint32_t>& streamSizes,
+    std::vector<uint32_t>& uniqueStreamSizes) {
+  const auto* trailerEnd = trailerStart + trailerSize;
+  const char* payload = trailerStart;
+  const auto streamIdsEncodingType =
+      static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+  decodeSection(streamIdsEncodingType, payload, trailerEnd, streamIds);
+  const auto sizeIndicesEncodingType =
+      static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+  // streamOffsets temporarily holds the per-slot unique stream index; it is
+  // overwritten with the reconstructed body offset below.
+  decodeSection(sizeIndicesEncodingType, payload, trailerEnd, streamOffsets);
+  const auto uniqueSizesEncodingType =
+      static_cast<EncodingType>(static_cast<uint8_t>(*payload++));
+  decodeSection(
+      uniqueSizesEncodingType, payload, trailerEnd, uniqueStreamSizes);
+  NIMBLE_CHECK_EQ(
+      payload,
+      trailerEnd,
+      "Trailer size mismatch: read {} bytes, expected {}",
+      payload - trailerStart,
+      trailerSize);
+  NIMBLE_CHECK_EQ(
+      streamIds.size(),
+      streamOffsets.size(),
+      "Trailer streamIds/sizeIndices section count mismatch");
+
+  const auto numStreams = streamIds.size();
+  const auto numUniqueStreams = uniqueStreamSizes.size();
+  streamSizes.resize(numStreams);
+  // Expand per-slot sizes from the unique-size table.
+  for (size_t i = 0; i < numStreams; ++i) {
+    const auto uniqueStreamIndex = streamOffsets[i];
+    NIMBLE_CHECK_LT(
+        uniqueStreamIndex,
+        numUniqueStreams,
+        "Unique stream index out of range");
+    streamSizes[i] = uniqueStreamSizes[uniqueStreamIndex];
+  }
+  // Transform uniqueStreamSizes in place into exclusive prefix-sum body
+  // offsets.
+  uint32_t nextBodyOffset{0};
+  for (size_t i = 0; i < numUniqueStreams; ++i) {
+    const auto sizeValue = uniqueStreamSizes[i];
+    uniqueStreamSizes[i] = nextBodyOffset;
+    nextBodyOffset += sizeValue;
+  }
+  // Expand per-slot body offsets from the unique-offset table.
+  // streamOffsets[i] currently holds the unique stream index; read it, then
+  // overwrite with the resolved offset.
+  for (size_t i = 0; i < numStreams; ++i) {
+    streamOffsets[i] = uniqueStreamSizes[streamOffsets[i]];
+  }
 }
 
 } // namespace
@@ -344,26 +410,45 @@ encode(const SerializerOptions& options, std::string_view input, char* output) {
 
 void readTrailerStreamMetadata(
     const char* end,
-    std::vector<uint32_t>& streamIndices,
+    std::vector<uint32_t>& streamIds,
     std::vector<uint32_t>& streamSizes) {
   const uint32_t trailerSize = readTrailerSize(end);
   NIMBLE_CHECK_LE(
       trailerSize,
       kMaxTrailerBytes,
-      "Trailer size sanity cap exceeded (likely buffer corruption): {} > {}",
-      trailerSize,
-      kMaxTrailerBytes);
+      "Trailer size sanity cap exceeded (likely buffer corruption)");
   const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
   decodeTrailerStreamMetadata(
-      trailerStart, trailerSize, streamIndices, streamSizes);
+      trailerStart, trailerSize, streamIds, streamSizes);
 }
 
 std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
 readTrailerStreamMetadata(const char* end) {
-  std::vector<uint32_t> streamIndices;
+  std::vector<uint32_t> streamIds;
   std::vector<uint32_t> streamSizes;
-  readTrailerStreamMetadata(end, streamIndices, streamSizes);
-  return {std::move(streamIndices), std::move(streamSizes)};
+  readTrailerStreamMetadata(end, streamIds, streamSizes);
+  return {std::move(streamIds), std::move(streamSizes)};
+}
+
+void readTrailerStreamMetadata(
+    const char* end,
+    std::vector<uint32_t>& streamIds,
+    std::vector<uint32_t>& streamOffsets,
+    std::vector<uint32_t>& streamSizes,
+    std::vector<uint32_t>& uniqueStreamSizesScratch) {
+  const uint32_t trailerSize = readTrailerSize(end);
+  NIMBLE_CHECK_LE(
+      trailerSize,
+      kMaxTrailerBytes,
+      "Trailer size sanity cap exceeded (likely buffer corruption)");
+  const char* trailerStart = end - sizeof(uint32_t) - trailerSize;
+  decodeTrailerStreamMetadata(
+      trailerStart,
+      trailerSize,
+      streamIds,
+      streamOffsets,
+      streamSizes,
+      uniqueStreamSizesScratch);
 }
 
 std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
@@ -387,27 +472,23 @@ readTrailerStreamMetadata(const folly::IOBuf& input) {
   NIMBLE_CHECK_LE(
       trailerSize,
       kMaxTrailerBytes,
-      "Trailer size sanity cap exceeded (likely buffer corruption): {} > {}",
-      trailerSize,
-      kMaxTrailerBytes);
+      "Trailer size sanity cap exceeded (likely buffer corruption)");
   // Bound trailerSize against the actual IOBuf chain length so a corrupted
   // value cannot drive a huge std::string allocation.
   NIMBLE_CHECK_LE(
       static_cast<uint64_t>(trailerSize) + sizeof(uint32_t),
       totalLength,
-      "Trailer size exceeds IOBuf chain length: trailerSize={}, chain={}",
-      trailerSize,
-      totalLength);
+      "Trailer size exceeds IOBuf chain length");
 
   folly::io::Cursor sizesCursor(&input);
   sizesCursor.skip(totalLength - sizeof(uint32_t) - trailerSize);
   std::string trailerBuf(trailerSize, '\0');
   sizesCursor.pull(trailerBuf.data(), trailerSize);
-  std::vector<uint32_t> streamIndices;
+  std::vector<uint32_t> streamIds;
   std::vector<uint32_t> streamSizes;
   decodeTrailerStreamMetadata(
-      trailerBuf.data(), trailerSize, streamIndices, streamSizes);
-  return {std::move(streamIndices), std::move(streamSizes)};
+      trailerBuf.data(), trailerSize, streamIds, streamSizes);
+  return {std::move(streamIds), std::move(streamSizes)};
 }
 
 size_t estimateTrailerSize(
@@ -423,6 +504,24 @@ size_t estimateTrailerSize(
       estimateSectionSize(sizesEncodingType, numStreams) + sizeof(uint32_t);
 }
 
+size_t estimateTrailerSize(
+    size_t numPresentStreams,
+    size_t numUniqueStreams,
+    EncodingType streamIdsEncodingType,
+    EncodingType sizeIndicesEncodingType,
+    EncodingType uniqueSizesEncodingType) {
+  // [streamIdsEncType:1B][streamIdsPayload]
+  // [sizeIndicesEncType:1B][sizeIndicesPayload]
+  // [uniqueSizesEncType:1B][uniqueSizesPayload][trailer_size:u32]
+  return sizeof(uint8_t) +
+      estimateSectionSize(streamIdsEncodingType, numPresentStreams) +
+      sizeof(uint8_t) +
+      estimateSectionSize(sizeIndicesEncodingType, numPresentStreams) +
+      sizeof(uint8_t) +
+      estimateSectionSize(uniqueSizesEncodingType, numUniqueStreams) +
+      sizeof(uint32_t);
+}
+
 std::vector<std::string_view> parseStreams(
     const char* pos,
     const char* end,
@@ -433,26 +532,25 @@ std::vector<std::string_view> parseStreams(
   std::vector<std::string_view> streams;
 
   if (isCompactFormat(version)) {
-    // Walk the sparse (streamIndices, streamSizes) trailer and place each
+    // Walk the sparse (streamIds, streamSizes) trailer and place each
     // stream at its offset slot. Gaps remain empty string_views. Legacy
     // kLegacyCompact blobs are decoded via the frozen legacy reader.
-    auto [streamIndices, streamSizes] = usesLegacyTrailer(version)
+    auto [streamIds, streamSizes] = usesLegacyTrailer(version)
         ? legacy::readLegacyTrailerStreamMetadata(end)
         : readTrailerStreamMetadata(end);
-    if (!streamIndices.empty()) {
-      streams.resize(streamIndices.back() + 1);
-      for (size_t k = 0; k < streamIndices.size(); ++k) {
+    if (!streamIds.empty()) {
+      streams.resize(streamIds.back() + 1);
+      for (size_t i = 0; i < streamIds.size(); ++i) {
         // NOLINTNEXTLINE(facebook-hte-LocalUncheckedArrayBounds)
-        streams[streamIndices[k]] = std::string_view(pos, streamSizes[k]);
-        pos += streamSizes[k];
+        streams[streamIds[i]] = std::string_view(pos, streamSizes[i]);
+        pos += streamSizes[i];
       }
     }
   } else {
     NIMBLE_CHECK_EQ(
         version,
         SerializationVersion::kLegacy,
-        "unexpected version {}",
-        version);
+        "Unexpected serialization version");
     // kLegacy format: inline [size:u32][data]...
     while (pos < end) {
       streams.emplace_back(readStream<false>(pos));

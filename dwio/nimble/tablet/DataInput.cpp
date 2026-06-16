@@ -213,11 +213,25 @@ void DirectDataInput::populateBufferRefs(
     const std::vector<IoGroup>& ioGroups,
     const char* buffer) {
   for (const auto& group : ioGroups) {
+    // group.regions is sorted by offset and then enqueueIndex. Duplicate read
+    // regions are therefore contiguous, with the earliest enqueued request
+    // first. The BufferRef for the first request in each run is canonical:
+    // it points canonicalIndex to itself, and later duplicates point
+    // canonicalIndex to it while sharing the same buffer slice. Since enqueue
+    // order matches consumer order, the canonical ref is processed before any
+    // duplicate that reuses it.
+    const EnqueuedRegion* shared = nullptr;
     for (const auto& region : group.regions) {
-      auto& ref = bufferRefs_[region.bufferIndex];
-      ref.data = buffer + group.bufferOffset +
+      auto& bufferRef = bufferRefs_[region.enqueueIndex];
+      bufferRef.data = buffer + group.bufferOffset +
           (region.region.offset - group.readOffset);
-      ref.length = region.region.length;
+      bufferRef.length = region.region.length;
+      if (shared != nullptr && region.sameRegionAs(*shared)) {
+        bufferRef.canonicalIndex = shared->enqueueIndex;
+      } else {
+        bufferRef.canonicalIndex = region.enqueueIndex;
+        shared = &region;
+      }
     }
   }
 }
@@ -280,7 +294,13 @@ DataInput::Handle DirectDataInput::load() {
         regions_.begin() + start,
         regions_.begin() + end,
         [](const EnqueuedRegion& a, const EnqueuedRegion& b) {
-          return a.region.offset < b.region.offset;
+          if (a.region.offset != b.region.offset) {
+            return a.region.offset < b.region.offset;
+          }
+          // Tiebreak equal extents by enqueue index so the first member of each
+          // duplicate run is its stored copy (smallest enqueue index = earliest
+          // processed by the consumer).
+          return a.enqueueIndex < b.enqueueIndex;
         });
 
     if (i > 0) {

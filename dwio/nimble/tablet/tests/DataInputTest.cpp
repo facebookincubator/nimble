@@ -484,6 +484,13 @@ DEBUG_ONLY_TEST_F(DataInputTest, coalescesDuplicateRegions) {
   EXPECT_EQ(refData(input.bufferRef(adjacent0)), data.substr(150, 50));
   EXPECT_EQ(refData(input.bufferRef(adjacent1)), data.substr(200, 25));
   EXPECT_EQ(input.bufferRef(duplicate0).data, input.bufferRef(duplicate1).data);
+  // BufferRef::canonicalIndex exposes the dedup: both duplicates resolve to
+  // the stored copy (the first-enqueued index of the duplicate set), while
+  // unique regions resolve to themselves.
+  EXPECT_EQ(input.bufferRef(adjacent0).canonicalIndex, adjacent0);
+  EXPECT_EQ(input.bufferRef(adjacent1).canonicalIndex, adjacent1);
+  EXPECT_EQ(input.bufferRef(duplicate0).canonicalIndex, duplicate0);
+  EXPECT_EQ(input.bufferRef(duplicate1).canonicalIndex, duplicate0);
   EXPECT_EQ(ioStats_->read().count(), 1);
   EXPECT_EQ(ioStats_->read().sum(), 125);
   EXPECT_EQ(ioStats_->rawBytesRead(), 125);
