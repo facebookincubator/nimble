@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>Nimble Metadata Cache</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-gradient: linear-gradient(160deg, #f5f7fa 0%, #edf1f7 50%, #f0f4f8 100%);
+  --surface: #ffffff;
+  --surface-hover: #f8f9fb;
+  --text-primary: #1b2838;
+  --text-secondary: #556270;
+  --text-muted: #8a95a5;
+  --border: #dce3ed;
+  --border-strong: #b8c4d4;
+  --primary: #3d6b9e;
+  --primary-light: #e8f0fa;
+  --accent: #c4841d;
+  --accent-light: #fef4e4;
+  --accent-green: #2d7d5f;
+  --accent-green-light: #e6f5ee;
+  --accent-red: #c44b3d;
+  --accent-red-light: #fce8e6;
+  --node-bg: #ffffff;
+  --code-bg: #f0f3f7;
+  --shadow: 0 1px 8px rgba(61,107,158,0.07);
+  --shadow-lg: 0 4px 20px rgba(61,107,158,0.10);
+  --mono: 'JetBrains Mono', monospace;
+  --font-display: 'Sora', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+body.dark-mode {
+  --bg: #0d1117;
+  --bg-gradient: linear-gradient(160deg, #0d1117 0%, #111820 50%, #0d1117 100%);
+  --surface: #161b22;
+  --surface-hover: #1c222b;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --primary: #58a6ff;
+  --primary-light: #0d1f3c;
+  --accent: #e3b341;
+  --accent-light: #1c1a0e;
+  --accent-green: #56d364;
+  --accent-green-light: #0e2218;
+  --accent-red: #f85149;
+  --accent-red-light: #2a1215;
+  --node-bg: #161b22;
+  --code-bg: #0d1117;
+  --shadow: 0 1px 8px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 20px rgba(0,0,0,0.4);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.65;
+}
+.container {
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 2rem 2.5rem 4rem;
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+  padding: 2.5rem 0 0.3rem;
+  animation: fadeIn 0.5s ease both;
+}
+.subtitle {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: 2rem;
+  animation: fadeIn 0.5s 0.1s ease both;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 2.5rem 0 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0.4rem;
+}
+h2 .sec-num {
+  background: var(--primary);
+  color: #fff;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+h3 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--primary);
+}
+p { margin-bottom: 0.75rem; font-size: 0.88rem; }
+code {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  color: var(--primary);
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin: 0.75rem 0;
+  box-shadow: var(--shadow);
+}
+.diagram {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 0.75rem 0;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  color: var(--text-secondary);
+  white-space: pre;
+}
+.diagram strong { color: var(--primary); font-weight: 600; }
+.diagram em { color: var(--accent); font-style: normal; font-weight: 500; }
+.diagram .g { color: var(--accent-green); }
+.diagram .r { color: var(--accent-red); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.82rem;
+}
+th {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--border);
+}
+td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+.badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1em 0.45em;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+.badge-blue { background: var(--primary-light); color: var(--primary); }
+.badge-amber { background: var(--accent-light); color: var(--accent); }
+.badge-green { background: var(--accent-green-light); color: var(--accent-green); }
+.badge-red { background: var(--accent-red-light); color: var(--accent-red); }
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-light);
+  padding: 0.75rem 1rem;
+  border-radius: 0 8px 8px 0;
+  margin: 0.75rem 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.callout strong { color: var(--accent); }
+.arrow-r, .arrow-l { flex-shrink:0; flex-grow:0; font-size:1rem; line-height:1; color:var(--arrow-c); display:inline-block; width:1rem; height:1rem; text-align:center; }
+.ref-num { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; background:var(--accent-red); color:#fff; font-size:0.5rem; font-weight:700; font-family:var(--font-display); vertical-align:middle; margin-left:0.3rem; }
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+@media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } }
+.footer {
+  text-align: center;
+  padding: 2rem 0 1rem;
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.footer a { color: var(--text-muted); text-decoration: underline; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+</style>
+<style>
+.viz-menu { position: fixed; top: 1rem; right: 1rem; z-index: 10000; font-family: inherit; }
+.viz-menu-toggle { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border, #e2e8f0); background: var(--surface, #fff); color: var(--text-secondary, #64748b); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, border-color 0.15s, transform 0.15s; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.viz-menu-toggle:hover { background: var(--surface-hover, #f8fafc); border-color: var(--border-strong, #cbd5e1); transform: scale(1.05); }
+.viz-menu-panel { position: absolute; top: calc(100% + 6px); right: 0; min-width: 200px; background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 10px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); opacity: 0; transform: translateY(-4px) scale(0.97); pointer-events: none; transition: opacity 0.15s, transform 0.15s; }
+.viz-menu.open .viz-menu-panel { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+.viz-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: none; border-radius: 7px; background: transparent; color: var(--text-primary, #0f172a); font-size: 0.85rem; cursor: pointer; text-align: left; transition: background 0.1s; font-family: inherit; }
+.viz-menu-item:hover { background: var(--surface-hover, #f1f5f9); }
+.viz-menu-icon { width: 20px; text-align: center; font-size: 1rem; flex-shrink: 0; }
+@media print { .viz-menu { display: none !important; } body { background: white !important; color: black !important; } @page { margin: 1.5cm; } }
+</style>
+</head>
+<body>
+
+<nav class="viz-menu" id="vizMenu" aria-label="Visualization controls">
+  <button class="viz-menu-toggle" onclick="toggleMenu()" aria-label="Toggle menu" aria-expanded="false">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="5" x2="15" y2="5"/><line x1="3" y1="9" x2="15" y2="9"/><line x1="3" y1="13" x2="15" y2="13"/></svg>
+  </button>
+  <div class="viz-menu-panel" id="vizMenuPanel">
+    <button onclick="toggleTheme()" class="viz-menu-item"><span class="viz-menu-icon" id="themeIcon">◐</span><span id="themeLabel">Dark mode</span></button>
+    <button onclick="window.print()" class="viz-menu-item"><span class="viz-menu-icon">⎙</span><span>Print / PDF</span></button>
+    <button onclick="toggleFullscreen()" class="viz-menu-item"><span class="viz-menu-icon" id="fsIcon">⛶</span><span id="fsLabel">Fullscreen</span></button>
+  </div>
+</nav>
+
+<div class="container">
+
+<h1>Nimble Metadata Cache</h1>
+<p class="subtitle">File layout, MetadataSection, CachedMetadataInput, and TabletReader init flow</p>
+
+<!-- Section 5: Why Two I/O Paths -->
+<h2><span class="sec-num">5</span> Why TabletReader Doesn't Use CachedBufferedInput</h2>
+
+<h3>Contiguous vs Non-Contiguous</h3>
+<div class="two-col">
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--primary);margin-bottom:0.4rem">FlatBuffers (metadata, indexes)</div>
+    <div class="diagram" style="margin:0;padding:0.5rem 0.7rem;font-size:0.66rem;line-height:1.6">flatbuffers::GetRoot&lt;Footer&gt;(data)
+  data + offset → random jump to any byte
+  data + offset + vtable → another jump
+
+Needs the ENTIRE buffer at one address.
+Non-contiguous PageRuns → wrong memory → crash.
+
+<strong>→ must be contiguous (flat malloc)</strong>
+<strong>→ CachedMetadataInput (contiguous=true)</strong></div>
+  </div>
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--primary);margin-bottom:0.4rem">Nimble Encodings (column data)</div>
+    <div class="diagram" style="margin:0;padding:0.5rem 0.7rem;font-size:0.66rem;line-height:1.6">ChunkedDecoder::ensureInput(size)
+  input_-&gt;Next(&amp;buf, &amp;len) → next chunk
+  reads forward only, never random jumps
+
+PageRun boundary? Next() returns rest of
+current run, next call returns next run.
+ensureInput() copies across boundary.
+
+<strong>→ non-contiguous PageRuns work fine</strong>
+<strong>→ CachedBufferedInput (contiguous=false)</strong></div>
+  </div>
+</div>
+
+<h3>Three Reasons for the Split</h3>
+<table>
+  <tr><th>#</th><th>Reason</th><th>Detail</th></tr>
+  <tr><td>1</td><td><strong>Contiguity</strong></td><td>FlatBuffers needs contiguous random access. <code>CachedBufferedInput</code> stores as non-contiguous PageRuns — would require an extra <code>readFully()</code> copy to flatten.</td></tr>
+  <tr><td>2</td><td><strong>Decompression</strong></td><td><code>CachedBufferedInput</code> caches compressed bytes → decompress on every access. <code>CachedMetadataInput</code> caches decompressed → zero-cost on cache hit.</td></tr>
+  <tr><td>3</td><td><strong>Shared component</strong></td><td><code>TabletReader</code> is used by both the selective reader (has <code>CachedBufferedInput</code>) and batch <code>VeloxReader</code> (has no <code>BufferedInput</code> at all). Can't depend on it.</td></tr>
+</table>
+
+<h3>What Goes Where</h3>
+<table>
+  <tr><th>Content</th><th>Format</th><th>Access</th><th>I/O Path</th></tr>
+  <tr><td>Footer, stripes metadata</td><td>FlatBuffers</td><td>Random</td><td>TabletReader → CachedMetadataInput</td></tr>
+  <tr><td>Stripe group metadata</td><td>FlatBuffers</td><td>Random</td><td>TabletReader → CachedMetadataInput (lazy)</td></tr>
+  <tr><td>Cluster / chunk index</td><td>FlatBuffers</td><td>Random</td><td>TabletReader → CachedMetadataInput</td></tr>
+  <tr><td>Column data streams</td><td>Nimble encodings</td><td>Sequential</td><td>ReaderBase → CachedBufferedInput</td></tr>
+</table>
+
+<div class="callout" style="margin-top:0.5rem">
+  <strong>The boundary isn't metadata vs data</strong> — it's <strong>FlatBuffers (contiguous, random access) vs encoded streams (non-contiguous, sequential)</strong>. Indexes are functionally data-path (used for predicate pushdown during query execution) but structurally FlatBuffers, so they go through TabletReader.
+</div>
+
+<!-- Section 6: Nimble File Layout -->
+<h2><span class="sec-num">6</span> Nimble File Layout</h2>
+
+<div style="display:flex;flex-direction:column;gap:0;margin:0.75rem 0">
+
+  <!-- Stripe Data row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px 12px 0 0;padding:0.75rem 1rem 0.5rem;text-align:center;box-shadow:var(--shadow)">
+      <div style="font-family:var(--font-display);font-weight:700;font-size:1rem;color:var(--primary);margin-bottom:0.6rem">Nimble</div>
+      <div style="background:var(--accent-green-light);border:1px solid color-mix(in srgb, var(--accent-green) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Stripe 0 — Data Streams</div>
+        <div style="font-size:0.63rem;color:var(--text-muted)">Independently encoded per stream (Nimble encodings)</div>
+      </div>
+      <div style="text-align:center;font-size:0.7rem;color:var(--text-muted);letter-spacing:0.3em;margin:0.15rem 0">···</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0">
+      <span class="arrow-r" style="--arrow-c:var(--accent-green)">→</span>
+      <div class="card" style="padding:0.4rem 0.5rem;margin:0;border-left:3px solid var(--accent-green);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.58rem;color:var(--text-secondary);line-height:1.5">
+          Stream 0: [chunk0|chunk1|...]<br>
+          Stream 1: [chunk0|chunk1|...]<br>
+          Stream 2: [chunk0|chunk1|...]
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- StripeGroup 0 row (with side panel) -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.4rem 0.5rem;margin:0;border-right:3px solid var(--primary);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.6">
+<div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>stripe_count:</span><span>3</span>
+            <span>stream_offsets:</span><span>[0, 10K, 22K, 0, 11K, 23K, 0, 9K, 20K]</span>
+            <span>stream_sizes:</span><span>[10K, 12K, 8K, 11K, 12K, 9K, 9K, 11K, 8K]</span>
+          </div>
+          <span style="color:var(--text-muted);font-size:0.5rem">flattened [stripe × stream] = 3 stripes × 3 streams = 9</span>
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--primary)">←</span>
+    </div>
+    <div style="background:var(--surface);padding:0.15rem 1rem 0">
+      <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">StripeGroup 0 Metadata <span class="ref-num">1</span></div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">stream_offsets[], stream_sizes[] per (stripe × stream)</div>
+      </div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- StripeChunkIndex 0 row (with side panel) -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);padding:0 1rem 0.15rem">
+      <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">StripeChunkIndex 0 <span class="ref-num">4</span></div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0">
+      <span class="arrow-r" style="--arrow-c:var(--primary)">→</span>
+      <div class="card" style="padding:0.4rem 0.5rem;margin:0;border-left:3px solid var(--primary);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.6">
+          <div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>stream_count:</span><span>5</span>
+            <span>chunk_rows:</span><span>[0, 2500, 5000, ...]</span>
+            <span>chunk_offsets:</span><span>[0, 1200, 2400, ...]</span>
+          </div>
+          <span style="color:var(--text-muted);font-size:0.5rem">per (stripe × stream × chunk)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remaining per-group items -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);padding:0.15rem 1rem 0">
+      <div style="display:flex;flex-direction:column;gap:0.25rem">
+        <div style="background:var(--accent-green-light);border:1px solid color-mix(in srgb, var(--accent-green) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+          <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Stripe N</div>
+        </div>
+        <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+          <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">StripeGroup 1 Metadata <span class="ref-num">1</span></div>
+        </div>
+        <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+          <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">StripeChunkIndex 1 <span class="ref-num">4</span></div>
+        </div>
+      </div>
+      <div style="border-top:2px solid var(--border);margin:0.3rem 0"></div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- ChunkIndex Root row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);padding:0 1rem 0.15rem">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">ChunkIndex Root <span class="ref-num">3</span></div>
+        <div style="font-size:0.58rem;color:var(--text-muted)">Pointers to StripeChunkIndex 0, 1…</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0">
+      <span class="arrow-r" style="--arrow-c:var(--accent)">→</span>
+      <div class="card" style="padding:0.3rem 0.5rem;margin:0;border-left:3px solid var(--accent);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.5">
+          <em style="color:var(--text-muted)">stripe_indexes: [MetadataSection]</em>
+          <div style="display:grid;grid-template-columns:auto auto auto auto auto;gap:0 0.3rem;margin-top:0.1rem">
+            <span>[0]</span><span>{off:0x16900, sz:1024}</span><span>→</span><span>group 0 ptr</span><span><span class="ref-num">4</span></span>
+            <span>[1]</span><span>{off:0x25900, sz:980}</span><span>→</span><span>group 1 ptr</span><span><span class="ref-num">4</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ClusterIndex Root row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.3rem 0.5rem;margin:0;border-right:3px solid var(--accent);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.5">
+<div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>stripe_keys:</span><span>["a".."m", "m".."z"]</span>
+            <span>sort_orders:</span><span>["ASC NULLS FIRST"]</span>
+          </div>
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--accent)">←</span>
+    </div>
+    <div style="background:var(--surface);padding:0.15rem 1rem 0">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">ClusterIndex Root <span class="ref-num">3</span></div>
+        <div style="font-size:0.58rem;color:var(--text-muted)">Stripe keys, sort orders, index pointers</div>
+      </div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- Stripes Metadata row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.4rem 0.5rem;margin:0;border-right:3px solid var(--accent);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.6">
+<div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>row_counts:</span><span>[10000, 10000, 8000]</span>
+            <span>offsets:</span><span>[0x0, 0x7800, 0xF800]</span>
+            <span>sizes:</span><span>[30KB, 32KB, 28KB]</span>
+            <span>group_indices:</span><span>[0, 0, 0]</span>
+          </div>
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--accent)">←</span>
+    </div>
+    <div style="background:var(--surface);padding:0 1rem">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Stripes Metadata <span class="ref-num">2</span></div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">row_counts[], offsets[], sizes[], group_indices[]</div>
+      </div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- Schema row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);padding:0 1rem 0.1rem">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Schema <span class="ref-num">3</span></div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">columnar.schema — column type tree</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0">
+      <span class="arrow-r" style="--arrow-c:var(--accent)">→</span>
+      <div class="card" style="padding:0.3rem 0.5rem;margin:0;border-left:3px solid var(--accent);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.5">
+          <div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>nodes:</span><span>[{Row, "root"}, {Int64, "id"}, {String, "name"}, ...]</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metadata row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.3rem 0.5rem;margin:0;border-right:3px solid var(--accent);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.5">
+          {"nimble.writer.version": "1.2.3", ...}
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--accent)">←</span>
+    </div>
+    <div style="background:var(--surface);padding:0.1rem 1rem">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Metadata <span class="ref-num">3</span></div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">columnar.metadata — key-value pairs</div>
+      </div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- Stats row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div></div>
+    <div style="background:var(--surface);padding:0.1rem 1rem">
+      <div style="background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">Vectorized Stats <span class="ref-num">3</span></div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">columnar.vectorized_stats — per-column min/max/count</div>
+      </div>
+      <div style="border-top:2px solid var(--border);margin:0.3rem 0"></div>
+    </div>
+    <div></div>
+  </div>
+
+  <!-- Footer row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.4rem 0.5rem;margin:0;border-right:3px solid var(--accent-red);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.56rem;color:var(--text-secondary);line-height:1.6">
+          <div style="display:grid;grid-template-columns:auto auto auto;gap:0 0.3rem">
+            <span>row_count:</span><span></span><span>57000</span>
+          </div>
+          <em style="color:var(--text-muted);font-size:0.5rem">each pointer = MetadataSection{offset, size, comp, uncomp_size}</em>
+          <div style="display:grid;grid-template-columns:auto auto auto auto;gap:0 0.3rem;margin-top:0.1rem">
+            <span>stripe_groups:</span><span>→</span><span>[{0x8000, 256, Zstd, 1024}, ...]</span><span><span class="ref-num">1</span> <span style="color:var(--text-muted)">ptr[]</span></span>
+            <span>stripes:</span><span>→</span><span>{0xA000, 512, Zstd, 2048}</span><span><span class="ref-num">2</span> <span style="color:var(--text-muted)">ptr</span></span>
+            <span>optional_sections:</span><span>→</span><span>[{0xB000, 256, Zstd, 800}, ...]</span><span><span class="ref-num">3</span> <span style="color:var(--text-muted)">ptr[] (named)</span></span>
+          </div>
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--accent-red)">←</span>
+    </div>
+    <div style="background:var(--surface);padding:0 1rem">
+      <div style="background:var(--accent-red-light);border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">File Footer</div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">Directory of pointers (MetadataSection) to data elsewhere in the file</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:flex-start;padding-left:1rem">
+      <div style="background:var(--code-bg);border:1px dashed var(--border);border-radius:6px;padding:0.6rem 0.8rem;font-family:var(--mono);font-size:0.62rem;line-height:1.6;color:var(--text-secondary)">
+        <div style="font-weight:600;color:var(--text-primary);font-size:0.7rem;margin-bottom:0.3rem">MetadataSection — two forms:</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem">
+          <span style="color:var(--accent-blue)">On disk</span>
+          <span>FlatBuffers table {offset, size, comp, uncomp_size}</span>
+          <span style="color:var(--accent-green)">In memory</span>
+          <span>C++ class with <em>optional</em>&lt;uint32&gt; uncompressedSize<br>(nullopt for old files — FlatBuffers default 0 → nullopt)</span>
+        </div>
+        <div style="margin-top:0.4rem;border-top:1px dashed var(--border);padding-top:0.4rem">
+          <div style="font-weight:600;color:var(--text-primary);font-size:0.7rem;margin-bottom:0.3rem">Metadata cache (what gets cached):</div>
+          <div style="display:grid;grid-template-columns:auto auto auto;gap:0.15rem 0.6rem">
+            <span style="width:16px;text-align:center">—</span><span>Footer + PostScript</span><span style="color:var(--text-muted)">{fileId, fileSize}</span>
+            <span class="ref-num">2</span><span>Stripes</span><span style="color:var(--text-muted)">{fileId, stripes.offset}</span>
+            <span class="ref-num">1</span><span>StripeGroup[0]</span><span style="color:var(--text-muted)">{fileId, sg[0].offset}</span>
+            <span class="ref-num">3</span><span>ClusterIndex root</span><span style="color:var(--text-muted)">{fileId, cli.offset}</span>
+            <span class="ref-num">3</span><span>ChunkIndex root</span><span style="color:var(--text-muted)">{fileId, ci.offset}</span>
+            <span class="ref-num">4</span><span>ChunkIndex group[0]</span><span style="color:var(--text-muted)">{fileId, cig[0].offset}</span>
+          </div>
+          <div style="margin-top:0.3rem;display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem">
+            <span style="color:var(--accent-green)">Value</span>
+            <span><strong>decompressed</strong> bytes (contiguous malloc'd)</span>
+            <span style="color:var(--accent-green)">Size</span>
+            <span>uncomp_size (allocate + validate)</span>
+            <span style="color:var(--accent-red)">Old files</span>
+            <span>uncomp_size=nullopt → skip items ①–④</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PostScript row -->
+  <div style="display:grid;grid-template-columns:1fr 400px 1fr;gap:0;align-items:center">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:0">
+      <div class="card" style="padding:0.3rem 0.5rem;margin:0;border-right:3px solid var(--text-muted);font-size:0.6rem;white-space:nowrap">
+        <div style="font-family:var(--mono);font-size:0.52rem;color:var(--text-secondary);line-height:1.5">
+          <div style="display:grid;grid-template-columns:auto auto;gap:0 0.3rem">
+            <span>footerSize:</span><span>uint32 (compressed)</span>
+            <span>compressionType:</span><span>uint8</span>
+            <span>checksumType:</span><span>uint8</span>
+            <span>checksum:</span><span>uint64</span>
+            <span>version:</span><span>uint16 + uint16</span>
+            <span>magic:</span><span>uint16</span>
+          </div>
+        </div>
+      </div>
+      <span class="arrow-l" style="--arrow-c:var(--text-muted)">←</span>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:0 0 12px 12px;padding:0 1rem 0.75rem;box-shadow:var(--shadow)">
+      <div style="background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:0.35rem;text-align:center">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.75rem;color:var(--text-primary)">PostScript (20 bytes)</div>
+        <div style="font-size:0.6rem;color:var(--text-muted)">footerSize, compressionType, checksum, version, magic</div>
+      </div>
+    </div>
+    <div></div>
+  </div>
+
+</div>
+
+
+<details style="margin:1rem 0">
+<summary style="font-family:var(--font-display);font-weight:600;font-size:0.95rem;color:var(--primary);cursor:pointer;padding:0.5rem 0">Full Physical Layout with FlatBuffer Details (click to expand)</summary>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35;margin-top:0.5rem"><strong>NIMBLE FILE — PHYSICAL LAYOUT</strong> (read bottom-up, written top-down)
+
+┌──────────────────────────────────────────────────────────────────────────┐ Byte 0
+│ STRIPE DATA — GROUP 0                                                    │
+│ ┌──────────────────────────────────────────────────────────────────────┐ │
+│ │ Stripe 0:                                                            │ │
+│ │   Stream 0 [chunk0|chunk1|...]  Stream 1 [chunk0|chunk1|...]  ...    │ │
+│ │ Stripe 1:  ...                                                       │ │
+│ │ Stripe M:  (last stripe in group 0)                                  │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────────────────┤
+│ StripeGroup 0 Metadata (FlatBuffers: stream_offsets[], stream_sizes[])  │
+│ Chunk Index Group 0    (FlatBuffers: chunk_rows[], chunk_offsets[])     │
+│ Cluster Index Group 0  (FlatBuffers, optional: key boundaries)          │
+│ StripeStrideIndex 0    (FlatBuffers, *** NEW ***: min/max per stride)   │
+├──────────────────────────────────────────────────────────────────────────┤
+│ STRIPE DATA — GROUP 1  ...  StripeGroup 1  ...  Index Groups 1          │
+├──────────────────────────────────────────────────────────────────────────┤
+│ <strong>GLOBAL METADATA</strong>                                                        │
+│   Stripes        (row_counts[], offsets[], sizes[], group_indices[])    │
+│   Schema         "columnar.schema"          — type tree                 │
+│   Metadata       "columnar.metadata"        — key-value pairs           │
+│   Stats          "columnar.vectorized_stats"— per-column stats          │
+│   ChunkIndex     "columnar.chunk.index"     — root → per-group blobs   │
+│   ClusterIndex   "columnar.cluster.index"   — root → per-group blobs   │
+│   StrideIndex    "columnar.stride.index"    — root → per-group blobs   │
+├──────────────────────────────────────────────────────────────────────────┤
+│ <strong>FOOTER</strong> (FlatBuffers, possibly Zstd compressed)                         │
+│   row_count, stripes ref, stripe_groups[] refs, optional_sections      │
+├──────────────────────────────────────────────────────────────────────────┤
+│ <strong>POSTSCRIPT</strong> (20 bytes fixed)                                              │
+│   FooterSize(4B) ComprType(1B) ChecksumType(1B) Checksum(8B)          │
+│   MajorVer(2B) MinorVer(2B) Magic 0xA1FA(2B)                          │
+└──────────────────────────────────────────────────────────────────────────┘ EOF</div>
+
+<h3 style="margin-top:1rem">Per-Group FlatBuffer Details</h3>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35"><strong>StripeGroup Metadata</strong> (one per group, points back to stripe data)
+  stripe_count:    uint32
+  stream_offsets:  [uint32]   flattened [stripe x stream]
+  stream_sizes:    [uint32]   flattened [stripe x stream]
+      ↑ locates individual stream bytes within stripe data
+
+<strong>StripeChunkIndex</strong> (one per group)
+  stream_count:          uint32
+  stream_chunk_counts:   [uint32]   prefix-sum [stripe x stream]
+  stream_chunk_rows:     [uint32]   prefix-sum row counts per chunk
+  stream_chunk_offsets:  [uint32]   byte offset per chunk
+
+<strong>StripeStrideIndex</strong> (one per group, *** NEW ***)
+  stride_size:           uint32    (e.g. 10,000 rows)
+  stride_count:          uint32
+  stripe_stride_counts:  [uint32]  (strides per stripe in group)
+  stream_stats: [StreamStrideStats] per stream
+    null_counts: [int64]   per stride
+    min_values:  [ubyte]   concatenated raw bytes
+    max_values:  [ubyte]   concatenated raw bytes
+    value_size:  uint32    bytes per value (e.g. 4, 8)</div>
+
+<h3>Footer = Directory of Pointers</h3>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35">byte 0                                                          byte end
+↓                                                               ↓
+┌─────────────────┬───────────────────────────┬──────────┬──────────┐
+│  Stream data    │  Metadata blobs           │  Footer  │ PS (20B) │
+│  (columns)      │  (scattered in here)      │          │          │
+└─────────────────┴───────────────────────────┴──────────┴──────────┘
+                   ↑                           ↑
+                   │                           └─ Footer is just pointers:
+                   │                              row_count: 57000  ← only inline field
+                   │                              stripes:       → {0xA000, 512, Zstd}
+                   │                              stripe_groups: → [{0x8000, 256, Zstd},
+                   │                                                {0x9000, 248, Zstd}]
+                   │                              optional_sections:
+                   │                                "columnar.schema"        → {0xB000, ...}
+                   │                                "columnar.chunk.index"   → {0xC000, ...}
+                   │                                "columnar.cluster.index" → {0xD000, ...}
+                   │
+                   ├─ 0x8000: StripeGroup 0 blob
+                   ├─ 0x9000: StripeGroup 1 blob
+                   ├─ 0xA000: Stripes blob
+                   ├─ 0xB000: Schema blob
+                   ├─ 0xC000: ChunkIndex root blob
+                   └─ 0xD000: ClusterIndex root blob
+
+One field (row_count) gives the answer directly.
+Everything else says "go read that blob if you need it."</div>
+
+<h3>Footer.stripes — Coarse Index</h3>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35">Footer.stripes {offset=0xA000, size=512, comp=Zstd}  → Stripes blob
+
+  Stripe ID   row_counts   offsets     sizes    group_indices
+  stripe 0    10000        0x0000      30KB     0
+  stripe 1    10000        0x7800      32KB     0
+  stripe 2     8000        0xF800      28KB     0
+  stripe 3    10000        0x16C00     31KB     1
+  stripe 4    10000        0x1E400     29KB     1
+
+  One row per stripe. Tells about the stripe AS A WHOLE.
+  "stripe 3 has 10000 rows, starts at 0x16C00, is 31KB, belongs to group 1"
+  But 31KB of WHAT? All streams mashed together. Can't pick a single column.</div>
+
+<h3>Footer.stripe_groups[] — Fine Index</h3>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35">Footer.stripe_groups[0] {offset=0x16800, size=256, comp=Zstd}  → StripeGroup 0
+
+  stripe_count = 3
+                    stream 0 (col:id)  stream 1 (col:name)  stream 2
+  stripe 0 offsets: 0                  10KB                  22KB
+  stripe 0 sizes:   10KB              12KB                  8KB
+  stripe 1 offsets: 0                  11KB                  23KB
+  stripe 1 sizes:   11KB              12KB                  9KB
+
+  One entry per (stripe, stream) pair.
+  "within stripe 1, stream 2 starts at offset 23KB and is 9KB long"
+  NOW you can read just one column.
+
+<strong>Two-level index:</strong>
+  Stripes     → coarse: where is each stripe? (row count, total size, group)
+  StripeGroup → fine:   where is each stream within the stripe?</div>
+
+<h3>Optional Sections — Extensible Design</h3>
+
+<div class="diagram" style="font-size:0.58rem;line-height:1.35">Footer.optional_sections:
+  names:              ["columnar.schema",  "columnar.metadata",  ...]
+  offsets:            [0xB000,             0xB100,               ...]
+  sizes:              [256,                128,                  ...]
+  compression_types:  [Zstd,               Zstd,                ...]
+
+<strong>columnar.schema</strong> — column type tree, maps columns to stream numbers:
+  nodes: [
+    {kind: Row,    children: 3, name: null,   offset: 0},  ← root
+    {kind: Int64,  children: 0, name: "id",   offset: 1},  ← stream 1
+    {kind: String, children: 0, name: "name", offset: 2},  ← stream 2
+    {kind: Map,    children: 2, name: "tags", offset: 3},
+    {kind: String, children: 0, name: null,   offset: 4},  ← map key
+    {kind: Int32,  children: 0, name: null,   offset: 5},  ← map value
+  ]
+
+<strong>columnar.metadata</strong> — arbitrary key-value pairs:
+  {"nimble.writer.version": "1.2.3", "hive.table.name": "warehouse.clicks"}
+
+Schema tells what columns exist and which stream carries each.
+Metadata tells who wrote the file and with what settings.
+Together with StripeGroup, you can read any column.</div>
+
+<h3>Section Status</h3>
+<table style="font-size:0.75rem">
+  <tr><th>Section</th><th>Status</th></tr>
+  <tr><td><code>columnar.schema</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.metadata</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.stats</code></td><td>Legacy (replaced by vectorized_stats)</td></tr>
+  <tr><td><code>columnar.vectorized_stats</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.chunk.index</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.cluster.index</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.stride.index</code></td><td>New</td></tr>
+  <tr><td><code>columnar.dense.index</code></td><td>Defined, not implemented</td></tr>
+</table>
+
+<h3>Write Order Example</h3>
+<div class="diagram" style="font-size:0.58rem;line-height:1.35">[stripe 0..66 data]
+                          ← metadata threshold hit, flush group 0
+[StripeGroup 0] [ChunkIndex 0] [ClusterIndex 0] [StrideIndex 0]
+
+[stripe 67..120 data]
+                          ← close(), force flush group 1
+[StripeGroup 1] [ChunkIndex 1] [ClusterIndex 1] [StrideIndex 1]
+
+[ChunkIndex root]         ← pointers to ChunkIndex 0, 1
+[ClusterIndex root]       ← pointers to ClusterIndex 0, 1
+[StrideIndex root]        ← pointers to StrideIndex 0, 1
+[Stripes blob]            ← row counts, offsets for all 121 stripes
+[Footer]                  ← pointers to everything above
+[Postscript 20B]
+
+Stripes blob   — flushed at close(). One per file. Coarse info.
+StripeGroup    — flushed incrementally at metadata threshold.
+                 Writer treats each group as self-contained unit:
+                 write, free memory, move on.</div>
+
+</details>
+
+<!-- Section 7: TabletReader -->
+<h2><span class="sec-num">7</span> TabletReader Init Flow</h2>
+
+<div class="callout" style="margin:0.5rem 0">
+  <strong>Metadata compression is per-section</strong> — each section independently compressed when &gt; 64KB (default threshold).
+</div>
+
+<div class="diagram" style="font-size:0.66rem;line-height:1.5">TabletWriter::writeMetadata(section_data):
+  if section_data.size() &gt; 64KB:
+    compressed = Zstd(section_data)
+    write compressed bytes → file
+    return CompressionType::Zstd
+  else:
+    write raw bytes → file
+    return CompressionType::Uncompressed</div>
+
+<table style="font-size:0.72rem;margin:0.5rem 0">
+  <tr><th>Section</th><th>Example Size</th><th>Compressed?</th><th>Why</th></tr>
+  <tr><td>StripeGroup 0</td><td>80KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>80KB &gt; 64KB</td></tr>
+  <tr><td>StripeGroup 1</td><td>40KB</td><td style="color:var(--text-muted)">No</td><td>40KB &lt; 64KB</td></tr>
+  <tr><td>Stripes</td><td>120KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>120KB &gt; 64KB</td></tr>
+  <tr><td>Schema</td><td>2KB</td><td style="color:var(--text-muted)">No</td><td>2KB &lt; 64KB</td></tr>
+  <tr><td>ChunkIndex Root</td><td>90KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>90KB &gt; 64KB</td></tr>
+  <tr><td>Footer</td><td>50KB</td><td style="color:var(--text-muted)">No</td><td>50KB &lt; 64KB</td></tr>
+</table>
+
+<div class="card" style="padding:0.5rem 0.7rem;margin:0.5rem 0;text-align:center">
+  <div style="font-family:var(--font-display);font-weight:600;font-size:0.8rem;color:var(--primary)">initFromCache()?</div>
+  <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem"><code>cached()</code> false → Cold &nbsp;|&nbsp; <code>findCachedMetadata(fileSize_)</code> miss → Cold &nbsp;|&nbsp; hit → Warm</div>
+</div>
+
+<div class="two-col" style="margin-top:0.5rem">
+  <div style="display:flex;flex-direction:column;gap:0.3rem">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--accent-red);text-align:center;margin-bottom:0.1rem">Cold Path</div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-red)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadFooter()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">rawRead last 128KB → parse PostScript → decompress Footer</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initOptionalSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">Parse Footer's parallel arrays → build lookup map. No I/O.</span>
+      <div style="font-family:var(--mono);font-size:0.52rem;color:var(--text-muted);margin-top:0.15rem;line-height:1.4;background:var(--code-bg);padding:0.2rem 0.3rem;border-radius:3px">
+        optionalSections_:<br>
+        &nbsp;"columnar.schema" → {0xB000, 256, Zstd}<br>
+        &nbsp;"columnar.chunk.index" → {0xC000, 1024, Zstd}<br>
+        &nbsp;...
+      </div>
+    </div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">collectSections(footerBuf)</span><br><span style="font-size:0.65rem;color:var(--text-muted)">tryExtractFromBuffer for: Stripes ②, Schema ③, ChunkIndex, ClusterIndex<br>in buf → extract + decompress, else → list</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadSections(list)</span><br><span style="font-size:0.65rem;color:var(--text-muted)">CachedMetadataInput::load() for sections not in speculative buf</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initStripes() + initIndexes()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">parse Stripes → stripe count, offsets, row counts<br>parse ClusterIndex, ChunkIndex → predicate pushdown</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green);background:color-mix(in srgb, var(--accent-green) 8%, var(--surface))"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600;color:var(--accent-green)">cacheMetadata(footerBuf)</span><br><span style="font-size:0.65rem;color:var(--accent-green)"><strong>Store decompressed metadata in cache</strong> (see Section 6 for full list)</span></div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:0.3rem">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--accent-green);text-align:center;margin-bottom:0.1rem">Warm Path</div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadFooterFromCache()</span><br><span style="font-size:0.65rem;color:var(--text-muted)"><strong>RAM only</strong> at {fileId, fileSize_} → footer_ + ps_<br>miss = fall back to full cold path (no SSD)</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initOptionalSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">same — parse cached Footer → build lookup map. No I/O.</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">collectSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">no footerBuf → Stripes ②, Schema ③, indexes all → list</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadSections(list)</span><br><span style="font-size:0.65rem;color:var(--accent-green)">RAM hit (typical)</span> <span style="font-size:0.65rem;color:var(--text-muted)">→ SSD fallback → file fallback<br>file fallback reads into cache pin → <strong style="color:var(--accent-green)">auto-populates cache</strong></span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initStripes() + initIndexes()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">parse Stripes, ClusterIndex, ChunkIndex FlatBuffers</span></div>
+    <div class="card" style="padding:0.35rem 0.6rem;margin:0;background:var(--code-bg)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600;color:var(--text-muted)">cacheMetadata() — not called</span></div>
+  </div>
+</div>
+
+
+<div class="footer">
+  Ke Wang &middot; 2026-06-11<br>
+  Generated by <a href="https://fburl.com/claude-templates/k5rd6ab0" target="_blank">/visualize</a> claude skill
+</div>
+</div>
+<!-- FEEDBACK-CSS -->
+<style>
+.fb-toggle { position: fixed; top: 1rem; right: 3.5rem; z-index: 10000; display: flex; align-items: center; gap: 6px; background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-family: inherit; font-size: 0.75rem; color: var(--text-secondary, #64748b); box-shadow: 0 2px 8px rgba(0,0,0,0.1); transition: background 0.15s, border-color 0.15s; }
+.fb-toggle:hover { background: var(--surface-hover, #f8fafc); border-color: var(--border-strong, #cbd5e1); }
+.fb-toggle.active { background: var(--primary, #0d9488); color: #fff; border-color: var(--primary, #0d9488); }
+.fb-section { position: relative; }
+.fb-trigger { position: absolute; top: 0.4rem; right: 0.4rem; width: 20px; height: 20px; border-radius: 4px; background: var(--primary, #0d9488); color: #fff; border: none; cursor: pointer; font-size: 11px; line-height: 20px; text-align: center; opacity: 0.5; transition: opacity 0.2s, transform 0.15s; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,0.12); display: none; }
+body.fb-mode-on .fb-trigger { display: block; }
+.fb-trigger:hover { opacity: 1; transform: scale(1.15); }
+.fb-inline-form { position: absolute; top: 0.5rem; right: 2.8rem; background: var(--surface, #fff); border: 1px solid var(--border, #d0ddd6); border-radius: 10px; padding: 0.75rem; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.12); z-index: 101; display: none; }
+.fb-inline-form.open { display: block; }
+.fb-inline-form textarea { width: 100%; min-height: 60px; border: 1px solid var(--border, #d0ddd6); border-radius: 6px; padding: 0.5rem; font-family: var(--font-body, sans-serif); font-size: 0.8rem; resize: vertical; background: var(--bg, #f4f7f6); color: var(--text-primary, #0f1f1a); }
+.fb-inline-form textarea:focus { outline: 2px solid var(--primary, #0d9488); border-color: transparent; }
+.fb-inline-form .fb-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; justify-content: flex-end; }
+.fb-inline-form button { padding: 0.3rem 0.7rem; border-radius: 6px; border: none; font-size: 0.75rem; cursor: pointer; font-weight: 500; }
+.fb-submit { background: var(--primary, #0d9488); color: #fff; }
+.fb-cancel { background: var(--bg-alt, #eaf0ee); color: var(--text-secondary, #4a6359); }
+.fb-section-label { font-size: 0.65rem; color: var(--text-muted, #7a9589); margin-bottom: 0.3rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.fb-toast { position: fixed; bottom: 2rem; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--text-primary, #0f1f1a); color: #fff; padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 0.8rem; opacity: 0; transition: opacity 0.3s, transform 0.3s; z-index: 300; pointer-events: none; }
+.fb-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.fb-toggle-hint { font-size: 0.6rem; opacity: 0.7; display: none; }
+.fb-toggle.fb-no-px .fb-toggle-hint { display: inline; }
+.fb-toggle.fb-no-px { cursor: default; opacity: 0.75; }
+@media print { .fb-toggle, .fb-trigger, .fb-inline-form { display: none !important; } }
+</style>
+
+<!-- FEEDBACK-HTML -->
+<button class="fb-toggle" id="fb-toggle" onclick="window._fbToggleMode()" title="Toggle feedback mode">
+  <span id="fb-toggle-icon">&#128172;</span>
+  <span id="fb-toggle-label">Feedback</span>
+  <span class="fb-toggle-hint">(Pixelcloud only)</span>
+</button>
+<div class="fb-toast" id="fb-toast"></div>
+
+<!-- FEEDBACK-JS -->
+<script>
+(function(){var inPixelcloud=false;if(window.parent!==window){try{var parentHref=window.parent.location.href;inPixelcloud=parentHref.indexOf('internalfb.com/intern/px')!==-1}catch(e){inPixelcloud=true}}var toggleBtn=document.getElementById('fb-toggle');if(!inPixelcloud)toggleBtn.classList.add('fb-no-px');var defaultSetting=toggleBtn?toggleBtn.getAttribute('data-feedback-default'):null;var feedbackEnabled=inPixelcloud&&defaultSetting!=='off';var initialized=false;function discoverSections(){var SKIP=['viz-menu','viz-menu-panel','fb-toggle','fb-toast','fb-inline-form'];var seen=new Set();var candidates=[];var autoIdx=0;document.querySelectorAll('h1,h2,h3,h4,[class*="-title"],[class*="-header"]').forEach(function(h){if(!h.textContent||h.tagName==='STYLE'||h.tagName==='SCRIPT')return;var text=h.textContent.replace(/\s+/g,' ').trim();if(text.length===0||text.length>100)return;var parent=h.closest('.step,.step-inner,.section,.card,.callout,.slide,.block,.panel,.phase,section,article,[data-feedback-section]')||h.parentElement;if(!parent||parent===document.body||seen.has(parent))return;for(var i=0;i<SKIP.length;i++){if(parent.classList.contains(SKIP[i]))return}seen.add(parent);autoIdx++;if(!parent.id)parent.id='fb-s'+autoIdx;candidates.push({el:parent,id:parent.id,name:text.substring(0,80)})});var sections=candidates.filter(function(a){return!candidates.some(function(b){return b!==a&&a.el.contains(b.el)})});return sections}var PARENT_ORIGIN='https://www.internalfb.com';window.addEventListener('message',function(event){if(event.origin!==PARENT_ORIGIN)return;if(event.data&&event.data.type==='px-comment-result'){if(event.data.status==='success')toast('Comment posted!');else toast('Error posting comment')}});function initSections(){if(initialized)return;initialized=true;var sections=discoverSections();sections.forEach(function(s){var el=s.el,id=s.id,name=s.name;if(el.classList.contains('fb-section'))return;var anchor=el.querySelector('.step-inner,.card,.card-body,.content')||el;anchor.classList.add('fb-section');if(!anchor.style.position||anchor.style.position==='static')anchor.style.position='relative';var btn=document.createElement('button');btn.className='fb-trigger';btn.innerHTML='&#128172;';btn.title='Feedback on: '+name;btn.onclick=function(e){e.stopPropagation();openForm(anchor,id,name)};anchor.appendChild(btn)})}window._fbToggleMode=function(){if(!inPixelcloud){toast('Feedback comments require viewing via a Pixelcloud link');return}feedbackEnabled=!feedbackEnabled;document.body.classList.toggle('fb-mode-on',feedbackEnabled);var tb=document.getElementById('fb-toggle');var tl=document.getElementById('fb-toggle-label');tb.classList.toggle('active',feedbackEnabled);tl.textContent=feedbackEnabled?'Feedback On':'Feedback';if(feedbackEnabled){initSections();toast('Feedback mode enabled')}else{document.querySelectorAll('.fb-inline-form.open').forEach(function(f){f.classList.remove('open')});toast('Feedback mode disabled')}};function openForm(el,id,name){document.querySelectorAll('.fb-inline-form.open').forEach(function(f){f.classList.remove('open')});var form=el.querySelector('.fb-inline-form');if(!form){form=document.createElement('div');form.className='fb-inline-form';var label=document.createElement('div');label.className='fb-section-label';label.textContent=name;form.appendChild(label);var textarea=document.createElement('textarea');textarea.placeholder='What would you change?';form.appendChild(textarea);var actions=document.createElement('div');actions.className='fb-actions';var cancelBtn=document.createElement('button');cancelBtn.className='fb-cancel';cancelBtn.textContent='Cancel';cancelBtn.addEventListener('click',function(){form.classList.remove('open')});actions.appendChild(cancelBtn);var submitBtn=document.createElement('button');submitBtn.className='fb-submit';submitBtn.textContent='Add';submitBtn.addEventListener('click',function(){window._fbSubmit(id,submitBtn)});actions.appendChild(submitBtn);form.appendChild(actions);form.addEventListener('click',function(e){e.stopPropagation()});el.appendChild(form)}form.classList.add('open');form.querySelector('textarea').focus()}window._fbSubmit=function(sectionId,btn){var form=btn.closest('.fb-inline-form');var ta=form.querySelector('textarea');var text=ta.value.trim();if(!text)return;var label=form.querySelector('.fb-section-label');var sectionName=label?label.textContent:sectionId;ta.value='';form.classList.remove('open');try{window.parent.postMessage({type:'px-section-comment',section_label:sectionName,element_id:sectionId,text:text},PARENT_ORIGIN);toast('Comment sent...')}catch(e){toast('Failed: '+e.message)}};function toast(msg){var t=document.getElementById('fb-toast');if(!t)return;t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2500)}function applyDefault(){if(feedbackEnabled){document.body.classList.add('fb-mode-on');toggleBtn.classList.add('active');document.getElementById('fb-toggle-label').textContent='Feedback On';initSections()}}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',applyDefault);else applyDefault()})();
+</script>
+
+<script>
+function toggleMenu(){var menu=document.getElementById('vizMenu');var toggle=menu.querySelector('.viz-menu-toggle');var isOpen=menu.classList.toggle('open');toggle.setAttribute('aria-expanded',isOpen)}
+document.addEventListener('click',function(e){var menu=document.getElementById('vizMenu');if(menu&&!menu.contains(e.target))menu.classList.remove('open')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){var menu=document.getElementById('vizMenu');if(menu)menu.classList.remove('open')}});
+function toggleTheme(){var isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('visualize-dark-mode',isDark);updateThemeLabel()}
+function updateThemeLabel(){var isDark=document.body.classList.contains('dark-mode');var icon=document.getElementById('themeIcon');var label=document.getElementById('themeLabel');if(icon)icon.textContent=isDark?'☀':'◐';if(label)label.textContent=isDark?'Light mode':'Dark mode'}
+if(localStorage.getItem('visualize-dark-mode')==='true'||(!localStorage.getItem('visualize-dark-mode')&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.body.classList.add('dark-mode');
+updateThemeLabel();
+function toggleFullscreen(){if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(function(){});else document.exitFullscreen()}
+document.addEventListener('fullscreenchange',function(){var icon=document.getElementById('fsIcon');var label=document.getElementById('fsLabel');var isFs=!!document.fullscreenElement;if(icon)icon.textContent='⛶';if(label)label.textContent=isFs?'Exit fullscreen':'Fullscreen'});
+</script>
+</body>
+</html>

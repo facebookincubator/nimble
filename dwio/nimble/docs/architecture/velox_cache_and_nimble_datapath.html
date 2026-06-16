@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>Velox Cache &amp; Nimble Data Path</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-gradient: linear-gradient(160deg, #f5f7fa 0%, #edf1f7 50%, #f0f4f8 100%);
+  --surface: #ffffff;
+  --surface-hover: #f8f9fb;
+  --text-primary: #1b2838;
+  --text-secondary: #556270;
+  --text-muted: #8a95a5;
+  --border: #dce3ed;
+  --border-strong: #b8c4d4;
+  --primary: #3d6b9e;
+  --primary-light: #e8f0fa;
+  --accent: #c4841d;
+  --accent-light: #fef4e4;
+  --accent-green: #2d7d5f;
+  --accent-green-light: #e6f5ee;
+  --accent-red: #c44b3d;
+  --accent-red-light: #fce8e6;
+  --node-bg: #ffffff;
+  --code-bg: #f0f3f7;
+  --shadow: 0 1px 8px rgba(61,107,158,0.07);
+  --shadow-lg: 0 4px 20px rgba(61,107,158,0.10);
+  --mono: 'JetBrains Mono', monospace;
+  --font-display: 'Sora', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+body.dark-mode {
+  --bg: #0d1117;
+  --bg-gradient: linear-gradient(160deg, #0d1117 0%, #111820 50%, #0d1117 100%);
+  --surface: #161b22;
+  --surface-hover: #1c222b;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --primary: #58a6ff;
+  --primary-light: #0d1f3c;
+  --accent: #e3b341;
+  --accent-light: #1c1a0e;
+  --accent-green: #56d364;
+  --accent-green-light: #0e2218;
+  --accent-red: #f85149;
+  --accent-red-light: #2a1215;
+  --node-bg: #161b22;
+  --code-bg: #0d1117;
+  --shadow: 0 1px 8px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 20px rgba(0,0,0,0.4);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.65;
+}
+.container {
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 2rem 2.5rem 4rem;
+}
+h1 {
+  font-family: var(--font-display);
+  font-size: 1.8rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: center;
+  padding: 2.5rem 0 0.3rem;
+  animation: fadeIn 0.5s ease both;
+}
+.subtitle {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: 2rem;
+  animation: fadeIn 0.5s 0.1s ease both;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 2.5rem 0 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0.4rem;
+}
+h2 .sec-num {
+  background: var(--primary);
+  color: #fff;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+h3 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--primary);
+}
+p { margin-bottom: 0.75rem; font-size: 0.88rem; }
+code {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  color: var(--primary);
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin: 0.75rem 0;
+  box-shadow: var(--shadow);
+}
+.diagram {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 0.75rem 0;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  color: var(--text-secondary);
+  white-space: pre;
+}
+.diagram strong { color: var(--primary); font-weight: 600; }
+.diagram em { color: var(--accent); font-style: normal; font-weight: 500; }
+.diagram .g { color: var(--accent-green); }
+.diagram .r { color: var(--accent-red); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.82rem;
+}
+th {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--border);
+}
+td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: none; }
+.badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1em 0.45em;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+.badge-blue { background: var(--primary-light); color: var(--primary); }
+.badge-amber { background: var(--accent-light); color: var(--accent); }
+.badge-green { background: var(--accent-green-light); color: var(--accent-green); }
+.badge-red { background: var(--accent-red-light); color: var(--accent-red); }
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-light);
+  padding: 0.75rem 1rem;
+  border-radius: 0 8px 8px 0;
+  margin: 0.75rem 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.callout strong { color: var(--accent); }
+.arrow-r, .arrow-l { flex-shrink:0; flex-grow:0; font-size:1rem; line-height:1; color:var(--arrow-c); display:inline-block; width:1rem; height:1rem; text-align:center; }
+.ref-num { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; background:var(--accent-red); color:#fff; font-size:0.5rem; font-weight:700; font-family:var(--font-display); vertical-align:middle; margin-left:0.3rem; }
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+@media (max-width: 640px) { .two-col { grid-template-columns: 1fr; } }
+.footer {
+  text-align: center;
+  padding: 2rem 0 1rem;
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.footer a { color: var(--text-muted); text-decoration: underline; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+</style>
+<style>
+.viz-menu { position: fixed; top: 1rem; right: 1rem; z-index: 10000; font-family: inherit; }
+.viz-menu-toggle { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border, #e2e8f0); background: var(--surface, #fff); color: var(--text-secondary, #64748b); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s, border-color 0.15s, transform 0.15s; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.viz-menu-toggle:hover { background: var(--surface-hover, #f8fafc); border-color: var(--border-strong, #cbd5e1); transform: scale(1.05); }
+.viz-menu-panel { position: absolute; top: calc(100% + 6px); right: 0; min-width: 200px; background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 10px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); opacity: 0; transform: translateY(-4px) scale(0.97); pointer-events: none; transition: opacity 0.15s, transform 0.15s; }
+.viz-menu.open .viz-menu-panel { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+.viz-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: none; border-radius: 7px; background: transparent; color: var(--text-primary, #0f172a); font-size: 0.85rem; cursor: pointer; text-align: left; transition: background 0.1s; font-family: inherit; }
+.viz-menu-item:hover { background: var(--surface-hover, #f1f5f9); }
+.viz-menu-icon { width: 20px; text-align: center; font-size: 1rem; flex-shrink: 0; }
+@media print { .viz-menu { display: none !important; } body { background: white !important; color: black !important; } @page { margin: 1.5cm; } }
+</style>
+</head>
+<body>
+
+<nav class="viz-menu" id="vizMenu" aria-label="Visualization controls">
+  <button class="viz-menu-toggle" onclick="toggleMenu()" aria-label="Toggle menu" aria-expanded="false">
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="5" x2="15" y2="5"/><line x1="3" y1="9" x2="15" y2="9"/><line x1="3" y1="13" x2="15" y2="13"/></svg>
+  </button>
+  <div class="viz-menu-panel" id="vizMenuPanel">
+    <button onclick="toggleTheme()" class="viz-menu-item"><span class="viz-menu-icon" id="themeIcon">◐</span><span id="themeLabel">Dark mode</span></button>
+    <button onclick="window.print()" class="viz-menu-item"><span class="viz-menu-icon">⎙</span><span>Print / PDF</span></button>
+    <button onclick="toggleFullscreen()" class="viz-menu-item"><span class="viz-menu-icon" id="fsIcon">⛶</span><span id="fsLabel">Fullscreen</span></button>
+  </div>
+</nav>
+
+<div class="container">
+
+<h1>Velox Cache &amp; Nimble Data Path</h1>
+<p class="subtitle">AsyncDataCache, CachedBufferedInput, Cache Entry, Format-Specific Usage</p>
+
+<h2><span class="sec-num">1</span> Overview</h2>
+<div class="diagram"><strong>BufferedInput</strong> (concrete base class, also used directly)
+  │   enqueue/load with coalesced preadv, no cache      <em>(Nimble, when no cache)</em>
+  │
+  ├── <strong>DirectBufferedInput</strong>   quantum-based loading, no cache     <em>(DWRF, when no cache)</em>
+  └── <strong>CachedBufferedInput</strong>   cache-backed (RAM + SSD)            <em>(all formats, when cache exists)</em>
+
+<strong>Read path without cache:</strong>
+  Reader → BufferedInput → enqueue/load → ReadFile → preadv() → storage
+           (coalescing only)
+
+<strong>Read path with cache:</strong>
+  Reader → CachedBufferedInput.enqueue() → CachedBufferedInput.load()
+                                              │
+                                              ├─ 1. AsyncDataCache.findOrCreate() → RAM hit? done
+                                              ├─ 2. SsdFile.find() → SSD hit? load SSD → RAM
+                                              └─ 3. ReadFile.preadv() → storage → store in RAM
+                                              <em>(all three steps inside CachedBufferedInput)</em></div>
+
+<h3>Two-Tier Layout</h3>
+<div style="display:flex;flex-direction:column;align-items:center;gap:0.4rem;margin:0.75rem 0">
+  <div class="card" style="width:100%;margin:0;padding:0.75rem 1rem;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-family:var(--font-display);font-weight:600;font-size:0.9rem;color:var(--primary)">AsyncDataCache <span style="font-weight:400;color:var(--text-muted);font-size:0.8rem">(RAM)</span></div>
+      <div style="font-family:var(--mono);font-size:0.75rem;color:var(--text-secondary)">key = {fileId, offset}</div>
+    </div>
+    <div style="text-align:right;font-size:0.75rem;color:var(--text-muted)">process-wide, sharded<br>one AsyncDataCacheEntry per region</div>
+  </div>
+  <div style="font-family:var(--mono);font-size:0.72rem;color:var(--text-muted);text-align:center">▼ eviction (async, bytes as-is)</div>
+  <div class="card" style="width:100%;margin:0;padding:0.75rem 1rem;display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-family:var(--font-display);font-weight:600;font-size:0.9rem;color:var(--primary)">SsdCache <span style="font-weight:400;color:var(--text-muted);font-size:0.8rem">(local SSD)</span></div>
+      <div style="font-family:var(--mono);font-size:0.75rem;color:var(--text-secondary)">key = {fileId, offset}</div>
+    </div>
+    <div style="text-align:right;font-size:0.75rem;color:var(--text-muted)">SsdFile per shard<br>SsdRun{offset, size, checksum}</div>
+  </div>
+</div>
+
+<!-- Section 2: CachedBufferedInput -->
+<h2><span class="sec-num">2</span> CachedBufferedInput</h2>
+
+<h3>API (inherited from BufferedInput base class)</h3>
+<table>
+  <tr><th>Method</th><th>Returns</th><th>Description</th></tr>
+  <tr><td><code>enqueue(region, sid)</code></td><td><code>unique_ptr&lt;SeekableInputStream&gt;</code></td><td>Register a byte range to read. Returns a stream handle (empty until <code>load()</code>)</td></tr>
+  <tr><td><code>load(logType)</code></td><td><code>void</code></td><td>Execute all enqueued reads — coalesce, check cache, read storage for misses</td></tr>
+  <tr><td><code>clone()</code></td><td><code>unique_ptr&lt;BufferedInput&gt;</code></td><td>New instance sharing same file + pool, empty enqueue list. Used for lazy column I/O</td></tr>
+  <tr><td><code>preload()</code></td><td><code>void</code></td><td>Enqueue + load the entire file. For small files, eliminates separate reads</td></tr>
+  <tr><td><code>shouldPrefetchStripes()</code></td><td><code>bool</code></td><td>Whether caller should prefetch stripe metadata. <code>CachedBufferedInput</code> returns true</td></tr>
+  <tr><td><code>read(offset, len)</code></td><td><code>unique_ptr&lt;SeekableInputStream&gt;</code></td><td>Unplanned read — bypasses enqueue/load, reads directly from file</td></tr>
+</table>
+
+<h3>Three-Phase Pattern</h3>
+
+<div class="two-col">
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.85rem;color:var(--primary);margin-bottom:0.5rem">DWRF</div>
+    <div class="diagram" style="margin:0;padding:0.5rem 0.7rem;font-size:0.66rem;line-height:1.65"><strong>Plan:</strong>
+DwrfRowReader::loadCurrentStripe()
+  DwrfUnit::load()
+    ensureDecoders()
+      ColumnReaderFactory::build()
+        each column reader calls:
+          StripeStreamsImpl::getStream()
+            stripeInput-&gt;enqueue(region)
+
+<strong>Execute:</strong>
+    loadDecoders()
+      stripeStreams_-&gt;loadReadPlan()
+        stripeInput-&gt;load(STREAM_BUNDLE)
+
+<strong>Consume:</strong>
+  IntegerRleDecoder → s1-&gt;Next() → cache
+  StringDecoder → s2-&gt;Next() → cache</div>
+  </div>
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.85rem;color:var(--primary);margin-bottom:0.5rem">Nimble</div>
+    <div class="diagram" style="margin:0;padding:0.5rem 0.7rem;font-size:0.66rem;line-height:1.65"><strong>Plan:</strong>
+SelectiveNimbleRowReader::loadCurrentStripe()
+  streams_.setStripe(currentStripe_)
+  buildColumnReader(...)
+    IntegerColumnReader / StringColumnReader / ...
+      NimbleData constructor
+        NimbleData::makeDecoder()
+          streams_-&gt;enqueue(streamId)
+            BufferedInput::enqueue(region)
+
+<strong>Execute:</strong>
+  streams_.load()
+    BufferedInput::load(STREAM_BUNDLE)
+
+<strong>Consume:</strong>
+  ChunkedDecoder::ensureInput()
+    input_-&gt;Next() → zero-copy ptr into cache</div>
+  </div>
+</div>
+
+<h3>Inside load()</h3>
+<div class="diagram">input.load()
+
+  Stream count is fixed at enqueue time (1 enqueue = 1 SeekableInputStream).
+  load() only decides where each stream's DATA comes from.
+
+  <strong>Step 1: Split large requests</strong> (loadQuantum = 8MB default)
+  Requests &gt; loadQuantum are split into multiple CacheRequests.
+  Small requests pass through as-is. Stream count unchanged.
+
+  <strong>Step 2: Classify each CacheRequest</strong> (decides data source, not stream count)
+    ├─ cache_-&gt;exists(key)       → RAM hit? skip (data already there)
+    ├─ ssdFile-&gt;find(key)        → SSD hit? add to ssdLoad group
+    └─ neither?                  → add to storageLoad group
+
+  <strong>Step 3: Coalesce + Execute</strong>
+  Nearby storage misses merged into fewer preadv calls.
+  SSD hits loaded via SsdFile::load().
+  Gap bytes read but discarded (no request owns them).</div>
+
+<h3>Examples</h3>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;margin:0.75rem 0">
+
+  <!-- Example 1: Small streams with gap -->
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--primary);margin-bottom:0.5rem">Small streams with gap</div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">enqueue</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_1<br><span style="color:var(--text-muted)">{0, 50KB}</span></div>
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_2<br><span style="color:var(--text-muted)">{80K, 30KB}</span></div>
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_3<br><span style="color:var(--text-muted)">{90K, 20KB}</span></div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 1: Split</div>
+    <div style="font-family:var(--mono);font-size:0.58rem;color:var(--text-muted);margin-bottom:0.4rem">all &lt; 8MB → no split, 3 CacheRequests as-is</div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 2: Classify</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">s1: miss</div>
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">s2: miss</div>
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">s3: miss</div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 3: Coalesce + Execute</div>
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--text-muted);margin-bottom:0.2rem">→ 1 preadv(0..110KB)</div>
+    <div style="display:flex;margin-bottom:0.1rem;border-radius:4px;overflow:hidden;border:1px solid var(--border)">
+      <div style="flex:5;background:var(--accent-green-light);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">50KB</div>
+      <div style="flex:3;background:color-mix(in srgb, var(--accent-red) 10%, var(--surface));border-left:1px dashed var(--accent-red);border-right:1px dashed var(--accent-red);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">gap</div>
+      <div style="flex:3;background:var(--accent-green-light);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">30KB</div>
+      <div style="flex:2;background:var(--accent-green-light);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">20KB</div>
+    </div>
+    <div style="display:flex;margin-bottom:0.2rem">
+      <div style="flex:5;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+      <div style="flex:3;text-align:center;font-size:0.55rem;font-weight:600;color:var(--accent-red);font-family:var(--mono)">discarded</div>
+      <div style="flex:3;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+      <div style="flex:2;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+    </div>
+    <div style="background:color-mix(in srgb, var(--accent-red) 6%, var(--surface));border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);border-radius:6px;padding:0.3rem;margin-bottom:0.15rem">
+      <div style="font-family:var(--mono);font-size:0.5rem;color:var(--accent-red);text-align:center;margin-bottom:0.15rem">Warm Storage</div>
+      <div style="display:flex;margin-bottom:0;border-radius:3px;overflow:hidden;border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent)">
+        <div style="flex:5;background:var(--accent-red-light);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">50KB</div>
+        <div style="flex:3;background:var(--code-bg);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--text-muted)">gap</div>
+        <div style="flex:3;background:var(--accent-red-light);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">30KB</div>
+        <div style="flex:2;background:var(--accent-red-light);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">20KB</div>
+      </div>
+    </div>
+    <div style="text-align:center;font-size:0.55rem;color:var(--text-muted);margin-bottom:0.15rem">preadv ▼</div>
+    <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.3rem">
+      <div style="font-family:var(--mono);font-size:0.5rem;color:var(--primary);font-weight:600;text-align:center;margin-bottom:0.15rem">AsyncDataCache</div>
+      <div style="display:flex;gap:0.2rem">
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_1<br>{fid,0}<br>50KB</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_2<br>{fid,80K}<br>30KB</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_3<br>{fid,90K}<br>20KB</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Example 2: Large stream -->
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--primary);margin-bottom:0.5rem">Large stream (loadQuantum)</div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">enqueue</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_1<br><span style="color:var(--text-muted)">{0, 20MB}</span></div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 1: Split</div>
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--text-muted);margin-bottom:0.15rem">20MB &gt; 8MB → 3 CacheRequests:</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:8;background:var(--code-bg);border-radius:3px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--text-secondary)">{fid,0} 8MB</div>
+      <div style="flex:8;background:var(--code-bg);border-radius:3px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--text-secondary)">{fid,8M} 8MB</div>
+      <div style="flex:4;background:var(--code-bg);border-radius:3px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--text-secondary)">{fid,16M} 4MB</div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 2: Classify</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">r1: miss</div>
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">r2: miss</div>
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">r3: miss</div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 3: Coalesce + Execute</div>
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--text-muted);margin-bottom:0.2rem">contiguous → 1 preadv(0..20MB)</div>
+    <div style="display:flex;margin-bottom:0.1rem;border-radius:4px;overflow:hidden;border:1px solid var(--border)">
+      <div style="flex:8;background:var(--accent-green-light);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">8MB</div>
+      <div style="flex:8;background:color-mix(in srgb, var(--accent-green-light) 70%, var(--surface));padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">8MB</div>
+      <div style="flex:4;background:var(--accent-green-light);padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">4MB</div>
+    </div>
+    <div style="display:flex;margin-bottom:0.2rem">
+      <div style="flex:8;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+      <div style="flex:8;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+      <div style="flex:4;text-align:center;font-size:0.65rem;color:var(--text-muted)">▼</div>
+    </div>
+    <div style="background:color-mix(in srgb, var(--accent-red) 6%, var(--surface));border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);border-radius:6px;padding:0.3rem;margin-bottom:0.15rem">
+      <div style="font-family:var(--mono);font-size:0.5rem;color:var(--accent-red);text-align:center;margin-bottom:0.15rem">Warm Storage</div>
+      <div style="display:flex;margin-bottom:0;border-radius:3px;overflow:hidden;border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent)">
+        <div style="flex:8;background:var(--accent-red-light);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">8MB</div>
+        <div style="flex:8;background:color-mix(in srgb, var(--accent-red-light) 60%, var(--surface));padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">8MB</div>
+        <div style="flex:4;background:var(--accent-red-light);padding:0.1rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">4MB</div>
+      </div>
+    </div>
+    <div style="text-align:center;font-size:0.55rem;color:var(--text-muted);margin-bottom:0.15rem">preadv ▼</div>
+    <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.3rem">
+      <div style="font-family:var(--mono);font-size:0.5rem;color:var(--primary);font-weight:600;text-align:center;margin-bottom:0.15rem">AsyncDataCache</div>
+      <div style="display:flex;gap:0.2rem">
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_1<br>{fid,0}<br>8MB</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_2<br>{fid,8M}<br>8MB</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.15rem;text-align:center;font-family:var(--mono);font-size:0.5rem;color:var(--primary)">Entry_3<br>{fid,16M}<br>4MB</div>
+      </div>
+    </div>
+    <div style="font-size:0.55rem;color:var(--text-muted);margin-top:0.2rem;text-align:center">1 stream swaps pin_ at boundaries</div>
+  </div>
+
+  <!-- Example 3: Mixed -->
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--primary);margin-bottom:0.5rem">Mixed (RAM + SSD + storage)</div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">enqueue</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_1<br><span style="color:var(--text-muted)">{0, 1MB}</span></div>
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_2<br><span style="color:var(--text-muted)">{1MB, 1MB}</span></div>
+      <div style="flex:1;background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 25%, transparent);border-radius:5px;padding:0.25rem;text-align:center;font-family:var(--mono);font-size:0.58rem;color:var(--primary)">stream_3<br><span style="color:var(--text-muted)">{3MB, 1MB}</span></div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 1: Split</div>
+    <div style="font-family:var(--mono);font-size:0.58rem;color:var(--text-muted);margin-bottom:0.4rem">all &lt; 8MB → no split, 3 CacheRequests as-is</div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 2: Classify</div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.4rem">
+      <div style="flex:1;background:var(--accent-red-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-red)">s1: storage<br>miss</div>
+      <div style="flex:1;background:var(--accent-green-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent-green)">s2: RAM<br>hit → skip</div>
+      <div style="flex:1;background:var(--accent-light);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.55rem;color:var(--accent)">s3: SSD<br>hit → ssdLoad</div>
+    </div>
+
+    <div style="font-family:var(--mono);font-size:0.6rem;font-weight:600;color:var(--primary);margin-bottom:0.2rem">Step 3: Execute (no coalescing — each path independent)</div>
+
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.15rem">
+      <div style="flex:1;background:color-mix(in srgb, var(--accent-red) 6%, var(--surface));border:1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);border-radius:5px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent-red)">Warm Storage<br>preadv {fid,0}<br>1MB</div>
+      <div style="flex:1"></div>
+      <div style="flex:1;background:color-mix(in srgb, var(--accent) 8%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 20%, transparent);border-radius:5px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.48rem;color:var(--accent)">SsdCache<br>SsdFile::load()<br>{fid,3M}</div>
+    </div>
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.15rem">
+      <div style="flex:1;text-align:center;font-size:0.6rem;color:var(--text-muted)">▼</div>
+      <div style="flex:1;text-align:center;font-size:0.6rem;color:var(--text-muted)">▼</div>
+      <div style="flex:1;text-align:center;font-size:0.6rem;color:var(--text-muted)">▼</div>
+    </div>
+
+    <div style="background:var(--primary-light);border:1px solid color-mix(in srgb, var(--primary) 20%, transparent);border-radius:6px;padding:0.3rem">
+      <div style="font-family:var(--mono);font-size:0.5rem;color:var(--primary);font-weight:600;text-align:center;margin-bottom:0.2rem">AsyncDataCache</div>
+      <div style="display:flex;gap:0.25rem">
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--primary)">Entry_1<br>{fid,0}<br>preadv</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--primary)">Entry_2<br>{fid,1M}<br>was in RAM</div>
+        <div style="flex:1;background:color-mix(in srgb, var(--primary) 15%, var(--surface));border:1px solid color-mix(in srgb, var(--primary) 30%, transparent);border-radius:4px;padding:0.2rem;text-align:center;font-family:var(--mono);font-size:0.52rem;color:var(--primary)">Entry_3<br>{fid,3M}<br>SSD→RAM</div>
+      </div>
+    </div>
+    <div style="font-size:0.55rem;color:var(--text-muted);margin-top:0.2rem;text-align:center">all three Next() look identical</div>
+  </div>
+</div>
+
+<h3>How CacheInputStream Manages Multiple Entries</h3>
+<p><code>CacheInputStream</code> holds <strong>one pin at a time</strong> — no array of entries. It computes quantum boundaries on the fly:</p>
+
+<div class="diagram" style="font-size:0.68rem;line-height:1.6"><strong>CacheInputStream</strong> (one per enqueue)
+  region_:      {offset: 0, length: 20MB}     ← original enqueued range
+  loadQuantum_: 8MB                           ← max entry size
+  position_:    current read offset           ← advances via Next()
+  pin_:         CachePin                      ← ONE entry at a time
+
+  Next() at position 7MB → pin_ points to Entry_1 {fid,0}
+  Next() at position 8MB → <em>boundary!</em>
+    1. drop pin_ (unpin Entry_1)
+    2. quantum_start = floor(8MB / 8MB) * 8MB = 8MB
+    3. cache_-&gt;findOrCreate({fid, 8MB}, 8MB)
+    4. pin_ = Entry_2
+    5. Next() returns ptr into Entry_2</div>
+
+<h3>Overlapping Streams</h3>
+<p>Two streams can request cache entries at the same key. <code>findOrCreate()</code> handles it:</p>
+<table>
+  <tr><th>Existing entry size</th><th>Requested size</th><th>Behavior</th></tr>
+  <tr><td>None</td><td>any</td><td>Create new entry</td></tr>
+  <tr><td>&gt;= requested</td><td>any</td><td>Cache hit. Larger entry satisfies smaller request</td></tr>
+  <tr><td>&lt; requested</td><td>any</td><td>Evict stale entry, create new one at requested size</td></tr>
+</table>
+  </div>
+</div>
+
+
+<!-- Section 3: Cache Entry -->
+<h2><span class="sec-num">3</span> Cache Entry</h2>
+<p><code>AsyncDataCacheEntry</code> is the unit of storage. One entry = one contiguous byte range from one file.</p>
+
+<h3>Key Fields</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td><code>key_</code></td><td><code>FileCacheKey</code></td><td><code>{fileNum, offset}</code> — identifies the source byte range</td></tr>
+  <tr><td><code>size_</code></td><td><code>int32_t</code></td><td>Logical data size (bytes actually meaningful)</td></tr>
+  <tr><td><code>numPins_</code></td><td><code>atomic&lt;int32_t&gt;</code></td><td>Reference count. <code>kExclusive (-10000)</code> = being written. <code>&gt;0</code> = shared readers</td></tr>
+  <tr><td><code>accessStats_</code></td><td><code>AccessStats</code></td><td>LRU-like scoring for eviction priority</td></tr>
+  <tr><td><code>ssdSaveable_</code></td><td><code>bool</code></td><td>Whether this entry should be written to SSD on eviction</td></tr>
+</table>
+
+<h3>Three Storage Modes</h3>
+<p>How the actual bytes are held in memory depends on the entry size and allocation mode:</p>
+
+<div style="display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:0.5rem;margin:0.75rem 0">
+  <div class="card" style="padding:0.75rem;margin:0;text-align:center">
+    <div style="font-family:var(--mono);font-size:0.7rem;color:var(--accent);font-weight:600;margin-bottom:0.4rem">size &lt; 2KB</div>
+    <div style="font-family:var(--mono);font-size:0.8rem;font-weight:600;color:var(--primary);margin-bottom:0.3rem">tinyData_</div>
+    <div style="font-size:0.78rem;color:var(--text-secondary)">std::string</div>
+    <div class="diagram" style="margin:0.4rem 0;padding:0.3rem 0.5rem;font-size:0.7rem;text-align:center">"..bytes.."</div>
+    <div style="font-size:0.72rem;color:var(--text-muted)">contiguous, inline</div>
+  </div>
+  <div class="card" style="padding:0.75rem;margin:0;text-align:center">
+    <div style="font-family:var(--mono);font-size:0.7rem;color:var(--accent);font-weight:600;margin-bottom:0.4rem">default (contiguous=false)</div>
+    <div style="font-family:var(--mono);font-size:0.8rem;font-weight:600;color:var(--primary);margin-bottom:0.3rem">nonContiguousData_</div>
+    <div style="font-size:0.78rem;color:var(--text-secondary)">memory::Allocation</div>
+    <div class="diagram" style="margin:0.4rem 0;padding:0.3rem 0.5rem;font-size:0.68rem;text-align:left;line-height:1.5">PageRun[0]: ptr→[<strong>██4KB██</strong>]
+PageRun[1]: ptr→[<strong>████16KB████</strong>]
+PageRun[2]: ptr→[<strong>██8KB██</strong>]</div>
+    <div style="font-size:0.72rem;color:var(--text-muted)">scattered in memory, 4KB pages</div>
+  </div>
+  <div class="card" style="padding:0.75rem;margin:0;text-align:center;border-left:3px solid var(--accent)">
+    <div style="font-family:var(--mono);font-size:0.7rem;color:var(--accent);font-weight:600;margin-bottom:0.4rem">contiguous=true</div>
+    <div style="font-family:var(--mono);font-size:0.8rem;font-weight:600;color:var(--primary);margin-bottom:0.3rem">contiguousData_</div>
+    <div style="font-size:0.78rem;color:var(--text-secondary)">void* (malloc)</div>
+    <div class="diagram" style="margin:0.4rem 0;padding:0.3rem 0.5rem;font-size:0.7rem;text-align:center">[<strong>═══ flat buffer ═══</strong>]</div>
+    <div style="font-size:0.72rem;color:var(--text-muted)">contiguous, single alloc</div>
+  </div>
+</div>
+
+<div class="callout">
+  <strong>PageRun</strong> is a single <code>uint64_t</code> packing a pointer (low 48 bits) and page count (high 16 bits). Each run points to a contiguous block of 4KB pages, but runs themselves can be anywhere in memory. A 50KB entry needs <code>ceil(50KB / 4KB) = 13 pages = 52KB</code> — the 2KB excess is internal fragmentation.
+</div>
+
+<h3>Memory Layout</h3>
+<p><code>AsyncDataCache</code> is sharded by CPU core. Inside one shard:</p>
+
+<div style="display:flex;flex-direction:column;gap:0.5rem;margin:0.75rem 0">
+  <div class="diagram" style="white-space:pre;line-height:1.5;margin:0"><strong>AsyncDataCache</strong> = CacheShard[0] | CacheShard[1] | ... | CacheShard[N]   <em>(N = cores)</em>
+<strong>Inside one shard</strong> — entries_ hash set holds all entries:</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+    <div class="card" style="padding:0.75rem;margin:0">
+      <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text-muted);margin-bottom:0.3rem">ENTRY A — <span class="badge badge-amber" style="font-size:0.6rem">TINY</span></div>
+      <div style="font-family:var(--mono);font-size:0.72rem;line-height:1.6;color:var(--text-secondary)">
+        key: {file:42, off:0}<br>
+        size: 1200 &nbsp; pins: 0<br>
+        <br>
+        <span style="color:var(--text-muted)">tinyData_:</span><br>
+        <span style="display:inline-block;background:var(--code-bg);border:1px solid var(--border);border-radius:3px;padding:0.15em 0.5em;font-size:0.7rem">"..1200 bytes.."</span><br>
+        <span style="font-size:0.65rem;color:var(--text-muted)">std::string (inline)</span>
+      </div>
+    </div>
+    <div class="card" style="padding:0.75rem;margin:0">
+      <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text-muted);margin-bottom:0.3rem">ENTRY B — <span class="badge badge-blue" style="font-size:0.6rem">DEFAULT</span></div>
+      <div style="font-family:var(--mono);font-size:0.72rem;line-height:1.6;color:var(--text-secondary)">
+        key: {file:99, off:0}<br>
+        size: 8MB &nbsp; pins: 1<br>
+        <br>
+        <span style="color:var(--text-muted)">Allocation:</span><br>
+        <span style="font-size:0.65rem;color:var(--text-muted)">PageRun[0..2047] = 2048 pages</span><br>
+        <span style="font-size:0.65rem;color:var(--text-muted)">non-contiguous, 4KB-aligned</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0.75rem;margin:0">
+    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text-muted);margin-bottom:0.3rem">ENTRY C — <span class="badge badge-blue" style="font-size:0.6rem">DEFAULT</span> &nbsp; non-contiguous detail</div>
+    <div class="diagram" style="margin:0.3rem 0 0;padding:0.6rem 0.8rem;font-size:0.7rem;line-height:1.5">key: {file:42, off:200KB}    size: 50000    pins: 1
+
+Allocation
+  PageRun[0]            PageRun[1]           PageRun[2]
+  [4K][4K][4K][4K]      [4K][4K][4K]         [4K][4K]
+  0x7fa00000            0x7fb80000           0x7fc40000
+  ----16KB----          ---12KB---           --8KB--
+  contiguous            contiguous           contiguous
+  within run            within run           within run
+
+  <-------- runs are scattered across memory --------></div>
+    <div style="font-family:var(--mono);font-size:0.65rem;color:var(--text-muted);margin-top:0.3rem">PageRun = uint64_t: [numPages : 16 bits | ptr : 48 bits]<br>ceil(50000 / 4096) = 13 pages = 52KB allocated (2KB waste)</div>
+  </div>
+
+  <div class="card" style="padding:0.75rem;margin:0;border-left:3px solid var(--accent)">
+    <div style="font-family:var(--mono);font-size:0.68rem;color:var(--text-muted);margin-bottom:0.3rem">ENTRY D — <span class="badge badge-green" style="font-size:0.6rem">CONTIG</span> &nbsp; contiguous detail</div>
+    <div class="diagram" style="margin:0.3rem 0 0;padding:0.6rem 0.8rem;font-size:0.7rem;line-height:1.5">key: {file:42, off:80KB}    size: 72584    pins: 2
+
+contiguousData_:
++================================================================+
+|                       72584 bytes                              |
+|  single flat malloc -- one pointer, random access anywhere     |
++================================================================+
+
+FlatBuffers reads: flatbuffers::GetRoot&lt;Footer&gt;(contiguousData_)</div>
+    <div style="font-family:var(--mono);font-size:0.65rem;color:var(--text-muted);margin-top:0.3rem">Used by CachedMetadataInput (contiguous=true)</div>
+  </div>
+
+  <div style="display:flex;gap:1rem;justify-content:center;padding:0.5rem;font-family:var(--mono);font-size:0.72rem;color:var(--text-muted)">
+    <span><span class="badge badge-amber" style="font-size:0.6rem">TINY</span> size &lt; 2KB</span>
+    <span><span class="badge badge-blue" style="font-size:0.6rem">DEFAULT</span> 4KB page runs</span>
+    <span><span class="badge badge-green" style="font-size:0.6rem">CONTIG</span> flat malloc</span>
+  </div>
+</div>
+
+<h3>Pin Lifecycle</h3>
+<div class="diagram"><strong>exclusive</strong>  ──setExclusiveToShared()──▶  <strong>shared</strong>  ──last unpin──▶  <strong>evictable</strong>
+(being written)                           (readable)              (can be freed)
+numPins=-10000                            numPins &gt; 0             numPins = 0
+                                                                       │
+                                                            ┌──────────┴──────────┐
+                                                            ▼                     ▼
+                                                     <em>ssdSaveable?</em>          freed immediately
+                                                       write to SSD
+                                                       then free RAM</div>
+
+<!-- Section 4 -->
+<h2><span class="sec-num">4</span> Format-Specific Usage</h2>
+
+<h3>How Formats Use the Cache</h3>
+<table>
+  <tr><th></th><th>Data Streams</th><th>Metadata</th></tr>
+  <tr>
+    <td><strong>DWRF</strong></td>
+    <td><span class="badge badge-blue">CachedBufferedInput</span><br>All I/O (data + metadata) through one path. Caches raw/compressed bytes.</td>
+    <td>Writer embeds <code>StripeMetadataCache</code> in file tail. Reader parses once at init → in-memory map. No re-reads.</td>
+  </tr>
+  <tr>
+    <td><strong>Nimble</strong></td>
+    <td><span class="badge badge-blue">CachedBufferedInput</span><br><code>StripeStreams::enqueue()</code> → <code>ChunkedDecoder</code> consumes via <code>Next()</code> incrementally. Zero-copy from cache.</td>
+    <td><span class="badge badge-amber">CachedMetadataInput</span><br>Separate path. Caches <strong>decompressed</strong> bytes (<code>contiguous=true</code>) for FlatBuffers random access.</td>
+  </tr>
+  <tr>
+    <td><strong>Parquet</strong></td>
+    <td><span class="badge badge-blue">CachedBufferedInput</span><br>Same as DWRF.</td>
+    <td>No format-specific caching. Speculative tail read only.</td>
+  </tr>
+</table>
+
+<h3>Nimble: Stream Ownership Chain</h3>
+<p>Each column's data within a stripe is one or more Nimble streams. Each stream gets its own <code>SeekableInputStream</code> and <code>ChunkedDecoder</code>:</p>
+<div class="diagram" style="font-size:0.68rem;line-height:1.5">Column A (integer)
+  └─ NimbleData
+       ├─ nulls   → ChunkedDecoder_1 → SeekableInputStream_1 → CacheEntry {fid, off_1}
+       └─ values  → ChunkedDecoder_2 → SeekableInputStream_2 → CacheEntry {fid, off_2}
+
+Column B (string)
+  └─ NimbleData
+       ├─ nulls   → ChunkedDecoder_3 → SeekableInputStream_3 → CacheEntry {fid, off_3}
+       ├─ lengths → ChunkedDecoder_4 → SeekableInputStream_4 → CacheEntry {fid, off_4}
+       └─ values  → ChunkedDecoder_5 → SeekableInputStream_5 → CacheEntry {fid, off_5}
+
+<strong>1 Nimble stream = 1 ChunkedDecoder = 1 SeekableInputStream = 1 CacheEntry</strong></div>
+
+<h3>Nimble: Two I/O Owners, One Cache</h3>
+<p><code>TabletReader</code> and <code>ReaderBase</code> each own a separate I/O abstraction. They share the same <code>AsyncDataCache</code> but never touch each other's entries (different file offsets).</p>
+
+<div class="diagram" style="font-size:0.68rem;line-height:1.5"><strong>SelectiveNimbleReader</strong>
+  │
+  ├── <strong>ReaderBase</strong>
+  │     └── input_: <strong>CachedBufferedInput</strong>          ← owns data I/O
+  │           │  receives from connector
+  │           │  enqueue/load/Next pattern
+  │           │  caches <em>compressed</em> bytes
+  │           │  non-contiguous (PageRuns)
+  │           │  returns SeekableInputStream
+  │           │
+  │           ▼
+  │     StripeStreams → ChunkedDecoder → column data
+  │
+  └── <strong>TabletReader</strong>
+        └── metadataInput_: <strong>CachedMetadataInput</strong>   ← owns metadata I/O
+              │  built internally from ReadFile + cache + fileHandle
+              │  does NOT use CachedBufferedInput
+              │  caches <em>decompressed</em> bytes
+              │  contiguous (flat malloc)
+              │  returns MetadataBuffer
+              │
+              ▼
+        footer, stripes, stripe groups, indexes
+
+Both write to the same <strong>AsyncDataCache</strong> + <strong>SsdCache</strong>
+  key = {fileId, offset}
+  data streams at stripe offsets (start of file)
+  metadata at section offsets (end of file)
+  → different keys, no collision</div>
+
+
+<div class="footer">
+  Ke Wang &middot; 2026-06-11<br>
+  Generated by <a href="https://fburl.com/claude-templates/k5rd6ab0" target="_blank">/visualize</a> claude skill
+</div>
+</div>
+<!-- FEEDBACK-CSS -->
+<style>
+.fb-toggle { position: fixed; top: 1rem; right: 3.5rem; z-index: 10000; display: flex; align-items: center; gap: 6px; background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-family: inherit; font-size: 0.75rem; color: var(--text-secondary, #64748b); box-shadow: 0 2px 8px rgba(0,0,0,0.1); transition: background 0.15s, border-color 0.15s; }
+.fb-toggle:hover { background: var(--surface-hover, #f8fafc); border-color: var(--border-strong, #cbd5e1); }
+.fb-toggle.active { background: var(--primary, #0d9488); color: #fff; border-color: var(--primary, #0d9488); }
+.fb-section { position: relative; }
+.fb-trigger { position: absolute; top: 0.4rem; right: 0.4rem; width: 20px; height: 20px; border-radius: 4px; background: var(--primary, #0d9488); color: #fff; border: none; cursor: pointer; font-size: 11px; line-height: 20px; text-align: center; opacity: 0.5; transition: opacity 0.2s, transform 0.15s; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,0.12); display: none; }
+body.fb-mode-on .fb-trigger { display: block; }
+.fb-trigger:hover { opacity: 1; transform: scale(1.15); }
+.fb-inline-form { position: absolute; top: 0.5rem; right: 2.8rem; background: var(--surface, #fff); border: 1px solid var(--border, #d0ddd6); border-radius: 10px; padding: 0.75rem; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.12); z-index: 101; display: none; }
+.fb-inline-form.open { display: block; }
+.fb-inline-form textarea { width: 100%; min-height: 60px; border: 1px solid var(--border, #d0ddd6); border-radius: 6px; padding: 0.5rem; font-family: var(--font-body, sans-serif); font-size: 0.8rem; resize: vertical; background: var(--bg, #f4f7f6); color: var(--text-primary, #0f1f1a); }
+.fb-inline-form textarea:focus { outline: 2px solid var(--primary, #0d9488); border-color: transparent; }
+.fb-inline-form .fb-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; justify-content: flex-end; }
+.fb-inline-form button { padding: 0.3rem 0.7rem; border-radius: 6px; border: none; font-size: 0.75rem; cursor: pointer; font-weight: 500; }
+.fb-submit { background: var(--primary, #0d9488); color: #fff; }
+.fb-cancel { background: var(--bg-alt, #eaf0ee); color: var(--text-secondary, #4a6359); }
+.fb-section-label { font-size: 0.65rem; color: var(--text-muted, #7a9589); margin-bottom: 0.3rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.fb-toast { position: fixed; bottom: 2rem; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--text-primary, #0f1f1a); color: #fff; padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 0.8rem; opacity: 0; transition: opacity 0.3s, transform 0.3s; z-index: 300; pointer-events: none; }
+.fb-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.fb-toggle-hint { font-size: 0.6rem; opacity: 0.7; display: none; }
+.fb-toggle.fb-no-px .fb-toggle-hint { display: inline; }
+.fb-toggle.fb-no-px { cursor: default; opacity: 0.75; }
+@media print { .fb-toggle, .fb-trigger, .fb-inline-form { display: none !important; } }
+</style>
+
+<!-- FEEDBACK-HTML -->
+<button class="fb-toggle" id="fb-toggle" onclick="window._fbToggleMode()" title="Toggle feedback mode">
+  <span id="fb-toggle-icon">&#128172;</span>
+  <span id="fb-toggle-label">Feedback</span>
+  <span class="fb-toggle-hint">(Pixelcloud only)</span>
+</button>
+<div class="fb-toast" id="fb-toast"></div>
+
+<!-- FEEDBACK-JS -->
+<script>
+(function(){var inPixelcloud=false;if(window.parent!==window){try{var parentHref=window.parent.location.href;inPixelcloud=parentHref.indexOf('internalfb.com/intern/px')!==-1}catch(e){inPixelcloud=true}}var toggleBtn=document.getElementById('fb-toggle');if(!inPixelcloud)toggleBtn.classList.add('fb-no-px');var defaultSetting=toggleBtn?toggleBtn.getAttribute('data-feedback-default'):null;var feedbackEnabled=inPixelcloud&&defaultSetting!=='off';var initialized=false;function discoverSections(){var SKIP=['viz-menu','viz-menu-panel','fb-toggle','fb-toast','fb-inline-form'];var seen=new Set();var candidates=[];var autoIdx=0;document.querySelectorAll('h1,h2,h3,h4,[class*="-title"],[class*="-header"]').forEach(function(h){if(!h.textContent||h.tagName==='STYLE'||h.tagName==='SCRIPT')return;var text=h.textContent.replace(/\s+/g,' ').trim();if(text.length===0||text.length>100)return;var parent=h.closest('.step,.step-inner,.section,.card,.callout,.slide,.block,.panel,.phase,section,article,[data-feedback-section]')||h.parentElement;if(!parent||parent===document.body||seen.has(parent))return;for(var i=0;i<SKIP.length;i++){if(parent.classList.contains(SKIP[i]))return}seen.add(parent);autoIdx++;if(!parent.id)parent.id='fb-s'+autoIdx;candidates.push({el:parent,id:parent.id,name:text.substring(0,80)})});var sections=candidates.filter(function(a){return!candidates.some(function(b){return b!==a&&a.el.contains(b.el)})});return sections}var PARENT_ORIGIN='https://www.internalfb.com';window.addEventListener('message',function(event){if(event.origin!==PARENT_ORIGIN)return;if(event.data&&event.data.type==='px-comment-result'){if(event.data.status==='success')toast('Comment posted!');else toast('Error posting comment')}});function initSections(){if(initialized)return;initialized=true;var sections=discoverSections();sections.forEach(function(s){var el=s.el,id=s.id,name=s.name;if(el.classList.contains('fb-section'))return;var anchor=el.querySelector('.step-inner,.card,.card-body,.content')||el;anchor.classList.add('fb-section');if(!anchor.style.position||anchor.style.position==='static')anchor.style.position='relative';var btn=document.createElement('button');btn.className='fb-trigger';btn.innerHTML='&#128172;';btn.title='Feedback on: '+name;btn.onclick=function(e){e.stopPropagation();openForm(anchor,id,name)};anchor.appendChild(btn)})}window._fbToggleMode=function(){if(!inPixelcloud){toast('Feedback comments require viewing via a Pixelcloud link');return}feedbackEnabled=!feedbackEnabled;document.body.classList.toggle('fb-mode-on',feedbackEnabled);var tb=document.getElementById('fb-toggle');var tl=document.getElementById('fb-toggle-label');tb.classList.toggle('active',feedbackEnabled);tl.textContent=feedbackEnabled?'Feedback On':'Feedback';if(feedbackEnabled){initSections();toast('Feedback mode enabled')}else{document.querySelectorAll('.fb-inline-form.open').forEach(function(f){f.classList.remove('open')});toast('Feedback mode disabled')}};function openForm(el,id,name){document.querySelectorAll('.fb-inline-form.open').forEach(function(f){f.classList.remove('open')});var form=el.querySelector('.fb-inline-form');if(!form){form=document.createElement('div');form.className='fb-inline-form';var label=document.createElement('div');label.className='fb-section-label';label.textContent=name;form.appendChild(label);var textarea=document.createElement('textarea');textarea.placeholder='What would you change?';form.appendChild(textarea);var actions=document.createElement('div');actions.className='fb-actions';var cancelBtn=document.createElement('button');cancelBtn.className='fb-cancel';cancelBtn.textContent='Cancel';cancelBtn.addEventListener('click',function(){form.classList.remove('open')});actions.appendChild(cancelBtn);var submitBtn=document.createElement('button');submitBtn.className='fb-submit';submitBtn.textContent='Add';submitBtn.addEventListener('click',function(){window._fbSubmit(id,submitBtn)});actions.appendChild(submitBtn);form.appendChild(actions);form.addEventListener('click',function(e){e.stopPropagation()});el.appendChild(form)}form.classList.add('open');form.querySelector('textarea').focus()}window._fbSubmit=function(sectionId,btn){var form=btn.closest('.fb-inline-form');var ta=form.querySelector('textarea');var text=ta.value.trim();if(!text)return;var label=form.querySelector('.fb-section-label');var sectionName=label?label.textContent:sectionId;ta.value='';form.classList.remove('open');try{window.parent.postMessage({type:'px-section-comment',section_label:sectionName,element_id:sectionId,text:text},PARENT_ORIGIN);toast('Comment sent...')}catch(e){toast('Failed: '+e.message)}};function toast(msg){var t=document.getElementById('fb-toast');if(!t)return;t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2500)}function applyDefault(){if(feedbackEnabled){document.body.classList.add('fb-mode-on');toggleBtn.classList.add('active');document.getElementById('fb-toggle-label').textContent='Feedback On';initSections()}}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',applyDefault);else applyDefault()})();
+</script>
+
+<script>
+function toggleMenu(){var menu=document.getElementById('vizMenu');var toggle=menu.querySelector('.viz-menu-toggle');var isOpen=menu.classList.toggle('open');toggle.setAttribute('aria-expanded',isOpen)}
+document.addEventListener('click',function(e){var menu=document.getElementById('vizMenu');if(menu&&!menu.contains(e.target))menu.classList.remove('open')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){var menu=document.getElementById('vizMenu');if(menu)menu.classList.remove('open')}});
+function toggleTheme(){var isDark=document.body.classList.toggle('dark-mode');localStorage.setItem('visualize-dark-mode',isDark);updateThemeLabel()}
+function updateThemeLabel(){var isDark=document.body.classList.contains('dark-mode');var icon=document.getElementById('themeIcon');var label=document.getElementById('themeLabel');if(icon)icon.textContent=isDark?'☀':'◐';if(label)label.textContent=isDark?'Light mode':'Dark mode'}
+if(localStorage.getItem('visualize-dark-mode')==='true'||(!localStorage.getItem('visualize-dark-mode')&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.body.classList.add('dark-mode');
+updateThemeLabel();
+function toggleFullscreen(){if(!document.fullscreenElement)document.documentElement.requestFullscreen().catch(function(){});else document.exitFullscreen()}
+document.addEventListener('fullscreenchange',function(){var icon=document.getElementById('fsIcon');var label=document.getElementById('fsLabel');var isFs=!!document.fullscreenElement;if(icon)icon.textContent='⛶';if(label)label.textContent=isFs?'Exit fullscreen':'Fullscreen'});
+</script>
+</body>
+</html>
