@@ -461,19 +461,23 @@ void TabletReader::cacheMetadata(
     return;
   }
 
-  auto cacheSection = [&](uint64_t regionOffset,
-                          uint64_t regionSize,
-                          std::optional<uint64_t> cacheOffset = std::nullopt) {
-    if (regionOffset < footerOffset) {
+  auto cacheSection = [&](const MetadataSection& section) {
+    if (section.offset() < footerOffset) {
       return;
     }
-    const uint64_t bufOffset = regionOffset - footerOffset;
-    if (bufOffset + regionSize > footerBuf.size()) {
+    const uint64_t bufOffset = section.offset() - footerOffset;
+    if (bufOffset + section.size() > footerBuf.size()) {
       return;
     }
-    std::string_view range = footerBuf.substr(bufOffset, regionSize);
-    metadataInput_->cacheMetadata(
-        cacheOffset.value_or(regionOffset), {&range, 1});
+    std::string_view range = footerBuf.substr(bufOffset, section.size());
+    if (section.compressionType() == CompressionType::Uncompressed) {
+      metadataInput_->cacheMetadata(section.offset(), {&range, 1});
+    } else {
+      auto decompressed =
+          MetadataBuffer::decompress(range, section.compressionType(), pool_);
+      std::string_view view{decompressed->as<char>(), decompressed->size()};
+      metadataInput_->cacheMetadata(section.offset(), {&view, 1});
+    }
   };
 
   // Cache decompressed footer + PS at synthetic offset fileSize_.
@@ -488,31 +492,29 @@ void TabletReader::cacheMetadata(
   const auto* footer = footerRoot(*footer_);
 
   if (auto* stripesSection = footer->stripes()) {
-    cacheSection(stripesSection->offset(), stripesSection->size());
+    cacheSection(toMetadataSection(stripesSection));
   }
 
   if (auto* stripeGroups = footer->stripe_groups();
       stripeGroups != nullptr && stripeGroups->size() > 0) {
-    auto* stripeGroup = stripeGroups->Get(0);
-    cacheSection(stripeGroup->offset(), stripeGroup->size());
+    cacheSection(toMetadataSection(stripeGroups->Get(0)));
   }
 
   if (clusterIndex_ != nullptr) {
     auto clusterIndexIt =
         optionalSections_.find(std::string{kClusterIndexSection});
     NIMBLE_CHECK(clusterIndexIt != optionalSections_.end());
-    cacheSection(
-        clusterIndexIt->second.offset(), clusterIndexIt->second.size());
+    cacheSection(clusterIndexIt->second);
   }
 
   if (chunkIndex_ != nullptr) {
     auto chunkIndexIt = optionalSections_.find(std::string{kChunkIndexSection});
     NIMBLE_CHECK(chunkIndexIt != optionalSections_.end());
-    cacheSection(chunkIndexIt->second.offset(), chunkIndexIt->second.size());
+    cacheSection(chunkIndexIt->second);
 
     const auto& firstSection = chunkIndex_->groupMetadata(0);
     if (firstSection.size() > 0) {
-      cacheSection(firstSection.offset(), firstSection.size());
+      cacheSection(firstSection);
     }
   }
 }

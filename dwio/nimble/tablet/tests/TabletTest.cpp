@@ -45,14 +45,20 @@
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 
+#include <folly/executors/IOThreadPoolExecutor.h>
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
+#include "velox/common/caching/SsdCache.h"
+#include "velox/common/file/FileSystems.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/io/Options.h"
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/dwio/common/ExecutorBarrier.h"
+
+DECLARE_bool(velox_ssd_odirect);
 
 using namespace facebook;
 using nimble::SortOrder;
@@ -4968,6 +4974,1272 @@ TEST_P(TabletTest, cacheWarmPath) {
   EXPECT_EQ(warmCacheStats.numEntries, coldCacheStats.numEntries);
   EXPECT_GT(warmCacheStats.numHit, coldCacheStats.numHit);
   EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// Verifies that cacheMetadata() stores decompressed metadata in the cache,
+// even when the on-disk metadata is Zstd-compressed. Before the fix,
+// cacheMetadata() stored compressed bytes, causing size mismatches on
+// subsequent reads (RAM: evict-and-recreate; SSD: crash).
+TEST_P(TabletTest, cacheMetadataCompressedRoundtrip) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  // Write a file with enough streams that stripe group metadata exceeds
+  // the 64KB compression threshold, triggering Zstd compression.
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold path: first reader populates the cache via cacheMetadata().
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  auto coldCacheStats = cache_->refreshStats();
+  EXPECT_GT(coldCacheStats.numEntries, 0);
+
+  // Reset IO stats for the warm path.
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm path: second reader should find correctly-sized (decompressed)
+  // entries in cache. Before the fix, cacheMetadata() stored compressed
+  // bytes, causing findOrCreate to evict-and-recreate (size mismatch)
+  // instead of hitting cache.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // No evictions — entries should be correct size from cacheMetadata().
+  // Before the fix, compressed entries would be evicted and re-created
+  // at the correct (uncompressed) size, incrementing numEvict.
+  auto warmCacheStats = cache_->refreshStats();
+  EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// Same as above but exercises the SSD path: forces RAM eviction so entries
+// go to SSD, then verifies a warm reader can load them back without crash.
+TEST_P(TabletTest, cacheMetadataCompressedSsdRoundtrip) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  // Set up cache with SSD backing and small RAM to force eviction.
+  velox::filesystems::registerLocalFileSystem();
+  auto tempDir = velox::common::testutil::TempDirectoryPath::create();
+  FLAGS_velox_ssd_odirect = false;
+  auto ssdExecutor = std::make_unique<folly::IOThreadPoolExecutor>(1);
+  velox::cache::SsdCache::Config ssdConfig(
+      fmt::format("{}/cache", tempDir->getPath()),
+      /*_maxBytes=*/64UL << 20,
+      /*_numShards=*/1,
+      /*_executor=*/ssdExecutor.get());
+  auto ssdCache = std::make_unique<velox::cache::SsdCache>(ssdConfig);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 8UL << 20, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(
+      allocator_.get(), std::move(ssdCache));
+
+  // Cold path: populate cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // Force RAM eviction by filling with unrelated entries (>8MB).
+  // Use a separate file ID to avoid colliding with metadata entries.
+  auto& ids = velox::fileIds();
+  auto evictLease = velox::StringIdLease(ids, "evict_filler");
+  for (int i = 0; i < 256; ++i) {
+    folly::SemiFuture<bool> wait{false};
+    auto pin = cache_->findOrCreate(
+        {evictLease.id(), static_cast<uint64_t>(i) * 65536},
+        65536,
+        false,
+        &wait);
+    if (!pin.empty() && pin.checkedEntry()->isExclusive()) {
+      pin.checkedEntry()->setExclusiveToShared();
+    }
+  }
+
+  // Wait for SSD writes to complete (bounded to avoid infinite hang).
+  constexpr int kMaxWaitMs = 5000;
+  int waitedMs = 0;
+  while (cache_->ssdCache()->writeInProgress()) {
+    ASSERT_LT(waitedMs, kMaxWaitMs) << "SSD write did not complete in time";
+    /* sleep override */ std::this_thread::sleep_for(
+        std::chrono::milliseconds(10));
+    waitedMs += 10;
+  }
+
+  // Reset IO stats.
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm path: should load from SSD without crash.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+}
+
+// Verifies that compressed metadata content survives the cache round-trip:
+// warm reader must produce identical stripe metadata as the cold reader.
+TEST_P(TabletTest, cacheMetadataCompressedContentVerification) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader: collect stripe group stream counts for comparison.
+  std::vector<uint32_t> coldStreamCounts;
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      coldStreamCounts.push_back(stripeId.stripeGroup()->streamCount());
+    }
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: verify identical metadata content from cache.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_EQ(stripeId.stripeGroup()->streamCount(), coldStreamCounts[i])
+          << "Stripe " << i << " stream count mismatch between cold and warm";
+    }
+  }
+
+  auto warmCacheStats = cache_->refreshStats();
+  EXPECT_EQ(warmCacheStats.numEvict, 0);
+}
+
+// Verifies that multiple sequential warm readers all get cache hits
+// with zero file IO and zero evictions.
+TEST_P(TabletTest, cacheMetadataCompressedMultipleWarmReaders) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader populates cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // Three sequential warm readers, each should get all cache hits.
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    SCOPED_TRACE(fmt::format("Warm reader attempt {}", attempt));
+
+    dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+    readerOptions_.reset();
+
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = warmReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  auto finalStats = cache_->refreshStats();
+  EXPECT_EQ(finalStats.numEvict, 0);
+}
+
+// Verifies cacheMetadata works with a small uncompressed file (below
+// compression threshold). Ensures the uncompressed fast-path in
+// cacheSection doesn't regress.
+TEST_P(TabletTest, cacheMetadataUncompressedRoundtrip) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 3;
+  constexpr int kNumStreams = 5;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, 'a' + s, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      EXPECT_NE(coldReader->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
+
+  auto coldStats = cache_->refreshStats();
+  EXPECT_GT(coldStats.numEntries, 0);
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+  }
+
+  auto warmStats = cache_->refreshStats();
+  EXPECT_EQ(warmStats.numEvict, 0);
+}
+
+// Verifies cacheMetadata with a single stripe (edge case: no stripe group
+// is flushed separately, all metadata is in the footer).
+TEST_P(TabletTest, cacheMetadataSingleStripe) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  std::vector<nimble::Stream> streams;
+  for (int s = 0; s < kNumStreams; ++s) {
+    const auto size = 50;
+    auto* pos = buffer.reserve(size);
+    std::memset(pos, s & 0xFF, size);
+    streams.push_back(
+        {.offset = static_cast<uint32_t>(s),
+         .chunks = {
+             {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+  }
+  tabletWriter->writeStripe(100, std::move(streams));
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), 1);
+    EXPECT_NE(coldReader->stripeIdentifier(0).stripeGroup(), nullptr);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), 1);
+    EXPECT_EQ(warmReader->tabletRowCount(), 100);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+    EXPECT_NE(warmReader->stripeIdentifier(0).stripeGroup(), nullptr);
+  }
+
+  auto warmStats = cache_->refreshStats();
+  EXPECT_EQ(warmStats.numEvict, 0);
+}
+
+// Verifies warm reader produces identical per-stripe metadata (row counts,
+// stream counts, stream offsets) as cold reader for compressed metadata.
+TEST_P(TabletTest, cacheMetadataCompressedStripeConsistency) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  std::vector<uint32_t> rowCounts = {100, 200, 150, 300, 50};
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = rowCounts[i],
+                .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(rowCounts[i], std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader: collect per-stripe metadata.
+  struct StripeInfo {
+    uint32_t rowCount;
+    uint32_t streamCount;
+  };
+  std::vector<StripeInfo> coldInfo;
+  uint64_t coldTotalRows = 0;
+  {
+    auto coldReader = createTabletReader(readFile);
+    coldTotalRows = coldReader->tabletRowCount();
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      coldInfo.push_back({
+          .rowCount = coldReader->stripeRowCount(i),
+          .streamCount = stripeId.stripeGroup()->streamCount(),
+      });
+    }
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: verify per-stripe metadata matches cold.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->tabletRowCount(), coldTotalRows);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      SCOPED_TRACE(fmt::format("Stripe {}", i));
+      auto stripeId = warmReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_EQ(warmReader->stripeRowCount(i), coldInfo[i].rowCount);
+      EXPECT_EQ(stripeId.stripeGroup()->streamCount(), coldInfo[i].streamCount);
+    }
+  }
+}
+
+// Verifies that after cache eviction, a third reader correctly re-reads
+// from file (no stale/corrupt data from previous cache population).
+TEST_P(TabletTest, cacheMetadataCompressedEvictAndReread) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader populates cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      EXPECT_NE(coldReader->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
+
+  auto populatedStats = cache_->refreshStats();
+  EXPECT_GT(populatedStats.numEntries, 0);
+
+  // Evict all cache entries.
+  cache_->clear();
+  auto clearedStats = cache_->refreshStats();
+  EXPECT_EQ(clearedStats.numEntries, 0);
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Third reader: re-reads from file after eviction.
+  {
+    auto reReader = createTabletReader(readFile);
+    EXPECT_EQ(reReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(reReader->tabletRowCount(), kNumStripes * 100);
+
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = reReader->stripeIdentifier(i);
+      EXPECT_NE(stripeId.stripeGroup(), nullptr);
+    }
+  }
+
+  // Cache should be repopulated.
+  auto repopulatedStats = cache_->refreshStats();
+  EXPECT_GT(repopulatedStats.numEntries, 0);
+}
+
+// Verifies that two different files sharing the same cache don't
+// cross-contaminate metadata.
+TEST_P(TabletTest, cacheMetadataTwoFileIsolation) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Write file A: 3 stripes, 500 streams, 100 rows each.
+  std::string fileA;
+  {
+    velox::InMemoryWriteFile writeFile(&fileA);
+    nimble::Buffer buffer(*pool_);
+    auto writer = nimble::TabletWriter::create(
+        &writeFile,
+        *pool_,
+        {.metadataFlushThreshold = 1024 * 1024 * 1024,
+         .streamDeduplicationEnabled = false});
+    for (int i = 0; i < 3; ++i) {
+      std::vector<nimble::Stream> streams;
+      for (int s = 0; s < 500; ++s) {
+        auto* pos = buffer.reserve(50);
+        std::memset(pos, 'A', 50);
+        streams.push_back(
+            {.offset = static_cast<uint32_t>(s),
+             .chunks = {
+                 {.rowCount = 100, .content = {std::string_view(pos, 50)}}}});
+      }
+      writer->writeStripe(100, std::move(streams));
+    }
+    writer->close();
+  }
+
+  // Write file B: 5 stripes, 500 streams, 200 rows each.
+  std::string fileB;
+  {
+    velox::InMemoryWriteFile writeFile(&fileB);
+    nimble::Buffer buffer(*pool_);
+    auto writer = nimble::TabletWriter::create(
+        &writeFile,
+        *pool_,
+        {.metadataFlushThreshold = 1024 * 1024 * 1024,
+         .streamDeduplicationEnabled = false});
+    for (int i = 0; i < 5; ++i) {
+      std::vector<nimble::Stream> streams;
+      for (int s = 0; s < 500; ++s) {
+        auto* pos = buffer.reserve(50);
+        std::memset(pos, 'B', 50);
+        streams.push_back(
+            {.offset = static_cast<uint32_t>(s),
+             .chunks = {
+                 {.rowCount = 200, .content = {std::string_view(pos, 50)}}}});
+      }
+      writer->writeStripe(200, std::move(streams));
+    }
+    writer->close();
+  }
+
+  auto readFileA = std::make_shared<velox::InMemoryReadFile>(fileA);
+  auto readFileB = std::make_shared<velox::InMemoryReadFile>(fileB);
+
+  // Cold read both files to populate cache.
+  {
+    auto readerA = createTabletReader(readFileA);
+    EXPECT_EQ(readerA->stripeCount(), 3);
+    EXPECT_EQ(readerA->tabletRowCount(), 300);
+    for (uint32_t i = 0; i < 3; ++i) {
+      EXPECT_NE(readerA->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
+  readerOptions_.reset();
+  {
+    auto readerB = createTabletReader(readFileB);
+    EXPECT_EQ(readerB->stripeCount(), 5);
+    EXPECT_EQ(readerB->tabletRowCount(), 1000);
+    for (uint32_t i = 0; i < 5; ++i) {
+      EXPECT_NE(readerB->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
+
+  // Warm read both files and verify no cross-contamination.
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmA = createTabletReader(readFileA);
+    EXPECT_EQ(warmA->stripeCount(), 3);
+    EXPECT_EQ(warmA->tabletRowCount(), 300);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmB = createTabletReader(readFileB);
+    EXPECT_EQ(warmB->stripeCount(), 5);
+    EXPECT_EQ(warmB->tabletRowCount(), 1000);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+  }
+}
+
+// Verifies cache warm path with many stripes (enough that the stripes
+// FlatBuffer section itself exceeds the 64KB compression threshold).
+TEST_P(TabletTest, cacheMetadataCompressedStripesSection) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  // Many stripes with few streams. The stripes FlatBuffer stores per-stripe
+  // arrays (row counts, offsets, sizes, group indices), which grows with
+  // stripe count. ~5000 stripes should exceed 64KB.
+  constexpr int kNumStripes = 5000;
+  constexpr int kNumStreams = 2;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 10;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, i & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 10, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(10, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(coldReader->tabletRowCount(), kNumStripes * 10);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 10);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+  }
+
+  auto warmStats = cache_->refreshStats();
+  EXPECT_EQ(warmStats.numEvict, 0);
+}
+
+// Verifies that stripe groups beyond group 0 are correctly loaded from file
+// on the warm path. cacheMetadata() only caches group 0 — groups 1+ must
+// be loaded via MetadataInput::load() which hits the cache for group 0 but
+// falls through to file IO for the rest.
+TEST_P(TabletTest, cacheMetadataCompressedStripeGroupBeyondZero) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  // Low flush threshold forces each stripe into its own stripe group.
+  constexpr int kNumStripes = 4;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1, .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader: collect stream counts from ALL stripe groups.
+  std::vector<uint32_t> coldStreamCounts;
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      auto stripeId = coldReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      coldStreamCounts.push_back(stripeId.stripeGroup()->streamCount());
+    }
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: verify ALL stripe groups (including 1+) are accessible
+  // and produce the same metadata as cold.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      SCOPED_TRACE(fmt::format("Stripe {}", i));
+      auto stripeId = warmReader->stripeIdentifier(i);
+      ASSERT_NE(stripeId.stripeGroup(), nullptr);
+      EXPECT_EQ(stripeId.stripeGroup()->streamCount(), coldStreamCounts[i]);
+    }
+  }
+}
+
+// Verifies that the compressed footer is correctly cached and loaded
+// on the warm path. The footer is cached at the synthetic offset fileSize_
+// as decompressed content + serialized postscript.
+TEST_P(TabletTest, cacheMetadataCompressedFooter) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  // Create a file with enough metadata that the footer itself gets
+  // Zstd-compressed (many stripe groups, optional sections, etc.).
+  constexpr int kNumStripes = 10;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1, .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  uint64_t coldTotalRows = 0;
+  uint32_t coldStripeCount = 0;
+  {
+    auto coldReader = createTabletReader(readFile);
+    coldTotalRows = coldReader->tabletRowCount();
+    coldStripeCount = coldReader->stripeCount();
+    EXPECT_EQ(coldStripeCount, kNumStripes);
+    EXPECT_EQ(coldTotalRows, kNumStripes * 100);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader initializes from cached footer.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), coldStripeCount);
+    EXPECT_EQ(warmReader->tabletRowCount(), coldTotalRows);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    // Verify all stripes are accessible via the cached metadata.
+    for (uint32_t i = 0; i < coldStripeCount; ++i) {
+      EXPECT_EQ(warmReader->stripeRowCount(i), 100);
+    }
+  }
+}
+
+// Verifies that optional sections (written via writeOptionalSection) are
+// correctly preloaded and served from cache on the warm path.
+TEST_P(TabletTest, cacheMetadataWithOptionalSections) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  // Write custom optional sections with known content.
+  const std::string sectionData1(1000, 'X');
+  const std::string sectionData2(2000, 'Y');
+  tabletWriter->writeOptionalSection("test_section_1", sectionData1);
+  tabletWriter->writeOptionalSection("test_section_2", sectionData2);
+
+  std::vector<nimble::Stream> streams;
+  auto* pos = buffer.reserve(50);
+  std::memset(pos, 'a', 50);
+  streams.push_back(
+      {.offset = 0,
+       .chunks = {{.rowCount = 100, .content = {std::string_view(pos, 50)}}}});
+  tabletWriter->writeStripe(100, std::move(streams));
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  nimble::TabletReader::Options options;
+  options.preloadOptionalSections = {"test_section_1", "test_section_2"};
+  // Use adaptive mode (maxFooterIoBytes=0) so optional sections are NOT
+  // in the speculative buffer and must go through CachedMetadataInput::load(),
+  // which caches them in AsyncDataCache for the warm reader.
+  options.maxFooterIoBytes = 0;
+
+  // Cold reader: preloads optional sections via MetadataInput::load().
+  {
+    auto coldReader = createTabletReader(readFile, options);
+    EXPECT_EQ(coldReader->stripeCount(), 1);
+    EXPECT_TRUE(coldReader->hasOptionalSection("test_section_1"));
+    EXPECT_TRUE(coldReader->hasOptionalSection("test_section_2"));
+
+    auto sec1 = coldReader->loadOptionalSection("test_section_1");
+    ASSERT_TRUE(sec1.has_value());
+    EXPECT_EQ(sec1->content().size(), sectionData1.size());
+
+    auto sec2 = coldReader->loadOptionalSection("test_section_2");
+    ASSERT_TRUE(sec2.has_value());
+    EXPECT_EQ(sec2->content().size(), sectionData2.size());
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: optional sections should be served from cache.
+  // With maxFooterIoBytes=0 (adaptive mode), cacheMetadata() has no speculative
+  // buffer, so only footer+PS is proactively cached. Stripes and stripe group
+  // metadata may require file IO on the warm path, but optional sections
+  // (loaded through CachedMetadataInput by the cold reader) should be in cache.
+  {
+    auto warmReader = createTabletReader(readFile, options);
+    EXPECT_EQ(warmReader->stripeCount(), 1);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+
+    EXPECT_TRUE(warmReader->hasOptionalSection("test_section_1"));
+    EXPECT_TRUE(warmReader->hasOptionalSection("test_section_2"));
+
+    auto sec1 = warmReader->loadOptionalSection("test_section_1");
+    ASSERT_TRUE(sec1.has_value());
+    EXPECT_EQ(sec1->content().size(), sectionData1.size());
+    EXPECT_EQ(sec1->content(), sectionData1);
+
+    auto sec2 = warmReader->loadOptionalSection("test_section_2");
+    ASSERT_TRUE(sec2.has_value());
+    EXPECT_EQ(sec2->content().size(), sectionData2.size());
+    EXPECT_EQ(sec2->content(), sectionData2);
+  }
+}
+
+// Verifies rowToStripe and stripeRowCount work correctly on a warm reader
+// initialized entirely from cached metadata.
+TEST_P(TabletTest, cacheMetadataRowToStripeNavigation) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  // Write stripes with varying row counts.
+  std::vector<uint32_t> rowCounts = {100, 250, 50, 300, 200};
+  for (size_t i = 0; i < rowCounts.size(); ++i) {
+    std::vector<nimble::Stream> streams;
+    auto* pos = buffer.reserve(50);
+    std::memset(pos, 'a' + i, 50);
+    streams.push_back(
+        {.offset = 0,
+         .chunks = {
+             {.rowCount = rowCounts[i],
+              .content = {std::string_view(pos, 50)}}}});
+    tabletWriter->writeStripe(rowCounts[i], std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Cold reader populates cache.
+  {
+    auto coldReader = createTabletReader(readFile);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: verify stripe navigation APIs.
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), 5);
+    EXPECT_EQ(warmReader->tabletRowCount(), 900);
+    EXPECT_GT(metadataIoStats_->ramHit().count(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+
+    // Verify per-stripe row counts.
+    for (size_t i = 0; i < rowCounts.size(); ++i) {
+      EXPECT_EQ(warmReader->stripeRowCount(i), rowCounts[i]) << "Stripe " << i;
+    }
+
+    // Verify rowToStripe mapping.
+    EXPECT_EQ(warmReader->rowToStripe(0), 0);
+    EXPECT_EQ(warmReader->rowToStripe(99), 0);
+    EXPECT_EQ(warmReader->rowToStripe(100), 1);
+    EXPECT_EQ(warmReader->rowToStripe(349), 1);
+    EXPECT_EQ(warmReader->rowToStripe(350), 2);
+    EXPECT_EQ(warmReader->rowToStripe(399), 2);
+    EXPECT_EQ(warmReader->rowToStripe(400), 3);
+    EXPECT_EQ(warmReader->rowToStripe(699), 3);
+    EXPECT_EQ(warmReader->rowToStripe(700), 4);
+    EXPECT_EQ(warmReader->rowToStripe(899), 4);
+  }
+}
+
+// Verifies cache behavior with an empty file (zero stripes).
+TEST_P(TabletTest, cacheMetadataEmptyFile) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile, *pool_, {.streamDeduplicationEnabled = false});
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  {
+    auto coldReader = createTabletReader(readFile);
+    EXPECT_EQ(coldReader->stripeCount(), 0);
+    EXPECT_EQ(coldReader->tabletRowCount(), 0);
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  {
+    auto warmReader = createTabletReader(readFile);
+    EXPECT_EQ(warmReader->stripeCount(), 0);
+    EXPECT_EQ(warmReader->tabletRowCount(), 0);
+    EXPECT_EQ(metadataIoStats_->rawBytesRead(), 0);
+  }
+}
+
+// Verifies cache behavior with a small maxFooterIoBytes that doesn't cover
+// all metadata. cacheMetadata should cache whatever fits in the speculative
+// buffer; the rest is loaded from file.
+TEST_P(TabletTest, cacheMetadataSmallFooterIoBytes) {
+  if (GetParam() != BufferedInputMode::kCachedBufferedInput) {
+    GTEST_SKIP() << "Only applies to CachedBufferedInput";
+  }
+
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  nimble::Buffer buffer(*pool_);
+
+  constexpr int kNumStripes = 5;
+  constexpr int kNumStreams = 500;
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.metadataFlushThreshold = 1024 * 1024 * 1024,
+       .streamDeduplicationEnabled = false});
+
+  for (int i = 0; i < kNumStripes; ++i) {
+    std::vector<nimble::Stream> streams;
+    for (int s = 0; s < kNumStreams; ++s) {
+      const auto size = 50;
+      auto* pos = buffer.reserve(size);
+      std::memset(pos, (i * kNumStreams + s) & 0xFF, size);
+      streams.push_back(
+          {.offset = static_cast<uint32_t>(s),
+           .chunks = {
+               {.rowCount = 100, .content = {std::string_view(pos, size)}}}});
+    }
+    tabletWriter->writeStripe(100, std::move(streams));
+  }
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+  allocator_ = std::make_shared<velox::memory::MallocAllocator>(
+      velox::memory::MemoryAllocator::Options{
+          .capacity = 1UL << 30, .reservationByteLimit = 0});
+  cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
+
+  // Use a very small maxFooterIoBytes so the speculative tail read
+  // doesn't cover all metadata.
+  nimble::TabletReader::Options options;
+  options.maxFooterIoBytes = 1024;
+
+  {
+    auto coldReader = createTabletReader(readFile, options);
+    EXPECT_EQ(coldReader->stripeCount(), kNumStripes);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      EXPECT_NE(coldReader->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
+
+  dataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  metadataIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  indexIoStats_ = std::make_shared<velox::io::IoStatistics>();
+  readerOptions_.reset();
+
+  // Warm reader: should still work correctly.
+  {
+    auto warmReader = createTabletReader(readFile, options);
+    EXPECT_EQ(warmReader->stripeCount(), kNumStripes);
+    EXPECT_EQ(warmReader->tabletRowCount(), kNumStripes * 100);
+    for (uint32_t i = 0; i < kNumStripes; ++i) {
+      EXPECT_NE(warmReader->stripeIdentifier(i).stripeGroup(), nullptr);
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
