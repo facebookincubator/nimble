@@ -35,6 +35,7 @@
 #include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "folly/Likely.h"
 #include "folly/io/Cursor.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/Casts.h"
@@ -256,7 +257,9 @@ void writeTrailer(
   streamIds.reserve(streamCount);
   streamSizes.reserve(streamCount);
   for (uint32_t i = 0; i < streamCount; ++i) {
-    if (denseStreamSizes[i] != 0) {
+    // Sparse trailer: in the dominant flat-map RPC workload most stream slots
+    // are empty in any given batch, so the non-zero branch is the rare case.
+    if (FOLLY_UNLIKELY(denseStreamSizes[i] != 0)) {
       streamIds.emplace_back(i);
       streamSizes.emplace_back(denseStreamSizes[i]);
     }
