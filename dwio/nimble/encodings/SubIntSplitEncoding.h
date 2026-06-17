@@ -139,12 +139,15 @@ class SubIntSplitEncoding
 
   // Return the storage byte width for a section of the given bit width.
   static constexpr uint8_t sectionStorageBytes(int bitWidth) noexcept {
-    if (bitWidth <= 8)
+    if (bitWidth <= 8) {
       return 1;
-    if (bitWidth <= 16)
+    }
+    if (bitWidth <= 16) {
       return 2;
-    if (bitWidth <= 32)
+    }
+    if (bitWidth <= 32) {
       return 4;
+    }
     return 8;
   }
 
@@ -282,8 +285,9 @@ void SubIntSplitEncoding<T>::accumulateSection(
           std::memcpy(&tmp, src + i, 4);
           __m256i vs = _mm256_cvtepu8_epi64(_mm_cvtsi32_si128(tmp));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift)
+          if (shift) {
             vs = _mm256_sll_epi64(vs, vshift);
+          }
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
@@ -294,10 +298,11 @@ void SubIntSplitEncoding<T>::accumulateSection(
           }
         }
         for (; i < count; ++i) {
-          if constexpr (IsFirst)
+          if constexpr (IsFirst) {
             dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
-          else
+          } else {
             dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+          }
         }
         return;
 
@@ -312,8 +317,9 @@ void SubIntSplitEncoding<T>::accumulateSection(
           __m256i vs = _mm256_cvtepu16_epi64(
               _mm_loadl_epi64(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift)
+          if (shift) {
             vs = _mm256_sll_epi64(vs, vshift);
+          }
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
@@ -324,10 +330,11 @@ void SubIntSplitEncoding<T>::accumulateSection(
           }
         }
         for (; i < count; ++i) {
-          if constexpr (IsFirst)
+          if constexpr (IsFirst) {
             dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
-          else
+          } else {
             dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+          }
         }
         return;
 
@@ -342,8 +349,9 @@ void SubIntSplitEncoding<T>::accumulateSection(
           __m256i vs = _mm256_cvtepu32_epi64(
               _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift)
+          if (shift) {
             vs = _mm256_sll_epi64(vs, vshift);
+          }
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
@@ -354,10 +362,11 @@ void SubIntSplitEncoding<T>::accumulateSection(
           }
         }
         for (; i < count; ++i) {
-          if constexpr (IsFirst)
+          if constexpr (IsFirst) {
             dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
-          else
+          } else {
             dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+          }
         }
         return;
       }
@@ -381,8 +390,9 @@ void SubIntSplitEncoding<T>::accumulateSection(
           std::memcpy(&tmp, src + i, 8);
           __m256i vs = _mm256_cvtepu8_epi32(_mm_cvtsi64_si128(tmp));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift)
+          if (shift) {
             vs = _mm256_sll_epi32(vs, vshift);
+          }
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
@@ -393,10 +403,11 @@ void SubIntSplitEncoding<T>::accumulateSection(
           }
         }
         for (; i < count; ++i) {
-          if constexpr (IsFirst)
+          if constexpr (IsFirst) {
             dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
-          else
+          } else {
             dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+          }
         }
         return;
 
@@ -411,8 +422,9 @@ void SubIntSplitEncoding<T>::accumulateSection(
           __m256i vs = _mm256_cvtepu16_epi32(
               _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i)));
           vs = _mm256_and_si256(vs, vmask);
-          if (shift)
+          if (shift) {
             vs = _mm256_sll_epi32(vs, vshift);
+          }
           if constexpr (IsFirst) {
             _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), vs);
           } else {
@@ -423,10 +435,11 @@ void SubIntSplitEncoding<T>::accumulateSection(
           }
         }
         for (; i < count; ++i) {
-          if constexpr (IsFirst)
+          if constexpr (IsFirst) {
             dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
-          else
+          } else {
             dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+          }
         }
         return;
       }
@@ -440,11 +453,13 @@ void SubIntSplitEncoding<T>::accumulateSection(
   // __restrict__ on the parameters allows the compiler to auto-vectorise this
   // loop for same-width cases (e.g. uint32_t → uint32_t, uint64_t → uint64_t).
   if constexpr (IsFirst) {
-    for (uint32_t i = 0; i < count; ++i)
+    for (uint32_t i = 0; i < count; ++i) {
       dst[i] = static_cast<physicalType>(src[i] & narrowMask) << shift;
+    }
   } else {
-    for (uint32_t i = 0; i < count; ++i)
+    for (uint32_t i = 0; i < count; ++i) {
       dst[i] |= static_cast<physicalType>(src[i] & narrowMask) << shift;
+    }
   }
 }
 
@@ -482,45 +497,49 @@ void SubIntSplitEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
         case 1: {
           auto* scratch = reinterpret_cast<uint8_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
-          if (isFirst)
+          if (isFirst) {
             accumulateSection<uint8_t, true>(
                 scratch, chunkOutput, chunkCount, mask, shift);
-          else
+          } else {
             accumulateSection<uint8_t, false>(
                 scratch, chunkOutput, chunkCount, mask, shift);
+          }
           break;
         }
         case 2: {
           auto* scratch = reinterpret_cast<uint16_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
-          if (isFirst)
+          if (isFirst) {
             accumulateSection<uint16_t, true>(
                 scratch, chunkOutput, chunkCount, mask, shift);
-          else
+          } else {
             accumulateSection<uint16_t, false>(
                 scratch, chunkOutput, chunkCount, mask, shift);
+          }
           break;
         }
         case 4: {
           auto* scratch = reinterpret_cast<uint32_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
-          if (isFirst)
+          if (isFirst) {
             accumulateSection<uint32_t, true>(
                 scratch, chunkOutput, chunkCount, mask, shift);
-          else
+          } else {
             accumulateSection<uint32_t, false>(
                 scratch, chunkOutput, chunkCount, mask, shift);
+          }
           break;
         }
         case 8: {
           auto* scratch = reinterpret_cast<uint64_t*>(scratchBuf_.data());
           sec.encoding->materialize(chunkCount, scratch);
-          if (isFirst)
+          if (isFirst) {
             accumulateSection<uint64_t, true>(
                 scratch, chunkOutput, chunkCount, mask, shift);
-          else
+          } else {
             accumulateSection<uint64_t, false>(
                 scratch, chunkOutput, chunkCount, mask, shift);
+          }
           break;
         }
         default:
