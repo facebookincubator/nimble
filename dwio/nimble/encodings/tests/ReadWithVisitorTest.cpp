@@ -3735,11 +3735,12 @@ TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesNoNulls) {
   ASSERT_EQ(reader->numValues(), 0);
 
   // Call the helper with no nulls.
+  ReadWithVisitorParams params{.numScanned = 0};
   detail::readDenseMaterializedIndices(
       *encoding,
       visitor,
+      params,
       /*rawNulls=*/nullptr,
-      /*readOffset=*/0,
       /*numReadRows=*/kRows,
       /*numNonNulls=*/kRows);
 
@@ -3838,11 +3839,12 @@ TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesWithNulls) {
   ASSERT_EQ(reader->numValues(), 0);
 
   // Call the helper with nulls.
+  ReadWithVisitorParams params{.numScanned = 0};
   detail::readDenseMaterializedIndices(
       *encoding,
       visitor,
+      params,
       rawNulls,
-      /*readOffset=*/0,
       /*numReadRows=*/kRows,
       /*numNonNulls=*/numNonNull);
 
