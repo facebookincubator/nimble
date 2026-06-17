@@ -19,7 +19,9 @@
 #include <algorithm>
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
+#include "velox/common/base/SimdUtil.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/SelectiveColumnReaderInternal.h"
 #include "velox/vector/DictionaryVector.h"
 
@@ -44,6 +46,34 @@ void StringColumnReader::ensureDictionaryState() {
   }
   dictionaryState_.alphabet = buildEncodingDictionaryAlphabet<std::string_view>(
       decoder_.currentEncoding());
+}
+
+void StringColumnReader::updateDictionaryScanState(
+    const std::vector<std::string_view>& chunkAlphabet) {
+  using FilterResult = velox::dwio::common::FilterResult;
+  const auto alphabetSize = static_cast<int32_t>(chunkAlphabet.size());
+
+  auto values =
+      velox::AlignedBuffer::allocate<velox::StringView>(alphabetSize, pool_);
+  auto* rawValues = values->asMutable<velox::StringView>();
+  for (int32_t i = 0; i < alphabetSize; ++i) {
+    rawValues[i] =
+        velox::StringView(chunkAlphabet[i].data(), chunkAlphabet[i].size());
+  }
+  scanState_.dictionary.values = std::move(values);
+  scanState_.dictionary.numValues = alphabetSize;
+
+  // The filter dictionary is per-chunk: a given local index maps to a
+  // different value in each chunk, so the cache must be rebuilt (reset to
+  // kUnknown), not extended, at every chunk boundary.
+  if (velox::dwio::common::DictionaryValues::hasFilter(scanSpec_->filter())) {
+    scanState_.filterCache.resize(alphabetSize);
+    velox::simd::memset(
+        scanState_.filterCache.data(),
+        static_cast<uint8_t>(FilterResult::kUnknown),
+        alphabetSize);
+  }
+  scanState_.updateRawState();
 }
 
 void StringColumnReader::updateDictionaryIndices(
@@ -86,6 +116,9 @@ bool StringColumnReader::tryExtendDictionaryAtChunkBoundary(
       chunkAlphabet.begin(),
       chunkAlphabet.end());
   dictionaryState_.alphabetVector.reset();
+  if (scanSpec_->hasFilter()) {
+    updateDictionaryScanState(chunkAlphabet);
+  }
   crossChunkRead_ = true;
   return true;
 }
@@ -94,11 +127,15 @@ bool StringColumnReader::readWithDictionary(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
-  // Dictionary path requires: no filter pushdown, no value hook, non-legacy
-  // encoding path (zero-copy), session property enabled, and
-  // dictionary-convertible encoding.
-  if (scanSpec_->hasFilter() || scanSpec_->valueHook() ||
-      !formatData().stringDecoderZeroCopy() ||
+  // Dictionary path requires: no value hook, non-legacy encoding path
+  // (zero-copy), session property enabled, and dictionary-convertible
+  // encoding. Filters are supported via post-materialization filtering
+  // on the bulk-read dictionary indices.
+  // TODO: Value hooks (aggregation pushdown) could be supported by
+  // resolving alphabet[index] and calling hook->addValue() post-read,
+  // similar to filterDictionaryIndices. Neither Nimble nor DWRF
+  // currently support filter+hook combined for dict string columns.
+  if (scanSpec_->valueHook() || !formatData().stringDecoderZeroCopy() ||
       !static_cast<const NimbleData&>(formatData())
            .nimblePreserveDictionaryEncoding()) {
     clearDictionaryState();
@@ -119,8 +156,24 @@ bool StringColumnReader::readWithDictionary(
     return false;
   }
 
+  // A cross-chunk merged alphabet is per-read: getValues() clears it (and snaps
+  // its backing into the output DictionaryVector) once the read is consumed.
+  // But the parent struct reader skips this column's getValues() when it
+  // filters out all rows in a batch, leaving crossChunkRead_ set and a stale
+  // merged alphabet whose backing buffers the next read's setStringBuffers()
+  // will free. Clear it before reuse so ensureDictionaryState() rebuilds a
+  // fresh, valid alphabet. Single-chunk reads keep their cached alphabet
+  // (crossChunkRead_ stays false).
+  if (crossChunkRead_) {
+    clearDictionaryState();
+    crossChunkRead_ = false;
+  }
+
   prepareRead<int32_t>(offset, rows, incomingNulls);
   ensureDictionaryState();
+  if (scanSpec_->hasFilter()) {
+    updateDictionaryScanState(dictionaryState_.alphabet);
+  }
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::StringColumnReader::readWithDictionary",
       &dictionaryState_.alphabet);
@@ -139,8 +192,20 @@ bool StringColumnReader::readWithDictionary(
   //   - Returns false: the new chunk is not dict-compatible, so
   //     readDictionaryIndices stops and the reactive flat fallback below
   //     takes over.
+  //
+  // When a filter is active, the visitor's process()/processNull() in
+  // readDenseMaterializedIndices handle filter evaluation and outputRows
+  // via the if constexpr (kHasFilter) path in the encoding layer.
+  // kEncodingHasNulls must be false: unlike DWRF, Nimble does not pre-populate
+  // nullsInReadRange_ before the read. Nulls are materialized lazily by
+  // NullableEncoding during the decode (inside readDictionaryIndices). Passing
+  // true would route IsNull/IsNotNull through
+  // SelectiveColumnReader::filterNulls, which reads the still-empty
+  // nullsInReadRange_ and silently drops every matching row. With false,
+  // IsNull/IsNotNull go through the visitor/decode path (processNull) like
+  // every other filter, matching the flat read() below.
   dwio::common::StringColumnReadWithVisitorHelper<
-      /*kEncodingHasNulls=*/true,
+      /*kEncodingHasNulls=*/false,
       /*kDictionary=*/false>(*this, rows)([&](auto visitor) {
     auto dictVisitor = visitor.toStringDictionaryColumnVisitor();
 

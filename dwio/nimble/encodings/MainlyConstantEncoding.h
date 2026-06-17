@@ -273,8 +273,8 @@ class MainlyConstantEncodingBase
         this->dictionaryEnabled(),
         "readIndicesWithVisitor requires dictionary-enabled inner encoding");
     NIMBLE_CHECK(
-        !IndicesVisitor::kHasFilter && !IndicesVisitor::kHasHook,
-        "readIndicesWithVisitor should only be invoked in dictionary fast path");
+        !IndicesVisitor::kHasHook,
+        "readIndicesWithVisitor does not support value hooks");
     const auto numReadRows =
         visitor.rowAt(visitor.numRows() - 1) - params.numScanned + 1;
 
@@ -291,12 +291,7 @@ class MainlyConstantEncodingBase
           visitor.rowAt(0) + visitor.numRows() - 1,
           "Dense visitor must have contiguous rows");
       detail::readDenseMaterializedIndices(
-          *this,
-          visitor,
-          rawNulls,
-          params.numScanned,
-          numReadRows,
-          numNonNulls);
+          *this, visitor, params, rawNulls, numReadRows, numNonNulls);
       return;
     }
 
@@ -502,6 +497,13 @@ class MainlyConstantEncodingBase
   /// Reads isCommon, delegates to inner encoding's materializeIndices for
   /// non-common rows, fills common positions with commonValueIndex.
   void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
+    // An all-null read range produces zero dense non-null rows. Return early:
+    // nwords(0) is 0, so the isCommon[numWords - 1] tail-bit write below would
+    // underflow to isCommon[-1] (out-of-bounds). rowCount == 0 is the only
+    // input that yields numWords == 0.
+    if (rowCount == 0) {
+      return;
+    }
     const auto numWords = velox::bits::nwords(rowCount);
     isCommonBuffer_.resize(numWords * sizeof(uint64_t));
     auto* isCommon = reinterpret_cast<uint64_t*>(isCommonBuffer_.data());
