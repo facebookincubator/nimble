@@ -345,8 +345,14 @@ velox::cache::CachePin CachedMetadataInput::acquireCachePin(
     uint32_t size) {
   for (;;) {
     folly::SemiFuture<bool> waitFuture{false};
-    auto pin =
-        cache_->findOrCreate(key, size, /*contiguous=*/true, &waitFuture);
+    velox::cache::CachePin pin;
+    try {
+      pin = cache_->findOrCreate(key, size, /*contiguous=*/true, &waitFuture);
+    } catch (const velox::VeloxRuntimeError&) {
+      // Cache is full and cannot evict enough entries. Return empty pin
+      // so the caller falls back to loading from storage without caching.
+      return {};
+    }
     if (!pin.empty()) {
       return pin;
     }
@@ -503,6 +509,11 @@ std::vector<uint32_t> CachedMetadataInput::loadFromCache(
 
     if (uncompressedSize.has_value()) {
       auto pin = acquireCachePin(key, uncompressedSize.value());
+      if (pin.empty()) {
+        // Cache is full; skip caching and load from storage directly.
+        loadIndices.push_back(index);
+        continue;
+      }
       auto buffer = tryCacheHit(uncompressedSize.value(), pin);
       if (buffer != nullptr) {
         sections[index].buffer = std::move(buffer);

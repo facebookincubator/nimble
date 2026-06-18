@@ -1275,6 +1275,53 @@ DEBUG_ONLY_TEST_P(CachedMetadataInputTest, concurrentCacheAndFind) {
   EXPECT_EQ(foundResult->content(), cachedData);
 }
 
+// Verifies that when the cache is completely full and cannot allocate new
+// entries, CachedMetadataInput gracefully falls back to loading metadata
+// from storage instead of throwing.
+TEST_P(CachedMetadataInputTest, loadFallsBackWhenCacheFull) {
+  const std::string sectionData(4096, 'X');
+  std::vector<SectionSpec> specs = {
+      {sectionData, nimble::CompressionType::Uncompressed}};
+
+  std::vector<nimble::MetadataSection> sections;
+  std::vector<std::string> fileDataParts;
+  buildSections(specs, pool_.get(), sections, fileDataParts);
+  const auto fileContent = buildFileContent(sections, fileDataParts);
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(fileContent);
+
+  // Exhaust the allocator so the next cache allocation fails.
+  // Leave 1MB free for the fallback read buffer allocation.
+  std::vector<velox::memory::Allocation> allocations;
+  const auto totalPages = velox::memory::AllocationTraits::numPages(kCacheSize);
+  const auto reservePages = velox::memory::AllocationTraits::numPages(1 << 20);
+  uint64_t allocatedPages = 0;
+  while (allocatedPages + reservePages < totalPages) {
+    const auto pagesToAllocate =
+        std::min<uint64_t>(256, totalPages - reservePages - allocatedPages);
+    if (pagesToAllocate == 0) {
+      break;
+    }
+    velox::memory::Allocation allocation;
+    if (!allocator_->allocateNonContiguous(pagesToAllocate, allocation)) {
+      break;
+    }
+    allocatedPages += allocation.numPages();
+    allocations.push_back(std::move(allocation));
+  }
+  ASSERT_GT(allocatedPages, 0);
+
+  auto input = createCachedInput(readFile.get());
+  auto results = input->load(sections);
+
+  ASSERT_EQ(results.size(), 1);
+  ASSERT_NE(results[0], nullptr);
+  EXPECT_EQ(results[0]->content(), sectionData);
+
+  for (auto& allocation : allocations) {
+    allocator_->freeNonContiguous(allocation);
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CachedMetadataInputTests,
     CachedMetadataInputTest,
