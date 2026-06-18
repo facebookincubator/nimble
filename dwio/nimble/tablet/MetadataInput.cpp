@@ -71,14 +71,18 @@ std::vector<std::shared_ptr<MetadataBuffer>> MetadataInput::extractResults(
 }
 
 void MetadataInput::readRaw(uint64_t offset, uint64_t size, void* dest) {
-  uint64_t storageReadUs{0};
+  // Measure at nanosecond resolution so that fast (e.g. in-memory or cached)
+  // reads still register a non-zero scan time; truncating to microseconds
+  // would lose sub-microsecond reads entirely.
+  uint64_t storageReadNs{0};
   {
-    velox::MicrosecondTimer timer{&storageReadUs};
+    velox::NanosecondTimer timer{&storageReadNs};
     file_->pread(offset, size, static_cast<char*>(dest));
   }
+  const uint64_t storageReadUs = storageReadNs / 1'000;
   ioStats_->queryThreadIoLatencyUs().increment(storageReadUs);
   ioStats_->storageReadLatencyUs().increment(storageReadUs);
-  ioStats_->incTotalScanTimeNs(storageReadUs * 1'000);
+  ioStats_->incTotalScanTimeNs(storageReadNs);
   ioStats_->read().increment(size);
   ioStats_->incRawBytesRead(size);
 }
@@ -208,13 +212,16 @@ void MetadataInput::executeIoGroups(std::vector<IoGroup>& ioGroups) {
   for (const auto& group : ioGroups) {
     asyncIos.emplace_back(
         std::make_unique<velox::AsyncSource<folly::Unit>>([this, &group]() {
-          uint64_t storageReadUs{0};
+          // Measure at nanosecond resolution so that fast reads still register
+          // a non-zero scan time; truncating to microseconds would lose
+          // sub-microsecond reads entirely.
+          uint64_t storageReadNs{0};
           {
-            velox::MicrosecondTimer ioTimer(&storageReadUs);
+            velox::NanosecondTimer ioTimer(&storageReadNs);
             file_->preadv(group.offset, group.ranges);
           }
-          ioStats_->storageReadLatencyUs().increment(storageReadUs);
-          ioStats_->incTotalScanTimeNs(storageReadUs * 1'000);
+          ioStats_->storageReadLatencyUs().increment(storageReadNs / 1'000);
+          ioStats_->incTotalScanTimeNs(storageReadNs);
           return std::make_unique<folly::Unit>();
         }));
   }
