@@ -206,8 +206,22 @@ class TabletTest : public ::testing::TestWithParam<BufferedInputMode> {
         cache_ = velox::cache::AsyncDataCache::create(allocator_.get());
       }
       auto& ids = velox::fileIds();
+      // Derive the cache file identity from the file content rather than the
+      // readFile pointer address. A pointer is stable for a single readFile but
+      // not unique across iterations: a destroyed readFile's address is
+      // frequently reused by the next allocation, which (combined with a shared
+      // cache_) would alias a new file onto a previous file's cached footer or
+      // streams and surface stale/zeroed data. Keying on content keeps
+      // warm-path tests (which reuse the same readFile) hitting the cache while
+      // keeping distinct files isolated, mirroring production where the uuid is
+      // the unique file path.
+      const auto contentSize = readFile_->size();
+      std::string content(contentSize, '\0');
+      readFile_->pread(0, contentSize, content.data());
       auto fileKey = fmt::format(
-          "testFile_{}", reinterpret_cast<uintptr_t>(readFile_.get()));
+          "testFile_{}_{}",
+          contentSize,
+          std::hash<std::string_view>{}(content));
       fileHandle_ = std::make_unique<velox::FileHandle>();
       fileHandle_->uuid = velox::StringIdLease(ids, fileKey);
       fileHandle_->groupId = velox::StringIdLease(ids, "testGroup");
