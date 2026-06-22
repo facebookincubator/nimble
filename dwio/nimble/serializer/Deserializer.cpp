@@ -730,8 +730,9 @@ Deserializer::Deserializer(
     // child was absent but a sibling was present.
     for (const auto& [inMapOffset, childType] : inMapChildTypes_) {
       visitValueStreamLeaves(
-          *childType, [this, inMapOffset](offset_size valueOffset) {
-            valueOffsetToInMap_[valueOffset] = inMapOffset;
+          *childType,
+          [this, _inMapOffset = inMapOffset](offset_size valueOffset) {
+            valueOffsetToInMap_[valueOffset] = _inMapOffset;
             return false;
           });
     }
