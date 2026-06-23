@@ -69,8 +69,13 @@ struct SegmentMetrics {
 };
 
 // Single-pass metric collector for extracted bit-range values.
-// Allocates a small hash set for unique counting (capped at kUniqueCountCap)
-// and uses a running prev-value comparison for run counting.
+// Uses a frequency map for unique/dominant counting (capped at
+// kUniqueCountCap) and a running prev-value comparison for run counting.
+//
+// The frequency map is a reusable member: the split selector calls compute()
+// for every bit-range in an O(kBits^2) grid, so allocating a fresh map per
+// call dominated encode time. Clearing and reusing one map preserves its
+// capacity across calls and avoids that allocation churn.
 class MetricCollector {
  public:
   static constexpr size_t kUniqueCountCap = 1
@@ -78,7 +83,7 @@ class MetricCollector {
 
   SegmentMetrics compute(
       const std::vector<uint64_t>& values,
-      MetricFlags flags = static_cast<MetricFlags>(MetricFlag::All)) const {
+      MetricFlags flags = static_cast<MetricFlags>(MetricFlag::All)) {
     const bool doMin = hasFlag(flags, MetricFlag::MinMax);
     const bool doRun = hasFlag(flags, MetricFlag::RunStats);
     const bool doUniq = hasFlag(flags, MetricFlag::UniqueCount);
@@ -101,12 +106,12 @@ class MetricCollector {
       out.runCount = 1;
     }
 
-    absl::flat_hash_map<uint64_t, uint32_t> freqMap;
     bool capped = false;
     uint32_t maxCount = 0;
     if (doFreq) {
-      freqMap.reserve(std::min(n, kUniqueCountCap));
-      freqMap.emplace(v0, 1u);
+      freqMap_.clear();
+      freqMap_.reserve(std::min(n, kUniqueCountCap));
+      freqMap_.emplace(v0, 1u);
       maxCount = 1;
     }
 
@@ -125,12 +130,12 @@ class MetricCollector {
         ++out.runCount;
       }
       if (doFreq && !capped) {
-        auto [it, inserted] = freqMap.try_emplace(v, 0u);
+        auto [it, inserted] = freqMap_.try_emplace(v, 0u);
         const uint32_t count = ++it->second;
         if (count > maxCount) {
           maxCount = count;
         }
-        if (inserted && freqMap.size() > kUniqueCountCap) {
+        if (inserted && freqMap_.size() > kUniqueCountCap) {
           capped = true;
         }
       }
@@ -145,7 +150,7 @@ class MetricCollector {
           static_cast<double>(n) / static_cast<double>(out.runCount);
     }
     if (doUniq) {
-      out.uniqueCount = capped ? (kUniqueCountCap + 1) : freqMap.size();
+      out.uniqueCount = capped ? (kUniqueCountCap + 1) : freqMap_.size();
       out.uniqueCountCapped = capped;
     }
     if (doDominant) {
@@ -155,6 +160,10 @@ class MetricCollector {
 
     return out;
   }
+
+ private:
+  // frequency map for unique/dominant counting.
+  absl::flat_hash_map<uint64_t, uint32_t> freqMap_;
 };
 
 } // namespace facebook::nimble::detail::subintsplit

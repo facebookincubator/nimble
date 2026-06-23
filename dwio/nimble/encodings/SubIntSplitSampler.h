@@ -33,15 +33,18 @@
 namespace facebook::nimble::detail::subintsplit {
 
 struct SamplerConfig {
-  // Maximum number of samples to draw.
-  size_t maxSamples{10'000};
+  // Maximum number of samples to draw. The split selector runs an
+  // O(kBits^2 * sampleSize) DP over this sample (larger
+  // samples sharpen the cost estimates only marginally while making encode
+  // dramatically slower (especially for 64-bit types)).
+  size_t maxSamples{2'048};
   // Contiguous block size for block-stratified sampling.
   // 0 → use uniform stride sampling instead.
   size_t blockSize{128};
 };
 
 inline SamplerConfig defaultSamplerConfig() noexcept {
-  return SamplerConfig{.maxSamples = 10'000, .blockSize = 128};
+  return SamplerConfig{.maxSamples = 2'048, .blockSize = 128};
 }
 
 // Fill `out` with up to cfg.maxSamples uint64_t values drawn from `values`.

@@ -119,7 +119,7 @@ inline SelectorResult selectSplits(
   kBits = std::min(kBits, 64);
 
   const MetricFlags requiredFlags = allCostModelRequiredFlags();
-  const MetricCollector collector;
+  MetricCollector collector;
 
   // bestCost[l][r] = {min cost in bits for full stream, best EncodingType}
   // Only lower-triangular (r >= l) entries are valid.
