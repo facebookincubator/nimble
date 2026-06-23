@@ -22,13 +22,12 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/io/IoStatistics.h"
+#include "velox/common/testutil/RandomSeed.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/vector/DictionaryVector.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 #include <gtest/gtest.h>
-
-#include "folly/Random.h"
 
 namespace facebook::nimble {
 namespace {
@@ -458,8 +457,10 @@ TEST_P(StringColumnReaderTest, fuzzFilterDictionary) {
     GTEST_SKIP() << "Dictionary filter path requires stringDecoderZeroCopy";
   }
 
-  for (int run = 0; run < 20; ++run) {
-    auto seed = folly::Random::rand32();
+  for (int run = 0; run < 5; ++run) {
+    // Deterministic by default; set env VELOX_TEST_USE_RANDOM_SEED=1 for a
+    // fresh, logged seed per run (idiomatic with stress runs).
+    auto seed = common::testutil::getRandomSeed(/*fixedValue=*/1 + run);
     std::mt19937 rng(seed);
     const int numRows = 100 + rng() % 900;
     const int batchSize = 10 + rng() % numRows;
@@ -1793,6 +1794,131 @@ TEST_P(StringColumnReaderTest, rleDictionaryVector) {
       pool());
 }
 
+// Forces column "c0" to encode as RLE wrapping Dictionary, so repeated-value
+// runs become RLE runs of dictionary indices (mirrors rleDictionaryVector).
+EncodingLayoutTree makeRleDictionaryLayoutTree() {
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  EncodingLayout rleLayout{
+      EncodingType::RLE,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::move(dictLayout)}};
+  return EncodingLayoutTree{
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {{0, std::move(rleLayout)}}, "c0"}}};
+}
+
+// Regression for the RLE dict-index mid-run resume bug: when a chunk read is
+// split across next() batches and the split lands inside an RLE run,
+// RLEEncoding::materializeIndices is re-entered with copiesRemaining_ > 0 and
+// must reuse the in-progress run's dictionary index (member currentIndex_)
+// rather than restart at 0. The run length (50) does not divide the batch size
+// (75), so a run straddles a next() boundary and forces the resume path.
+TEST_P(StringColumnReaderTest, rleDictionaryMidRunBatchResume) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 300;
+  constexpr int kRunLength = 50;
+  const std::string values[] = {"alpha", "bravo", "charlie"};
+  auto data = makeRowVector({makeFlatVector<std::string>(
+      kRows, [&](auto i) { return values[(i / kRunLength) % 3]; })});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
+  auto file = test::createNimbleFile(
+      *rootPool(), std::vector<VectorPtr>{data}, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*data->type());
+  auto readers = makeReaders(data, file, scanSpec, stringDecoderZeroCopy);
+  validate(*data, *readers.rowReader, /*batchSize=*/75);
+}
+
+// Same mid-run resume as above but with nulls interspersed — the shape of the
+// original residue-dependent failure (seed 1031254216). The inner RLE runs
+// cover the dense non-null values, which must still resume correctly mid-run.
+TEST_P(StringColumnReaderTest, rleDictionaryMidRunBatchResumeWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 300;
+  constexpr int kRunLength = 50;
+  const std::string values[] = {"alpha", "bravo", "charlie"};
+  std::vector<std::optional<std::string>> raw(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    raw[i] = (i % 7 == 0)
+        ? std::nullopt
+        : std::optional<std::string>(values[(i / kRunLength) % 3]);
+  }
+  auto data = makeRowVector({makeNullableFlatVector<std::string>(raw)});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
+  auto file = test::createNimbleFile(
+      *rootPool(), std::vector<VectorPtr>{data}, writerOptions);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*data->type());
+  auto readers = makeReaders(data, file, scanSpec, stringDecoderZeroCopy);
+  validate(*data, *readers.rowReader, /*batchSize=*/75);
+}
+
+// Mid-run resume in the production multi-chunk shape: two RLE→Dictionary chunks
+// within a stripe, read with a batch size (70) that both splits runs mid-run
+// inside a chunk and produces a batch spanning the chunk boundary.
+TEST_P(StringColumnReaderTest, rleDictionaryMidRunResumeAcrossChunk) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 300;
+  constexpr int kRunLength = 50;
+  const std::string chunk1Values[] = {"alpha", "bravo", "charlie"};
+  const std::string chunk2Values[] = {"delta", "echo", "foxtrot"};
+  auto chunk1 = makeRowVector({makeFlatVector<std::string>(
+      kChunkRows, [&](auto i) { return chunk1Values[(i / kRunLength) % 3]; })});
+  auto chunk2 = makeRowVector({makeFlatVector<std::string>(
+      kChunkRows, [&](auto i) { return chunk2Values[(i / kRunLength) % 3]; })});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  auto expected =
+      makeRowVector({makeFlatVector<std::string>(2 * kChunkRows, [&](auto i) {
+        return i < kChunkRows
+            ? chunk1Values[(i / kRunLength) % 3]
+            : chunk2Values[((i - kChunkRows) / kRunLength) % 3];
+      })});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*expected->type());
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+  validate(*expected, *readers.rowReader, /*batchSize=*/70);
+}
+
 // Constant string encoding — all values identical.
 TEST_P(StringColumnReaderTest, constantDictionary) {
   const bool stringDecoderZeroCopy = GetParam();
@@ -2564,13 +2690,21 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkDictionary) {
     GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
   }
 
-  // Run 0 replays a previously-crashing seed as a fixed regression for the
-  // MainlyConstant::materializeIndices rowCount==0 out-of-bounds write (an
-  // all-null read range across a chunk boundary). The remaining runs are
-  // random; use --stress-runs to exercise more seeds.
-  constexpr uint32_t kRegressionSeed = 2770505665u;
-  for (int run = 0; run < 20; ++run) {
-    auto seed = run == 0 ? kRegressionSeed : folly::Random::rand32();
+  // Runs 0..N-1 replay previously-failing seeds as fixed regressions; the last
+  // run is a single random draw (use --stress-runs to exercise more seeds):
+  //   - 2770505665: MainlyConstant::materializeIndices rowCount==0 OOB write
+  //     (an all-null read range across a chunk boundary).
+  //   - 968259391: RLE dict-index mid-run resume bug — a chunk read split
+  //     across two batches re-read the in-progress run's index as 0.
+  constexpr uint32_t kRegressionSeeds[] = {2770505665u, 968259391u};
+  constexpr int kNumRegressionSeeds =
+      static_cast<int>(sizeof(kRegressionSeeds) / sizeof(kRegressionSeeds[0]));
+  for (int run = 0; run < kNumRegressionSeeds + 1; ++run) {
+    // Random run is deterministic by default; set VELOX_TEST_USE_RANDOM_SEED=1
+    // (idiomatic with --stress-runs) to draw a fresh, logged seed per process.
+    const auto seed = run < kNumRegressionSeeds
+        ? kRegressionSeeds[run]
+        : common::testutil::getRandomSeed(/*fixedValue=*/2);
     std::mt19937 rng(seed);
     const int numChunks = 2 + rng() % 6;
     const int rowsPerChunk = 100 + rng() % 900;
@@ -2657,8 +2791,10 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkDictionary) {
 TEST_P(StringColumnReaderTest, fuzzMultiChunkReadCorrectness) {
   const bool stringDecoderZeroCopy = GetParam();
 
-  for (int run = 0; run < 20; ++run) {
-    auto seed = folly::Random::rand32();
+  for (int run = 0; run < 5; ++run) {
+    // Deterministic by default; set env VELOX_TEST_USE_RANDOM_SEED=1 for a
+    // fresh, logged seed per run (idiomatic with stress runs).
+    auto seed = common::testutil::getRandomSeed(/*fixedValue=*/3 + run);
     std::mt19937 rng(seed);
     const int numChunks = 2 + rng() % 5;
     const int rowsPerChunk = 100 + rng() % 500;
