@@ -31,6 +31,12 @@ DEFINE_string(
     encoding_file,
     "",
     "If porivided, prints the content of the encoding file.");
+DEFINE_string(
+    encoding_filter,
+    "",
+    "If provided, only generate files for this encoding type "
+    "(e.g. BlockBitPacking, Trivial, Dictionary). "
+    "Skips directory cleanup so existing files are preserved.");
 
 namespace {
 template <typename T, typename RNG, bool SmallNumbers = false>
@@ -179,7 +185,9 @@ void writeFile(
   }
 
   for (auto compressionType :
-       {nimble::CompressionType::Uncompressed, nimble::CompressionType::Zstd}) {
+       {nimble::CompressionType::Uncompressed,
+        nimble::CompressionType::Zstd,
+        nimble::CompressionType::MetaInternal}) {
     std::string_view encoded;
     if constexpr (
         nimble::test::Encoder<E>::encodingType() ==
@@ -192,7 +200,12 @@ void writeFile(
     {
       std::ofstream file{
           fmt::format(
-              "{}/{}_{}.encoding", path, identifier, toString(compressionType)),
+              "{}/{}_{}.encoding",
+              path,
+              identifier,
+              compressionType == nimble::CompressionType::MetaInternal
+                  ? "Zstrong"
+                  : toString(compressionType)),
           std::ios::out | std::ios::binary | std::ios::trunc};
       file << encoded;
     }
@@ -381,31 +394,65 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  if (folly::fs::exists(FLAGS_output_dir)) {
-    folly::fs::remove_all(FLAGS_output_dir);
+  const auto& filter = FLAGS_encoding_filter;
+  const auto match = [&](const std::string& name) {
+    return filter.empty() || name == filter;
+  };
+
+  if (filter.empty()) {
+    if (folly::fs::exists(FLAGS_output_dir)) {
+      folly::fs::remove_all(FLAGS_output_dir);
+    }
+    folly::fs::create_directory(FLAGS_output_dir);
+  } else if (!folly::fs::exists(FLAGS_output_dir)) {
+    folly::fs::create_directory(FLAGS_output_dir);
   }
 
-  folly::fs::create_directory(FLAGS_output_dir);
-
-  WRITE_CONSTANT_FILES(256);
-  WRITE_FBW_FILES(256);
-  WRITE_NON_BOOL_FILES(MainlyConstantEncoding, 256);
+  if (match("Constant") || match("RLE")) {
+    WRITE_CONSTANT_FILES(256);
+  }
+  if (match("FixedBitWidth")) {
+    WRITE_FBW_FILES(256);
+  }
+  if (match("MainlyConstant")) {
+    WRITE_NON_BOOL_FILES(MainlyConstantEncoding, 256);
+  }
 
   for (auto rowCount : {0, 256}) {
-    WRITE_FILES(TrivialEncoding, rowCount);
-    WRITE_FILES(DictionaryEncoding, rowCount);
-    WRITE_FILES(RLEEncoding, rowCount);
-    WRITE_FILES(NullableEncoding, rowCount);
-    WRITE_NUMERIC_FILES(FixedBitWidthEncoding, rowCount);
-    writeFile<nimble::SparseBoolEncoding>(rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<int32_t>>(rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<uint32_t>>(
-        rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<int64_t>>(rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<uint64_t>>(
-        rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<float>>(rng, FLAGS_output_dir, rowCount);
-    writeFile<nimble::VarintEncoding<double>>(rng, FLAGS_output_dir, rowCount);
+    if (match("Trivial")) {
+      WRITE_FILES(TrivialEncoding, rowCount);
+    }
+    if (match("Dictionary")) {
+      WRITE_FILES(DictionaryEncoding, rowCount);
+    }
+    if (match("RLE")) {
+      WRITE_FILES(RLEEncoding, rowCount);
+    }
+    if (match("Nullable")) {
+      WRITE_FILES(NullableEncoding, rowCount);
+    }
+    if (match("FixedBitWidth")) {
+      WRITE_NUMERIC_FILES(FixedBitWidthEncoding, rowCount);
+    }
+    if (match("BlockBitPacking")) {
+      WRITE_NUMERIC_FILES(BlockBitPackingEncoding, rowCount);
+    }
+    if (match("SparseBool")) {
+      writeFile<nimble::SparseBoolEncoding>(rng, FLAGS_output_dir, rowCount);
+    }
+    if (match("Varint")) {
+      writeFile<nimble::VarintEncoding<int32_t>>(
+          rng, FLAGS_output_dir, rowCount);
+      writeFile<nimble::VarintEncoding<uint32_t>>(
+          rng, FLAGS_output_dir, rowCount);
+      writeFile<nimble::VarintEncoding<int64_t>>(
+          rng, FLAGS_output_dir, rowCount);
+      writeFile<nimble::VarintEncoding<uint64_t>>(
+          rng, FLAGS_output_dir, rowCount);
+      writeFile<nimble::VarintEncoding<float>>(rng, FLAGS_output_dir, rowCount);
+      writeFile<nimble::VarintEncoding<double>>(
+          rng, FLAGS_output_dir, rowCount);
+    }
   }
 
   return 0;
