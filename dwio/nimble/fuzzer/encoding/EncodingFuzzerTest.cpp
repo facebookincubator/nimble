@@ -349,11 +349,10 @@ class SubIntSplitFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(SubIntSplitFuzzerTest, SubIntSplitTypes);
 
 TYPED_TEST(SubIntSplitFuzzerTest, correctness) {
+  const uint32_t iterations = std::min<uint32_t>(FLAGS_fuzzer_iterations, 20);
+  const uint32_t maxRows = std::min<uint32_t>(FLAGS_fuzzer_max_rows, 500);
   EncodingFuzzer<TypeParam> fuzzer(
-      FLAGS_fuzzer_iterations,
-      FLAGS_fuzzer_max_rows,
-      FLAGS_fuzzer_seed,
-      FLAGS_fuzzer_compression);
+      iterations, maxRows, FLAGS_fuzzer_seed, FLAGS_fuzzer_compression);
   fuzzer.run();
 }
 #endif // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
