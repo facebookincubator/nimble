@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>Nimble Java Reader &amp; Writer &mdash; BlockBitPacking Example</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-gradient: linear-gradient(160deg, #f5f7fa 0%, #edf1f7 50%, #f0f4f8 100%);
+  --surface: #ffffff;
+  --surface-hover: #f8f9fb;
+  --text-primary: #1b2838;
+  --text-secondary: #556270;
+  --text-muted: #8a95a5;
+  --border: #dce3ed;
+  --border-strong: #b8c4d4;
+  --primary: #3d6b9e;
+  --primary-light: #e8f0fa;
+  --accent: #c4841d;
+  --accent-light: #fef4e4;
+  --accent-green: #2d7d5f;
+  --accent-green-light: #e6f5ee;
+  --accent-red: #c44b3d;
+  --accent-red-light: #fce8e6;
+  --accent-purple: #6b5fad;
+  --accent-purple-light: #f0edf8;
+  --node-bg: #ffffff;
+  --code-bg: #f0f3f7;
+  --shadow: 0 1px 8px rgba(61,107,158,0.07);
+  --shadow-lg: 0 4px 20px rgba(61,107,158,0.10);
+  --mono: 'JetBrains Mono', monospace;
+  --font-display: 'Sora', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+body.dark-mode {
+  --bg: #0d1117;
+  --bg-gradient: linear-gradient(160deg, #0d1117 0%, #111820 50%, #0d1117 100%);
+  --surface: #161b22;
+  --surface-hover: #1c222b;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --primary: #58a6ff;
+  --primary-light: #0d1f3c;
+  --accent: #e3b341;
+  --accent-light: #1c1a0e;
+  --accent-green: #56d364;
+  --accent-green-light: #0e2218;
+  --accent-red: #f85149;
+  --accent-red-light: #2a1215;
+  --accent-purple: #bc8cff;
+  --accent-purple-light: #1c1530;
+  --node-bg: #161b22;
+  --code-bg: #0d1117;
+  --shadow: 0 1px 8px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 20px rgba(0,0,0,0.4);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.65;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 2rem 2.5rem 4rem; }
+h1 {
+  font-family: var(--font-display); font-size: 1.8rem; font-weight: 700;
+  letter-spacing: -0.02em; text-align: center; padding: 2.5rem 0 0.3rem;
+}
+.subtitle { text-align: center; color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 2rem; }
+h2 {
+  font-family: var(--font-display); font-size: 1.2rem; font-weight: 600;
+  margin: 2.5rem 0 0.75rem; display: flex; align-items: center; gap: 0.5rem;
+  border-bottom: 2px solid var(--border); padding-bottom: 0.4rem;
+}
+h2 .sec-num {
+  background: var(--primary); color: #fff; width: 26px; height: 26px;
+  border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 700; flex-shrink: 0;
+}
+h3 {
+  font-family: var(--font-display); font-size: 0.95rem; font-weight: 600;
+  margin: 1.5rem 0 0.5rem; color: var(--primary);
+}
+p { margin-bottom: 0.75rem; font-size: 0.88rem; }
+code {
+  font-family: var(--mono); font-size: 0.78rem; background: var(--code-bg);
+  padding: 0.1em 0.35em; border-radius: 4px; color: var(--primary);
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 1.25rem; margin: 0.75rem 0; box-shadow: var(--shadow);
+}
+.card-title {
+  font-family: var(--font-display); font-size: 0.88rem; font-weight: 600;
+  color: var(--primary); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;
+}
+.diagram {
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1rem 1.25rem; margin: 0.75rem 0; font-family: var(--mono);
+  font-size: 0.72rem; line-height: 1.7; overflow-x: auto;
+  color: var(--text-secondary); white-space: pre;
+}
+.diagram strong { color: var(--primary); font-weight: 600; }
+.diagram em { color: var(--accent); font-style: normal; font-weight: 500; }
+.diagram .g { color: var(--accent-green); }
+.diagram .r { color: var(--accent-red); }
+.diagram .p { color: var(--accent-purple); }
+table {
+  width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.82rem;
+}
+th {
+  font-family: var(--font-display); font-size: 0.72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);
+  text-align: left; padding: 0.5rem 0.75rem; border-bottom: 2px solid var(--border);
+}
+td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+.badge {
+  display: inline-block; font-size: 0.65rem; font-weight: 600;
+  padding: 0.1em 0.45em; border-radius: 4px; letter-spacing: 0.02em;
+}
+.badge-blue { background: var(--primary-light); color: var(--primary); }
+.badge-amber { background: var(--accent-light); color: var(--accent); }
+.badge-green { background: var(--accent-green-light); color: var(--accent-green); }
+.badge-red { background: var(--accent-red-light); color: var(--accent-red); }
+.badge-purple { background: var(--accent-purple-light); color: var(--accent-purple); }
+.callout {
+  border-left: 3px solid var(--accent); background: var(--accent-light);
+  padding: 0.75rem 1rem; border-radius: 0 8px 8px 0; margin: 0.75rem 0;
+  font-size: 0.82rem; color: var(--text-secondary);
+}
+.callout strong { color: var(--accent); }
+.callout.info { border-left-color: var(--primary); background: var(--primary-light); }
+.callout.info strong { color: var(--primary); }
+.callout.warn { border-left-color: var(--accent-red); background: var(--accent-red-light); }
+.callout.warn strong { color: var(--accent-red); }
+.flow { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 1rem 0; }
+.flow-node {
+  background: var(--surface); border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 0.6rem 1.1rem; text-align: center; width: 100%; max-width: 650px;
+  box-shadow: var(--shadow);
+}
+.flow-node h5 {
+  font-family: var(--font-display); font-size: 0.82rem; font-weight: 600;
+  color: var(--primary); margin-bottom: 0.15rem;
+}
+.flow-node .fd { font-size: 0.72rem; color: var(--text-muted); font-family: var(--mono); }
+.flow-arrow { color: var(--accent); font-size: 1.1rem; padding: 0.1rem 0; font-weight: 700; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.75rem 0; }
+@media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } .container { padding: 1.5rem 1rem; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Nimble Java Reader &amp; Writer</h1>
+<p class="subtitle">Using BlockBitPacking (EncodingType=15) as a concrete example</p>
+
+<!-- ================================================================ -->
+<h2><span class="sec-num">1</span> Write Path</h2>
+
+<p>
+  There is <strong>no pure Java Nimble writer</strong>. Spark writes Nimble files via JNI,
+  delegating to the C++ <code>VeloxWriter</code> for encoding and file layout.
+</p>
+
+<div class="flow">
+  <div class="flow-node">
+    <h5><span class="badge badge-amber">Java</span> AlphaPageWriter.writePage(Page)</h5>
+    <div class="fd">Serializes Presto Page &rarr; ByteBuffer</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node" style="border-color: var(--accent-purple)">
+    <h5><span class="badge badge-purple">JNI</span> JniAlphaWriter.writePageJni(writerId, buffer)</h5>
+    <div class="fd">xldb/alpha_jni/cpp/AlphaWriterJNI.cpp</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node" style="border-color: var(--accent-green)">
+    <h5><span class="badge badge-green">C++</span> VeloxWriter::write(RowVector)</h5>
+    <div class="fd">Encoding selection &rarr; BlockBitPacking / Dictionary / RLE / ... &rarr; flush to disk</div>
+  </div>
+</div>
+
+<div class="callout info">
+  <strong>Implication:</strong> Because encoding happens in C++, any new encoding (like BlockBitPacking)
+  is automatically available for writes once the C++ encoder lands. No Java-side write changes needed.
+</div>
+
+<table>
+  <tr><th>Layer</th><th>Key Class</th><th>File</th></tr>
+  <tr>
+    <td><span class="badge badge-amber">Java</span></td>
+    <td><code>AlphaPageWriter</code></td>
+    <td><code>xldb/alpha_jni/alpha-common/.../writer/AlphaPageWriter.java</code></td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-amber">Java</span></td>
+    <td><code>JniAlphaWriter</code></td>
+    <td><code>xldb/alpha_jni/alpha-common/.../writer/JniAlphaWriter.java</code></td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-purple">JNI</span></td>
+    <td><code>AlphaWriterJNI.cpp</code></td>
+    <td><code>xldb/alpha_jni/cpp/AlphaWriterJNI.cpp</code></td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-green">C++</span></td>
+    <td><code>VeloxWriter</code></td>
+    <td><code>dwio/nimble/velox/VeloxWriter.h</code></td>
+  </tr>
+</table>
+
+<!-- ================================================================ -->
+<h2><span class="sec-num">2</span> Read Path</h2>
+
+<p>
+  Unlike the writer, the Java Nimble reader is a <strong>pure Java implementation</strong> in
+  <code>alpha.encodings</code>. It is the production decoder used by Spark via
+  <code>xldb-orc</code> &rarr; shaded <code>AlphaRecordReader</code>.
+</p>
+
+<h3>Three Java Nimble Packages</h3>
+
+<p>There are three Java packages related to Nimble encoding. Only one is production:</p>
+
+<div class="card" style="margin-bottom: 0.5rem;">
+  <div class="card-title" style="color: var(--accent-green)">Production</div>
+  <table style="margin: 0.5rem 0 0;">
+    <tr><th>Package</th><th>Location</th><th>Consumers</th></tr>
+    <tr>
+      <td><code>com.facebook.presto.alpha.encodings</code></td>
+      <td><code>presto-facebook-alpha/.../alpha/encodings/</code></td>
+      <td>Spark reads via <code>AlphaRecordReader</code></td>
+    </tr>
+  </table>
+</div>
+
+<div class="card" style="border-color: var(--accent-red); margin-bottom: 0.75rem;">
+  <div class="card-title" style="color: var(--accent-red)">Dead &mdash; prototype + its test JNI bridge</div>
+  <table style="margin: 0.5rem 0 0;">
+    <tr><th>Package</th><th>Location</th><th>Role</th></tr>
+    <tr>
+      <td><code>com.facebook.presto.nimble</code></td>
+      <td><code>presto-facebook-alpha/.../nimble/</code></td>
+      <td>Selective-read prototype decoders &mdash; never shipped, zero consumers</td>
+    </tr>
+    <tr>
+      <td><code>com.facebook.xldb.nimble.jni</code></td>
+      <td><code>xldb/alpha_jni/nimble-encodings/</code></td>
+      <td>JNI bridge that encodes test data via C++ for the prototype&rsquo;s tests (<code>&lt;scope&gt;test&lt;/scope&gt;</code>)</td>
+    </tr>
+  </table>
+  <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.5rem 0 0;">
+    The prototype&rsquo;s tests call <code>NimbleEncodings.encode()</code> via JNI to generate C++-encoded
+    data, then verify the prototype&rsquo;s Java decoders can read it. No <code>alpha.*</code> code imports
+    <code>xldb.nimble.jni</code>.
+  </p>
+</div>
+
+<div class="callout warn">
+  <strong>Important:</strong> New encoding support (like BlockBitPacking) only needs to be added to
+  <code>alpha.encodings</code>. The other two packages have zero production consumers.
+</div>
+
+<p>
+  There are also two separate <code>EncodingType</code> enums:
+</p>
+<ul style="font-size:0.85rem; margin: 0.5rem 0 0.75rem 1.5rem;">
+  <li><code>alpha.common.EncodingType</code> &mdash; <span class="badge badge-green">production</span> used by the read path; <code>EncodingFactory</code> calls <code>fromValue(15)</code> to dispatch decoding. <strong>Must</strong> be updated for new encodings.</li>
+  <li><code>xldb.nimble.jni.EncodingType</code> &mdash; <span class="badge badge-red">test-only</span> only imported by <code>com.facebook.presto.nimble</code> test files. Updated defensively to keep integer values in sync, but not required for production.</li>
+</ul>
+
+<div class="flow">
+  <div class="flow-node">
+    <h5><span class="badge badge-amber">Java</span> AlphaRecordReader</h5>
+    <div class="fd">Spark &rarr; xldb-orc &rarr; AlphaRecordReader</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node">
+    <h5>EncodingFactory.deserializeEncoding()</h5>
+    <div class="fd">Reads encoding prefix &rarr; dispatches on EncodingType</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node" style="border-color: var(--accent-green)">
+    <h5>BlockBitPackingEncoding.createEncoding(dataType, input, memCtx)</h5>
+    <div class="fd">Dispatches to Byte / Short / Int / Long variant based on DataType</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node">
+    <h5>Constructor: parse nested metadata + decompress packed data</h5>
+    <div class="fd">Reads 3 sub-streams via recursive EncodingFactory calls</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node">
+    <h5>materialize(rowCount) &rarr; Block</h5>
+    <div class="fd">Per-block bit-unpack + baseline addition &rarr; ByteArrayBlock / IntArrayBlock / ...</div>
+  </div>
+</div>
+
+<h3>BlockBitPacking Binary Format</h3>
+
+<div class="card">
+  <div class="card-title">What the Java decoder reads</div>
+<div class="diagram"><strong>[Encoding Prefix]</strong>  <em>encodingType=15, dataType, rowCount</em>
+
+<strong>[compressionType]</strong>  uint8  &mdash; Uncompressed / Zstd / Zstrong
+<strong>[blockSize]</strong>         uint16 &mdash; default 1024
+<strong>[numBlocks]</strong>         uint16 &mdash; ceil(rowCount / blockSize)
+
+<em>[size&#x2081;]</em> <span class="p">[baselines encoding]</span>   physicalType[numBlocks]
+<em>[size&#x2082;]</em> <span class="p">[bitWidths encoding]</span>   uint8[numBlocks], 255 = skip-encoding
+<em>[size&#x2083;]</em> <span class="p">[offsets encoding]</span>     uint32[numBlocks], byte offset per block
+
+<span class="g">[packed data]</span>  all blocks contiguously, compressed with compressionType</div>
+</div>
+
+<h3>Type Specialization</h3>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">ByteBlockBitPackingEncoding</div>
+    <p style="font-size:0.82rem">Int8 / Uint8 &mdash; baseline: <code>byte</code>, reads <code>short</code> for bit extraction</p>
+  </div>
+  <div class="card">
+    <div class="card-title">ShortBlockBitPackingEncoding</div>
+    <p style="font-size:0.82rem">Int16 / Uint16 &mdash; baseline: <code>short</code>, reads <code>int</code> for bit extraction</p>
+  </div>
+  <div class="card">
+    <div class="card-title">IntBlockBitPackingEncoding</div>
+    <p style="font-size:0.82rem">Int32 / Uint32 / Float &mdash; baseline: <code>int</code>, reads <code>long</code> for extraction</p>
+  </div>
+  <div class="card">
+    <div class="card-title">LongBlockBitPackingEncoding</div>
+    <p style="font-size:0.82rem">Int64 / Uint64 / Double &mdash; baseline: <code>long</code>, two-word read for bw &gt; 58</p>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<h2><span class="sec-num">3</span> E2E Verification</h2>
+
+<p>
+  The E2E test verifies that the <strong>pure Java decoder</strong> correctly reads what the
+  <strong>C++ encoder</strong> writes. Artifacts are generated once by the C++ test generator
+  and committed to the repo.
+</p>
+
+<h3>Step 1 &mdash; Generate Artifacts <span class="badge badge-green">C++</span></h3>
+
+<p>
+  <code>test_generator</code> (<code>//dwio/nimble/encodings/tests:test_generator</code>)
+  produces artifact files for each (encoding, dataType, rowCount) combination:
+</p>
+
+<div class="card">
+  <div class="card-title">For each encoding &times; type &times; rowCount:</div>
+  <ol style="font-size: 0.84rem; margin: 0.5rem 0 0.5rem 1.2rem;">
+    <li><strong>Generate random data</strong> &mdash; seeded RNG creates <code>rowCount</code> random values of the given type</li>
+    <li><strong>Write <code>.data</code> file</strong> &mdash; raw bytes of each value in native byte order (no header, no encoding &mdash; just <code>rowCount &times; sizeof(T)</code> bytes)</li>
+    <li><strong>Encode 3&times;</strong> &mdash; calls the real C++ encoder (<code>E::encode()</code>) via a test wrapper (<code>nimble::test::Encoder&lt;E&gt;::encode()</code>) with each compression type</li>
+    <li><strong>Write <code>.encoding</code> files</strong> &mdash; the full encoded blob (prefix + nested metadata + compressed packed data) for Uncompressed, Zstd, and Zstrong</li>
+  </ol>
+</div>
+
+<div class="callout info">
+  <strong>Real encoder, controlled selection:</strong> The test wrapper calls the exact same
+  <code>BlockBitPackingEncoding::encode()</code> that production uses. The only test-specific
+  behavior is a <code>TestTrivialEncodingSelectionPolicy</code> that forces nested metadata
+  sub-streams to use Trivial encoding for determinism.
+</div>
+
+<div class="diagram"><em># Generate only BlockBitPacking artifacts (use --encoding_filter)</em>
+buck2 run //dwio/nimble/encodings/tests:test_generator \
+    -- --output_dir=presto-facebook-alpha/src/test/resources/encodings \
+       --encoding_filter=BlockBitPacking
+
+<em># Output per (dataType, rowCount):</em>
+<em>#   BlockBitPacking_Int32_256.data                  &larr; raw values (ground truth)</em>
+<em>#   BlockBitPacking_Int32_256_Uncompressed.encoding &larr; encoded blob, no compression</em>
+<em>#   BlockBitPacking_Int32_256_Zstd.encoding          &larr; encoded blob, Zstd compressed</em>
+<em>#   BlockBitPacking_Int32_256_Zstrong.encoding       &larr; encoded blob, Zstrong compressed</em>
+
+<em># Omit --encoding_filter to regenerate ALL encoding artifacts</em></div>
+
+<h3>Step 2 &mdash; Verify <span class="badge badge-amber">Java</span></h3>
+
+<div class="flow">
+  <div class="flow-node">
+    <h5>List *.data files in resources/encodings/</h5>
+    <div class="fd">Parse filename &rarr; encoding type, data type, row count</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node">
+    <h5>Read .data file &rarr; expected values[]</h5>
+    <div class="fd">Raw source values written by C++ (ground truth)</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node" style="border-color: var(--accent-purple)">
+    <h5>Read .encoding file &rarr; EncodingFactory.deserialize()</h5>
+    <div class="fd">Recursive Nimble decoding &rarr; encoding.materialize(rowCount) &rarr; decoded values[]</div>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-node" style="border-color: var(--accent-green)">
+    <h5>assertEquals(expected[i], decoded[i]) &forall; i</h5>
+    <div class="fd">3 compressions &times; 10 data types &times; 2 sizes = 60 test cases per encoding</div>
+  </div>
+</div>
+
+<h3>Running the Test</h3>
+
+<div class="diagram"><em># Generate artifacts (only needed when C++ format changes)</em>
+buck2 run //dwio/nimble/encodings/tests:test_generator \
+    -- --output_dir=presto-facebook-alpha/src/test/resources/encodings
+
+<em># Run the Java E2E test</em>
+cd github/presto-facebook-trunk
+mvn test -pl presto-facebook-alpha \
+    -Dtest=TestEncodingsE2E \
+    -Dmaven.gitcommitid.skip=true \
+    -Dcheckstyle.skip=true</div>
+
+<div class="callout">
+  <strong>Coverage:</strong> 3 compressions (Uncompressed, Zstd, Zstrong)
+  &times; 10 data types (Int8, Uint8, Int16, Uint16, Int32, Uint32, Int64, Uint64, Float, Double)
+  &times; 2 row counts (0, 256) = <strong>60 test cases</strong> per encoding type.
+</div>
+
+
+</div>
+</body>
+</html>
