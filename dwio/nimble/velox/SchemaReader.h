@@ -69,8 +69,18 @@ class Type {
   const FlatMapType& asFlatMap() const;
   const SlidingWindowMapType& asSlidingWindowMap() const;
 
+  /// Returns the per-type string-keyed attribute bag. Insertion order
+  /// matches the writer-side `TypeBuilder::attributes()` it was sourced
+  /// from. Empty when the underlying SchemaNode had no attributes (covers
+  /// both legacy files and present-but-empty lists).
+  const std::vector<std::pair<std::string, std::string>>& attributes() const {
+    return attributes_;
+  }
+
  protected:
-  explicit Type(Kind kind);
+  explicit Type(
+      Kind kind,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   virtual ~Type() = default;
 
@@ -79,11 +89,14 @@ class Type {
   Type(Type&&) = delete;
 
   Kind kind_;
+  std::vector<std::pair<std::string, std::string>> attributes_;
 };
 
 class ScalarType : public Type {
  public:
-  explicit ScalarType(StreamDescriptor scalarDescriptor);
+  explicit ScalarType(
+      StreamDescriptor scalarDescriptor,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& scalarDescriptor() const;
 
@@ -95,7 +108,8 @@ class TimestampMicroNanoType : public Type {
  public:
   explicit TimestampMicroNanoType(
       StreamDescriptor microsDescriptor,
-      StreamDescriptor nanosDescriptor);
+      StreamDescriptor nanosDescriptor,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& microsDescriptor() const;
   const StreamDescriptor& nanosDescriptor() const;
@@ -109,7 +123,8 @@ class ArrayType : public Type {
  public:
   ArrayType(
       StreamDescriptor lengthsDescriptor,
-      std::shared_ptr<const Type> elements);
+      std::shared_ptr<const Type> elements,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& lengthsDescriptor() const;
   const std::shared_ptr<const Type>& elements() const;
@@ -124,7 +139,8 @@ class MapType : public Type {
   MapType(
       StreamDescriptor lengthsDescriptor,
       std::shared_ptr<const Type> keys,
-      std::shared_ptr<const Type> values);
+      std::shared_ptr<const Type> values,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& lengthsDescriptor() const;
   const std::shared_ptr<const Type>& keys() const;
@@ -142,7 +158,8 @@ class SlidingWindowMapType : public virtual Type {
       StreamDescriptor offsetsDescriptor,
       StreamDescriptor lengthsDescriptor,
       std::shared_ptr<const Type> keys,
-      std::shared_ptr<const Type> values);
+      std::shared_ptr<const Type> values,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& offsetsDescriptor() const;
   const StreamDescriptor& lengthsDescriptor() const;
@@ -161,7 +178,8 @@ class RowType : public Type {
   RowType(
       StreamDescriptor nullsDescriptor,
       std::vector<std::string> names,
-      std::vector<std::shared_ptr<const Type>> children);
+      std::vector<std::shared_ptr<const Type>> children,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& nullsDescriptor() const;
   size_t childrenCount() const;
@@ -193,7 +211,8 @@ class FlatMapType : public Type {
       ScalarKind keyScalarKind,
       std::vector<std::string> names,
       std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors,
-      std::vector<std::shared_ptr<const Type>> children);
+      std::vector<std::shared_ptr<const Type>> children,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& nullsDescriptor() const;
   const StreamDescriptor& inMapDescriptorAt(size_t index) const;
@@ -219,7 +238,8 @@ class ArrayWithOffsetsType : public Type {
   ArrayWithOffsetsType(
       StreamDescriptor offsetsDescriptor,
       StreamDescriptor lengthsDescriptor,
-      std::shared_ptr<const Type> elements);
+      std::shared_ptr<const Type> elements,
+      std::vector<std::pair<std::string, std::string>> attributes = {});
 
   const StreamDescriptor& offsetsDescriptor() const;
   const StreamDescriptor& lengthsDescriptor() const;

@@ -85,6 +85,30 @@ struct VeloxWriterOptions {
   /// the set will cause an error during writing.
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
 
+  // Per-column string-keyed attributes to stamp onto the NIMBLE schema.
+  // Keyed by a dotted path of `RowType` child names that resolves to a node
+  // in the input `RowType`. The empty key (`""`) targets the root.
+  // Examples:
+  //   "id"              -> top-level column `id`
+  //   "user.name"       -> field `name` inside top-level struct column
+  //                        `user`
+  // Each value is the attribute bag forwarded verbatim to
+  // `TypeBuilder::setAttributes(...)` on the matching node and preserves
+  // insertion order end-to-end through schema serialization.
+  //
+  // Paths that do not resolve to a node in the input `RowType` are silently
+  // ignored so that callers can submit a superset of attributes and let
+  // schema evolution drop entries that no longer apply. Paths walking
+  // through non-`RowType` parents are not supported in this diff; callers
+  // currently emit flat top-level / nested-struct keys only, and richer
+  // addressing can be added in a follow-up if needed.
+  //
+  // Empty map (default) is a no-op: every existing NIMBLE writer produces
+  // byte-identical files.
+  folly::
+      F14FastMap<std::string, std::vector<std::pair<std::string, std::string>>>
+          attributesByColumn;
+
   // When true, the writer skips encoding flat map in-map boolean streams that
   // are all-true (every row has the key) or all-false (no row has the key).
   // The reader infers the in-map state from value stream presence: all-true

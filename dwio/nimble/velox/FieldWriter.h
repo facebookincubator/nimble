@@ -323,12 +323,12 @@ class FieldWriterContext {
     flatmapFieldAddedEventHandler_ = std::move(handler);
   }
 
-  inline void handleAddedType(const TypeBuilder& typeBuilder) const {
-    typeAddedHandler_(typeBuilder);
+  inline void handleAddedType(TypeBuilder& typeBuilder, uint32_t nodeId) const {
+    typeAddedHandler_(typeBuilder, nodeId);
   }
 
   inline void setTypeAddedHandler(
-      std::function<void(const TypeBuilder&)>&& handler) {
+      std::function<void(TypeBuilder&, uint32_t)>&& handler) {
     typeAddedHandler_ = std::move(handler);
   }
 
@@ -499,8 +499,8 @@ class FieldWriterContext {
   std::function<void(const TypeBuilder&, std::string_view, const TypeBuilder&)>
       flatmapFieldAddedEventHandler_;
 
-  std::function<void(const TypeBuilder&)> typeAddedHandler_{
-      [](const TypeBuilder&) {}};
+  std::function<void(TypeBuilder&, uint32_t)> typeAddedHandler_{
+      [](TypeBuilder&, uint32_t) {}};
 
  private:
   void finalizeStatsCollector(
@@ -662,7 +662,7 @@ class FieldWriter {
   static std::unique_ptr<FieldWriter> create(
       FieldWriterContext& context,
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
-      std::function<void(const TypeBuilder&)> typeAddedHandler);
+      std::function<void(TypeBuilder&, uint32_t)> typeAddedHandler);
 
  protected:
   // Computes the number of parallel write tasks based on max parallelism and

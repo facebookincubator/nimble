@@ -7349,6 +7349,142 @@ TEST_P(VeloxReaderTest, flatMapStringKeyOwnership) {
   ASSERT_EQ(output->size(), kBatches);
 }
 
+// ---------------------------------------------------------------------------
+// End-to-end attributes propagation through the writer/reader pipeline.
+//
+// Validates VeloxWriterOptions::attributesByColumn round-trips through the
+// writer pipeline, the schema flatbuffer, and back through VeloxReader to
+// the deserialized Type tree exposed by reader.schema(). Top-level and
+// nested-struct dotted-path keys are covered; unresolved paths must be
+// silently dropped per the documented contract.
+// ---------------------------------------------------------------------------
+TEST_P(VeloxReaderTest, attributesByColumnRoundTrip) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // ROW{id BIGINT, user ROW{name VARCHAR, age INTEGER}}
+  auto userType =
+      velox::ROW({"name", "age"}, {velox::VARCHAR(), velox::INTEGER()});
+  auto type = velox::ROW({"id", "user"}, {velox::BIGINT(), userType});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  // Top-level leaf and a nested-struct leaf via dotted path. The bogus path
+  // "user.does_not_exist" must be silently dropped.
+  writerOptions.attributesByColumn["id"] = {
+      {"key.a", "1"},
+      {"key.b", "true"},
+      {"key.c", "LONG"},
+  };
+  writerOptions.attributesByColumn["user"] = {
+      {"key.a", "2"},
+      {"key.b", "false"},
+  };
+  writerOptions.attributesByColumn["user.name"] = {
+      {"key.a", "3"},
+      {"key.b", "true"},
+  };
+  writerOptions.attributesByColumn["user.does_not_exist"] = {
+      {"key.a", "999"},
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  auto users = vectorMaker.rowVector(
+      {"name", "age"},
+      {vectorMaker.flatVector<velox::StringView>({"alice", "bob"}),
+       vectorMaker.flatVector<int32_t>({30, 25})});
+  auto vector = vectorMaker.rowVector(
+      {"id", "user"}, {vectorMaker.flatVector<int64_t>({100, 200}), users});
+  writer.write(vector);
+  writer.close();
+
+  // Read back and inspect the deserialized Type tree's attributes().
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& root = reader.schema();
+  ASSERT_EQ(nimble::Kind::Row, root->kind());
+  EXPECT_TRUE(root->attributes().empty());
+
+  const auto& rowSchema = root->asRow();
+  ASSERT_EQ(2, rowSchema.childrenCount());
+  EXPECT_EQ("id", rowSchema.nameAt(0));
+  EXPECT_EQ("user", rowSchema.nameAt(1));
+
+  // Top-level leaf attributes.
+  const auto& idType = rowSchema.childAt(0);
+  EXPECT_EQ(nimble::Kind::Scalar, idType->kind());
+  const std::vector<std::pair<std::string, std::string>> kIdAttrs = {
+      {"key.a", "1"},
+      {"key.b", "true"},
+      {"key.c", "LONG"},
+  };
+  EXPECT_EQ(kIdAttrs, idType->attributes());
+
+  // Nested-struct attributes on the parent row.
+  const auto& userTypeSchema = rowSchema.childAt(1);
+  ASSERT_EQ(nimble::Kind::Row, userTypeSchema->kind());
+  const std::vector<std::pair<std::string, std::string>> kUserAttrs = {
+      {"key.a", "2"},
+      {"key.b", "false"},
+  };
+  EXPECT_EQ(kUserAttrs, userTypeSchema->attributes());
+
+  // Nested-struct attributes on a leaf reached by dotted path.
+  const auto& userRowSchema = userTypeSchema->asRow();
+  ASSERT_EQ(2, userRowSchema.childrenCount());
+  EXPECT_EQ("name", userRowSchema.nameAt(0));
+  const auto& nameType = userRowSchema.childAt(0);
+  EXPECT_EQ(nimble::Kind::Scalar, nameType->kind());
+  const std::vector<std::pair<std::string, std::string>> kNameAttrs = {
+      {"key.a", "3"},
+      {"key.b", "true"},
+  };
+  EXPECT_EQ(kNameAttrs, nameType->attributes());
+
+  // `age` was never annotated -- must surface as empty (the unresolved
+  // "user.does_not_exist" path must have been dropped without bleeding
+  // into a sibling).
+  const auto& ageType = userRowSchema.childAt(1);
+  EXPECT_TRUE(ageType->attributes().empty());
+}
+
+// Backward-compat: a writer that does NOT set attributesByColumn must
+// produce a NIMBLE file whose deserialized Type tree exposes empty
+// attributes on every node. Pins the no-op upgrade path for every
+// existing NIMBLE writer.
+TEST_P(VeloxReaderTest, attributesByColumnEmptyByDefault) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  auto type = velox::ROW({"a", "b"}, {velox::BIGINT(), velox::VARCHAR()});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  facebook::nimble::VeloxWriterOptions writerOptions; // defaults
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  auto vector = vectorMaker.rowVector(
+      {"a", "b"},
+      {vectorMaker.flatVector<int64_t>({1, 2}),
+       vectorMaker.flatVector<velox::StringView>({"x", "y"})});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& root = reader.schema();
+  ASSERT_EQ(nimble::Kind::Row, root->kind());
+  EXPECT_TRUE(root->attributes().empty());
+  const auto& rowSchema = root->asRow();
+  ASSERT_EQ(2, rowSchema.childrenCount());
+  EXPECT_TRUE(rowSchema.childAt(0)->attributes().empty());
+  EXPECT_TRUE(rowSchema.childAt(1)->attributes().empty());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     VeloxReaderTestSuite,
     VeloxReaderTest,

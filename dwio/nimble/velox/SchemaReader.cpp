@@ -47,7 +47,10 @@ struct NamedType {
 
 } // namespace
 
-Type::Type(Kind kind) : kind_{kind} {}
+Type::Type(
+    Kind kind,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : kind_{kind}, attributes_{std::move(attributes)} {}
 
 Kind Type::kind() const {
   return kind_;
@@ -145,8 +148,11 @@ const SlidingWindowMapType& Type::asSlidingWindowMap() const {
   return dynamic_cast<const SlidingWindowMapType&>(*this);
 }
 
-ScalarType::ScalarType(StreamDescriptor scalarDescriptor)
-    : Type(Kind::Scalar), scalarDescriptor_{std::move(scalarDescriptor)} {}
+ScalarType::ScalarType(
+    StreamDescriptor scalarDescriptor,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::Scalar, std::move(attributes)),
+      scalarDescriptor_{std::move(scalarDescriptor)} {}
 
 const StreamDescriptor& ScalarType::scalarDescriptor() const {
   return scalarDescriptor_;
@@ -154,8 +160,9 @@ const StreamDescriptor& ScalarType::scalarDescriptor() const {
 
 TimestampMicroNanoType::TimestampMicroNanoType(
     StreamDescriptor microsDescriptor,
-    StreamDescriptor nanosDescriptor)
-    : Type(Kind::TimestampMicroNano),
+    StreamDescriptor nanosDescriptor,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::TimestampMicroNano, std::move(attributes)),
       microsDescriptor_{std::move(microsDescriptor)},
       nanosDescriptor_{std::move(nanosDescriptor)} {}
 
@@ -169,8 +176,9 @@ const StreamDescriptor& TimestampMicroNanoType::nanosDescriptor() const {
 
 ArrayType::ArrayType(
     StreamDescriptor lengthsDescriptor,
-    std::shared_ptr<const Type> elements)
-    : Type(Kind::Array),
+    std::shared_ptr<const Type> elements,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::Array, std::move(attributes)),
       lengthsDescriptor_{std::move(lengthsDescriptor)},
       elements_{std::move(elements)} {}
 
@@ -185,8 +193,9 @@ const std::shared_ptr<const Type>& ArrayType::elements() const {
 MapType::MapType(
     StreamDescriptor lengthsDescriptor,
     std::shared_ptr<const Type> keys,
-    std::shared_ptr<const Type> values)
-    : Type(Kind::Map),
+    std::shared_ptr<const Type> values,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::Map, std::move(attributes)),
       lengthsDescriptor_{std::move(lengthsDescriptor)},
       keys_{std::move(keys)},
       values_{std::move(values)} {}
@@ -207,8 +216,9 @@ SlidingWindowMapType::SlidingWindowMapType(
     StreamDescriptor offsetsDescriptor,
     StreamDescriptor lengthsDescriptor,
     std::shared_ptr<const Type> keys,
-    std::shared_ptr<const Type> values)
-    : Type(Kind::SlidingWindowMap),
+    std::shared_ptr<const Type> values,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::SlidingWindowMap, std::move(attributes)),
       offsetsDescriptor_{std::move(offsetsDescriptor)},
       lengthsDescriptor_{std::move(lengthsDescriptor)},
 
@@ -234,8 +244,9 @@ const std::shared_ptr<const Type>& SlidingWindowMapType::values() const {
 RowType::RowType(
     StreamDescriptor nullsDescriptor,
     std::vector<std::string> names,
-    std::vector<std::shared_ptr<const Type>> children)
-    : Type(Kind::Row),
+    std::vector<std::shared_ptr<const Type>> children,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::Row, std::move(attributes)),
       nullsDescriptor_{std::move(nullsDescriptor)},
       names_{std::move(names)},
       children_{std::move(children)} {
@@ -278,8 +289,9 @@ FlatMapType::FlatMapType(
     ScalarKind keyScalarKind,
     std::vector<std::string> names,
     std::vector<std::unique_ptr<StreamDescriptor>> inMapDescriptors,
-    std::vector<std::shared_ptr<const Type>> children)
-    : Type(Kind::FlatMap),
+    std::vector<std::shared_ptr<const Type>> children,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::FlatMap, std::move(attributes)),
       nullsDescriptor_{nullsDescriptor},
       keyScalarKind_{keyScalarKind},
       names_{std::move(names)},
@@ -332,8 +344,9 @@ std::optional<size_t> FlatMapType::findChild(std::string_view name) const {
 ArrayWithOffsetsType::ArrayWithOffsetsType(
     StreamDescriptor offsetsDescriptor,
     StreamDescriptor lengthsDescriptor,
-    std::shared_ptr<const Type> elements)
-    : Type(Kind::ArrayWithOffsets),
+    std::shared_ptr<const Type> elements,
+    std::vector<std::pair<std::string, std::string>> attributes)
+    : Type(Kind::ArrayWithOffsets, std::move(attributes)),
       offsetsDescriptor_{std::move(offsetsDescriptor)},
       lengthsDescriptor_{std::move(lengthsDescriptor)},
       elements_{std::move(elements)} {}
@@ -355,11 +368,18 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
   const auto& node = nodes[index++];
   auto offset = node.offset();
   auto kind = node.kind();
+  // Attributes are sourced from the primary SchemaNode of each TypeBuilder
+  // (the first node emitted in addNode). Synthetic intermediate nodes such
+  // as the nanos descriptor of TimestampMicroNano, the offsets descriptor
+  // of ArrayWithOffsets, the lengths descriptor of SlidingWindowMap, and
+  // the in-map descriptors of FlatMap do not carry attributes.
+  auto attributes = node.attributes();
   switch (kind) {
     case Kind::Scalar: {
       return {
           .type = std::make_shared<ScalarType>(
-              StreamDescriptor{offset, node.scalarKind()}),
+              StreamDescriptor{offset, node.scalarKind()},
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::TimestampMicroNano: {
@@ -371,7 +391,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
       return {
           .type = std::make_shared<TimestampMicroNanoType>(
               StreamDescriptor{offset, ScalarKind::Int64},
-              StreamDescriptor{nanosNode.offset(), nanosNode.scalarKind()}),
+              StreamDescriptor{nanosNode.offset(), nanosNode.scalarKind()},
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::Array: {
@@ -379,7 +400,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
       return {
           .type = std::make_shared<ArrayType>(
               StreamDescriptor{offset, ScalarKind::UInt32},
-              std::move(elements)),
+              std::move(elements),
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::Map: {
@@ -389,7 +411,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
           .type = std::make_shared<MapType>(
               StreamDescriptor{offset, ScalarKind::UInt32},
               std::move(keys),
-              std::move(values)),
+              std::move(values),
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::SlidingWindowMap: {
@@ -405,7 +428,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
               StreamDescriptor{offset, ScalarKind::UInt32},
               StreamDescriptor{lengthsNode.offset(), lengthsNode.scalarKind()},
               std::move(keys),
-              std::move(values)),
+              std::move(values),
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::Row: {
@@ -422,7 +446,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
           .type = std::make_shared<RowType>(
               StreamDescriptor{offset, ScalarKind::Bool},
               std::move(names),
-              std::move(children)),
+              std::move(children),
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::FlatMap: {
@@ -454,7 +479,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
               node.scalarKind(),
               std::move(names),
               std::move(inMapDescriptors),
-              std::move(children)),
+              std::move(children),
+              std::move(attributes)),
           .name = node.name()};
     }
     case Kind::ArrayWithOffsets: {
@@ -468,7 +494,8 @@ NamedType getType(offset_size& index, const std::vector<SchemaNode>& nodes) {
           .type = std::make_shared<ArrayWithOffsetsType>(
               StreamDescriptor{offsetsNode.offset(), offsetsNode.scalarKind()},
               StreamDescriptor{offset, ScalarKind::UInt32},
-              std::move(elements)),
+              std::move(elements),
+              std::move(attributes)),
           .name = node.name()};
     }
 
