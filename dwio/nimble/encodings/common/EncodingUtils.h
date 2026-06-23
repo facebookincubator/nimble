@@ -21,11 +21,12 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-// FOR and FrequencyPartition integration commented out (disabled):
-/*
+// FOR and FrequencyPartition integration (re-enabled for
+// NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
-*/
+#endif
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -33,12 +34,11 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-// SubIntSplit integration commented out (disabled):
-/*
+// SubIntSplit integration (re-enabled for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+// was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
-*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 
@@ -155,19 +155,18 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
-      // SubIntSplit integration commented out (disabled):
-      /*
-  #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-      case EncodingType::SubIntSplit:
-        if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
-          return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
-        } else {
-          NIMBLE_UNREACHABLE(toString(encoding.dataType()));
-        }
-  #endif
-      */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    case EncodingType::SubIntSplit:
+      if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
+        return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
+      }
+#endif
+    // FOR and FrequencyPartition integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR:
       if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
@@ -182,7 +181,6 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
         NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
 #endif
-    */
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

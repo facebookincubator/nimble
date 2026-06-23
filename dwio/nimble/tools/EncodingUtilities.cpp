@@ -114,9 +114,12 @@ void traverseEncodings(
     case EncodingType::Prefix:
     case EncodingType::ALP:
     case EncodingType::SimdForBitpack:
-    // SubIntSplit integration is disabled; treat it as having no nested
-    // encoding to traverse.
-    case EncodingType::SubIntSplit: {
+#ifndef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+    // SubIntSplit integration is disabled in non-experimental builds; treat
+    // it as having no nested encoding to traverse.
+    case EncodingType::SubIntSplit:
+#endif
+    {
       // don't have any nested encoding
       break;
     }
@@ -260,8 +263,9 @@ void traverseEncodings(
           visitor);
       break;
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       const char* pos = stream.data() + kEncodingPrefixSize;
       const uint8_t splitCount = encoding::read<uint8_t>(pos);
@@ -285,7 +289,7 @@ void traverseEncodings(
       }
       break;
     }
-    */
+#endif
     case EncodingType::Sentinel: {
       const char* pos = stream.data() + kEncodingPrefixSize + 8;
       traverseEncodings(

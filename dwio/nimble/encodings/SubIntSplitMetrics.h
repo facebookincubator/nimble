@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -37,7 +40,10 @@ enum class MetricFlag : uint32_t {
   RunStats = 1u << 1, // runCount, avgRunLength
   UniqueCount = 1u << 2, // uniqueCount (raw, capped)
   DominantValue = 1u << 3, // dominantCount (most-frequent value's frequency)
-  All = (1u << 4) - 1,
+  BitWidthHistogram = 1u << 4, // bitWidthBuckets
+  DeltaStats = 1u << 5, // sumAbsDelta, monotonicCount
+  FrequencyTiers = 1u << 6, // topKCoverage (requires UniqueCount)
+  All = (1u << 7) - 1,
 };
 using MetricFlags = uint32_t;
 
@@ -66,6 +72,28 @@ struct SegmentMetrics {
 
   size_t runCount{0};
   double avgRunLength{0.0};
+
+  // bitWidthBuckets[i] counts values v with bit_width(v) in [7*i, 7*i+6],
+  // for i in [0, 8]; bucket 9 catches bit_width(v) >= 63. Approximates
+  // PFOREncoding<T>::selectBaseBitWidth's bit_width(v - min) histogram using
+  // bit_width(v) directly (segment values are already small bit-slices, so
+  // `min` is usually close to 0). See PFOREncoding.h's selectBaseBitWidth.
+  std::array<uint32_t, 10> bitWidthBuckets{};
+
+  // Sum of |v[i] - v[i-1]| over consecutive pairs, and the count of pairs
+  // where v[i] >= v[i-1] (non-decreasing, i.e. encodable as a positive delta
+  // without a restatement). Used by deltaCostBits/forCostBits to estimate the
+  // average step size and the monotonic-non-decreasing fraction.
+  uint64_t sumAbsDelta{0};
+  size_t monotonicCount{0};
+
+  // Cumulative fraction of values covered by the top-1/2/4/8 most-frequent
+  // distinct values. Only valid when FrequencyTiers was requested AND
+  // uniqueCountCapped == false (i.e. uniqueCount <= kUniqueCountCap).
+  // topKCoverage[0] = fraction for top-1, [1] = top-2, [2] = top-4,
+  // [3] = top-8. Used by frequencyPartitionCostBits to estimate tier encoding
+  // gains.
+  std::array<double, 4> topKCoverage{};
 };
 
 // Single-pass metric collector for extracted bit-range values.
@@ -76,15 +104,25 @@ class MetricCollector {
   static constexpr size_t kUniqueCountCap = 1
       << 14; // 16K cap (lighter than full HLL)
 
+  // Maps bit_width(v) to a bucket index in [0, 9], grouping every 7 bits.
+  static constexpr size_t bitWidthBucket(uint64_t v) noexcept {
+    return std::min<size_t>(static_cast<size_t>(std::bit_width(v)) / 7, 9);
+  }
+
   SegmentMetrics compute(
       const std::vector<uint64_t>& values,
       MetricFlags flags = static_cast<MetricFlags>(MetricFlag::All)) const {
     const bool doMin = hasFlag(flags, MetricFlag::MinMax);
     const bool doRun = hasFlag(flags, MetricFlag::RunStats);
-    const bool doUniq = hasFlag(flags, MetricFlag::UniqueCount);
     const bool doDominant = hasFlag(flags, MetricFlag::DominantValue);
+    const bool doFreqTiers = hasFlag(flags, MetricFlag::FrequencyTiers);
+    // FrequencyTiers requires frequency counts, which subsumes UniqueCount.
+    const bool doUniq =
+        hasFlag(flags, MetricFlag::UniqueCount) || doFreqTiers;
     // Unique count and dominant value share a single frequency map pass.
     const bool doFreq = doUniq || doDominant;
+    const bool doHist = hasFlag(flags, MetricFlag::BitWidthHistogram);
+    const bool doDelta = hasFlag(flags, MetricFlag::DeltaStats);
 
     SegmentMetrics out;
     const size_t n = values.size();
@@ -100,13 +138,19 @@ class MetricCollector {
     if (doRun) {
       out.runCount = 1;
     }
+    if (doHist) {
+      ++out.bitWidthBuckets[bitWidthBucket(v0)];
+    }
 
+    // When doFreqTiers, store actual frequency counts (value → count) so that
+    // topKCoverage can be derived after the pass. When only doUniq or doDominant
+    // is needed, ++freqMap[v] accumulates counts at negligible extra cost.
     absl::flat_hash_map<uint64_t, uint32_t> freqMap;
     bool capped = false;
     uint32_t maxCount = 0;
     if (doFreq) {
       freqMap.reserve(std::min(n, kUniqueCountCap));
-      freqMap.emplace(v0, 1u);
+      ++freqMap[v0];
       maxCount = 1;
     }
 
@@ -125,13 +169,21 @@ class MetricCollector {
         ++out.runCount;
       }
       if (doFreq && !capped) {
-        auto [it, inserted] = freqMap.try_emplace(v, 0u);
-        const uint32_t count = ++it->second;
+        const uint32_t count = ++freqMap[v];
         if (count > maxCount) {
           maxCount = count;
         }
-        if (inserted && freqMap.size() > kUniqueCountCap) {
+        if (freqMap.size() > kUniqueCountCap) {
           capped = true;
+        }
+      }
+      if (doHist) {
+        ++out.bitWidthBuckets[bitWidthBucket(v)];
+      }
+      if (doDelta) {
+        out.sumAbsDelta += (v >= prev) ? (v - prev) : (prev - v);
+        if (v >= prev) {
+          ++out.monotonicCount;
         }
       }
       prev = v;
@@ -151,6 +203,33 @@ class MetricCollector {
     if (doDominant) {
       out.dominantCount = maxCount;
       out.dominantCountCapped = capped;
+    }
+    if (doFreqTiers && !capped) {
+      // Extract frequency values, sort descending, then compute cumulative
+      // coverage fractions for top {1, 2, 4, 8} distinct values.
+      std::vector<uint32_t> freqs;
+      freqs.reserve(freqMap.size());
+      for (const auto& [val, cnt] : freqMap) {
+        freqs.push_back(cnt);
+      }
+      std::sort(freqs.begin(), freqs.end(), std::greater<uint32_t>());
+
+      constexpr size_t kTopKs[4] = {1, 2, 4, 8};
+      const double dn = static_cast<double>(n);
+      uint64_t cumFreq = 0;
+      size_t ki = 0;
+      for (size_t fi = 0; fi < freqs.size() && ki < 4; ++fi) {
+        cumFreq += freqs[fi];
+        while (ki < 4 && fi + 1 >= kTopKs[ki]) {
+          out.topKCoverage[ki] = static_cast<double>(cumFreq) / dn;
+          ++ki;
+        }
+      }
+      // Fill remaining slots if fewer distinct values than topK thresholds.
+      while (ki < 4) {
+        out.topKCoverage[ki] = static_cast<double>(cumFreq) / dn;
+        ++ki;
+      }
     }
 
     return out;

@@ -20,11 +20,12 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-// FOR and FrequencyPartition integration commented out (disabled):
-/*
+// FOR and FrequencyPartition integration (re-enable for
+// NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
-*/
+#endif
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -32,12 +33,11 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-// SubIntSplit integration commented out (disabled):
-/*
+// SubIntSplit integration (re-enable for NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS;
+// was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
-*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -296,16 +296,15 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
     }
 #endif
-    */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
+    // FOR and FrequencyPartition integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FOR: {
       RETURN_ENCODING_BY_INTEGER_TYPE(ForEncoding, dataType);
@@ -314,7 +313,6 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_NON_BOOL_TYPE(FrequencyPartitionEncoding, dataType);
     }
 #endif
-    */
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -421,15 +419,16 @@ std::string_view EncodingFactory::encode(
             selection, castedValues, buffer, options);
       }
     }
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
+    // FOR and FrequencyPartition integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::FrequencyPartition: {
       if constexpr (std::is_same<T, bool>::value) {
         NIMBLE_INCOMPATIBLE_ENCODING(
-            "FrequencyPartition encoding should not be selected for bool data
-types."); } else { return FrequencyPartitionEncoding<T>::encode( selection,
-castedValues, buffer, options);
+            "FrequencyPartition encoding should not be selected for bool data types.");
+      } else {
+        return FrequencyPartitionEncoding<T>::encode(
+            selection, castedValues, buffer, options);
       }
     }
     case EncodingType::FOR: {
@@ -439,12 +438,10 @@ castedValues, buffer, options);
         return ForEncoding<T>::encode(selection, castedValues, buffer, options);
       } else {
         NIMBLE_INCOMPATIBLE_ENCODING(
-            "For encoding can only be selected for integral data types (not
-bool).");
+            "For encoding can only be selected for integral data types (not bool).");
       }
     }
 #endif
-    */
     case EncodingType::SparseBool: {
       if constexpr (!std::is_same<T, bool>::value) {
         NIMBLE_INCOMPATIBLE_ENCODING(
@@ -504,8 +501,8 @@ bool).");
             TypeTraits<T>::dataType);
       }
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
+    // SubIntSplit integration (re-enabled for
+    // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
     case EncodingType::SubIntSplit: {
       if constexpr (
@@ -519,7 +516,6 @@ bool).");
       }
     }
 #endif
-    */
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported.", toString(selection.encodingType()));

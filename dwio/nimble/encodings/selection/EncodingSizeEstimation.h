@@ -21,9 +21,15 @@
 #include <optional>
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
+#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+#endif
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -97,8 +103,18 @@ struct EncodingSizeEstimation {
           return std::nullopt;
         }
       }
-      // SubIntSplit integration commented out (disabled):
-      /*
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+      case EncodingType::BlockBitPacking: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return BlockBitPackingEncoding<physicalType>::estimateSize(
+              entryCount, statistics);
+        } else {
+          return std::nullopt;
+        }
+      }
+#endif
+      // SubIntSplit integration (re-enabled for
+      // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
       case EncodingType::SubIntSplit: {
         if constexpr (
@@ -127,7 +143,36 @@ struct EncodingSizeEstimation {
         }
       }
 #endif
-      */
+      // Delta/FOR integration (re-enabled for
+      // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
+      case EncodingType::Delta: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return DeltaEncoding<physicalType>::estimateSize(
+              entryCount, statistics);
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::FOR: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return ForEncoding<physicalType>::estimateSize(
+              entryCount, statistics);
+        } else {
+          return std::nullopt;
+        }
+      }
+      // FrequencyPartition integration (re-enabled for
+      // NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS; was commented out by #636):
+      case EncodingType::FrequencyPartition: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return FrequencyPartitionEncoding<physicalType>::estimateSize(
+              entryCount, statistics);
+        } else {
+          return std::nullopt;
+        }
+      }
+#endif
       default: {
         return std::nullopt;
       }

@@ -770,6 +770,14 @@ std::string_view SubIntSplitEncoding<T>::encode(
   std::vector<std::string_view> sectionData;
   sectionData.reserve(splitCount);
 
+  // FrequencyPartitionEncoding with NoIndex (options.frequencyPartitionIndex
+  // == 0) outputs values in tier-reordered order, which would desync this
+  // segment from sibling segments at decode time. Override to PerTierBitmaps
+  // (1) so materialize() preserves original row order for all sub-encodings
+  // that read this field.
+  Encoding::Options segmentOptions = options;
+  segmentOptions.frequencyPartitionIndex = 1u; // FreqPartIndexType::PerTierBitmaps
+
   for (uint8_t s = 0; s < splitCount; ++s) {
     const auto& seg = segments[s];
     const int bitStart = seg.bitStart;
@@ -793,7 +801,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint8_t>(
                 sectionValues.data(), sectionValues.size()),
             tempBuffer,
-            options);
+            segmentOptions);
         break;
       }
       case 2: {
@@ -808,7 +816,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint16_t>(
                 sectionValues.data(), sectionValues.size()),
             tempBuffer,
-            options);
+            segmentOptions);
         break;
       }
       case 4: {
@@ -823,7 +831,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint32_t>(
                 sectionValues.data(), sectionValues.size()),
             tempBuffer,
-            options);
+            segmentOptions);
         break;
       }
       case 8: {
@@ -838,7 +846,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint64_t>(
                 sectionValues.data(), sectionValues.size()),
             tempBuffer,
-            options);
+            segmentOptions);
         break;
       }
       default: {
