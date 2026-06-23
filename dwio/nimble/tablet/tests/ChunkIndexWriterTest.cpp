@@ -625,19 +625,27 @@ TEST_F(ChunkIndexWriterTest, uncompressedSizeRoundtrip) {
   }
 }
 
-// Verifies that index metadata without uncompressed_size is rejected.
-// Index is not in production yet, so all files must have the field set.
-TEST_F(ChunkIndexWriterTest, missingUncompressedSizeRejected) {
+// Verifies that index metadata without uncompressed_size (written before
+// D108464890) is handled gracefully: the reader returns nullopt instead of
+// throwing, restoring backward compatibility with old files.
+TEST_F(ChunkIndexWriterTest, missingUncompressedSizeBackwardCompat) {
   flatbuffers::FlatBufferBuilder builder(256);
 
+  // Simulate a pre-D108464890 FlatBuffer: no uncompressed_size field set.
   auto section0 = serialization::CreateMetadataSection(
       builder,
       /*offset=*/100,
       /*size=*/200,
       serialization::CompressionType_Zstd);
 
+  auto section1 = serialization::CreateMetadataSection(
+      builder,
+      /*offset=*/300,
+      /*size=*/150,
+      serialization::CompressionType_Uncompressed);
+
   std::vector<flatbuffers::Offset<serialization::MetadataSection>> sections = {
-      section0};
+      section0, section1};
   auto stripeIndexes = builder.CreateVector(sections);
   builder.Finish(serialization::CreateChunkIndex(builder, stripeIndexes));
 
@@ -651,8 +659,20 @@ TEST_F(ChunkIndexWriterTest, missingUncompressedSizeRejected) {
       MetadataBuffer::decompress(
           std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
 
-  NIMBLE_ASSERT_THROW(
-      index::ChunkIndex::create(std::move(rootSection)), "Uncompressed size");
+  auto chunkIndex = index::ChunkIndex::create(std::move(rootSection));
+  ASSERT_NE(chunkIndex, nullptr);
+  ASSERT_EQ(chunkIndex->numGroups(), 2);
+
+  const auto& zstdSection = chunkIndex->groupMetadata(0);
+  EXPECT_EQ(zstdSection.compressionType(), CompressionType::Zstd);
+  EXPECT_FALSE(zstdSection.uncompressedSize().has_value());
+  EXPECT_EQ(zstdSection.size(), 200);
+
+  const auto& uncompressedSection = chunkIndex->groupMetadata(1);
+  EXPECT_EQ(
+      uncompressedSection.compressionType(), CompressionType::Uncompressed);
+  EXPECT_FALSE(uncompressedSection.uncompressedSize().has_value());
+  EXPECT_EQ(uncompressedSection.size(), 150);
 }
 
 // Verifies that uncompressed sections get uncompressedSize == size in the
