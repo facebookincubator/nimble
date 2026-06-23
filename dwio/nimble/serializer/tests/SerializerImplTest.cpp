@@ -1587,6 +1587,7 @@ TEST_F(EncodeTypedCompressionTest, withEncodingLayout) {
         std::span<const uint32_t>(data),
         buffer,
         policyFactory,
+        Encoding::Options{.useVarintRowCount = true},
         &layout,
         testData.compressionOptions);
 
@@ -1634,6 +1635,7 @@ TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
       std::span<const uint32_t>(data),
       buffer,
       noCompressPolicyFactory,
+      Encoding::Options{.useVarintRowCount = true},
       /*encodingLayout=*/nullptr,
       /*compressionOptions=*/CompressionOptions{});
 

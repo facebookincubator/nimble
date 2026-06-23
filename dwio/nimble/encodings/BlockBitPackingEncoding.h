@@ -651,7 +651,7 @@ std::string_view BlockBitPackingEncoding<T>::encode(
   static_assert(
       std::is_unsigned_v<physicalType>, "Physical type must be unsigned.");
 
-  const uint16_t blockSize = selection.blockBitPackingBlockSize();
+  const uint16_t blockSize = options.blockBitPackingBlockSize;
   const auto rowCount = static_cast<uint32_t>(values.size());
   const uint32_t numBlocks = velox::bits::divRoundUp(rowCount, blockSize);
   NIMBLE_CHECK_LE(

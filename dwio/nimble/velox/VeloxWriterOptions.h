@@ -131,7 +131,12 @@ struct VeloxWriterOptions {
   CompressionOptions compressionOptions;
 
   // Block size for BlockBitPacking encoding.
-  uint16_t blockBitPackingBlockSize{kBlockBitPackingBlockSize};
+  uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
+
+  /// Builds Encoding::Options from VeloxWriterOptions fields.
+  Encoding::Options buildEncodingOptions() const {
+    return {.blockBitPackingBlockSize = blockBitPackingBlockSize};
+  }
 
   // In low-memory mode, the writer is trying to perform smaller (and more
   // precise) buffer allocations. This means that overall, the writer will
