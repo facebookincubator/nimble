@@ -322,14 +322,13 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
     NIMBLE_CHECK_NULL(values_);
     uint32_t rowsLeft = rowCount;
     uint32_t numOutputRows = 0;
-    uint32_t runIndex = 0;
     while (rowsLeft > 0) {
       if (this->copiesRemaining_ == 0) {
         advanceRunLength();
-        runIndex = advanceRunIndex();
+        advanceRunIndex();
       }
       const auto numRows = std::min(rowsLeft, this->copiesRemaining_);
-      velox::simd::simdFill(buffer + numOutputRows, runIndex, numRows);
+      velox::simd::simdFill(buffer + numOutputRows, currentIndex_, numRows);
       numOutputRows += numRows;
       rowsLeft -= numRows;
       this->copiesRemaining_ -= numRows;
@@ -422,7 +421,8 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   void advanceRunValue();
 
   uint32_t advanceRunIndex() {
-    return dictValues_->nextIndex();
+    currentIndex_ = dictValues_->nextIndex();
+    return currentIndex_;
   }
 
   template <bool kDense>
@@ -448,6 +448,11 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   std::unique_ptr<detail::BufferedDictEncoding<physicalType, 128>> dictValues_;
   const physicalType* alphabet_{nullptr};
   velox::BufferPtr indicesBuffer_;
+  // Dict-mode current run's dictionary index. Kept as a member (mirroring
+  // currentValue_ for the non-dict path) so a materialize that resumes mid-run
+  // across a batch boundary reuses the in-progress run's index instead of
+  // restarting from 0.
+  uint32_t currentIndex_{0};
 };
 
 // For the bool case we know the values will alternate between true
