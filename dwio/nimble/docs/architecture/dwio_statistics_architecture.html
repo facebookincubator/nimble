@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>DWIO Statistics Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-gradient: linear-gradient(160deg, #f5f7fa 0%, #edf1f7 50%, #f0f4f8 100%);
+  --surface: #ffffff;
+  --surface-hover: #f8f9fb;
+  --text-primary: #1b2838;
+  --text-secondary: #556270;
+  --text-muted: #8a95a5;
+  --border: #dce3ed;
+  --border-strong: #b8c4d4;
+  --primary: #3d6b9e;
+  --primary-light: #e8f0fa;
+  --accent: #c4841d;
+  --accent-light: #fef4e4;
+  --accent-green: #2d7d5f;
+  --accent-green-light: #e6f5ee;
+  --accent-red: #c44b3d;
+  --accent-red-light: #fce8e6;
+  --accent-purple: #7c3aed;
+  --accent-purple-light: #f3eeff;
+  --node-bg: #ffffff;
+  --code-bg: #f0f3f7;
+  --shadow: 0 1px 8px rgba(61,107,158,0.07);
+  --shadow-lg: 0 4px 20px rgba(61,107,158,0.10);
+  --mono: 'JetBrains Mono', monospace;
+  --font-display: 'Sora', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+body.dark-mode {
+  --bg: #0d1117;
+  --bg-gradient: linear-gradient(160deg, #0d1117 0%, #111820 50%, #0d1117 100%);
+  --surface: #161b22;
+  --surface-hover: #1c222b;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --border: #21262d;
+  --border-strong: #30363d;
+  --primary: #58a6ff;
+  --primary-light: #0d1f3c;
+  --accent: #e3b341;
+  --accent-light: #1c1a0e;
+  --accent-green: #56d364;
+  --accent-green-light: #0e2218;
+  --accent-red: #f85149;
+  --accent-red-light: #2a1215;
+  --accent-purple: #d2a8ff;
+  --accent-purple-light: #1a1230;
+  --node-bg: #161b22;
+  --code-bg: #0d1117;
+  --shadow: 0 1px 8px rgba(0,0,0,0.3);
+  --shadow-lg: 0 4px 20px rgba(0,0,0,0.4);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg-gradient);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.65;
+}
+.container { max-width: 100%; margin: 0 auto; padding: 2rem 2.5rem 4rem; }
+h1 {
+  font-family: var(--font-display); font-size: 1.8rem; font-weight: 700;
+  letter-spacing: -0.02em; text-align: center; padding: 2.5rem 0 0.3rem;
+}
+.subtitle {
+  text-align: center; color: var(--text-secondary);
+  font-size: 0.95rem; margin-bottom: 2rem;
+}
+h2 {
+  font-family: var(--font-display); font-size: 1.2rem; font-weight: 600;
+  margin: 2.5rem 0 0.75rem; display: flex; align-items: center; gap: 0.5rem;
+  border-bottom: 2px solid var(--border); padding-bottom: 0.4rem;
+}
+h2 .sec-num {
+  background: var(--primary); color: #fff; width: 26px; height: 26px;
+  border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 700; flex-shrink: 0;
+}
+h3 {
+  font-family: var(--font-display); font-size: 0.95rem; font-weight: 600;
+  margin: 1.5rem 0 0.5rem; color: var(--primary);
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 1.2rem 1.5rem; margin: 0.75rem 0; box-shadow: var(--shadow);
+}
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0; }
+@media (max-width: 900px) { .card-grid { grid-template-columns: 1fr; } }
+code, .code {
+  font-family: var(--mono); font-size: 0.82rem; background: var(--code-bg);
+  padding: 0.15em 0.4em; border-radius: 4px;
+}
+pre {
+  font-family: var(--mono); font-size: 0.78rem; background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem;
+  overflow-x: auto; line-height: 1.5; margin: 0.75rem 0;
+}
+.tag {
+  display: inline-block; padding: 0.15em 0.6em; border-radius: 6px;
+  font-size: 0.72rem; font-weight: 600; font-family: var(--mono);
+}
+.tag-blue { background: var(--primary-light); color: var(--primary); }
+.tag-green { background: var(--accent-green-light); color: var(--accent-green); }
+.tag-amber { background: var(--accent-light); color: var(--accent); }
+.tag-red { background: var(--accent-red-light); color: var(--accent-red); }
+.tag-purple { background: var(--accent-purple-light); color: var(--accent-purple); }
+.file-ref {
+  font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted);
+  margin-top: 0.3rem;
+}
+
+/* Flow diagram */
+.flow-col { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 1rem 0; }
+.flow-node {
+  background: var(--surface); border: 1.5px solid var(--border-strong);
+  border-radius: 8px; padding: 0.6rem 1.2rem; text-align: center;
+  font-size: 0.82rem; font-weight: 500; min-width: 200px;
+  box-shadow: var(--shadow); position: relative;
+}
+.flow-node.primary { border-color: var(--primary); background: var(--primary-light); }
+.flow-node.green { border-color: var(--accent-green); background: var(--accent-green-light); }
+.flow-node.amber { border-color: var(--accent); background: var(--accent-light); }
+.flow-node.red { border-color: var(--accent-red); background: var(--accent-red-light); }
+.flow-node.purple { border-color: var(--accent-purple); background: var(--accent-purple-light); }
+.flow-arrow {
+  color: var(--text-muted); font-size: 1.2rem; line-height: 1; padding: 0.15rem 0;
+}
+.flow-label {
+  font-size: 0.7rem; color: var(--text-muted); font-family: var(--mono);
+  margin-top: -0.1rem; margin-bottom: 0.1rem;
+}
+
+/* Compare table */
+.cmp-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.82rem; }
+.cmp-table th {
+  background: var(--code-bg); padding: 0.6rem 1rem; text-align: left;
+  font-weight: 600; border-bottom: 2px solid var(--border-strong);
+  font-family: var(--font-display); font-size: 0.78rem;
+}
+.cmp-table td {
+  padding: 0.5rem 1rem; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.cmp-table tr:hover td { background: var(--surface-hover); }
+
+/* Big flow diagram */
+.arch-diagram {
+  display: flex; gap: 2rem; margin: 1.5rem 0; align-items: flex-start;
+  flex-wrap: wrap; justify-content: center;
+}
+.arch-col {
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  min-width: 260px; flex: 1; max-width: 380px;
+}
+.arch-header {
+  font-family: var(--font-display); font-weight: 700; font-size: 0.85rem;
+  padding: 0.5rem 1.2rem; border-radius: 8px 8px 0 0; width: 100%;
+  text-align: center; letter-spacing: 0.02em;
+}
+.arch-header.io-hdr { background: var(--primary); color: #fff; }
+.arch-header.col-hdr { background: var(--accent-green); color: #fff; }
+.arch-body {
+  border: 1.5px solid var(--border-strong); border-top: none;
+  border-radius: 0 0 8px 8px; padding: 1rem; width: 100%;
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.arch-node {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.5rem 0.8rem; margin: 0.4rem 0;
+  font-size: 0.78rem; font-family: var(--mono);
+}
+.arch-node strong { font-weight: 600; }
+.arch-note {
+  font-size: 0.72rem; color: var(--text-muted); padding: 0.2rem 0;
+  font-style: italic;
+}
+.arch-arrow-down {
+  text-align: center; color: var(--text-muted); font-size: 1rem;
+  line-height: 1; padding: 0.1rem 0;
+}
+
+.dark-toggle {
+  position: fixed; top: 12px; right: 16px; z-index: 100;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 12px; cursor: pointer; font-size: 0.75rem;
+  font-family: var(--font-display); color: var(--text-secondary);
+  box-shadow: var(--shadow);
+}
+.dark-toggle:hover { background: var(--surface-hover); }
+</style>
+</head>
+<body>
+<button class="dark-toggle" onclick="document.body.classList.toggle('dark-mode')">Toggle Dark</button>
+
+<div class="container">
+
+<h1>DWIO Statistics Architecture</h1>
+<div class="subtitle">IoStatistics &bull; ColumnReaderStatistics &bull; Cache Stats &bull; Writer Stats &bull; Operator Stats &bull; Full Aggregation Pipeline</div>
+
+<!-- ============================================================ -->
+<h2><span class="sec-num">1</span> Reader Stats</h2>
+
+<p style="margin-bottom:1rem;">
+  The Velox DWIO reader stack has <strong>two independent statistics pipelines</strong> that never reference each other.
+  They join only at the operator level, where both contribute keys to the <code>RuntimeMetric</code> map.
+</p>
+
+<div style="display:flex; flex-direction:column; align-items:center; gap:0; margin:1.5rem 0;">
+
+  <!-- Operator -->
+  <div class="flow-node" style="min-width:500px; border-color:var(--accent-red); background:var(--accent-red-light);">
+    <strong>Operator (TableScan)</strong><br>
+    <span style="font-size:0.72rem;"><code>OperatorStats::runtimeStats</code> &mdash; map&lt;string, RuntimeMetric&gt;</span>
+  </div>
+  <div style="display:flex; gap:4rem; margin-top:0.2rem;">
+    <div style="text-align:center; color:var(--text-muted); font-size:0.75rem;">&uarr; addIoStatsToRuntimeStats()</div>
+    <div style="text-align:center; color:var(--text-muted); font-size:0.75rem;">&uarr; toRuntimeMetricMap()</div>
+  </div>
+
+  <!-- Two branches -->
+  <div style="display:flex; gap:2rem; margin-top:0.3rem; flex-wrap:wrap; justify-content:center;">
+
+    <!-- Left: IoStatistics -->
+    <div style="display:flex; flex-direction:column; align-items:center; gap:0; min-width:240px;">
+      <div class="flow-node primary" style="min-width:240px;">
+        <strong>IoStatistics</strong><br>
+        <span style="font-size:0.7rem; color:var(--text-muted);">velox/common/io/IoStatistics.h</span><br>
+        <span style="font-size:0.72rem;">Storage / cache layer &mdash; "how much did we read?"</span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-node" style="min-width:240px; font-size:0.75rem;">
+        read_, ramHit_, ssdRead_, prefetch_<br>
+        queryThreadIoLatencyUs_, rawBytesRead_<br>
+        <span style="color:var(--text-muted);">Granularity: whole file (one per split)</span>
+      </div>
+    </div>
+
+    <!-- Right: RuntimeStatistics → ColumnReaderStatistics → DecodingStats -->
+    <div style="display:flex; flex-direction:column; align-items:center; gap:0; min-width:280px;">
+      <div class="flow-node green" style="min-width:280px;">
+        <strong>RuntimeStatistics</strong><br>
+        <span style="font-size:0.7rem; color:var(--text-muted);">velox/dwio/common/Statistics.h</span><br>
+        <span style="font-size:0.72rem;">Format reader layer &mdash; "how much CPU did decoding cost?"</span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+
+      <div style="border:2px solid var(--accent-green); border-radius:10px; padding:0.8rem; min-width:280px; background:var(--surface); box-shadow:var(--shadow);">
+        <div style="font-family:var(--font-display); font-weight:600; font-size:0.82rem; color:var(--accent-green); margin-bottom:0.4rem;">
+          ColumnReaderStatistics
+        </div>
+        <div class="arch-node" style="font-size:0.72rem; margin-bottom:0.3rem;">
+          flattenStringDictionaryValues, pageLoadTimeNs<br>
+          skippedStrides, processedStrides, numStripes
+        </div>
+        <div style="text-align:center; color:var(--text-muted); font-size:0.75rem;">&darr; optional (per column)</div>
+        <div style="border:1.5px solid var(--accent-green); border-radius:8px; padding:0.6rem; background:var(--accent-green-light);">
+          <div style="font-size:0.75rem; font-weight:600; color:var(--accent-green); margin-bottom:0.3rem;">
+            DecodingStatsSet &rarr; DecodingStats
+          </div>
+          <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent-green);">
+            typeKind, decodeCPUTimeNanos, decompressCPUTimeNanos
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+<h3>IoStatistics</h3>
+
+<div class="flow-col">
+
+  <!-- Step 1: Creation -->
+  <div class="flow-node primary" style="min-width:500px;">
+    <strong>FileDataSource</strong> <span style="font-size:0.7rem; color:var(--text-muted);">velox/connectors/hive/FileDataSource.cpp:381</span><br>
+    <span style="font-size:0.75rem;">
+      <code>dataIoStats_ = make_shared&lt;IoStatistics&gt;()</code> &mdash; for column data IO<br>
+      <code>metadataIoStats_ = make_shared&lt;IoStatistics&gt;()</code> &mdash; for footer/metadata IO
+    </span>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">FileSplitReader &rarr; ReaderOptions::setDataIoStats(shared_ptr) &rarr; BufferedInput constructor</div>
+
+  <!-- Step 2: IoStatistics as distinct component -->
+  <div style="border:2.5px solid var(--primary); border-radius:12px; padding:1rem; min-width:500px; background:var(--surface); box-shadow:var(--shadow-lg); margin:0.3rem 0;">
+    <div style="font-family:var(--font-display); font-weight:700; font-size:0.9rem; color:var(--primary); margin-bottom:0.5rem;">
+      IoStatistics <span style="font-size:0.7rem; font-weight:400; color:var(--text-muted);">velox/common/io/IoStatistics.h:44</span>
+    </div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap;">
+      <!-- Left: IoCounter fields -->
+      <div style="flex:1; min-width:200px;">
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>read_</strong> <span class="tag tag-blue">IoCounter</span> &mdash; storage reads<br>
+          <strong>ramHit_</strong> <span class="tag tag-blue">IoCounter</span> &mdash; RAM cache hits<br>
+          <strong>ssdRead_</strong> <span class="tag tag-blue">IoCounter</span> &mdash; SSD cache reads<br>
+          <strong>prefetch_</strong> <span class="tag tag-blue">IoCounter</span> &mdash; planned reads
+        </div>
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>queryThreadIoLatencyUs_</strong> <span class="tag tag-blue">IoCounter</span><br>
+          <strong>storageReadLatencyUs_</strong> <span class="tag tag-blue">IoCounter</span><br>
+          <strong>ssdCacheReadLatencyUs_</strong> <span class="tag tag-blue">IoCounter</span><br>
+          <strong>cacheWaitLatencyUs_</strong> <span class="tag tag-blue">IoCounter</span>
+        </div>
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>rawBytesRead_</strong> <span class="tag tag-amber">atomic</span> &mdash; total bytes touched<br>
+          <strong>rawOverreadBytes_</strong> <span class="tag tag-amber">atomic</span> &mdash; gap fill bytes
+        </div>
+      </div>
+      <!-- Right: OperationCounters -->
+      <div style="flex:1; min-width:220px;">
+        <div style="border:1.5px solid var(--primary); border-radius:8px; padding:0.6rem; background:var(--primary-light);">
+          <div style="font-size:0.75rem; font-weight:600; color:var(--primary); margin-bottom:0.3rem;">
+            operationStats_ <span style="font-weight:400;">map&lt;string, OperationCounters&gt;</span>
+          </div>
+          <div class="arch-node" style="font-size:0.72rem; border-color:var(--primary);">
+            <strong>OperationCounters</strong> <span style="font-size:0.65rem; color:var(--text-muted);">(per operation, e.g. "ws_pread")</span><br>
+            throttleCount, retryCount<br>
+            requestCount, latencyInMs
+          </div>
+          <div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.3rem;">
+            Populated by WarmStorageRetry.<br>
+            <span style="color:var(--accent);">Not in RuntimeMetric &mdash; ODS export only.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">stored as shared_ptr in CachedBufferedInput / DirectBufferedInput</div>
+
+  <!-- Step 3: Streams -->
+  <div class="flow-node" style="min-width:500px;">
+    <strong>BufferedInput</strong> passes raw <code>IoStatistics*</code> to each stream via <code>enqueue()</code>
+  </div>
+
+  <!-- Step 4: Fork into cached vs direct -->
+  <div style="display:flex; gap:1.5rem; margin-top:0.3rem; flex-wrap:wrap; justify-content:center; width:100%; max-width:600px;">
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-node primary">
+        <strong>CacheInputStream</strong><br>
+        <span style="font-size:0.72rem;">(cached path)</span>
+      </div>
+      <div class="arch-node" style="font-size:0.7rem; margin-top:0.3rem;">
+        <code>read_</code> &larr; loadSync() storage read<br>
+        <code>ramHit_</code> &larr; loadSync() cache hit<br>
+        <code>ssdRead_</code> &larr; loadFromSsd()<br>
+        <code>queryThreadIoLatencyUs_</code> &larr; all wait sites
+      </div>
+    </div>
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-node primary">
+        <strong>DirectInputStream</strong><br>
+        <span style="font-size:0.72rem;">(no-cache path)</span>
+      </div>
+      <div class="arch-node" style="font-size:0.7rem; margin-top:0.3rem;">
+        <code>read_</code> &larr; loadData() storage read<br>
+        <code>prefetch_</code> &larr; coalesced load (prefetch=true)<br>
+        <code>queryThreadIoLatencyUs_</code> &larr; loadData(), coalesced wait
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 5: CoalesceIoStats feeds back -->
+  <div style="margin-top:0.5rem; min-width:500px;">
+    <div class="arch-node" style="font-size:0.72rem; border-color:var(--primary);">
+      <strong>CoalesceIoStats</strong> <span style="color:var(--text-muted);">&mdash; returned by <code>coalesceIo()</code> in <code>groupRequests()</code>, feeds back into IoStatistics:</span><br>
+      <code>gaps</code> &rarr; <code>readGap().merge()</code> &bull;
+      <code>duplicateRegions</code> &rarr; <code>incDuplicateRead()</code> &bull;
+      <code>extraBytes</code> &rarr; <code>incRawOverreadBytes()</code>
+    </div>
+  </div>
+
+  <!-- Step 6: Export -->
+  <div class="flow-arrow" style="margin-top:0.5rem;">&darr;</div>
+  <div class="flow-label">FileDataSource::getRuntimeStats() calls addIoStatsToRuntimeStats()</div>
+  <div class="flow-node amber" style="min-width:500px;">
+    <strong>OperatorStats::runtimeStats</strong> <span style="font-size:0.72rem;">map&lt;string, RuntimeMetric&gt;</span><br>
+    <table style="font-size:0.68rem; margin-top:0.4rem; width:100%; border-collapse:collapse;">
+      <tr style="border-bottom:1px solid var(--border);">
+        <th style="padding:3px 6px; text-align:left;">IoStatistics counter</th>
+        <th style="padding:3px 6px; text-align:left;">RuntimeMetric key</th>
+        <th style="padding:3px 6px; text-align:left;">Unit</th>
+      </tr>
+      <tr><td style="padding:2px 6px;"><code>queryThreadIoLatencyUs_</code></td><td style="padding:2px 6px;"><code>ioWaitWallNanos</code></td><td style="padding:2px 6px;">nanos (us*1000)</td></tr>
+      <tr><td style="padding:2px 6px;"><code>read_</code></td><td style="padding:2px 6px;"><code>storageReadBytes</code></td><td style="padding:2px 6px;">bytes (sum/count/min/max)</td></tr>
+      <tr><td style="padding:2px 6px;"><code>ramHit_</code></td><td style="padding:2px 6px;"><code>numRamRead</code> + <code>ramReadBytes</code></td><td style="padding:2px 6px;">count + bytes</td></tr>
+      <tr><td style="padding:2px 6px;"><code>ssdRead_</code></td><td style="padding:2px 6px;"><code>numLocalRead</code> + <code>localReadBytes</code></td><td style="padding:2px 6px;">count + bytes</td></tr>
+      <tr><td style="padding:2px 6px;"><code>prefetch_</code></td><td style="padding:2px 6px;"><code>numPrefetch</code> + <code>prefetchBytes</code></td><td style="padding:2px 6px;">count + bytes</td></tr>
+      <tr><td style="padding:2px 6px;"><code>readGap_</code></td><td style="padding:2px 6px;"><code>readGapBytes</code></td><td style="padding:2px 6px;">bytes (sum/count/min/max)</td></tr>
+      <tr><td style="padding:2px 6px;"><code>rawOverreadBytes_</code></td><td style="padding:2px 6px;"><code>overreadBytes</code></td><td style="padding:2px 6px;">bytes</td></tr>
+    </table>
+    <div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.3rem;">
+      Metadata stats exported with <code>metadata.</code> prefix. <code>rawBytesRead_</code> not exported &mdash; consumed via <code>getCompletedBytes()</code>.
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h3>ColumnReaderStatistics</h3>
+
+<div class="flow-col">
+
+  <!-- Step 1: RowReader creates -->
+  <div class="flow-node green" style="min-width:500px;">
+    <strong>Format RowReader</strong> <span style="font-size:0.72rem; color:var(--text-muted);">DwrfRowReader / SelectiveNimbleRowReader</span><br>
+    <span style="font-size:0.75rem;">owns <code>ColumnReaderStatistics columnReaderStats_</code> as value member</span>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">initColumnStatsCollection(schema, options) &mdash; if collectColumnCpuMetrics() is on</div>
+
+  <!-- Step 2: ColumnReaderStatistics as distinct component -->
+  <div style="border:2.5px solid var(--accent-green); border-radius:12px; padding:1rem; min-width:500px; background:var(--surface); box-shadow:var(--shadow-lg); margin:0.3rem 0;">
+    <div style="font-family:var(--font-display); font-weight:700; font-size:0.9rem; color:var(--accent-green); margin-bottom:0.5rem;">
+      ColumnReaderStatistics <span style="font-size:0.7rem; font-weight:400; color:var(--text-muted);">velox/dwio/common/Statistics.h:669</span>
+    </div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap;">
+      <!-- Left: scalar fields -->
+      <div style="flex:1; min-width:180px;">
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>flattenStringDictionaryValues</strong> <span class="tag tag-amber">int64</span>
+        </div>
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>pageLoadTimeNs</strong> <span class="tag tag-blue">IoCounter</span>
+        </div>
+      </div>
+      <!-- Right: DecodingMetricsSet -->
+      <div style="flex:2; min-width:250px;">
+        <div style="border:1.5px solid var(--accent-green); border-radius:8px; padding:0.6rem; background:var(--accent-green-light);">
+          <div style="font-size:0.75rem; font-weight:600; color:var(--accent-green); margin-bottom:0.3rem;">
+            columnMetricsSet <span style="font-weight:400;">optional&lt;DecodingMetricsSet&gt;</span> <span style="font-size:0.65rem; color:var(--text-muted);">:596</span>
+          </div>
+          <div style="font-size:0.7rem; color:var(--text-muted); margin-bottom:0.3rem;">
+            folly::Synchronized&lt;F14FastMap&lt;nodeId, unique_ptr&lt;DecodingMetrics&gt;&gt;&gt;
+          </div>
+          <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent-green);">
+            <strong>DecodingMetrics</strong> <span style="font-size:0.65rem; color:var(--text-muted);">(per column, keyed by nodeId) :580</span><br>
+            typeKind <span class="tag tag-amber">TypeKind</span><br>
+            decodeCPUTimeNanos <span class="tag tag-blue">IoCounter</span><br>
+            decompressCPUTimeNanos <span class="tag tag-blue">IoCounter</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">passed by reference: FormatParams(pool, columnReaderStats_&amp;)</div>
+
+  <!-- Step 3: FormatParams -->
+  <div class="flow-node" style="min-width:500px;">
+    <strong>FormatParams</strong> <span class="tag tag-purple">base class</span> <span style="font-size:0.72rem; color:var(--text-muted);">(NimbleParams / DwrfParams)</span><br>
+    <span style="font-size:0.75rem;"><code>runtimeStatistics()</code> returns <code>ColumnReaderStatistics&amp;</code></span>
+  </div>
+
+  <!-- Step 4: Fork into decode + decompress -->
+  <div style="display:flex; gap:1.5rem; margin-top:0.3rem; flex-wrap:wrap; justify-content:center; width:100%; max-width:600px;">
+    <!-- Left: decode path -->
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-label">columnMetricsSet-&gt;getOrCreate(id)</div>
+      <div class="flow-node primary">
+        <strong>SelectiveColumnReader</strong><br>
+        <span style="font-size:0.72rem;">stores <code>DecodingMetrics*</code></span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-label">readWithTiming() wraps read()</div>
+      <div class="flow-node" style="border-color:var(--primary); background:var(--primary-light);">
+        <span class="tag tag-blue">FORMAT-AGNOSTIC</span><br>
+        <code>decodeCPUTimeNanos</code><br>
+        <span style="font-size:0.7rem;">DeltaCpuWallTimer callback</span>
+      </div>
+    </div>
+    <!-- Right: decompress path -->
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-label">toFormatData() extracts IoCounter*</div>
+      <div class="flow-node green">
+        <strong>FormatData</strong><br>
+        <span style="font-size:0.72rem;">NimbleData / DwrfData</span>
+      </div>
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-label">&amp;metrics-&gt;decompressCPUTimeNanos</div>
+      <div class="flow-node" style="border-color:var(--accent-green); background:var(--accent-green-light);">
+        <span class="tag tag-green">FORMAT-SPECIFIC</span><br>
+        <code>decompressCPUTimeNanos</code><br>
+        <span style="font-size:0.7rem;">encoding construction site</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 5: Export -->
+  <div class="flow-arrow" style="margin-top:0.5rem;">&darr;</div>
+  <div class="flow-label">updateRuntimeStats() &rarr; stats.columnReaderStats.mergeFrom(columnReaderStats_)</div>
+  <div class="flow-node amber" style="min-width:500px;">
+    <strong>RuntimeStatistics</strong> &rarr; <code>toRuntimeMetricMap()</code> &rarr; <strong>OperatorStats::runtimeStats</strong><br>
+    <span style="font-size:0.72rem;">Keys: <code>column_{nodeId}.{TypeName}.decodeCPUTimeNanos</code>, <code>...decompressCPUTimeNanos</code></span>
+  </div>
+</div>
+
+<h3>Decompress Timing: DWRF vs Nimble</h3>
+
+<div class="card-grid">
+  <div class="card">
+    <h3 style="margin-top:0;">DWRF Path</h3>
+    <div class="flow-col" style="align-items:flex-start;">
+      <div class="arch-node"><strong>StripeStreamsImpl</strong> holds <code>ColumnReaderStatistics*</code></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><code>getDecompressCounter(nodeId)</code> &rarr; <code>&amp;metrics-&gt;decompressCPUTimeNanos</code></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><strong>PagedInputStream</strong> stores <code>decompressCounter_</code></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><code>withDecompressStats(counter, [&amp;]{ /* zlib/zstd decompress */ })</code></div>
+    </div>
+    <div class="file-ref" style="margin-top:0.5rem;">
+      velox/dwio/dwrf/common/DecoderUtil.h &bull; PagedInputStream.cpp:186
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Nimble Path <span class="tag tag-amber">D108361387</span></h3>
+    <div class="flow-col" style="align-items:flex-start;">
+      <div class="arch-node"><strong>NimbleParams::toFormatData()</strong> gets <code>DecodingStats*</code> from <code>decodingStatsSet</code></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><strong>NimbleData</strong> stores <code>decodingStats_</code></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><code>makeValuesDecoder()</code> / <code>make*Decoder()</code> forward to <strong>ChunkedDecoder</strong></div>
+      <div class="arch-arrow-down">&darr;</div>
+      <div class="arch-node"><code>loadNextChunk()</code>: <code>options.recordDecompressNanos(decompressNanos)</code></div>
+    </div>
+    <div class="file-ref" style="margin-top:0.5rem;">
+      dwio/nimble/velox/selective/NimbleData.cpp &bull; ChunkedDecoder.cpp
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="sec-num">2</span> Cache Stats</h2>
+
+<div class="flow-col">
+
+  <div class="flow-node purple" style="min-width:500px;">
+    <strong>AsyncDataCache</strong> <span style="font-size:0.7rem; color:var(--text-muted);">velox/common/caching/AsyncDataCache.h &mdash; process-wide singleton</span><br>
+    <span style="font-size:0.75rem;">Aggregates from all <code>CacheShard</code> instances</span>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">each CacheShard increments its local counters, aggregated on stats() call</div>
+
+  <div style="border:2.5px solid var(--accent-purple); border-radius:12px; padding:1rem; min-width:500px; background:var(--surface); box-shadow:var(--shadow-lg); margin:0.3rem 0;">
+    <div style="font-family:var(--font-display); font-weight:700; font-size:0.9rem; color:var(--accent-purple); margin-bottom:0.5rem;">
+      CacheStats <span style="font-size:0.7rem; font-weight:400; color:var(--text-muted);">velox/common/caching/AsyncDataCache.h:543</span>
+    </div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap;">
+      <div style="flex:1; min-width:180px;">
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>Snapshot:</strong><br>
+          numEntries, tinySize, largeSize<br>
+          sharedPinnedBytes, exclusivePinnedBytes
+        </div>
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>Cumulative:</strong><br>
+          numHit, hitBytes, numEvict<br>
+          numWaitExclusive, numAgedOut
+        </div>
+      </div>
+      <div style="flex:1; min-width:220px;">
+        <div style="border:1.5px solid var(--accent-purple); border-radius:8px; padding:0.6rem; background:var(--accent-purple-light);">
+          <div style="font-size:0.75rem; font-weight:600; color:var(--accent-purple); margin-bottom:0.3rem;">
+            ssdStats <span style="font-weight:400;">shared_ptr&lt;SsdCacheStats&gt;</span>
+          </div>
+          <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent-purple);">
+            <strong>SsdCacheStats</strong> <span style="font-size:0.65rem; color:var(--text-muted);">SsdFile.h:142</span><br>
+            entriesCached, bytesCached<br>
+            bytesWritten, bytesRead<br>
+            writeSsdErrors, readSsdCorruptions
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">reported periodically, NOT per-query</div>
+
+  <div class="flow-node purple" style="min-width:500px;">
+    <strong>PeriodicStatsReporter</strong> &rarr; ODS/monitoring<br>
+    <span style="font-size:0.72rem; color:var(--accent-purple);">NOT exported to RuntimeMetric &mdash; completely separate from per-query stats</span>
+  </div>
+
+  <div style="display:flex; gap:1.5rem; margin-top:1rem; flex-wrap:wrap; justify-content:center; width:100%; max-width:600px;">
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent-purple);">
+        <strong>SimpleLRUCacheStats</strong> <span style="font-size:0.65rem; color:var(--text-muted);">SimpleLRUCache.h:30</span><br>
+        maxSize, curSize, numHits, numLookups<br>
+        <span style="color:var(--text-muted);">Used by FileHandleFactory for file handle caching</span>
+      </div>
+    </div>
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent-purple);">
+        <strong>ScanTracker</strong> <span style="font-size:0.65rem; color:var(--text-muted);">ScanTracker.h:87</span><br>
+        per-column TrackingData (referencedBytes vs readBytes)<br>
+        <span style="color:var(--text-muted);">Feeds adaptive prefetch decisions, not exported as metrics</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="sec-num">3</span> Writer Stats</h2>
+
+<div class="flow-col">
+
+  <div class="flow-node amber" style="min-width:500px;">
+    <strong>VeloxWriter</strong> <span style="font-size:0.72rem; color:var(--text-muted);">(Nimble)</span> /
+    <strong>DwrfWriter</strong> <span style="font-size:0.72rem; color:var(--text-muted);">(DWRF)</span><br>
+    <span style="font-size:0.75rem;">Owns stats as member; populated during write/flush/close</span>
+  </div>
+  <div class="flow-arrow">&darr;</div>
+  <div class="flow-label">incremented during write(), flush(), close()</div>
+
+  <div style="border:2.5px solid var(--accent); border-radius:12px; padding:1rem; min-width:500px; background:var(--surface); box-shadow:var(--shadow-lg); margin:0.3rem 0;">
+    <div style="font-family:var(--font-display); font-weight:700; font-size:0.9rem; color:var(--accent); margin-bottom:0.5rem;">
+      VeloxWriter::Stats <span style="font-size:0.7rem; font-weight:400; color:var(--text-muted);">dwio/nimble/velox/VeloxWriter.h:61 (Nimble)</span>
+    </div>
+    <div style="display:flex; gap:0.8rem; flex-wrap:wrap;">
+      <div style="flex:1; min-width:200px;">
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>Timing:</strong><br>
+          writeCpuTimeNs, writeWallTimeNs<br>
+          ingestionCpuTimeNs<br>
+          encodingCpuTimeNs, encodingWallTimeNs<br>
+          encodingSelectionCpuTimeNs
+        </div>
+        <div class="arch-node" style="font-size:0.72rem;">
+          <strong>Sizes:</strong><br>
+          writtenBytes, inputBytes, stripeCount<br>
+          rowsPerStripe, chunkSizeBytes <span class="tag tag-blue">RuntimeMetric</span>
+        </div>
+      </div>
+      <div style="flex:1; min-width:220px;">
+        <div style="border:1.5px solid var(--accent); border-radius:8px; padding:0.6rem; background:var(--accent-light);">
+          <div style="font-size:0.75rem; font-weight:600; color:var(--accent); margin-bottom:0.3rem;">
+            Embedded: TabletWriter::Stats
+          </div>
+          <div class="arch-node" style="font-size:0.72rem; border-color:var(--accent);">
+            duplicateStreamCount<br>
+            duplicateStreamBytes
+          </div>
+        </div>
+        <div class="arch-node" style="font-size:0.72rem; margin-top:0.5rem;">
+          <strong>RatioTracker</strong> <span style="color:var(--text-muted);">(DWRF only)</span><br>
+          CompressionRatioTracker<br>
+          FlushOverheadRatioTracker<br>
+          AverageRowSizeTracker<br>
+          <span style="color:var(--text-muted);">feeds flush policy decisions</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:1.5rem; margin-top:0.3rem; flex-wrap:wrap; justify-content:center; width:100%; max-width:600px;">
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-node amber">
+        <strong>Caller</strong> via <code>writer.stats()</code><br>
+        <span style="font-size:0.72rem;">returned to TableWriter operator</span>
+      </div>
+    </div>
+    <div class="flow-col" style="flex:1; min-width:260px;">
+      <div class="flow-arrow">&darr;</div>
+      <div class="flow-node amber">
+        <strong>Scuba</strong> via <code>MetricsLog</code><br>
+        <span style="font-size:0.72rem;">StripeFlushMetrics, FileCloseMetrics</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+</div><!-- /.container -->
+</body>
+</html>
