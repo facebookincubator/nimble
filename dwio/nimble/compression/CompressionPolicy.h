@@ -90,10 +90,17 @@ struct MetaInternalCompressionParameters {
   MetaInternalCompressionKey compressionKey;
 };
 
+struct OpenZLCompressionParameters {
+  int compressionLevel = 6;
+  int decompressionLevel = 3;
+  int formatVersion = 25; // current prod max, as of 2026-06-10
+};
+
 struct CompressionParameters {
   ZstdCompressionParameters zstd{};
   Lz4CompressionParameters lz4{};
   MetaInternalCompressionParameters metaInternal{};
+  OpenZLCompressionParameters openzl{};
 };
 
 struct CompressionInformation {
