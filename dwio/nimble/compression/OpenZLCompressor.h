@@ -16,13 +16,23 @@
 
 #pragma once
 
+#include <memory>
+
 #include "dwio/nimble/compression/Compression.h"
 
 namespace facebook::nimble {
 
-/// ICompressor backed by custom graphs implemented using OpenZL
+/// ICompressor backed by custom graphs implemented using OpenZL.
+///
+/// The OpenZL numeric graphs are built once per instance and shared (read-only)
+/// across all compress() calls, so per-call setup is limited to a CCtx that
+/// refs the prebuilt graphs. Instances are expected to be long-lived (a single
+/// instance is registered in the compressor registry).
 class OpenZLCompressor : public ICompressor {
  public:
+  OpenZLCompressor();
+  ~OpenZLCompressor() override;
+
   CompressionResult compress(
       velox::memory::MemoryPool& pool,
       std::string_view data,
@@ -40,6 +50,12 @@ class OpenZLCompressor : public ICompressor {
   std::optional<size_t> uncompressedSize(std::string_view data) const override;
 
   CompressionType compressionType() override;
+
+ private:
+  // Holds the prebuilt OpenZL Compressor and its per-DataType graphs. Defined
+  // in the .cpp to keep OpenZL headers out of this header.
+  struct GraphCache;
+  std::unique_ptr<GraphCache> graphCache_;
 };
 
 } // namespace facebook::nimble

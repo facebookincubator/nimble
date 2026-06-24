@@ -232,14 +232,10 @@ class SelectRangePack : public openzl::Selector {
   openzl::GraphID noRangePack_;
 };
 
-// Registers the chunk segmenter on the raw compressor and wraps @p innerGraph
-// with it, threading the element byte width through as a local parameter. This
-// is the only place the C API is used directly, since segmenters have no C++
-// wrapper.
-openzl::GraphID wrapWithDefaultSegmenter(
-    ZL_Compressor* cgraph,
-    openzl::GraphID innerGraph,
-    size_t elementByteWidth) {
+// Registers the base multi-chunk segmenter, without the per-width element-width
+// parameter. The same base is reused for every element width. This is the only
+// place the C API is used directly, since segmenters have no C++ wrapper.
+openzl::GraphID registerDefaultSegmenterBase(ZL_Compressor* cgraph) {
   ZL_Type inputType = ZL_Type_serial;
   ZL_SegmenterDesc desc = {
       .name = "!nimble.default_segmenter",
@@ -251,9 +247,17 @@ openzl::GraphID wrapWithDefaultSegmenter(
       .numCustomGraphs = 0,
       .localParams = {},
   };
-  ZL_GraphID const segmenterBase =
-      ZL_Compressor_registerSegmenter(cgraph, &desc);
+  return ZL_Compressor_registerSegmenter(cgraph, &desc);
+}
 
+// Wraps @p innerGraph with the pre-registered @p segmenterBase, threading the
+// element byte width through as a local parameter so the segmenter can align
+// chunks to element boundaries.
+openzl::GraphID wrapWithSegmenter(
+    ZL_Compressor* cgraph,
+    openzl::GraphID segmenterBase,
+    openzl::GraphID innerGraph,
+    size_t elementByteWidth) {
   ZL_IntParam intParams[] = {{
       .paramId = kNimbleElementByteWidthParamId,
       .paramValue = static_cast<int>(elementByteWidth),
@@ -270,78 +274,142 @@ openzl::GraphID wrapWithDefaultSegmenter(
   return ZL_Compressor_registerParameterizedGraph(cgraph, &segGraphDesc);
 }
 
-// Builds the default numeric graph:
-//   serial -> interpret-as-LE(width) -> range-pack? -> tokenize?+delta -> lz
-// Wrapped by the multi-chunk segmenter.
-// This decision-making is a default "should-be-good-enough" pipeline that can
-// be modified or replaced to fit to your specific use case.
-openzl::GraphID makeNumericGraph(
-    openzl::Compressor& compressor,
-    bool isFloat,
-    size_t elementBitWidth,
-    int formatVersion) {
-  const size_t elementByteWidth = elementBitWidth / 8;
+// Width-independent selectors/nodes and the base segmenter. These are
+// registered once and reused by every per-DataType graph.
+struct SharedGraphs {
+  openzl::GraphID lz;
+  openzl::GraphID tokenize;
+  openzl::GraphID segmenterBase;
+};
 
+// Registers the width-independent portion of the numeric pipeline once:
+//   lz       = select(field-lz | zstd)
+//   deltaLz  = delta -> lz
+//   tokenize = tokenize -> (deltaLz | lz)
+SharedGraphs registerSharedGraphs(openzl::Compressor& compressor) {
   const openzl::GraphID fieldLz = openzl::graphs::FieldLz{}(compressor);
   const openzl::GraphID lz = openzl::Selector::registerSelector(
       compressor, std::make_shared<SelectLz>(fieldLz));
-
   const openzl::GraphID deltaLz = openzl::nodes::DeltaInt{}(compressor, lz);
   const openzl::GraphID tokenize =
       openzl::nodes::TokenizeNumeric{/* sort */ true}(compressor, deltaLz, lz);
-
-  const openzl::GraphID tokenizeOrNot = openzl::Selector::registerSelector(
-      compressor, std::make_shared<SelectTokenize>(tokenize, lz, isFloat));
-
-  const openzl::GraphID range =
-      openzl::nodes::RangePack{}(compressor, tokenizeOrNot);
-  const openzl::GraphID rangeOrNot = openzl::Selector::registerSelector(
-      compressor, std::make_shared<SelectRangePack>(range, tokenizeOrNot));
-
-  openzl::nodes::ConvertSerialToNumLE toNumeric{
-      static_cast<int>(elementByteWidth)};
-  const openzl::GraphID innerGraph = toNumeric(compressor, rangeOrNot);
-  return wrapWithDefaultSegmenter(
-      compressor.get(), innerGraph, elementByteWidth);
+  return {
+      .lz = lz,
+      .tokenize = tokenize,
+      .segmenterBase = registerDefaultSegmenterBase(compressor.get()),
+  };
 }
 
-// Maps the nimble DataType to the appropriate numeric graph. Types without
-// a dedicated numeric pipeline fall back to a plain zstd graph (still a valid
-// OpenZL frame).
-openzl::GraphID createGraph(
+// Registers the int- or float-specific tail of the numeric graph, reusing the
+// shared graphs. The tail differs only by the tokenize cardinality heuristic
+// (int vs float), so it is registered once per variant rather than per width:
+//   tokenizeOrNot = select(tokenize | lz)
+//   rangeOrNot    = select(range-pack -> tokenizeOrNot | tokenizeOrNot)
+openzl::GraphID registerNumericTail(
     openzl::Compressor& compressor,
-    DataType dataType,
-    int formatVersion) {
-  switch (dataType) {
-    case DataType::Int8:
-    case DataType::Uint8:
-      return makeNumericGraph(
-          compressor, /* isFloat */ false, 8, formatVersion);
-    case DataType::Int16:
-    case DataType::Uint16:
-      return makeNumericGraph(
-          compressor, /* isFloat */ false, 16, formatVersion);
-    case DataType::Int32:
-    case DataType::Uint32:
-      return makeNumericGraph(
-          compressor, /* isFloat */ false, 32, formatVersion);
-    case DataType::Int64:
-    case DataType::Uint64:
-      return makeNumericGraph(
-          compressor, /* isFloat */ false, 64, formatVersion);
-    case DataType::Float:
-      return makeNumericGraph(
-          compressor, /* isFloat */ true, 32, formatVersion);
-    case DataType::Double:
-    case DataType::Bool:
-    case DataType::String:
-    case DataType::Undefined:
-    default:
-      return ZL_GRAPH_ZSTD;
-  }
+    const SharedGraphs& shared,
+    bool isFloat) {
+  const openzl::GraphID tokenizeOrNot = openzl::Selector::registerSelector(
+      compressor,
+      std::make_shared<SelectTokenize>(shared.tokenize, shared.lz, isFloat));
+  const openzl::GraphID range =
+      openzl::nodes::RangePack{}(compressor, tokenizeOrNot);
+  return openzl::Selector::registerSelector(
+      compressor, std::make_shared<SelectRangePack>(range, tokenizeOrNot));
+}
+
+// Builds the per-width entry graph: interpret serial bytes as little-endian
+// numerics of the given width, route them through the shared @p tail, and wrap
+// the whole thing in the multi-chunk segmenter.
+//   serial -> interpret-as-LE(width) -> tail -> ... -> lz
+openzl::GraphID buildNumericGraph(
+    openzl::Compressor& compressor,
+    const SharedGraphs& shared,
+    openzl::GraphID tail,
+    size_t elementBitWidth) {
+  const size_t elementByteWidth = elementBitWidth / 8;
+  openzl::nodes::ConvertSerialToNumLE toNumeric{
+      static_cast<int>(elementByteWidth)};
+  const openzl::GraphID innerGraph = toNumeric(compressor, tail);
+  return wrapWithSegmenter(
+      compressor.get(), shared.segmenterBase, innerGraph, elementByteWidth);
+}
+
+// Reuses one OpenZL decompression context per thread, mirroring
+// ZstdCompressor::getThreadLocalDCtx, to avoid per-call context allocation.
+openzl::DCtx& getThreadLocalDCtx() {
+  static thread_local openzl::DCtx dctx;
+  return dctx;
 }
 
 } // namespace
+
+// Builds and owns the OpenZL Compressor and its per-DataType graphs. The
+// width-independent selectors/nodes and the base segmenter are registered once
+// and shared; only the per-width entry (serial->numeric conversion + segmenter)
+// is registered per DataType. The Compressor is validated and shared read-only
+// so each compress() call only needs a CCtx that refs it.
+struct OpenZLCompressor::GraphCache {
+  openzl::Compressor compressor;
+  openzl::GraphID int8Graph;
+  openzl::GraphID int16Graph;
+  openzl::GraphID int32Graph;
+  openzl::GraphID int64Graph;
+  openzl::GraphID floatGraph;
+
+  GraphCache() {
+    const SharedGraphs shared = registerSharedGraphs(compressor);
+    const openzl::GraphID intTail =
+        registerNumericTail(compressor, shared, /* isFloat */ false);
+    const openzl::GraphID floatTail =
+        registerNumericTail(compressor, shared, /* isFloat */ true);
+
+    int8Graph = buildNumericGraph(compressor, shared, intTail, 8);
+    int16Graph = buildNumericGraph(compressor, shared, intTail, 16);
+    int32Graph = buildNumericGraph(compressor, shared, intTail, 32);
+    int64Graph = buildNumericGraph(compressor, shared, intTail, 64);
+    floatGraph = buildNumericGraph(compressor, shared, floatTail, 32);
+    // A starting graph must be set before the Compressor can be reffed by a
+    // CCtx; this also validates the Compressor once, single-threaded. Each
+    // compress() call overrides the starting graph per DataType.
+    compressor.selectStartingGraph(ZL_GRAPH_ZSTD);
+  }
+
+  // Maps the nimble DataType to its numeric graph. Types without a dedicated
+  // numeric pipeline fall back to a plain zstd graph (still a valid OpenZL
+  // frame).
+  // The numeric decision-making is a default "should-be-good-enough" pipeline
+  // that can be modified or replaced to fit to your specific use case.
+  openzl::GraphID graphFor(DataType dataType) const {
+    switch (dataType) {
+      case DataType::Int8:
+      case DataType::Uint8:
+        return int8Graph;
+      case DataType::Int16:
+      case DataType::Uint16:
+        return int16Graph;
+      case DataType::Int32:
+      case DataType::Uint32:
+        return int32Graph;
+      case DataType::Int64:
+      case DataType::Uint64:
+        return int64Graph;
+      case DataType::Float:
+        return floatGraph;
+      case DataType::Double:
+      case DataType::Bool:
+      case DataType::String:
+      case DataType::Undefined:
+      default:
+        return ZL_GRAPH_ZSTD;
+    }
+  }
+};
+
+OpenZLCompressor::OpenZLCompressor()
+    : graphCache_{std::make_unique<GraphCache>()} {}
+
+OpenZLCompressor::~OpenZLCompressor() = default;
 
 CompressionResult OpenZLCompressor::compress(
     velox::memory::MemoryPool& pool,
@@ -351,17 +419,17 @@ CompressionResult OpenZLCompressor::compress(
     const CompressionPolicy& compressionPolicy) {
   const auto parameters = compressionPolicy.compression().parameters.openzl;
 
-  openzl::Compressor compressor;
-  compressor.selectStartingGraph(
-      createGraph(compressor, dataType, parameters.formatVersion));
-
   openzl::CCtx cctx;
   cctx.setParameter(
       openzl::CParam::CompressionLevel, parameters.compressionLevel);
   cctx.setParameter(
       openzl::CParam::DecompressionLevel, parameters.decompressionLevel);
   cctx.setParameter(openzl::CParam::FormatVersion, parameters.formatVersion);
-  cctx.refCompressor(compressor);
+  // Ref the prebuilt, shared Compressor and pick the per-DataType starting
+  // graph. This refs the Compressor read-only; all per-call state lives in the
+  // CCtx, so the shared Compressor is safe to use from multiple threads.
+  cctx.selectStartingGraph(
+      graphCache_->compressor, graphCache_->graphFor(dataType));
 
   Vector<char> buffer{&pool, openzl::compressBound(data.size())};
   const size_t compressedSize =
@@ -388,7 +456,7 @@ velox::BufferPtr OpenZLCompressor::uncompress(
     const DataType /* dataType */,
     std::string_view data,
     velox::BufferPool* bufferPool) {
-  openzl::DCtx dctx;
+  openzl::DCtx& dctx = getThreadLocalDCtx();
   const size_t uncompressedSize =
       dctx.unwrap(ZL_getDecompressedSize(data.data(), data.size()));
   auto buffer = allocateBuffer(pool, bufferPool, uncompressedSize);
