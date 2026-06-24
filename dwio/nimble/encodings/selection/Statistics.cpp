@@ -131,6 +131,16 @@ void Statistics<T, InputType>::populateUniques() const {
 }
 
 template <typename T, typename InputType>
+void Statistics<T, InputType>::populateMinMaxBlocks(uint16_t blockSize) const {
+  static_assert(std::is_unsigned_v<T>);
+  BlockStatsAccumulator acc(blockSize);
+  for (const auto& v : data_) {
+    acc.add(static_cast<uint64_t>(static_cast<T>(v)));
+  }
+  minMaxBlocks_ = acc.finish();
+}
+
+template <typename T, typename InputType>
 void Statistics<T, InputType>::populateBucketCounts() const {
   using UnsignedT = typename std::make_unsigned<T>::type;
   // Bucket counts are calculated in two phases. In phase one, we iterate on all
@@ -272,6 +282,13 @@ template void Statistics<float>::populateMinMax() const;
 template void Statistics<double>::populateMinMax() const;
 template void Statistics<std::string_view>::populateMinMax() const;
 template void Statistics<std::string_view, std::string>::populateMinMax() const;
+
+// populateMinMaxBlocks is used through the estimation path where T is always
+// the unsigned physicalType.
+template void Statistics<uint8_t>::populateMinMaxBlocks(uint16_t) const;
+template void Statistics<uint16_t>::populateMinMaxBlocks(uint16_t) const;
+template void Statistics<uint32_t>::populateMinMaxBlocks(uint16_t) const;
+template void Statistics<uint64_t>::populateMinMaxBlocks(uint16_t) const;
 
 // populateBucketCounts works on integral types only
 template void Statistics<int8_t>::populateBucketCounts() const;

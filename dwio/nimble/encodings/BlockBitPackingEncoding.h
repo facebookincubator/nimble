@@ -91,6 +91,37 @@ class BlockBitPackingEncoding final
       std::span<const physicalType> values,
       uint16_t blockSize = kBlockBitPackingBlockSize);
 
+  static uint64_t estimateSize(
+      const Statistics<physicalType>& statistics,
+      uint16_t blockSize = kBlockBitPackingBlockSize) {
+    const auto& blocks = statistics.minMaxBlocks(blockSize);
+    const auto numBlocks = static_cast<uint32_t>(blocks.size());
+
+    uint64_t packedSize = 0;
+    for (const auto& block : blocks) {
+      const auto rawSize = block.count * sizeof(physicalType);
+      const auto range = block.max - block.min;
+      const auto bw = range == 0 ? 0 : velox::bits::bitsRequired(range);
+      if (bw >= sizeof(physicalType) * 8) {
+        packedSize += rawSize;
+        continue;
+      }
+      const auto blockPackedSize =
+          static_cast<uint64_t>(FixedBitArray::bufferSize(block.count, bw));
+      if (blockPackedSize < rawSize) {
+        packedSize += blockPackedSize;
+      } else {
+        packedSize += rawSize;
+      }
+    }
+
+    const uint64_t metadataSize = kMetadataHeaderSize +
+        TrivialEncoding<physicalType>::estimateSize(numBlocks) +
+        TrivialEncoding<uint8_t>::estimateSize(numBlocks) +
+        TrivialEncoding<uint32_t>::estimateSize(numBlocks);
+    return EncodingPrefix::kFixedPrefixSize + metadataSize + packedSize;
+  }
+
   std::string debugString(int offset) const final;
 
  private:

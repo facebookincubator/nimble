@@ -1086,6 +1086,90 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlagPropagesToNested) {
       nimble::CompressionType::Uncompressed);
 }
 
+TEST(ManualEncodingSelectionPolicyTest, perEncodingCompressionAcceptRatio) {
+  // Default CompressionOptions has BlockBitPacking=0.7 in overrides.
+  // The accept ratio is enforced by shouldAccept(), not by changing the
+  // compression type — compression is always attempted, but rejected if
+  // the compressed size exceeds the ratio threshold.
+
+  // Force BlockBitPacking selection via read factors.
+  auto cbpPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          std::vector<std::pair<nimble::EncodingType, float>>{
+              {nimble::EncodingType::BlockBitPacking, 1.0}},
+          nimble::CompressionOptions{},
+          std::nullopt);
+  std::vector<uint32_t> data(2048);
+  for (uint32_t i = 0; i < data.size(); ++i) {
+    data[i] = i % 100;
+  }
+  auto cbpResult =
+      cbpPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  EXPECT_EQ(cbpResult.encodingType, nimble::EncodingType::BlockBitPacking);
+  auto cbpCompressionPolicy = cbpResult.compressionPolicyFactory();
+  // BlockBitPacking ratio is 0.7: reject compression that only saves 20%.
+  EXPECT_FALSE(cbpCompressionPolicy->shouldAccept(
+      nimble::CompressionType::MetaInternal, 100, 80));
+  // Accept compression that saves 40%.
+  EXPECT_TRUE(cbpCompressionPolicy->shouldAccept(
+      nimble::CompressionType::MetaInternal, 100, 60));
+
+  // Force Trivial selection — default ratio is 0.98, more permissive.
+  auto trivialPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          std::vector<std::pair<nimble::EncodingType, float>>{
+              {nimble::EncodingType::Trivial, 1.0}},
+          nimble::CompressionOptions{},
+          std::nullopt);
+  auto trivialResult =
+      trivialPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  EXPECT_EQ(trivialResult.encodingType, nimble::EncodingType::Trivial);
+  auto trivialCompressionPolicy = trivialResult.compressionPolicyFactory();
+  // Trivial uses default ratio 0.98: accept compression that saves 20%.
+  EXPECT_TRUE(trivialCompressionPolicy->shouldAccept(
+      nimble::CompressionType::MetaInternal, 100, 80));
+}
+
+TEST(ManualEncodingSelectionPolicyTest, customCompressionAcceptRatioOverride) {
+  // Override: FixedBitWidth=0.0 (reject all compression).
+  nimble::CompressionOptions options;
+  options.compressionAcceptRatioOverrides = {
+      {nimble::EncodingType::FixedBitWidth, 0.0f}};
+
+  auto fbwPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          std::vector<std::pair<nimble::EncodingType, float>>{
+              {nimble::EncodingType::FixedBitWidth, 1.0}},
+          options,
+          std::nullopt);
+  std::vector<uint32_t> data(1000);
+  for (uint32_t i = 0; i < data.size(); ++i) {
+    data[i] = i;
+  }
+  auto result =
+      fbwPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  EXPECT_EQ(result.encodingType, nimble::EncodingType::FixedBitWidth);
+  auto compressionPolicy = result.compressionPolicyFactory();
+  // FixedBitWidth ratio is 0.0: reject all compression.
+  EXPECT_FALSE(compressionPolicy->shouldAccept(
+      nimble::CompressionType::MetaInternal, 100, 1));
+
+  // BlockBitPacking NOT in this override list — uses default ratio (0.98).
+  auto cbpPolicy =
+      std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
+          std::vector<std::pair<nimble::EncodingType, float>>{
+              {nimble::EncodingType::BlockBitPacking, 1.0}},
+          options,
+          std::nullopt);
+  auto cbpResult =
+      cbpPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto cbpCompressionPolicy = cbpResult.compressionPolicyFactory();
+  // BlockBitPacking has no override here, uses default 0.98: accept moderate
+  // savings.
+  EXPECT_TRUE(cbpCompressionPolicy->shouldAccept(
+      nimble::CompressionType::MetaInternal, 100, 80));
+}
+
 TEST(ManualEncodingSelectionPolicyFactoryTest, noCompressFactory) {
   // Factory with nullopt compressionOptions should create policies that skip
   // compression.

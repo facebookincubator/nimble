@@ -20,6 +20,7 @@
 #include <span>
 #include <type_traits>
 #include <vector>
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/Types.h"
 
 #include "absl/container/flat_hash_map.h" // @manual=fbsource//third-party/abseil-cpp:container__flat_hash_map
@@ -195,14 +196,70 @@ class Statistics {
     return uniqueCounts_.value();
   }
 
+  struct BlockStats {
+    uint64_t count;
+    uint64_t min;
+    uint64_t max;
+  };
+
+  const std::vector<BlockStats>& minMaxBlocks(
+      uint16_t blockSize = kBlockBitPackingBlockSize) const noexcept {
+    static_assert(nimble::isNumericType<T>());
+    if (!minMaxBlocks_.has_value() || minMaxBlockSize_ != blockSize) {
+      populateMinMaxBlocks(blockSize);
+      minMaxBlockSize_ = blockSize;
+    }
+    return minMaxBlocks_.value();
+  }
+
  private:
   Statistics() = default;
   std::span<const InputType> data_;
+
+  class BlockStatsAccumulator {
+   public:
+    explicit BlockStatsAccumulator(uint16_t blockSize)
+        : blockSize_{blockSize} {}
+
+    void add(uint64_t val) {
+      if (val < blockMin_) {
+        blockMin_ = val;
+      }
+      if (val > blockMax_) {
+        blockMax_ = val;
+      }
+      if (++blockCount_ == blockSize_) {
+        flush();
+      }
+    }
+
+    std::vector<BlockStats> finish() {
+      flush();
+      return std::move(result_);
+    }
+
+   private:
+    void flush() {
+      if (blockCount_ > 0) {
+        result_.push_back({blockCount_, blockMin_, blockMax_});
+      }
+      blockCount_ = 0;
+      blockMin_ = std::numeric_limits<uint64_t>::max();
+      blockMax_ = 0;
+    }
+
+    const uint16_t blockSize_;
+    uint64_t blockCount_ = 0;
+    uint64_t blockMin_ = std::numeric_limits<uint64_t>::max();
+    uint64_t blockMax_ = 0;
+    std::vector<BlockStats> result_;
+  };
 
   void populateRepeats() const;
   void populateUniques() const;
   void populateMinMax() const;
   void populateBucketCounts() const;
+  void populateMinMaxBlocks(uint16_t blockSize) const;
   void populateStringLength() const;
 
   mutable std::optional<uint64_t> consecutiveRepeatCount_;
@@ -213,6 +270,8 @@ class Statistics {
   mutable std::optional<T> min_;
   mutable std::optional<T> max_;
   mutable std::optional<std::vector<uint64_t>> bucketCounts_;
+  mutable std::optional<std::vector<BlockStats>> minMaxBlocks_;
+  mutable uint16_t minMaxBlockSize_{0};
   mutable std::optional<std::optional<UniqueValueCounts<T, InputType>>>
       uniqueCounts_;
 };
