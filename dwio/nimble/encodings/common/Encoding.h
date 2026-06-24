@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
@@ -97,30 +98,36 @@ struct ReadWithVisitorParams {
 
 class Encoding {
  public:
-  /// Options for encoding/decoding, extracted from persisted storage version
-  /// (file footer or serializer version).
+  /// Options that control encoding behavior during encode and decode.
+  /// Includes format-level settings (e.g., varint row count from file version)
+  /// and per-encoding configuration (e.g., block size from serde params).
   struct Options {
     /// When true, rowCount in the encoding prefix is varint-encoded instead of
     /// fixed 4-byte uint32. Determined from file format version or serializer
     /// version.
-    bool useVarintRowCount;
+    bool useVarintRowCount = false;
 
     /// Optional buffer pool for reusing scratch buffers across encoding
     /// lifetimes. When set, encodings return their scratch buffers to the pool
     /// on destruction and grab pre-allocated buffers on construction, avoiding
     /// MemoryPool alloc/free overhead.
-    /// Value-initialized to nullptr when omitted from aggregate initialization.
-    velox::BufferPool* bufferPool;
+    velox::BufferPool* bufferPool = nullptr;
 
     /// When true, encodings that support dictionary mode (e.g., RLE) will
     /// use the dictionary index path when the inner encoding is
     /// dictionary-enabled. False by default — only the selective
     /// reader enables this for dictionary vector output.
-    bool preserveDictionaryEncoding;
+    bool preserveDictionaryEncoding = false;
+
     /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
     /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,
     /// 2 = TierTagArray, 3 = EliasFano.
-    uint8_t frequencyPartitionIndex;
+    uint8_t frequencyPartitionIndex = 0;
+
+    /// Block size for BlockBitPacking encoding. Determines how many rows
+    /// are packed per block. Written to the stream header; the reader
+    /// reads it back from the stream (self-describing).
+    uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
   };
 
   static constexpr int kEncodingTypeOffset =
@@ -132,7 +139,7 @@ class Encoding {
   Encoding(
       velox::memory::MemoryPool& pool,
       std::string_view data,
-      const Options& options = {});
+      const Options& options);
   virtual ~Encoding() = default;
 
   EncodingType encodingType() const {

@@ -104,13 +104,15 @@ class TrivialNestedPolicy : public EncodingSelectionPolicy<T> {
  public:
   EncodingSelectionResult select(
       std::span<const physicalType>,
-      const Statistics<physicalType>&) override {
+      const Statistics<physicalType>&,
+      const Encoding::Options& /* options */) override {
     return {.encodingType = EncodingType::Trivial};
   }
   EncodingSelectionResult selectNullable(
       std::span<const physicalType>,
       std::span<const bool>,
-      const Statistics<physicalType>&) override {
+      const Statistics<physicalType>&,
+      const Encoding::Options& /* options */) override {
     return {.encodingType = EncodingType::Nullable};
   }
   std::unique_ptr<EncodingSelectionPolicyBase>

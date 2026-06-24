@@ -131,12 +131,10 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   ManualEncodingSelectionPolicy(
       std::vector<std::pair<EncodingType, float>> readFactors,
       std::optional<CompressionOptions> compressionOptions,
-      std::optional<NestedEncodingIdentifier> identifier,
-      uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize)
+      std::optional<NestedEncodingIdentifier> identifier)
       : readFactors_{std::move(readFactors)},
         compressionOptions_{std::move(compressionOptions)},
-        identifier_{identifier},
-        blockBitPackingBlockSize_{blockBitPackingBlockSize} {}
+        identifier_{identifier} {}
 
   std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
       EncodingType encodingType,
@@ -165,13 +163,13 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         COMMA FixedByteWidth,
         std::move(filteredReadFactors),
         compressionOptions_,
-        identifier,
-        blockBitPackingBlockSize_);
+        identifier);
   }
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) override {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& /* options */ = {}) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
@@ -312,25 +310,23 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
                 ? "..."
                 : ""));
     if (!compressionOptions_.has_value()) {
-      return {
-          .encodingType = selectedEncoding,
-          .blockBitPackingBlockSize = blockBitPackingBlockSize_};
+      return {.encodingType = selectedEncoding};
     }
     return {
         .encodingType = selectedEncoding,
-        .compressionPolicyFactory =
-            [compressionOptions = compressionOptions_.value(),
-             selectedEncoding]() {
-              return std::make_unique<AlwaysCompressPolicy>(
-                  compressionOptions, selectedEncoding);
-            },
-        .blockBitPackingBlockSize = blockBitPackingBlockSize_};
+        .compressionPolicyFactory = [compressionOptions =
+                                         compressionOptions_.value(),
+                                     selectedEncoding]() {
+          return std::make_unique<AlwaysCompressPolicy>(
+              compressionOptions, selectedEncoding);
+        }};
   }
 
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -352,7 +348,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   // policies created from it.
   const std::optional<CompressionOptions> compressionOptions_;
   const std::optional<NestedEncodingIdentifier> identifier_;
-  const uint16_t blockBitPackingBlockSize_;
 };
 
 // This model is trained offline and parameters are updated here.
@@ -382,11 +377,9 @@ class ManualEncodingSelectionPolicyFactory {
       std::vector<std::pair<EncodingType, float>> readFactors =
           defaultReadFactors(),
       std::optional<CompressionOptions> compressionOptions =
-          CompressionOptions{},
-      uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize)
+          CompressionOptions{})
       : readFactors_{std::move(readFactors)},
-        compressionOptions_{std::move(compressionOptions)},
-        blockBitPackingBlockSize_{blockBitPackingBlockSize} {}
+        compressionOptions_{std::move(compressionOptions)} {}
 
   std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
       DataType dataType) const {
@@ -395,8 +388,7 @@ class ManualEncodingSelectionPolicyFactory {
         ManualEncodingSelectionPolicy,
         readFactors_,
         compressionOptions_,
-        std::nullopt,
-        blockBitPackingBlockSize_);
+        std::nullopt);
   }
 
   // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
@@ -494,7 +486,6 @@ class ManualEncodingSelectionPolicyFactory {
  private:
   const std::vector<std::pair<EncodingType, float>> readFactors_;
   const std::optional<CompressionOptions> compressionOptions_;
-  const uint16_t blockBitPackingBlockSize_;
 };
 
 // This is a learned encoding selection implementation.
@@ -519,7 +510,8 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) override {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& /* options */ = {}) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
@@ -543,7 +535,8 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -676,7 +669,8 @@ class ReplayedEncodingSelectionPolicy
 
   nimble::EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
-      const nimble::Statistics<physicalType>& /* statistics */) override {
+      const nimble::Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     NIMBLE_SELECTION_LOG(
         CYAN << "Replaying encoding " << encodingLayout_.encodingType());
     if (!compressionOptions_.has_value()) {
@@ -697,7 +691,8 @@ class ReplayedEncodingSelectionPolicy
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     NIMBLE_SELECTION_LOG(
         CYAN << "Replaying nullable encoding "
              << encodingLayout_.encodingType());

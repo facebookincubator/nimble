@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nimble Writer Configuration Flow</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #fafbfc; --surface: #ffffff; --text: #1a1a2e; --muted: #6b7280; --sub: #4b5563;
+  --border: #d1d5db;
+  --hl: #2563eb; --warm: #b45309; --step: #059669;
+  --writer: #2563eb; --context: #7c3aed; --tablet: #0891b2;
+  --flush: #d97706; --encoding: #059669; --index: #dc2626;
+  --accent: #f59e0b; --kill: #ef4444; --pass: #22c55e;
+}
+body.dark {
+  --bg: #111118; --surface: #1a1a24; --text: #e5e7eb; --muted: #9ca3af; --sub: #d1d5db;
+  --border: #374151; --hl: #60a5fa; --warm: #fbbf24; --step: #34d399;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); padding:2rem; }
+.wrap { max-width:780px; margin:0 auto; }
+h1 { font-family:'Space Grotesk',sans-serif; font-size:1.4rem; text-align:center; margin-bottom:0.15rem; }
+.sub { text-align:center; color:var(--muted); font-size:0.78rem; margin-bottom:1.8rem; }
+code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:color-mix(in srgb, var(--border) 30%, var(--surface)); padding:0.05rem 0.25rem; border-radius:3px; }
+.node { border:2px solid var(--border); border-radius:10px; padding:0.5rem 0.8rem; background:var(--surface); text-align:center; }
+.node h3 { font-family:'Space Grotesk',sans-serif; font-size:0.75rem; font-weight:600; }
+.node .d { font-family:'JetBrains Mono',monospace; font-size:0.55rem; color:var(--muted); margin-top:0.15rem; }
+.node .d b { color:var(--hl); }
+.ar { display:flex; justify-content:center; padding:0.12rem 0; }
+.ar .a { width:2px; height:18px; background:var(--border); position:relative; }
+.ar .a::after { content:''; position:absolute; bottom:-1px; left:50%; transform:translateX(-50%); border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid var(--border); }
+.ar-accent .a { background:var(--accent); }
+.ar-accent .a::after { border-top-color:var(--accent); }
+.callout { display:flex; align-items:flex-start; gap:0.4rem; padding:0.4rem 0.6rem; border-radius:7px; font-size:0.65rem; color:var(--sub); margin-top:0.4rem; }
+.sec { margin-bottom:1.5rem; }
+.sec-head { font-family:'Space Grotesk',sans-serif; font-size:0.58rem; font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); margin-bottom:0.4rem; display:flex; align-items:center; gap:0.4rem; }
+.sec-head::after { content:''; flex:1; height:1px; background:var(--border); }
+.sn { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%; font-size:0.55rem; font-weight:700; color:#fff; }
+.part { margin-bottom:0.3rem; font-family:'Space Grotesk',sans-serif; font-size:0.85rem; font-weight:700; text-align:center; color:var(--text); margin-top:1.5rem; }
+.part-sub { text-align:center; color:var(--muted); font-size:0.65rem; margin-bottom:1rem; }
+.fp { font-family:'JetBrains Mono',monospace; font-size:0.48rem; color:var(--muted); margin-top:0.35rem; }
+.footer { text-align:center; font-size:0.6rem; color:var(--muted); margin-top:1.2rem; padding-top:0.5rem; border-top:1px solid var(--border); }
+.priority-bar { display:flex; height:24px; border-radius:6px; overflow:hidden; border:1.5px solid var(--border); margin:0.3rem 0; }
+.priority-seg { display:flex; align-items:center; justify-content:center; font-family:'JetBrains Mono',monospace; font-size:0.48rem; font-weight:500; color:#fff; }
+</style>
+</head>
+<body>
+<button onclick="document.body.classList.toggle('dark')" style="position:fixed;top:1rem;right:1rem;border:1px solid var(--border);background:var(--surface);border-radius:6px;padding:0.25rem 0.4rem;cursor:pointer;color:var(--text);font-size:0.8rem">&#9684;</button>
+<div class="wrap">
+
+<h1>Nimble Writer Configuration Flow</h1>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PART 1: Encoding::Options Overview -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="part" style="margin-top:0">Part 1: Encoding::Options Background</div>
+<div class="part-sub">What the struct is, where it's constructed, and which encodings consume which field</div>
+
+<!-- 1a: Fields & Consumption -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--step)">1a</span> Encoding::Options &mdash; Fields &amp; Consumption</div>
+
+<div style="border:1.5px solid var(--border);border-radius:10px;background:var(--surface);padding:0.4rem 0.5rem;overflow-x:auto;">
+<div class="d" style="margin-bottom:0.3rem;text-align:center">dwio/nimble/encodings/common/Encoding.h</div>
+<table style="width:100%;border-collapse:collapse;font-size:0.55rem;">
+  <thead>
+    <tr>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:var(--muted);padding:0.25rem 0.4rem;text-align:left;border-bottom:2px solid var(--border)">Encoding</th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--step);vertical-align:middle"></span> useVarintRowCount<br><span style="font-weight:400;font-size:0.4rem;color:var(--muted)">bool = false</span></th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--hl);vertical-align:middle"></span> bufferPool<br><span style="font-weight:400;font-size:0.4rem;color:var(--muted)">Pool* = nullptr</span></th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#7c3aed;vertical-align:middle"></span> preserveDict<br><span style="font-weight:400;font-size:0.4rem;color:var(--muted)">bool = false</span></th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#e11d48;vertical-align:middle"></span> freqPartIdx<br><span style="font-weight:400;font-size:0.4rem;color:var(--muted)">uint8_t = 0</span></th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warm);vertical-align:middle"></span> bbpBlockSize<br><span style="font-weight:400;font-size:0.4rem;color:var(--muted)">uint16_t = 1024</span></th>
+    </tr>
+  </thead>
+  <tbody style="font-family:'JetBrains Mono',monospace;font-size:0.5rem;color:var(--sub)">
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">Trivial</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">RLE</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#7c3aed">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">Dictionary</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">FixedBitWidth</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">BlockBitPacking</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--warm)">&#9679;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">FreqPartition</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border)">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#e11d48">&#9679;</td><td style="text-align:center;border-bottom:1px solid var(--border);color:var(--border)">&#9675;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;font-weight:600">Delta, Varint, SparseBool,<br>MainlyConst, Constant,<br>Sentinel, Prefix, Nullable, ALP</td><td style="text-align:center">&#9679;</td><td style="text-align:center">&#9679;</td><td style="text-align:center;color:var(--border)">&#9675;</td><td style="text-align:center;color:var(--border)">&#9675;</td><td style="text-align:center;color:var(--border)">&#9675;</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="callout" style="background:color-mix(in srgb, var(--step) 5%, var(--surface));border:1px solid color-mix(in srgb, var(--step) 15%, transparent)">
+  <span>&#9654;</span>
+  <div><code>useVarintRowCount</code> and <code>bufferPool</code> are read by all encodings via the base <code>Encoding</code> class (stream prefix row count format + scratch buffer reuse). The other three fields are encoding-specific.</div>
+</div>
+</div>
+
+<!-- 1b: Construction Sites -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--accent)">1b</span> Construction Sites (3 Paths)</div>
+
+<div style="display:flex;gap:0.5rem;">
+
+  <!-- Write Path -->
+  <div style="flex:1;border:2px solid var(--step);border-radius:10px;padding:0.45rem 0.5rem;background:color-mix(in srgb, var(--step) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;font-weight:700;color:var(--step);margin-bottom:0.1rem">Write Path</div>
+    <div class="d" style="margin-bottom:0.2rem">VeloxWriter &rarr; file writing</div>
+    <div class="node" style="border-color:var(--step);margin-bottom:0.1rem;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:var(--step)">VeloxWriterOptions</h3>
+      <div class="d">.blockBitPackingBlockSize = N <span style="color:var(--muted)">(from serde params)</span></div>
+    </div>
+    <div class="ar"><div class="a" style="background:var(--step)"></div></div>
+    <div class="node" style="border-color:var(--step);background:color-mix(in srgb, var(--step) 8%, var(--surface));padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:var(--step)">VeloxWriter::encode&lt;T&gt;()</h3>
+      <div class="d">calls context.options().<span style="color:var(--step);font-weight:600">buildEncodingOptions()</span><br>reads .blockBitPackingBlockSize &rarr; Options{<span style="color:var(--step)">bbpBlockSize=N</span>}</div>
+    </div>
+    <div class="ar"><div class="a" style="background:var(--step)"></div></div>
+    <div class="node" style="border-color:var(--step);padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem">EncodingFactory::encode(options)</h3>
+      <div class="d">options &rarr; select() + EncodingSelection</div>
+    </div>
+  </div>
+
+  <!-- Serializer Path -->
+  <div style="flex:1;border:2px solid var(--hl);border-radius:10px;padding:0.45rem 0.5rem;background:color-mix(in srgb, var(--hl) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;font-weight:700;color:var(--hl);margin-bottom:0.1rem">Serializer / Deserializer</div>
+    <div class="d" style="margin-bottom:0.2rem">Network/RPC vector transfer</div>
+    <div class="node" style="border-color:var(--hl);margin-bottom:0.1rem;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:var(--hl)">SerializerOptions</h3>
+      <div class="d">encodingOptions{<span style="color:var(--hl)">useVarint</span>=true, <span style="color:var(--hl)">bbpBlockSize</span>}</div>
+    </div>
+    <div class="ar"><div class="a" style="background:var(--hl)"></div></div>
+    <div class="node" style="border-color:var(--hl);background:color-mix(in srgb, var(--hl) 8%, var(--surface));padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:var(--hl)">DeserializerImpl</h3>
+      <div class="d">Options{<span style="color:var(--hl)">useVarintRowCount</span>, <span style="color:var(--hl)">bufferPool</span>}</div>
+    </div>
+    <div class="ar"><div class="a" style="background:var(--hl)"></div></div>
+    <div class="node" style="border-color:var(--hl);padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem">EncodingFactory(opts).create()</h3>
+      <div class="d">options stored, passed to constructors</div>
+    </div>
+  </div>
+
+  <!-- Selective Reader Path -->
+  <div style="flex:1;border:2px solid #7c3aed;border-radius:10px;padding:0.45rem 0.5rem;background:color-mix(in srgb, #7c3aed 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;font-weight:700;color:#7c3aed;margin-bottom:0.1rem">Selective Reader</div>
+    <div class="d" style="margin-bottom:0.2rem">ChunkedDecoder path</div>
+    <div class="node" style="border-color:#7c3aed;margin-bottom:0.1rem;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:#7c3aed">SelectiveNimbleReader</h3>
+      <div class="d">EncodingFactory() with default Options{}</div>
+    </div>
+    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
+    <div class="node" style="border-color:#7c3aed;background:color-mix(in srgb, #7c3aed 8%, var(--surface));padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:#7c3aed">ChunkedDecoder</h3>
+      <div class="d">copies opts, sets <span style="color:#7c3aed">preserveDictEncoding</span>=true</div>
+    </div>
+    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
+    <div class="node" style="border-color:#7c3aed;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem">EncodingFactory(opts).create()</h3>
+      <div class="d">RLE sees preserveDict &rarr; dict output</div>
+    </div>
+  </div>
+</div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PART 2: Write Path (Detail) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="part">Part 2: Write Path Overview</div>
+<div class="part-sub">How serde params collect into VeloxWriterOptions, fan out to components, and how <code>Encoding::Options</code> fits in</div>
+
+<!-- 2a: Entry Points -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--writer)">2a</span> Entry Points</div>
+
+<div style="display:flex;gap:0.6rem;">
+
+  <!-- Path A -->
+  <div style="flex:1;border:2px solid var(--writer);border-radius:10px;padding:0.5rem 0.6rem;background:color-mix(in srgb, var(--writer) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.68rem;font-weight:700;color:var(--writer);margin-bottom:0.15rem">Path A: DWIO FileWriter API</div>
+    <div class="d" style="color:var(--muted);margin-bottom:0.3rem">TableService / Ingestion pipelines</div>
+
+    <div class="node" style="border-color:var(--writer);margin-bottom:0.15rem">
+      <h3 style="color:var(--writer);font-size:0.65rem">Hive Metastore</h3>
+      <div class="d">HiveTableMetadata.sd().serdeInfo().parameters()</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-color:var(--writer);margin-bottom:0.15rem">
+      <h3 style="font-size:0.65rem">FileWriterFactory::create()</h3>
+      <div class="d">format = NIMBLE &rarr; copy serdeParams</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-color:var(--accent);border-width:2.5px">
+      <h3 style="color:var(--accent);font-size:0.65rem">NimbleWriterOptionBuilder</h3>
+      <div class="d">.withSerdeParams(schema, serdeParams).build()</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-style:dashed">
+      <h3 style="font-size:0.65rem">optionOverrides.nimbleOverrides(options)</h3>
+      <div class="d">optional lambda-based overrides from caller</div>
+    </div>
+    <div class="fp">dwio/api/FileWriter.cpp:484-544</div>
+  </div>
+
+  <!-- Path B -->
+  <div style="flex:1;border:2px solid var(--context);border-radius:10px;padding:0.5rem 0.6rem;background:color-mix(in srgb, var(--context) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.68rem;font-weight:700;color:var(--context);margin-bottom:0.15rem">Path B: Velox HiveDataSink</div>
+    <div class="d" style="color:var(--muted);margin-bottom:0.3rem">Presto / Spark write queries</div>
+
+    <div class="node" style="border-color:var(--context);margin-bottom:0.15rem">
+      <h3 style="color:var(--context);font-size:0.65rem">HiveInsertTableHandle</h3>
+      <div class="d">serdeParameters_ (from coordinator)</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-color:var(--context);margin-bottom:0.15rem">
+      <h3 style="font-size:0.65rem">createWriterOptions()</h3>
+      <div class="d">options&rarr;serdeParameters = table serde params</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-color:var(--flush);margin-bottom:0.15rem">
+      <h3 style="color:var(--flush);font-size:0.65rem">processConfigs(connectorConfig, session)</h3>
+      <div class="d">merges session &amp; connector overrides via emplace()</div>
+    </div>
+    <div class="ar ar-accent"><div class="a"></div></div>
+    <div class="node" style="border-color:var(--accent);border-width:2.5px">
+      <h3 style="color:var(--accent);font-size:0.65rem">NimbleWriterOptionBuilder</h3>
+      <div class="d">.withSerdeParams(schema, serdeParams).build()</div>
+    </div>
+    <div class="fp">velox/connectors/hive/HiveDataSink.cpp</div>
+  </div>
+</div>
+
+<div style="margin-top:0.5rem;">
+  <div style="font-family:'Space Grotesk',sans-serif;font-size:0.55rem;font-weight:600;color:var(--muted);margin-bottom:0.15rem;letter-spacing:0.05em">OVERRIDE PRIORITY (highest &rarr; lowest)</div>
+  <div class="priority-bar">
+    <div class="priority-seg" style="flex:3;background:var(--writer)">Table Serde Param</div>
+    <div class="priority-seg" style="flex:2;background:var(--context)">Session Property</div>
+    <div class="priority-seg" style="flex:2;background:var(--flush)">Connector Config</div>
+    <div class="priority-seg" style="flex:1.5;background:var(--muted)">Default</div>
+  </div>
+  <div class="d">Enforced by std::map::emplace() &mdash; only inserts if key does not already exist</div>
+</div>
+
+<div class="callout" style="background:color-mix(in srgb, var(--accent) 5%, var(--surface));border:1px solid color-mix(in srgb, var(--accent) 15%, transparent)">
+  <span>&#9654;</span>
+  <div>Both paths converge at <code>NimbleWriterOptionBuilder::withSerdeParams()</code>. This is the single chokepoint where the flat <code>map&lt;string,string&gt;</code> of serde params is parsed into typed <code>VeloxWriterOptions</code> fields.</div>
+</div>
+</div>
+
+<!-- 2b: VeloxWriterOptions Config Map -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--sub)">2b</span> VeloxWriterOptions Config Map</div>
+
+<div class="node" style="padding:0.6rem 0.8rem">
+  <h3 style="text-align:left;font-size:0.75rem">VeloxWriterOptions</h3>
+
+  <div style="text-align:left;margin-top:0.5rem;border:1.5px solid color-mix(in srgb, var(--hl) 30%, var(--border));border-radius:6px;padding:0.35rem 0.5rem;background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+    <div class="d" style="color:var(--hl);font-weight:700;font-size:0.6rem;margin-bottom:0.15rem">Encoding</div>
+    <div class="d" style="text-align:left;line-height:1.7">
+      <span style="color:#1d4ed8;font-weight:600">encodingSelectionPolicyFactory</span> &larr; opaque lambda<br>
+      &nbsp;&nbsp;&#9500; <span style="color:#1d4ed8">readFactors</span> <span style="color:var(--muted)">(which encodings to try + weights)</span><br>
+      &nbsp;&nbsp;&#9492; <span style="color:#1d4ed8">compressionOptions</span> <span style="color:var(--muted)">(codec, levels, accept ratio)</span><br>
+      <span style="color:#2563eb;font-weight:600">blockBitPackingBlockSize</span> + <span style="color:#2563eb">buildEncodingOptions()</span> <span style="color:var(--muted)">&rarr; Encoding::Options</span><br>
+      <span style="color:#60a5fa">compressionOptions</span> &larr; direct field <span style="color:var(--muted)">(duplicate for replay path)</span><br>
+      <span style="color:#60a5fa">encodingLayoutTree</span> &larr; captured layout for replay
+    </div>
+  </div>
+
+  <div style="text-align:left;margin-top:0.3rem;border:1.5px solid color-mix(in srgb, var(--warm) 30%, var(--border));border-radius:6px;padding:0.35rem 0.5rem;background:color-mix(in srgb, var(--warm) 5%, var(--surface))">
+    <div class="d" style="color:var(--warm);font-weight:700;font-size:0.6rem;margin-bottom:0.15rem">Flush / Chunking</div>
+    <div class="d" style="text-align:left;line-height:1.7">
+      flushPolicyFactory &larr; opaque lambda <span style="color:var(--muted)">(stripe size, memory thresholds)</span><br>
+      enableChunking, min/max/wideSchemaMaxStreamChunkRawSize
+    </div>
+  </div>
+
+  <div style="text-align:left;margin-top:0.3rem;border:1.5px solid color-mix(in srgb, var(--step) 30%, var(--border));border-radius:6px;padding:0.35rem 0.5rem;background:color-mix(in srgb, var(--step) 5%, var(--surface))">
+    <div class="d" style="color:var(--step);font-weight:700;font-size:0.6rem;margin-bottom:0.15rem">Schema</div>
+    <div class="d" style="text-align:left;line-height:1.7">
+      flatMapColumns, dictionaryArrayColumns, deduplicatedMapColumns
+    </div>
+  </div>
+
+  <div style="display:flex;gap:0.3rem;margin-top:0.3rem">
+    <div style="flex:1;border:1.5px solid color-mix(in srgb, #7c3aed 30%, var(--border));border-radius:6px;padding:0.3rem 0.4rem;background:color-mix(in srgb, #7c3aed 5%, var(--surface))">
+      <div class="d" style="color:#7c3aed;font-weight:700;font-size:0.55rem">Index</div>
+      <div class="d" style="text-align:left">clusterIndexConfig</div>
+    </div>
+    <div style="flex:1;border:1.5px solid color-mix(in srgb, #0891b2 30%, var(--border));border-radius:6px;padding:0.3rem 0.4rem;background:color-mix(in srgb, #0891b2 5%, var(--surface))">
+      <div class="d" style="color:#0891b2;font-weight:700;font-size:0.55rem">Memory / Parallelism</div>
+      <div class="d" style="text-align:left">encodingExecutor, reclaimerFactory, spillConfig</div>
+    </div>
+    <div style="flex:1;border:1.5px solid color-mix(in srgb, #6b7280 30%, var(--border));border-radius:6px;padding:0.3rem 0.4rem;background:color-mix(in srgb, #6b7280 5%, var(--surface))">
+      <div class="d" style="color:#6b7280;font-weight:700;font-size:0.55rem">Stats / Misc</div>
+      <div class="d" style="text-align:left">enableStatsCollection, enableStreamDedup, metadata</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 2c: Options Fan-Out -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--flush)">2c</span> Options Fan-Out</div>
+
+<div style="display:flex;flex-direction:column;align-items:center;gap:0;margin-bottom:0.3rem;">
+  <div class="node" style="border-color:var(--accent);border-width:2.5px;padding:0.35rem 1.2rem;">
+    <h3 style="color:var(--accent);font-size:0.75rem">VeloxWriterOptions</h3>
+  </div>
+  <div class="ar ar-accent"><div class="a"></div></div>
+  <div class="node" style="border-color:var(--writer);width:100%;">
+    <h3 style="color:var(--writer)">VeloxWriter constructor</h3>
+    <div class="d">distributes options to context, creates TabletWriter, invokes factories</div>
+  </div>
+  <div class="ar ar-accent"><div class="a"></div></div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:0.3rem;">
+  <div style="border:1.5px solid var(--writer);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--writer) 5%, var(--surface));text-align:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--writer)">VeloxWriter</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">enableChunking, chunk sizes<br>stats collection<br>schema columns<br>encoding layout<br>metadata</div>
+  </div>
+  <div style="border:1.5px solid var(--context);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--context) 5%, var(--surface));text-align:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--context)">FieldWriterContext</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">buffer growth<br>string buffers<br>parallel encoding<br>flat map nodes<br>dict array nodes</div>
+  </div>
+  <div style="border:1.5px solid var(--tablet);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--tablet) 5%, var(--surface));text-align:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--tablet)">TabletWriter</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">stream dedup<br>chunk index<br>metadata compression<br>feature reorder</div>
+  </div>
+  <div style="border:1.5px solid var(--flush);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--flush) 5%, var(--surface));text-align:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--flush)">FlushPolicy</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">stripe raw size<br>memory thresholds<br>target storage sz<br>compression factor</div>
+  </div>
+  <div style="border:2.5px solid var(--encoding);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--encoding) 10%, var(--surface));text-align:center;position:relative;">
+    <div style="position:absolute;top:-0.4rem;right:0.3rem;font-family:'Space Grotesk',sans-serif;font-size:0.4rem;font-weight:700;color:#fff;background:var(--encoding);padding:0.05rem 0.25rem;border-radius:3px">Encoding::Options</div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--encoding)">EncodingSelection</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">read factors <span style="color:var(--muted)">(policy)</span><br>compr accept ratio <span style="color:var(--muted)">(policy)</span><br><span style="color:var(--encoding);font-weight:600">blockBitPackingBlockSize</span> <span style="color:var(--muted)">(options)</span></div>
+  </div>
+  <div style="border:1.5px solid var(--index);border-radius:8px;padding:0.35rem 0.4rem;background:color-mix(in srgb, var(--index) 5%, var(--surface));text-align:center;">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--index)">ClusterIndexWriter</div>
+    <div class="d" style="text-align:left;line-height:1.5;margin-top:0.1rem;">index columns<br>sort orders<br>key constraints<br>encoding layout</div>
+  </div>
+</div>
+
+<div class="fp">dwio/nimble/velox/VeloxWriter.cpp &middot; VeloxWriterOptions.h &middot; FieldWriter.h &middot; TabletWriter.h</div>
+</div>
+
+<!-- 2d: Encoding Flow -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--step)">2d</span> Encoding Flow (estimation &rarr; selection &rarr; encode)</div>
+
+<div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+  <h3>VeloxWriter::encode&lt;T&gt;()</h3>
+  <div class="d">calls <span style="color:#2563eb;font-weight:600">buildEncodingOptions()</span> <span style="color:var(--warm);font-weight:600">(new)</span> + creates policy from factory</div>
+</div>
+<div class="ar"><div class="a"></div></div>
+<div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+  <h3>EncodingFactory::encode(policy, data, buffer, <span style="color:#2563eb">options</span>)</h3>
+  <div class="d">passes <span style="color:#2563eb;font-weight:600">options</span> <span style="color:var(--warm);font-weight:600">(new)</span> to select() and EncodingSelection</div>
+</div>
+
+<div style="margin:0.4rem 0 0.15rem;display:flex;align-items:center;gap:0.4rem">
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.6rem;font-weight:700;color:var(--step);background:color-mix(in srgb, var(--step) 10%, var(--surface));padding:0.15rem 0.4rem;border-radius:4px">Step 1</span>
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.55rem;color:var(--sub)">Estimation &mdash; pick encoding</span>
+</div>
+
+<div class="ar"><div class="a"></div></div>
+<div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+  <h3>select(values, stats, <span style="color:#2563eb">options</span>)</h3>
+  <div class="d">readFactors_ from policy + <span style="color:#2563eb;font-weight:600">blockSize</span> from <span style="color:#2563eb">options</span> <span style="color:var(--warm);font-weight:600">(new)</span> &rarr; EncodingCandidates &rarr; estimation</div>
+  <div class="d">picks best encoding &rarr; returns EncodingSelectionResult{BBP, comprFactory}</div>
+</div>
+
+<div style="margin:0.4rem 0 0.15rem;display:flex;align-items:center;gap:0.4rem">
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.6rem;font-weight:700;color:var(--step);background:color-mix(in srgb, var(--step) 10%, var(--surface));padding:0.15rem 0.4rem;border-radius:4px">Step 2</span>
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.55rem;color:var(--sub)">Build selection &mdash; bundle result + options</span>
+</div>
+
+<div class="ar"><div class="a"></div></div>
+<div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+  <h3>EncodingSelection&lt;T&gt;</h3>
+  <div class="d">wraps result + stats + policy + <span style="color:#2563eb">options</span> <span style="color:var(--warm);font-weight:600">(new)</span></div>
+</div>
+
+<div style="margin:0.4rem 0 0.15rem;display:flex;align-items:center;gap:0.4rem">
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.6rem;font-weight:700;color:var(--step);background:color-mix(in srgb, var(--step) 10%, var(--surface));padding:0.15rem 0.4rem;border-radius:4px">Step 3</span>
+  <span style="font-family:'Space Grotesk',sans-serif;font-size:0.55rem;color:var(--sub)">Encode &mdash; write data</span>
+</div>
+
+<div class="ar"><div class="a"></div></div>
+<div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
+  <h3>BBP::encode(selection, values, buffer, <span style="color:#2563eb">options</span>)</h3>
+  <div class="d"><span style="color:#2563eb">options</span>.blockBitPackingBlockSize = <b>512</b> &#10003;</div>
+</div>
+
+<div style="text-align:center;margin-top:0.6rem">
+  <div style="display:inline-flex;gap:0.5rem;align-items:center;border:1.5px solid var(--border);border-radius:8px;padding:0.35rem 0.8rem">
+    <span style="font-family:'Space Grotesk',sans-serif;font-size:0.68rem;font-weight:600;color:var(--sub)">Estimation 512 = Encoding 512 &nbsp;&#10003;</span>
+  </div>
+</div>
+</div>
+
+
+<div class="footer">Ke Wang &middot; 2026-06-21</div>
+</div>
+</body>
+</html>

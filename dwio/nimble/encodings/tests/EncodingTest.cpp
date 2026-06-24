@@ -154,7 +154,8 @@ class TestTrivialEncodingSelectionPolicy
 
   nimble::EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
-      const nimble::Statistics<physicalType>& /* statistics */) override {
+      const nimble::Statistics<physicalType>& /* statistics */,
+      const nimble::Encoding::Options& /* options */) override {
     return {
         .encodingType = nimble::EncodingType::Trivial,
         .compressionPolicyFactory = [this]() {
@@ -166,7 +167,8 @@ class TestTrivialEncodingSelectionPolicy
   nimble::EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const nimble::Statistics<physicalType>& /* statistics */) override {
+      const nimble::Statistics<physicalType>& /* statistics */,
+      const nimble::Encoding::Options& /* options */) override {
     return {
         .encodingType = nimble::EncodingType::Nullable,
     };

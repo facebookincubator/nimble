@@ -89,6 +89,7 @@ std::string_view encodeTyped(
     std::span<const T> values,
     nimble::Buffer& encodingBuffer,
     const EncodingSelectionPolicyFactory& policyFactory,
+    const Encoding::Options& encodingOptions = {.useVarintRowCount = true},
     const EncodingLayout* encodingLayout = nullptr,
     std::optional<CompressionOptions> compressionOptions = std::nullopt) {
   std::unique_ptr<EncodingSelectionPolicy<T>> typedPolicy;
@@ -102,10 +103,7 @@ std::string_view encodeTyped(
         policyFactory(TypeTraits<T>::dataType));
   }
   return EncodingFactory::encode<T>(
-      std::move(typedPolicy),
-      values,
-      encodingBuffer,
-      Encoding::Options{.useVarintRowCount = true});
+      std::move(typedPolicy), values, encodingBuffer, encodingOptions);
 }
 
 /// Reads the trailer size (u32) from the last 4 bytes of the buffer.
@@ -463,6 +461,7 @@ std::string_view encodeTyped(
       values,
       encodingBuffer,
       options.encodingSelectionPolicyFactory,
+      options.encodingOptions,
       encodingLayout,
       options.compressionOptions);
 }

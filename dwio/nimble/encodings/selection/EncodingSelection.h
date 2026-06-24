@@ -77,7 +77,6 @@ struct EncodingSelectionResult {
   EncodingLayout::Config encodingConfig;
   std::function<std::unique_ptr<CompressionPolicy>()> compressionPolicyFactory =
       []() { return std::make_unique<NoCompressionPolicy>(); };
-  uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 };
 
 /// The EncodingSelection class is passed in to the encode() method of each
@@ -105,10 +104,6 @@ class EncodingSelection {
   std::unique_ptr<CompressionPolicy> compressionPolicy() const noexcept {
     auto policy = selectionResult_.compressionPolicyFactory();
     return policy;
-  }
-
-  uint16_t blockBitPackingBlockSize() const noexcept {
-    return selectionResult_.blockBitPackingBlockSize;
   }
 
   /// Returns a config value for the given key, or std::nullopt if not found.
@@ -179,13 +174,15 @@ class EncodingSelectionPolicy : public EncodingSelectionPolicyBase {
   /// return the selected encoding (and the matching compression policy).
   virtual EncodingSelectionResult select(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) = 0;
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) = 0;
 
   /// Same as the |select()| method above, but for nullable values.
   virtual EncodingSelectionResult selectNullable(
       std::span<const physicalType> values,
       std::span<const bool> nulls,
-      const Statistics<physicalType>& statistics) = 0;
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) = 0;
 
   virtual ~EncodingSelectionPolicy() = default;
 };
@@ -211,7 +208,7 @@ std::string_view EncodingSelection<T>::encodeNested(
           selectionPolicy_->template create<NestedT>(encodingType(), identifier)
               .release()));
   auto statistics = Statistics<NestedT>::create(values);
-  auto selectionResult = nestedPolicy->select(values, statistics);
+  auto selectionResult = nestedPolicy->select(values, statistics, options);
 
   return EncodingFactory::encode<NestedT>(
       EncodingSelection<NestedT>{
