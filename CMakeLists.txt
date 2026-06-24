@@ -188,14 +188,38 @@ add_subdirectory(velox)
 set(OPENZL_BUILD_CLI OFF CACHE BOOL "Build the OpenZL cli subdirectory" FORCE)
 set(OPENZL_BUILD_EXAMPLES OFF CACHE BOOL "Build OpenZL examples" FORCE)
 set(OPENZL_BUILD_TOOLS OFF CACHE BOOL "Build OpenZL tools" FORCE)
-set(OPENZL_BUILD_CUSTOM_PARSERS OFF CACHE BOOL "Build OpenZL custom parsers"
-    FORCE
+set(
+  OPENZL_BUILD_CUSTOM_PARSERS
+  OFF
+  CACHE BOOL
+  "Build OpenZL custom parsers"
+  FORCE
 )
 set(OPENZL_BUILD_TESTS OFF CACHE BOOL "Build OpenZL tests" FORCE)
 set(OPENZL_BUILD_BENCHMARKS OFF CACHE BOOL "Build OpenZL benchmarks" FORCE)
-set(OPENZL_BUILD_PYTHON_EXT OFF CACHE BOOL "Build OpenZL Python extension" FORCE)
+set(OPENZL_BUILD_PYTHON_EXT
+  OFF
+  CACHE BOOL
+  "Build OpenZL Python extension"
+  FORCE
+)
 set(OPENZL_INSTALL OFF CACHE BOOL "Install OpenZL" FORCE)
 add_subdirectory(openzl)
+
+# OpenZL hard-codes CMAKE_CXX_STANDARD to 17 (see openzl/CMakeLists.txt), but
+# Nimble builds with C++20. OpenZL's C++ bindings select between std:: types and
+# internal polyfills (poly::span, poly::source_location, poly::string_view, ...)
+# at compile time via feature-test macros (openzl/cpp/include/openzl/cpp/detail/
+# Portability.hpp). If openzl_cpp is compiled as C++17 while Nimble consumes its
+# headers as C++20, the same poly:: aliases resolve to different underlying types
+# (e.g. std::span vs poly::impl::span, std::source_location vs the polyfill),
+# producing mismatched mangled symbols and undefined-reference link errors. Force
+# the OpenZL C++ binding library to the same standard as Nimble so the polyfill
+# selection is identical on both sides of the ABI.
+set_target_properties(
+  openzl_cpp
+  PROPERTIES CXX_STANDARD ${CMAKE_CXX_STANDARD} CXX_STANDARD_REQUIRED ON
+)
 
 add_subdirectory(dwio/nimble/common)
 add_subdirectory(dwio/nimble/compression)
