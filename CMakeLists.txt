@@ -177,6 +177,26 @@ include_directories(SYSTEM velox/velox/external/xxhash)
 include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
 
 add_subdirectory(velox)
+
+# OpenZL is vendored as a git submodule and provides the OpenZL compression
+# codec used by dwio/nimble/compression (the `openzl` and `openzl_cpp` targets).
+# Only those core libraries are needed here, so disable OpenZL's CLI, examples,
+# tools, parsers, tests, benchmarks, Python bindings and install rules to keep
+# the Nimble build minimal and avoid pulling in unneeded dependencies. This must
+# come before any subdirectory that links against OpenZL so the targets and
+# their public include directories (e.g. openzl/cpp/include) are defined.
+set(OPENZL_BUILD_CLI OFF CACHE BOOL "Build the OpenZL cli subdirectory" FORCE)
+set(OPENZL_BUILD_EXAMPLES OFF CACHE BOOL "Build OpenZL examples" FORCE)
+set(OPENZL_BUILD_TOOLS OFF CACHE BOOL "Build OpenZL tools" FORCE)
+set(OPENZL_BUILD_CUSTOM_PARSERS OFF CACHE BOOL "Build OpenZL custom parsers"
+    FORCE
+)
+set(OPENZL_BUILD_TESTS OFF CACHE BOOL "Build OpenZL tests" FORCE)
+set(OPENZL_BUILD_BENCHMARKS OFF CACHE BOOL "Build OpenZL benchmarks" FORCE)
+set(OPENZL_BUILD_PYTHON_EXT OFF CACHE BOOL "Build OpenZL Python extension" FORCE)
+set(OPENZL_INSTALL OFF CACHE BOOL "Install OpenZL" FORCE)
+add_subdirectory(openzl)
+
 add_subdirectory(dwio/nimble/common)
 add_subdirectory(dwio/nimble/compression)
 add_subdirectory(dwio/nimble/tools)
