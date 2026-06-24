@@ -117,7 +117,10 @@ struct CompressionOptions {
   bool useVariableBitWidthCompressor = false;
   MetaInternalCompressionKey metaInternalCompressionKey;
   // Per-encoding overrides for compressionAcceptRatio.
-  std::vector<std::pair<EncodingType, float>> compressionAcceptRatioOverrides;
+  // BlockBitPacking default 0.7: data is already well-packed via per-block
+  // baselines, so compression must save at least 30% to justify CPU cost.
+  std::vector<std::pair<EncodingType, float>> compressionAcceptRatioOverrides =
+      {{EncodingType::BlockBitPacking, 0.7f}};
 };
 
 // This is the manual encoding selection implementation.
@@ -169,7 +172,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult select(
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& options = {}) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
@@ -191,7 +194,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       const auto encodingType = pair.first;
       const auto estimatedSize =
           detail::EncodingSizeEstimation<T, FixedByteWidth>::estimateSize(
-              encodingType, values.size(), statistics);
+              encodingType, values.size(), statistics, options);
       if (!estimatedSize.has_value()) {
         NIMBLE_SELECTION_LOG(
             PURPLE << encodingType << " encoding is incompatible.");

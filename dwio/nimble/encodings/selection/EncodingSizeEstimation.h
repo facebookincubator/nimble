@@ -19,8 +19,11 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <span>
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -31,8 +34,10 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
+
 namespace detail {
 
 // This class is meant to quickly estimate the size of encoded data using a
@@ -47,12 +52,16 @@ struct EncodingSizeEstimation {
   static std::optional<uint64_t> estimateNumericSize(
       const EncodingType encodingType,
       const uint64_t entryCount,
-      const Statistics<physicalType>& statistics) {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<physicalType>::estimateSize(statistics);
       }
       case EncodingType::MainlyConstant: {
+        // TODO: Wire per-block tightening when BlockBitPacking is a
+        // candidate. MainlyConstantEncoding::estimateSize already supports
+        // usePerBlockStats + blockSize params.
         return MainlyConstantEncoding<physicalType>::estimateSize(
             entryCount, statistics, FixedByteWidth);
       }
@@ -64,6 +73,9 @@ struct EncodingSizeEstimation {
             entryCount, statistics, FixedByteWidth);
       }
       case EncodingType::Dictionary: {
+        // TODO: Wire per-block tightening when BlockBitPacking is a
+        // candidate. DictionaryEncoding::estimateSize already supports
+        // usePerBlockStats + blockSize params.
         return DictionaryEncoding<physicalType>::estimateSize(
             entryCount, statistics, FixedByteWidth);
       }
@@ -96,6 +108,10 @@ struct EncodingSizeEstimation {
         } else {
           return std::nullopt;
         }
+      }
+      case EncodingType::BlockBitPacking: {
+        return BlockBitPackingEncoding<physicalType>::estimateSize(
+            statistics, options.blockBitPackingBlockSize);
       }
       // SubIntSplit integration commented out (disabled):
       /*
@@ -192,9 +208,10 @@ struct EncodingSizeEstimation {
   static std::optional<uint64_t> estimateSize(
       const EncodingType encodingType,
       const size_t entryCount,
-      const Statistics<physicalType>& statistics) {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) {
     if constexpr (isNumericType<physicalType>()) {
-      return estimateNumericSize(encodingType, entryCount, statistics);
+      return estimateNumericSize(encodingType, entryCount, statistics, options);
     } else if constexpr (isBoolType<physicalType>()) {
       return estimateBoolSize(encodingType, entryCount, statistics);
     } else if constexpr (isStringType<physicalType>()) {

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<base target="_blank">
+<title>Nimble Encoding Cost Model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f7fa;
+  --bg-alt: #eef1f6;
+  --surface: #ffffff;
+  --text-primary: #0f1a2e;
+  --text-secondary: #4a5568;
+  --text-muted: #8896ab;
+  --border: #dde3ed;
+  --border-strong: #c1c9d6;
+  --surface-hover: #f1f5f9;
+
+  --col0: #2563eb;
+  --col1: #9ca3af;
+  --col2: #7c3aed;
+  --col3: #059669;
+
+  --layer-query: #6366f1;
+  --layer-encoding: #059669;
+
+  --accent: #f59e0b;
+  --accent-glow: rgba(245,158,11,0.12);
+  --kill: #ef4444;
+  --pass: #22c55e;
+}
+body.dark-mode {
+  --bg: #0c1220;
+  --bg-alt: #111827;
+  --surface: #1a2332;
+  --text-primary: #e8ecf4;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --border: #2a3548;
+  --border-strong: #3b4a60;
+  --surface-hover: #1e293b;
+  --accent-glow: rgba(245,158,11,0.06);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text-primary);
+  line-height: 1.55;
+}
+body::before {
+  content:'';
+  position:fixed; inset:0;
+  background:
+    radial-gradient(ellipse at 15% 0%, rgba(99,102,241,0.06) 0%, transparent 55%),
+    radial-gradient(ellipse at 85% 100%, rgba(245,158,11,0.04) 0%, transparent 55%);
+  pointer-events:none; z-index:0;
+}
+.container { position:relative; z-index:1; max-width:1100px; margin:0 auto; padding:3rem 2rem 2rem; }
+
+h1 { font-family:'Space Grotesk',sans-serif; font-size:1.85rem; font-weight:700; text-align:center; letter-spacing:-0.02em; margin-bottom:0.15rem; }
+.subtitle { text-align:center; color:var(--text-secondary); font-size:0.9rem; margin-bottom:2rem; }
+
+/* Sections */
+.section { margin-bottom:2rem; }
+.section-head {
+  font-family:'Space Grotesk',sans-serif; font-size:0.65rem; font-weight:600;
+  letter-spacing:0.1em; text-transform:uppercase; color:var(--text-muted);
+  margin-bottom:0.6rem; display:flex; align-items:center; gap:0.5rem;
+}
+.section-head::after { content:''; flex:1; height:1px; background:var(--border); }
+.section-num {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:18px; height:18px; border-radius:50%;
+  font-size:0.6rem; font-weight:700; color:#fff;
+}
+
+/* Step cards */
+.step {
+  border:1.5px solid var(--border); border-radius:12px;
+  padding:1rem 1.25rem; background:var(--surface);
+  margin-bottom:0.6rem;
+}
+.step h3 {
+  font-family:'Space Grotesk',sans-serif; font-size:0.95rem; font-weight:600;
+  margin-bottom:0.3rem;
+}
+.step-label {
+  font-family:'Space Grotesk',sans-serif; font-size:0.6rem; font-weight:600;
+  letter-spacing:0.08em; text-transform:uppercase; color:var(--accent);
+  margin-bottom:0.2rem;
+}
+
+code {
+  font-family:'JetBrains Mono',monospace; font-size:0.72rem;
+  background:var(--bg-alt); padding:0.08rem 0.3rem; border-radius:3px;
+}
+
+/* Formula blocks */
+.formula {
+  font-family:'JetBrains Mono',monospace; font-size:0.75rem;
+  background:var(--bg-alt); border:1px solid var(--border);
+  padding:0.6rem 0.8rem; border-radius:6px;
+  margin:0.5rem 0; line-height:1.8; overflow-x:auto;
+}
+.formula .var { color:var(--col0); }
+.formula .fn { color:var(--col3); }
+.formula .op { color:var(--accent); font-weight:500; }
+.formula .comment { color:var(--text-muted); font-style:italic; }
+.formula .highlight { color:var(--kill); font-weight:700; }
+
+/* Encoding cards */
+.encodings {
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
+  gap:0.8rem; margin:0.8rem 0;
+}
+.enc-card {
+  border:1.5px solid var(--border); border-radius:10px;
+  padding:0.9rem 1rem; background:var(--surface);
+  border-left:3px solid var(--border-strong);
+}
+.enc-card.highlight { border-left-color:var(--accent); }
+.enc-card.new { border-left-color:var(--kill); }
+.enc-name {
+  font-family:'Space Grotesk',sans-serif;
+  font-weight:700; font-size:0.9rem; margin-bottom:0.4rem;
+}
+.enc-name .tag {
+  font-family:'DM Sans',sans-serif;
+  font-size:0.6rem; padding:0.1rem 0.4rem; border-radius:3px;
+  margin-left:0.4rem; vertical-align:middle; font-weight:600;
+}
+.tag-new { background:var(--kill); color:#fff; }
+.tag-modified { background:var(--accent); color:#fff; }
+.tag-unchanged { background:var(--bg-alt); color:var(--text-muted); border:1px solid var(--border); }
+
+/* Comparison */
+.comparison {
+  display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; margin:0.8rem 0;
+}
+.comparison > div {
+  border:1.5px solid var(--border); border-radius:10px;
+  padding:0.9rem 1rem; background:var(--surface);
+}
+.comparison .label {
+  font-family:'Space Grotesk',sans-serif;
+  font-size:0.65rem; font-weight:600; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.4rem;
+}
+.example {
+  background:var(--bg-alt); border-radius:6px;
+  padding:0.7rem 0.9rem; margin:0.4rem 0; font-size:0.78rem;
+  color:var(--text-secondary); line-height:1.7;
+}
+.example .title {
+  font-family:'Space Grotesk',sans-serif;
+  color:var(--text-primary); font-weight:600; font-size:0.8rem;
+  margin-bottom:0.25rem;
+}
+
+/* Table */
+.stats-table {
+  width:100%; border-collapse:collapse; margin:0.5rem 0; font-size:0.8rem;
+}
+.stats-table th {
+  text-align:left; color:var(--text-muted); font-weight:600;
+  padding:0.4rem 0.6rem; border-bottom:1.5px solid var(--border);
+  font-family:'Space Grotesk',sans-serif; font-size:0.7rem;
+  letter-spacing:0.03em; text-transform:uppercase;
+}
+.stats-table td {
+  padding:0.4rem 0.6rem; border-bottom:1px solid var(--border);
+  color:var(--text-secondary);
+}
+.stats-table .num { text-align:right; font-family:'JetBrains Mono',monospace; }
+
+/* Primitive stack */
+.stack { max-width:520px; margin:0.8rem 0; display:flex; flex-direction:column; align-items:center; gap:0; }
+.stack-box {
+  border:1.5px solid var(--border); border-radius:8px;
+  padding:0.35rem 0.7rem; background:var(--surface);
+  font-family:'JetBrains Mono',monospace; font-size:0.72rem;
+  text-align:center; white-space:nowrap;
+}
+.stack-arrow { color:var(--text-muted); font-size:0.6rem; padding:0.15rem 0; }
+.stack-row { display:flex; gap:0.6rem; justify-content:center; }
+
+/* Pipe arrow */
+.pipe-arrow { display:flex; justify-content:center; padding:0.15rem 0; }
+.pipe-arrow .arr {
+  width:2px; height:16px; background:var(--accent); position:relative;
+}
+.pipe-arrow .arr::after {
+  content:''; position:absolute; bottom:-1px; left:50%;
+  transform:translateX(-50%);
+  border-left:4px solid transparent; border-right:4px solid transparent;
+  border-top:5px solid var(--accent);
+}
+
+/* Legend */
+.legend {
+  display:flex; flex-wrap:wrap; gap:1rem; justify-content:center;
+  margin-bottom:1.5rem; font-size:0.75rem; color:var(--text-secondary);
+}
+.legend-item { display:flex; align-items:center; gap:0.3rem; }
+.legend-dot { width:10px; height:10px; border-radius:3px; }
+
+/* Callout */
+.callout {
+  display:flex; align-items:flex-start; gap:0.5rem;
+  padding:0.6rem 0.8rem; border-radius:8px;
+  background:var(--accent-glow);
+  border:1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  font-size:0.78rem; color:var(--text-secondary); margin-top:0.6rem;
+}
+
+/* Animate */
+.ani { opacity:0; animation: fadeUp 0.5s ease forwards; }
+@keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+.d1{animation-delay:.05s}.d2{animation-delay:.1s}.d3{animation-delay:.15s}
+.d4{animation-delay:.2s}.d5{animation-delay:.25s}.d6{animation-delay:.3s}
+.d7{animation-delay:.35s}.d8{animation-delay:.4s}
+
+/* Dark mode toggle */
+.theme-toggle {
+  position:fixed; top:1rem; right:1rem; z-index:100;
+  width:36px; height:36px; border-radius:8px;
+  border:1px solid var(--border); background:var(--surface);
+  color:var(--text-secondary); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 2px 8px rgba(0,0,0,.08); transition:background .15s;
+}
+.theme-toggle:hover { background:var(--surface-hover); }
+
+/* Responsive */
+@media (max-width:700px) {
+  .container { padding:2rem 1rem; }
+  .comparison { grid-template-columns:1fr; }
+  .encodings { grid-template-columns:1fr; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .ani { opacity:1 !important; animation:none !important; }
+}
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" onclick="document.body.classList.toggle('dark-mode')" aria-label="Toggle theme">&#9684;</button>
+
+<div class="container">
+
+<h1 class="ani d1">Nimble Encoding Cost Model</h1>
+<p class="subtitle ani d2">How encoding selection estimates sizes with per-block statistics</p>
+
+<div class="legend ani d2">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--kill)"></div> New</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> Modified</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--border-strong)"></div> Unchanged</div>
+</div>
+
+<!-- ============ CALL STACK GRAPH ============ -->
+<div class="section ani d3">
+  <div class="section-head"><span class="section-num" style="background:var(--col2)">0</span> Full Call Stack</div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:0">
+
+    <!-- Caller -->
+    <div class="step" style="width:100%;text-align:center;border-color:var(--text-muted)">
+      <div class="step-label">Caller</div>
+      <h3>EncodingFactory::encode()</h3>
+      <div style="font-size:0.72rem;color:var(--text-muted)">
+        Called by FieldWriter when flushing a stream.
+      </div>
+      <div class="formula" style="text-align:left">
+        auto statistics = Statistics&lt;physicalType&gt;::create(values);<br>
+        <span class="comment">// O(1)</span> <span style="color:var(--accent);font-weight:600">&larr; data_</span><br>
+        <br>
+        auto result = selectorPolicy-&gt;select(values, statistics);
+      </div>
+    </div>
+    <div class="pipe-arrow"><div class="arr"></div></div>
+
+    <!-- Root -->
+    <div class="step" style="width:100%;text-align:center;border-color:var(--border-strong)">
+      <div class="step-label">Encoding selection</div>
+      <h3>EncodingSelectionPolicy::select(values, statistics)</h3>
+      <div class="formula" style="text-align:left">
+        hasPerBlockEncoding = any_of(readFactors_, == BlockBitPacking);<br>
+        <br>
+        for (const auto&amp; [encodingType, readFactor] : readFactors_) {<br>
+        &nbsp;&nbsp;estimatedSize = EncodingSizeEstimation::estimateSize(encodingType, count, statistics, hasPerBlockEncoding);<br>
+        &nbsp;&nbsp;<span class="comment">// dispatches by type:</span><br>
+        &nbsp;&nbsp;<span class="comment">//   numeric → estimateNumericSize()</span><br>
+        &nbsp;&nbsp;<span class="comment">//   bool    → estimateBoolSize()</span><br>
+        &nbsp;&nbsp;<span class="comment">//   string  → estimateStringSize()</span><br>
+        &nbsp;&nbsp;cost = estimatedSize * readFactor;<br>
+        &nbsp;&nbsp;if (cost &lt; minCost) {<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;selectedEncoding = encodingType;<br>
+        &nbsp;&nbsp;}<br>
+        }
+      </div>
+    </div>
+    <div class="pipe-arrow"><div class="arr"></div></div>
+
+    <!-- EncodingSizeEstimation dispatcher -->
+    <div class="step" style="width:100%;text-align:center">
+      <h3>EncodingSizeEstimation::estimateNumericSize()</h3>
+      <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.2rem">switch (encodingType) &rarr; dispatches to each encoding's estimateSize()</div>
+    </div>
+    <div class="pipe-arrow"><div class="arr"></div></div>
+
+    <!-- Trivial + Constant -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;width:100%;margin-bottom:0.6rem">
+      <div class="enc-card" style="width:100%">
+        <div class="enc-name">Trivial <span class="tag tag-unchanged">UNCHANGED</span></div>
+        <div style="font-size:0.62rem;color:var(--text-muted);margin-bottom:0.2rem">no stats needed</div>
+        <div class="formula" style="font-size:0.65rem;margin:0.2rem 0 0">
+          return prefix + count &times; sizeof(T)
+        </div>
+      </div>
+      <div class="enc-card" style="width:100%">
+        <div class="enc-name">Constant <span class="tag tag-unchanged">UNCHANGED</span></div>
+        <div style="font-size:0.62rem;color:var(--text-muted);margin-bottom:0.2rem">no stats needed</div>
+        <div class="formula" style="font-size:0.65rem;margin:0.2rem 0 0">
+          return prefix + sizeof(T)
+        </div>
+      </div>
+    </div>
+
+    <!-- FixedBitWidth + BlockBitPacking side by side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;width:100%;margin-bottom:0.6rem">
+      <div class="enc-card" style="width:100%">
+        <div class="enc-name">FixedBitWidth <span class="tag tag-unchanged">UNCHANGED</span></div>
+        <div class="formula" style="font-size:0.62rem;margin:0.2rem 0 0">
+          estimateSize(rowCount, statistics, fixedByteWidth) {<br>
+          &nbsp;&nbsp;return estimateSize(rowCount, statistics.min(), statistics.max(), fixedByteWidth);<br>
+          }<br>
+          <br>
+          estimateSize(rowCount, minValue, maxValue, fixedByteWidth) {<br>
+          &nbsp;&nbsp;payloadSize = bitPackedBytes(minValue, maxValue, rowCount, fixedByteWidth);<br>
+          &nbsp;&nbsp;return prefix + kPrefixSize + payloadSize;<br>
+          }
+        </div>
+        <div style="margin-top:0.5rem;font-size:0.62rem;color:var(--text-secondary);line-height:1.6;border-top:1px solid var(--border);padding-top:0.4rem">
+          <div style="display:flex;align-items:center;gap:0.3rem;margin-bottom:0.2rem">
+            <span style="font-family:'JetBrains Mono',monospace">statistics.min()</span>
+          </div>
+          <div style="padding-left:0.8rem;font-family:'JetBrains Mono',monospace;font-size:0.6rem;line-height:1.8">
+            if (!min_.has_value()) {<br>
+            &nbsp;&nbsp;populateMinMax(); <span style="color:var(--accent);font-weight:600">&larr; scans data_ once</span><br>
+            &nbsp;&nbsp;<span class="comment">// sets both min_ AND max_ in one pass</span><br>
+            &nbsp;&nbsp;<span class="comment">// via std::minmax_element(data_)</span><br>
+            }<br>
+            return min_.value(); <span style="color:var(--pass)">&larr; cached after first call</span>
+          </div>
+        </div>
+      </div>
+      <div class="enc-card new" style="width:100%">
+        <div class="enc-name">BlockBitPacking <span class="tag tag-new">NEW</span></div>
+        <div class="formula" style="font-size:0.62rem;margin:0.2rem 0 0">
+          estimateSize(const Statistics&amp; statistics) {<br>
+          &nbsp;&nbsp;const auto&amp; blocks = statistics.minMaxBlocks();<br>
+          <br>
+          &nbsp;&nbsp;for (const auto&amp; b : blocks) {<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;range = b.max - b.min;<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;bw = bitsRequired(range);<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;packedSize = bufferSize(b.count, bw);<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;rawSize = b.count * sizeof(T);<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;if (packedSize &lt; rawSize) {<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dataSize += packedSize;<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;} else {<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dataSize += rawSize; <span class="comment">// skip encoding</span><br>
+          &nbsp;&nbsp;&nbsp;&nbsp;}<br>
+          &nbsp;&nbsp;}<br>
+          <br>
+          &nbsp;&nbsp;<span class="comment">// per-block metadata stored as nested encodings:</span><br>
+          &nbsp;&nbsp;<span class="comment">//   baselines → Trivial&lt;T&gt;</span><br>
+          &nbsp;&nbsp;<span class="comment">//   bitWidths → Trivial&lt;uint8_t&gt;</span><br>
+          &nbsp;&nbsp;<span class="comment">//   dataOffsets → Trivial&lt;uint32_t&gt;</span><br>
+          &nbsp;&nbsp;metadataSize = kMetadataHeaderSize<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;+ Trivial&lt;T&gt;::estimateSize(numBlocks)<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;+ Trivial&lt;u8&gt;::estimateSize(numBlocks)<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;+ Trivial&lt;u32&gt;::estimateSize(numBlocks);<br>
+          <br>
+          &nbsp;&nbsp;return prefix + metadataSize + dataSize;<br>
+          }
+        </div>
+        <div style="margin-top:0.5rem;font-size:0.62rem;color:var(--text-secondary);line-height:1.6;border-top:1px solid var(--border);padding-top:0.4rem">
+          <div style="display:flex;align-items:center;gap:0.3rem;margin-bottom:0.2rem">
+            <span style="font-family:'JetBrains Mono',monospace">statistics.minMaxBlocks()</span>
+          </div>
+          <div style="padding-left:0.8rem;font-family:'JetBrains Mono',monospace;font-size:0.6rem;line-height:1.8">
+            if (!minMaxBlocks_.has_value()) {<br>
+            &nbsp;&nbsp;populateMinMaxBlocks(); <span style="color:var(--accent);font-weight:600">&larr; scans data_ once</span><br>
+            &nbsp;&nbsp;<span class="comment">// BlockStatsAccumulator: for each value,</span><br>
+            &nbsp;&nbsp;<span class="comment">// track min/max, flush every 1024 rows</span><br>
+            &nbsp;&nbsp;<span class="comment">// &rarr; vector&lt;{count, min, max}&gt;</span><br>
+            }<br>
+            return minMaxBlocks_.value(); <span style="color:var(--pass)">&larr; cached after first call</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+  </div>
+</div>
+
+
+</div>
+</body>
+</html>

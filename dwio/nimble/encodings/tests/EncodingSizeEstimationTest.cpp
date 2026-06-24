@@ -527,3 +527,194 @@ TEST_F(EncodingSizeEstimationTest, blockBitPackingEstimateVsActualSize) {
   verifyBlockBitPackingEstimateVsActualSize<uint32_t>();
   verifyBlockBitPackingEstimateVsActualSize<uint64_t>();
 }
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    blockBitPackingStatisticsOverloadMatchesSpanOverload) {
+  std::vector<uint32_t> data;
+  data.reserve(2050);
+  for (uint32_t i = 0; i < 1024; ++i) {
+    data.push_back(1000 + i % 4);
+  }
+  for (uint32_t i = 0; i < 1024; ++i) {
+    data.push_back(1'000'000 + i % 8);
+  }
+  data.push_back(std::numeric_limits<uint32_t>::min());
+  data.push_back(std::numeric_limits<uint32_t>::max());
+
+  const auto spanEstimate = BlockBitPackingEncoding<uint32_t>::estimateSize(
+      std::span<const uint32_t>{data.data(), data.size()});
+  auto stats = Statistics<uint32_t>::create(data);
+  const auto statsEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+
+  EXPECT_EQ(spanEstimate, statsEstimate);
+}
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    blockBitPackingSkipEncodingForFullRangeBlock) {
+  std::vector<uint32_t> data;
+  data.reserve(2048);
+  // Block 0: narrow range (should pack)
+  for (uint32_t i = 0; i < 1024; ++i) {
+    data.push_back(i % 4);
+  }
+  // Block 1: full 32-bit range (should skip encoding)
+  for (uint32_t i = 0; i < 1024; ++i) {
+    data.push_back(i == 0 ? 0 : std::numeric_limits<uint32_t>::max());
+  }
+
+  auto stats = Statistics<uint32_t>::create(data);
+  const auto estimate = BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+
+  // Block 1 should fall back to raw: 1024 * 4 = 4096 bytes.
+  // Block 0 packs at 2 bits: much smaller.
+  // Total should be less than 2 * 1024 * 4 (if both were raw).
+  const auto bothRaw = 2 * 1024 * sizeof(uint32_t);
+  EXPECT_LT(estimate, bothRaw + 200);
+  EXPECT_GT(estimate, 4096);
+}
+
+// TODO: Add perBlockTighteningReducesMainlyConstantEstimate and
+// perBlockTighteningReducesDictionaryEstimate tests when per-block
+// tightening is wired up for MainlyConstant and Dictionary encodings.
+
+TEST_F(EncodingSizeEstimationTest, customBlockSizeAffectsEstimate) {
+  // With block size 512, we get 4 blocks instead of 2 (for 2048 values).
+  // Each smaller block has a tighter range → different estimate.
+  std::vector<uint32_t> data;
+  data.reserve(2048);
+  for (uint32_t i = 0; i < 2048; ++i) {
+    data.push_back(i);
+  }
+
+  auto stats = Statistics<uint32_t>::create(data);
+
+  const auto defaultBlockEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  const auto smallBlockEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats, /*blockSize=*/512);
+
+  // Smaller blocks → tighter per-block ranges → smaller packed data.
+  // But more blocks → more metadata overhead.
+  // The estimates should differ.
+  EXPECT_NE(defaultBlockEstimate, smallBlockEstimate);
+
+  // With sequential data [0..2047], smaller blocks have tighter ranges.
+  // Block size 512: 4 blocks, each spanning 512 values (9 bits).
+  // Block size 1024: 2 blocks, each spanning 1024 values (10 bits).
+  // Smaller blocks should pack tighter despite more metadata.
+  EXPECT_LT(smallBlockEstimate, defaultBlockEstimate);
+
+  // Calling with the original block size again should return the same result
+  // (verifies cache invalidation round-trips correctly).
+  const auto defaultBlockEstimateAgain =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  EXPECT_EQ(defaultBlockEstimate, defaultBlockEstimateAgain);
+}
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    blockBitPackingStatisticsOverloadMultipleTypes) {
+  // Verify Statistics-based and span-based estimateSize match for all unsigned
+  // physical types, not just uint32_t.
+  auto verifyMatch = [](auto typeTag) {
+    using T = decltype(typeTag);
+    std::vector<T> data;
+    data.reserve(2048);
+    for (uint32_t i = 0; i < 2048; ++i) {
+      data.push_back(static_cast<T>(i % 200));
+    }
+
+    const auto spanEstimate = BlockBitPackingEncoding<T>::estimateSize(
+        std::span<const T>{data.data(), data.size()});
+    auto stats = Statistics<T>::create(data);
+    const auto statsEstimate = BlockBitPackingEncoding<T>::estimateSize(stats);
+
+    EXPECT_EQ(spanEstimate, statsEstimate)
+        << "Mismatch for type size " << sizeof(T);
+  };
+
+  verifyMatch(uint8_t{});
+  verifyMatch(uint16_t{});
+  verifyMatch(uint32_t{});
+  verifyMatch(uint64_t{});
+}
+
+TEST_F(EncodingSizeEstimationTest, blockBitPackingConstantData) {
+  // All values identical: every block has range=0, bw=0, packedSize=0.
+  // Estimate should be dominated by metadata.
+  std::vector<uint32_t> data(2048, 42);
+
+  auto stats = Statistics<uint32_t>::create(data);
+  const auto estimate = BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+
+  const auto rawSize = 2048 * sizeof(uint32_t);
+  EXPECT_LT(estimate, rawSize / 2);
+  EXPECT_GT(estimate, 0);
+}
+
+TEST_F(EncodingSizeEstimationTest, blockBitPackingPartialLastBlock) {
+  // 1500 values: 1 full block (1024) + 1 partial block (476).
+  // Verifies BlockStatsAccumulator correctly flushes the remainder.
+  std::vector<uint32_t> data;
+  data.reserve(1500);
+  for (uint32_t i = 0; i < 1500; ++i) {
+    data.push_back(i % 16);
+  }
+
+  auto stats = Statistics<uint32_t>::create(data);
+  const auto statsEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  const auto spanEstimate = BlockBitPackingEncoding<uint32_t>::estimateSize(
+      std::span<const uint32_t>{data.data(), data.size()});
+
+  EXPECT_EQ(spanEstimate, statsEstimate);
+  EXPECT_GT(statsEstimate, 0);
+}
+
+TEST_F(EncodingSizeEstimationTest, blockBitPackingSingleValue) {
+  // Edge case: 1 value.
+  std::vector<uint32_t> data = {12345};
+
+  auto stats = Statistics<uint32_t>::create(data);
+  const auto statsEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  const auto spanEstimate = BlockBitPackingEncoding<uint32_t>::estimateSize(
+      std::span<const uint32_t>{data.data(), data.size()});
+
+  EXPECT_EQ(spanEstimate, statsEstimate);
+}
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    blockBitPackingEstimateViaEncodingSizeEstimation) {
+  // Verify BlockBitPacking is wired up in EncodingSizeEstimation dispatcher.
+  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+
+  std::vector<uint32_t> data;
+  data.reserve(2048);
+  for (uint32_t i = 0; i < 2048; ++i) {
+    data.push_back(i % 100);
+  }
+  auto stats = Statistics<uint32_t>::create(data);
+
+  auto estimate =
+      Est::estimateNumericSize(EncodingType::BlockBitPacking, 2048, stats);
+  ASSERT_TRUE(estimate.has_value());
+  EXPECT_GT(estimate.value(), 0);
+
+  // Verify it matches the direct call with default block size.
+  const auto directEstimate =
+      BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  EXPECT_EQ(estimate.value(), directEstimate);
+
+  // Verify options.blockBitPackingBlockSize is threaded through.
+  Encoding::Options options;
+  options.blockBitPackingBlockSize = 512;
+  auto estimateSmallBlock = Est::estimateNumericSize(
+      EncodingType::BlockBitPacking, 2048, stats, options);
+  ASSERT_TRUE(estimateSmallBlock.has_value());
+  EXPECT_NE(estimateSmallBlock.value(), estimate.value());
+}
