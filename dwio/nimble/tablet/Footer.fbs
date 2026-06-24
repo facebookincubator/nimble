@@ -20,6 +20,7 @@ enum CompressionType:uint8 {
   Zstd = 1,
   MetaInternal = 2,
   Lz4 = 3,
+  OpenZL = 4,
 }
 
 table Stripes {

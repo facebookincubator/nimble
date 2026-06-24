@@ -31,6 +31,7 @@ add_executable(
   FrequencyPartitionEncodingTest.cpp
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
+  OpenZLCompressorTest.cpp
   PFOREncodingTest.cpp
   PrefixEncodingTest.cpp
   RLEEncodingTest.cpp

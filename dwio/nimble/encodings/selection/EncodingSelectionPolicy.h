@@ -116,6 +116,12 @@ struct CompressionOptions {
   uint32_t internalDecompressionLevel = 2;
   bool useVariableBitWidthCompressor = false;
   MetaInternalCompressionKey metaInternalCompressionKey;
+  // OpenZL settings
+  uint64_t openzlMinCompressionSize = kOpenZLMinCompressionSize;
+  // 6/3 is a close analogue to the performance of zstd level 3
+  int32_t openzlCompressionLevel = 6;
+  int32_t openzlDecompressionLevel = 3;
+  int32_t openzlFormatVersion = 25;
   // Per-encoding overrides for compressionAcceptRatio.
   // BlockBitPacking default 0.7: data is already well-packed via per-block
   // baselines, so compression must save at least 30% to justify CPU cost.
@@ -242,6 +248,19 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
               .minCompressionSize = compressionOptions_.lz4MinCompressionSize};
           information.parameters.lz4.accelerationLevel =
               compressionOptions_.lz4AccelerationLevel;
+          return information;
+        }
+        if (compressionOptions_.compressionType == CompressionType::OpenZL) {
+          CompressionInformation information{
+              .compressionType = CompressionType::OpenZL,
+              .minCompressionSize =
+                  compressionOptions_.openzlMinCompressionSize};
+          information.parameters.openzl.compressionLevel =
+              compressionOptions_.openzlCompressionLevel;
+          information.parameters.openzl.decompressionLevel =
+              compressionOptions_.openzlDecompressionLevel;
+          information.parameters.openzl.formatVersion =
+              compressionOptions_.openzlFormatVersion;
           return information;
         }
         CompressionInformation information{
