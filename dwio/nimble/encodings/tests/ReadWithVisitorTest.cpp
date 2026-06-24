@@ -127,14 +127,16 @@ class NonRecursiveSubIntSplitPolicy final : public EncodingSelectionPolicy<T> {
  public:
   EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */) override {
     return {.encodingType = EncodingType::SubIntSplit};
   }
 
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */) override {
     return {.encodingType = EncodingType::Nullable};
   }
 

@@ -36,14 +36,16 @@ class NoOpEncodingSelectionPolicy : public nimble::EncodingSelectionPolicy<T> {
  public:
   nimble::EncodingSelectionResult select(
       std::span<const physicalType>,
-      const nimble::Statistics<physicalType>&) override {
+      const nimble::Statistics<physicalType>&,
+      const nimble::Encoding::Options& /* options */) override {
     return {.encodingType = nimble::EncodingType::Trivial};
   }
 
   nimble::EncodingSelectionResult selectNullable(
       std::span<const physicalType>,
       std::span<const bool>,
-      const nimble::Statistics<physicalType>&) override {
+      const nimble::Statistics<physicalType>&,
+      const nimble::Encoding::Options& /* options */) override {
     return {.encodingType = nimble::EncodingType::Nullable};
   }
 

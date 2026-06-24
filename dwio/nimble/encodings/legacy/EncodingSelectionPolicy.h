@@ -160,7 +160,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) override {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& /* options */ = {}) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
@@ -301,7 +302,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -471,7 +473,8 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) override {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& /* options */ = {}) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
@@ -495,7 +498,8 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -625,7 +629,8 @@ class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
 
   EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
-      const nimble::Statistics<physicalType>& /* statistics */) override {
+      const nimble::Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     NIMBLE_SELECTION_LOG(
         CYAN << "Replaying encoding " << encodingLayout_.encodingType());
     if (!compressionOptions_.has_value()) {
@@ -644,7 +649,8 @@ class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
-      const Statistics<physicalType>& /* statistics */) override {
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */ = {}) override {
     NIMBLE_SELECTION_LOG(
         CYAN << "Replaying nullable encoding "
              << encodingLayout_.encodingType());

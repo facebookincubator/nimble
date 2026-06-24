@@ -247,6 +247,11 @@ struct SerializerOptions {
   /// FixedBitWidth.
   EncodingType streamIndicesEncodingType{EncodingType::FixedBitWidth};
 
+  /// Per-encoding options passed to EncodingFactory::encode(). Controls
+  /// format-level settings (varint row count) and per-encoding config
+  /// (e.g., BlockBitPacking block size).
+  Encoding::Options encodingOptions{.useVarintRowCount = true};
+
   /// Encoding type for the sizes array of the sparse stream-sizes trailer.
   /// Sizes are the byte sizes of non-zero streams, parallel to the indices
   /// array. Supported types: Trivial, Varint, Delta, FixedBitWidth.
