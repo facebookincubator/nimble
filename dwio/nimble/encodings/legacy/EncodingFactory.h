@@ -34,6 +34,12 @@ class EncodingFactory : public ::facebook::nimble::EncodingFactory {
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory) const override;
 
+  std::unique_ptr<Encoding> create(
+      velox::memory::MemoryPool& memoryPool,
+      std::string_view data,
+      std::function<void*(uint32_t)> stringBufferFactory,
+      const Encoding::Options& options) const override;
+
   template <typename T>
   static std::string_view encode(
       std::unique_ptr<EncodingSelectionPolicy<T>>&& selectorPolicy,
