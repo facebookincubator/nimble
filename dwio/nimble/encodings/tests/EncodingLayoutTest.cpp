@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #endif
@@ -392,6 +393,75 @@ TEST(EncodingLayoutTests, Dictionary) {
 
   testSerialization(expected);
   testCapture<uint32_t>(expected, {1, 1, 1, 1, 5, 1});
+}
+
+TEST(EncodingLayoutTests, ReplayDictionaryRejectsEmpty) {
+  // A replayed Dictionary layout applied to an EMPTY value stream cannot build
+  // a dictionary. It must reject the stream with an incompatible-encoding error
+  // -- like the other data-requiring encodings in EncodingFactory -- so the
+  // writer retries the stream without the captured layout. Before the fix this
+  // was a NIMBLE_DCHECK that aborted the process (and was silently ignored in
+  // opt).
+  nimble::EncodingLayout dictionary{
+      nimble::EncodingType::Dictionary,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+          nimble::EncodingLayout{
+              nimble::EncodingType::FixedBitWidth,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+
+  NIMBLE_ASSERT_THROW(
+      encodeAndCapture<uint32_t>(
+          std::move(dictionary), std::vector<uint32_t>{}),
+      "Dictionary encoding cannot be used with 0 rows.");
+}
+
+TEST(
+    EncodingLayoutTests,
+    ReplayMainlyConstantDictionaryRejectsEmptyOtherValues) {
+  // Replay a MainlyConstant whose OtherValues stream is a nested Dictionary.
+  // When every value equals the common value, OtherValues is empty, so the
+  // nested Dictionary replay has nothing to encode -- the data shape that made
+  // fuzzMainlyConstantDictionaryVector flake. The empty inner Dictionary must
+  // reject with an incompatible-encoding error (propagated out of the
+  // MainlyConstant encode) instead of aborting, so the writer can retry.
+  nimble::EncodingLayout mainlyConstant{
+      nimble::EncodingType::MainlyConstant,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+          nimble::EncodingLayout{
+              nimble::EncodingType::Dictionary,
+              {},
+              nimble::CompressionType::Uncompressed,
+              {
+                  nimble::EncodingLayout{
+                      nimble::EncodingType::Trivial,
+                      {},
+                      nimble::CompressionType::Uncompressed},
+                  nimble::EncodingLayout{
+                      nimble::EncodingType::FixedBitWidth,
+                      {},
+                      nimble::CompressionType::Uncompressed},
+              }},
+      }};
+
+  // All values identical -> MainlyConstant OtherValues stream is empty.
+  std::vector<uint32_t> data(64, 7);
+  NIMBLE_ASSERT_THROW(
+      encodeAndCapture<uint32_t>(std::move(mainlyConstant), data),
+      "Dictionary encoding cannot be used with 0 rows.");
 }
 
 TEST(EncodingLayoutTests, Rle) {

@@ -390,9 +390,19 @@ std::string_view EncodingFactory::encode(
       return RLEEncoding<T>::encode(selection, castedValues, buffer, options);
     }
     case EncodingType::Dictionary: {
-      NIMBLE_DCHECK(
-          (!std::is_same<T, bool>::value && !castedValues.empty()),
-          "Invalid DictionaryEncoding selection.");
+      if constexpr (std::is_same<T, bool>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Dictionary encoding cannot be used for boolean data.");
+      }
+      if (castedValues.empty()) {
+        // A replayed Dictionary layout can land on an empty stream (e.g. a
+        // MainlyConstant whose OtherValues are all the common value). Reject it
+        // as an incompatible encoding -- like the other data-requiring
+        // encodings here -- so the writer retries without the captured layout
+        // instead of aborting on an empty dictionary.
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Dictionary encoding cannot be used with 0 rows.");
+      }
       return DictionaryEncoding<T>::encode(
           selection, castedValues, buffer, options);
     }
