@@ -16,6 +16,7 @@
 #include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/compression/Lz4Compressor.h"
+#include "dwio/nimble/compression/OpenZLCompressor.h"
 #include "dwio/nimble/compression/ZstdCompressor.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 
@@ -29,11 +30,13 @@ namespace {
 
 struct CompressorRegistry {
   CompressorRegistry() {
-    compressors.reserve(3);
+    compressors.reserve(4);
     compressors.emplace(
         CompressionType::Zstd, std::make_unique<ZstdCompressor>());
     compressors.emplace(
         CompressionType::Lz4, std::make_unique<Lz4Compressor>());
+    compressors.emplace(
+        CompressionType::OpenZL, std::make_unique<OpenZLCompressor>());
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
     compressors.emplace(
         CompressionType::MetaInternal,
