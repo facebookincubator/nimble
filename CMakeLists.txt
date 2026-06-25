@@ -197,7 +197,8 @@ set(
 )
 set(OPENZL_BUILD_TESTS OFF CACHE BOOL "Build OpenZL tests" FORCE)
 set(OPENZL_BUILD_BENCHMARKS OFF CACHE BOOL "Build OpenZL benchmarks" FORCE)
-set(OPENZL_BUILD_PYTHON_EXT
+set(
+  OPENZL_BUILD_PYTHON_EXT
   OFF
   CACHE BOOL
   "Build OpenZL Python extension"
