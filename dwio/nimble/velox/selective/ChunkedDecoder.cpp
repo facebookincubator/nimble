@@ -57,14 +57,10 @@ bool ChunkedDecoder::loadNextChunk(
     return buffer->asMutable<void>();
   };
   auto data = std::string_view(chunkData, chunkSize);
-  if (preserveDictionaryEncoding) {
-    auto options = encodingFactory_->options();
-    options.preserveDictionaryEncoding = true;
-    encoding_ =
-        EncodingFactory(options).create(*pool_, data, stringBufferFactory);
-  } else {
-    encoding_ = encodingFactory_->create(*pool_, data, stringBufferFactory);
-  }
+  auto options = encodingFactory_->options();
+  options.preserveDictionaryEncoding = preserveDictionaryEncoding;
+  encoding_ =
+      encodingFactory_->create(*pool_, data, stringBufferFactory, options);
   remainingValues_ = encoding_->rowCount();
   NIMBLE_CHECK_GT(remainingValues_, 0);
   VLOG(1) << encoding_->debugString();

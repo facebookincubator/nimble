@@ -333,6 +333,14 @@ std::unique_ptr<Encoding> EncodingFactory::create(
   }
 }
 
+std::unique_ptr<Encoding> EncodingFactory::create(
+    velox::memory::MemoryPool& memoryPool,
+    std::string_view data,
+    std::function<void*(uint32_t)> stringBufferFactory,
+    const Encoding::Options& /*options*/) const {
+  return create(memoryPool, data, std::move(stringBufferFactory));
+}
+
 template <typename T>
 std::string_view EncodingFactory::encode(
     std::unique_ptr<EncodingSelectionPolicy<T>>&& selectorPolicy,
