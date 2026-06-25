@@ -1072,6 +1072,120 @@ TEST_F(VeloxWriterTest, encodingLayout) {
   }
 }
 
+TEST_F(VeloxWriterTest, openZLCompressionNumericRoundTrip) {
+  // E2E: force the OpenZL codec, write compressible numeric columns, and assert
+  // (a) at least one numeric stream is actually OpenZL-compressed and (b) the
+  // data round-trips byte-for-byte through the reader.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr velox::vector_size_t kRowCount = 1000;
+  auto vector = vectorMaker.rowVector(
+      {"i32", "i64", "f32"},
+      {
+          vectorMaker.flatVector<int32_t>(
+              kRowCount,
+              [](auto row) { return static_cast<int32_t>(1000 + row % 50); }),
+          vectorMaker.flatVector<int64_t>(
+              kRowCount,
+              [](auto row) { return static_cast<int64_t>(row / 4); }),
+          vectorMaker.flatVector<float>(
+              kRowCount, [](auto row) { return static_cast<float>(row % 16); }),
+      });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriterOptions writerOptions;
+  // The default write path drives compression off the encoding selection policy
+  // (not VeloxWriterOptions::compressionOptions), so force OpenZL via the
+  // factory. Accept ratio 100 + min size 0 ensure the codec is actually applied
+  // even to tiny streams.
+  writerOptions.encodingSelectionPolicyFactory =
+      [factory =
+           nimble::ManualEncodingSelectionPolicyFactory{
+               nimble::ManualEncodingSelectionPolicyFactory::
+                   defaultReadFactors(),
+               nimble::CompressionOptions{
+                   .compressionAcceptRatio = 100,
+                   .compressionType = nimble::CompressionType::OpenZL,
+                   .openzlMinCompressionSize = 0,
+               }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return factory.createPolicy(dataType);
+  };
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      std::move(writerOptions));
+  writer.write(vector);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  auto section =
+      tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+  ASSERT_TRUE(section.has_value());
+  auto schema =
+      nimble::SchemaDeserializer::deserialize(section->content().data());
+
+  // Recursively checks whether any node in the encoding tree was compressed
+  // with the given codec, so the assertion does not depend on which encoding
+  // the writer happened to pick.
+  std::function<bool(const nimble::EncodingLayout&, nimble::CompressionType)>
+      usesCompression = [&](const nimble::EncodingLayout& layout,
+                            nimble::CompressionType compressionType) {
+        if (layout.compressionType() == compressionType) {
+          return true;
+        }
+        for (uint8_t i = 0; i < layout.childrenCount(); ++i) {
+          const auto& child = layout.child(i);
+          if (child.has_value() &&
+              usesCompression(child.value(), compressionType)) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+  bool anyOpenZL = false;
+  for (auto stripe = 0; stripe < tablet->stripeCount(); ++stripe) {
+    auto stripeIdentifier = tablet->stripeIdentifier(stripe);
+    for (auto column = 0; column < schema->asRow().childrenCount(); ++column) {
+      auto offset = schema->asRow()
+                        .childAt(column)
+                        ->asScalar()
+                        .scalarDescriptor()
+                        .offset();
+      auto streams =
+          tablet->load(stripeIdentifier, std::vector<uint32_t>{offset});
+      if (streams.empty() || streams[0] == nullptr) {
+        continue;
+      }
+      nimble::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[0])};
+      while (chunkedStream.hasNext()) {
+        auto capture =
+            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        if (usesCompression(capture, nimble::CompressionType::OpenZL)) {
+          anyOpenZL = true;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(anyOpenZL)
+      << "Expected at least one numeric stream to be OpenZL-compressed";
+
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(kRowCount, result));
+  ASSERT_EQ(kRowCount, result->size());
+  for (velox::vector_size_t i = 0; i < kRowCount; ++i) {
+    EXPECT_TRUE(vector->equalValueAt(result.get(), i, i))
+        << "Content mismatch at row " << i;
+  }
+  ASSERT_FALSE(reader.next(1, result));
+}
+
 TEST_F(VeloxWriterTest, encodingLayoutSchemaMismatch) {
   nimble::EncodingLayoutTree expected{
       nimble::Kind::Row,

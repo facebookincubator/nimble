@@ -7349,6 +7349,85 @@ TEST_P(VeloxReaderTest, flatMapStringKeyOwnership) {
   ASSERT_EQ(output->size(), kBatches);
 }
 
+TEST_P(VeloxReaderTest, openZLCompressionRoundTrip) {
+  // E2E: write numeric columns (covering every width OpenZL has a numeric graph
+  // for) plus double/string columns that exercise the zstd-fallback path, with
+  // the OpenZL codec forced. Verify the data round-trips across all reader
+  // parameter combinations (cache/pin/skip).
+  auto type = velox::ROW({
+      {"i8", velox::TINYINT()},
+      {"i16", velox::SMALLINT()},
+      {"i32", velox::INTEGER()},
+      {"i64", velox::BIGINT()},
+      {"f32", velox::REAL()},
+      {"f64", velox::DOUBLE()},
+      {"str", velox::VARCHAR()},
+  });
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  constexpr velox::vector_size_t kRowCount = 1000;
+
+  auto generator = [&](const velox::RowTypePtr& rowType) -> velox::VectorPtr {
+    return vectorMaker.rowVector(
+        rowType->names(),
+        {
+            vectorMaker.flatVector<int8_t>(
+                kRowCount,
+                [](auto row) { return static_cast<int8_t>(row % 7); }),
+            vectorMaker.flatVector<int16_t>(
+                kRowCount,
+                [](auto row) { return static_cast<int16_t>(row % 100); }),
+            vectorMaker.flatVector<int32_t>(
+                kRowCount,
+                [](auto row) { return static_cast<int32_t>(1000 + row % 50); }),
+            vectorMaker.flatVector<int64_t>(
+                kRowCount,
+                [](auto row) { return static_cast<int64_t>(row / 4); }),
+            vectorMaker.flatVector<float>(
+                kRowCount,
+                [](auto row) { return static_cast<float>(row % 16); }),
+            vectorMaker.flatVector<double>(
+                kRowCount,
+                [](auto row) { return static_cast<double>(row % 32); }),
+            vectorMaker.flatVector<std::string>(
+                kRowCount,
+                [](auto row) { return "value_" + std::to_string(row % 20); }),
+        });
+  };
+
+  nimble::VeloxWriterOptions writerOptions;
+  // The default write path drives compression off the encoding selection policy
+  // (not VeloxWriterOptions::compressionOptions), so force OpenZL via the
+  // factory so the codec is actually exercised end-to-end.
+  writerOptions.encodingSelectionPolicyFactory =
+      [factory =
+           nimble::ManualEncodingSelectionPolicyFactory{
+               nimble::ManualEncodingSelectionPolicyFactory::
+                   defaultReadFactors(),
+               nimble::CompressionOptions{
+                   .compressionAcceptRatio = 100,
+                   .compressionType = nimble::CompressionType::OpenZL,
+                   .openzlMinCompressionSize = 0,
+               }}](nimble::DataType dataType)
+      -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return factory.createPolicy(dataType);
+  };
+
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+
+  writeAndVerify(
+      rng,
+      *leafPool_,
+      type,
+      generator,
+      vectorEquals,
+      /* batchCount */ 3,
+      writerOptions);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     VeloxReaderTestSuite,
     VeloxReaderTest,
