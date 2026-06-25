@@ -142,20 +142,31 @@ code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:colo
   <!-- Selective Reader Path -->
   <div style="flex:1;border:2px solid #7c3aed;border-radius:10px;padding:0.45rem 0.5rem;background:color-mix(in srgb, #7c3aed 4%, var(--surface));">
     <div style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;font-weight:700;color:#7c3aed;margin-bottom:0.1rem">Selective Reader</div>
-    <div class="d" style="margin-bottom:0.2rem">ChunkedDecoder path</div>
+    <div class="d" style="margin-bottom:0.2rem">ChunkedDecoder read path</div>
     <div class="node" style="border-color:#7c3aed;margin-bottom:0.1rem;padding:0.25rem 0.4rem">
-      <h3 style="font-size:0.58rem;color:#7c3aed">SelectiveNimbleReader</h3>
-      <div class="d">EncodingFactory() with default Options{}</div>
-    </div>
-    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
-    <div class="node" style="border-color:#7c3aed;background:color-mix(in srgb, #7c3aed 8%, var(--surface));padding:0.25rem 0.4rem">
-      <h3 style="font-size:0.58rem;color:#7c3aed">ChunkedDecoder</h3>
-      <div class="d">copies opts, sets <span style="color:#7c3aed">preserveDictEncoding</span>=true</div>
+      <h3 style="font-size:0.58rem;color:#7c3aed">SelectiveNimbleRowReader</h3>
+      <div class="d">zeroCopy? EncodingFactory() : legacy::EncodingFactory()<br><span style="color:var(--muted)">shared across all columns, default Options{}</span></div>
     </div>
     <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
     <div class="node" style="border-color:#7c3aed;padding:0.25rem 0.4rem">
-      <h3 style="font-size:0.58rem">EncodingFactory(opts).create()</h3>
-      <div class="d">RLE sees preserveDict &rarr; dict output</div>
+      <h3 style="font-size:0.58rem;color:#7c3aed">NimbleParams::toFormatData()</h3>
+      <div class="d">per-column: gets <span style="color:#7c3aed">decodingStats*</span> from runtimeStatistics</div>
+    </div>
+    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
+    <div class="node" style="border-color:#7c3aed;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:#7c3aed">NimbleData</h3>
+      <div class="d">per-column: holds encodingFactory_ + decodingStats_<br>creates ChunkedDecoders for each stream</div>
+    </div>
+    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
+    <div class="node" style="border-color:#7c3aed;background:color-mix(in srgb, #7c3aed 8%, var(--surface));padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem;color:#7c3aed">ChunkedDecoder::loadChunk()</h3>
+      <div class="d">copies factory opts and overrides per-create</div>
+      <div style="background:#fff;border:1px solid var(--border);border-radius:4px;padding:0.2rem 0.35rem;margin-top:0.15rem;text-align:left;font-family:'JetBrains Mono',monospace;font-size:0.45rem;line-height:1.6;color:var(--text)"><span style="color:var(--muted)">// copy, not reference</span><br>auto <span style="color:#dc2626;font-weight:600">options</span> = encodingFactory_-&gt;options();<br><span style="color:#dc2626;font-weight:600">options</span>.<span style="color:#7c3aed;font-weight:600">preserveDictionaryEncoding</span> = ...;<br><span style="color:#dc2626;font-weight:600">options</span>.<span style="color:#7c3aed;font-weight:600">decodingStats</span> = decodingStats_;</div>
+    </div>
+    <div class="ar"><div class="a" style="background:#7c3aed"></div></div>
+    <div class="node" style="border-color:#7c3aed;padding:0.25rem 0.4rem">
+      <h3 style="font-size:0.58rem">encodingFactory_-&gt;create(pool, data, factory, <span style="color:#dc2626;font-weight:700">options</span>)</h3>
+      <div class="d">virtual dispatch</div>
     </div>
   </div>
 </div>
@@ -401,7 +412,7 @@ code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:colo
 </div>
 
 
-<div class="footer">Ke Wang &middot; 2026-06-21</div>
+<div class="footer">Ke Wang &middot; 2026-06-25</div>
 </div>
 </body>
 </html>
