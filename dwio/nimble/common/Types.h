@@ -159,6 +159,7 @@ enum class CompressionType : uint8_t {
   Zstd = 1,
   MetaInternal = 2,
   Lz4 = 3,
+  OpenZL = 4,
 };
 
 std::string toString(CompressionType compressionType);

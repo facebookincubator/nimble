@@ -25,6 +25,7 @@ namespace facebook::nimble {
 constexpr uint32_t kMetaInternalMinCompressionSize{40};
 constexpr uint32_t kZstdMinCompressionSize{25};
 constexpr uint32_t kLz4MinCompressionSize{12};
+constexpr uint32_t kOpenZLMinCompressionSize{40};
 
 /// Default options for the ChunkFlushPolicy.
 /// Threshold to trigger chunking to relieve memory pressure

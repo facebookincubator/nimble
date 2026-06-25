@@ -15,7 +15,15 @@ add_library(
   nimble_compression
   Compression.cpp
   Lz4Compressor.cpp
+  OpenZLCompressor.cpp
   ZstdCompressor.cpp
 )
 
-target_link_libraries(nimble_compression nimble_common Folly::folly lz4)
+target_link_libraries(
+  nimble_compression
+  nimble_common
+  Folly::folly
+  lz4
+  openzl
+  openzl_cpp
+)
