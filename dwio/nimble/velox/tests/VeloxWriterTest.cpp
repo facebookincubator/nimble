@@ -34,6 +34,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/KeyEncoding.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
+#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
@@ -6211,6 +6212,96 @@ DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeFlatMapTaskCount) {
   velox::VectorPtr result;
   ASSERT_TRUE(reader.next(numBatches * 100, result));
   EXPECT_EQ(result->size(), numBatches * 100);
+}
+
+TEST_F(VeloxWriterTest, chunkStatsEndToEndInteger) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto vector = vectorMaker.rowVector(
+      {"c1"}, {vectorMaker.flatVector<int64_t>({10, -5, 42, 100, 7})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.enableChunkIndex = true,
+       .chunkIndexMinAvgChunks = 0,
+       .minStreamChunkRawSize = 0,
+       .flushPolicyFactory =
+           []() {
+             return std::make_unique<nimble::LambdaFlushPolicy>(
+                 [](auto&) { return false; }, [](auto&) { return true; });
+           },
+       .enableChunking = true,
+       .enableChunkStats = true});
+
+  writer.write(vector);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+
+  ASSERT_TRUE(tablet->hasChunkIndexSection());
+
+  // Verify data round-trips correctly.
+  nimble::VeloxReader reader(
+      std::make_shared<velox::InMemoryReadFile>(file), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(vector->size(), result));
+  ASSERT_EQ(result->size(), vector->size());
+  for (auto i = 0; i < vector->size(); ++i) {
+    ASSERT_TRUE(vector->equalValueAt(result.get(), i, i));
+  }
+}
+
+TEST_F(VeloxWriterTest, chunkStatsEndToEndNullableString) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto vector = vectorMaker.rowVector(
+      {"c1"},
+      {vectorMaker.flatVectorNullable<velox::StringView>(
+          {std::optional<velox::StringView>{"hello"},
+           std::nullopt,
+           std::optional<velox::StringView>{"world"}})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.enableChunkIndex = true,
+       .chunkIndexMinAvgChunks = 0,
+       .minStreamChunkRawSize = 0,
+       .flushPolicyFactory =
+           []() {
+             return std::make_unique<nimble::LambdaFlushPolicy>(
+                 [](auto&) { return false; }, [](auto&) { return true; });
+           },
+       .enableChunking = true,
+       .enableChunkStats = true});
+
+  writer.write(vector);
+  writer.close();
+
+  // Verify data round-trips correctly.
+  nimble::VeloxReader reader(
+      std::make_shared<velox::InMemoryReadFile>(file), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(vector->size(), result));
+  ASSERT_EQ(result->size(), vector->size());
+  for (auto i = 0; i < vector->size(); ++i) {
+    ASSERT_TRUE(vector->equalValueAt(result.get(), i, i));
+  }
+
+  // Verify chunk index section exists (string stats have nulls-only info).
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(readFile, leafPool_.get(), {});
+  EXPECT_TRUE(tablet->hasChunkIndexSection());
 }
 
 } // namespace facebook

@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -343,6 +344,16 @@ template <typename T>
 constexpr bool isBoolType() {
   return std::is_same_v<T, bool>;
 }
+
+/// Per-chunk column statistics for filter pushdown.
+/// Min/max stored as raw bytes in the stream's native type (little-endian).
+/// Empty minValue/maxValue means stats are unavailable.
+struct ChunkStats {
+  bool hasNulls{false};
+  uint64_t nullCount{0};
+  std::string minValue;
+  std::string maxValue;
+};
 
 } // namespace facebook::nimble
 

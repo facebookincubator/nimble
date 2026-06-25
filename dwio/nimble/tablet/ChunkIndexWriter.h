@@ -19,6 +19,7 @@
 #include <memory>
 #include <vector>
 
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 
 namespace facebook::nimble {
@@ -43,9 +44,11 @@ class ChunkIndexWriter {
   /// @param minAvgChunksPerStream Skip writing chunk index for a stripe group
   ///        if the average number of chunks per stream is below this threshold.
   ///        0 disables chunk index skipping.
+  /// @param enableChunkStats Whether to serialize per-chunk statistics.
   explicit ChunkIndexWriter(
       velox::memory::MemoryPool& pool,
-      float minAvgChunksPerStream = 2);
+      float minAvgChunksPerStream = 2,
+      bool enableChunkStats = false);
 
   ChunkIndexWriter(const ChunkIndexWriter&) = delete;
   ChunkIndexWriter& operator=(const ChunkIndexWriter&) = delete;
@@ -82,6 +85,8 @@ class ChunkIndexWriter {
     std::vector<uint32_t> chunkRows;
     // Byte offsets of each chunk within the stream.
     std::vector<uint32_t> chunkOffsets;
+    // Per-chunk statistics. Empty when stats are disabled.
+    std::vector<ChunkStats> chunkStats;
     // Number of chunks in this stripe for this stream.
     uint32_t chunkCount{0};
   };
@@ -102,6 +107,8 @@ class ChunkIndexWriter {
 
   velox::memory::MemoryPool* const pool_;
   const float minAvgChunksPerStream_;
+  // Whether per-chunk statistics are serialized into the chunk index.
+  const bool enableChunkStats_;
   std::unique_ptr<GroupIndex> groupIndex_;
   // Metadata sections for chunk index flatbuffers (used by writeRoot).
   std::vector<MetadataSection> chunkIndexSections_;

@@ -39,6 +39,18 @@ table StripeChunkIndex {
   stream_chunk_rows:[uint32];
   /// Byte offset of each chunk within its stream.
   stream_chunk_offsets:[uint32];
+
+  /// Per-stream chunk statistics for filter pushdown.
+  stream_stats:[StreamChunkStats];
+}
+
+/// Min/max stored as raw bytes in the stream's native type (little-endian).
+table StreamChunkStats {
+  has_nulls:[ubyte];
+  min_values:[ubyte];
+  max_values:[ubyte];
+  value_size:uint32;
+  null_counts:[int64];
 }
 
 /// Root table for the chunk index optional section.

@@ -233,6 +233,10 @@ struct VeloxWriterOptions {
 
   bool enableChunking{true};
 
+  // Compute per-chunk min/max stats for chunk-level filter pushdown.
+  // Requires enableChunkIndex and enableChunking.
+  bool enableChunkStats{false};
+
   // This callback will be visited on access to getDecodedVector in order to
   // monitor usage of decoded vectors vs. data that is passed-through in the
   // writer. Default function is no-op since its used for tests only.

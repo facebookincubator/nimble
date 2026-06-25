@@ -20,6 +20,7 @@
 #include <span>
 #include <string_view>
 
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
@@ -94,17 +95,20 @@ class StreamDataView final : public StreamData {
       const StreamDescriptorBuilder& descriptor,
       std::string_view data,
       uint32_t rowCount,
-      std::optional<std::span<const bool>> nonNulls = std::nullopt)
+      std::optional<std::span<const bool>> nonNulls = std::nullopt,
+      std::optional<ChunkStats> stats = std::nullopt)
       : StreamData(descriptor),
         data_{data},
         rowCount_{rowCount},
-        nonNulls_{nonNulls} {}
+        nonNulls_{nonNulls},
+        stats_{std::move(stats)} {}
 
   StreamDataView(StreamDataView&& other) noexcept
       : StreamData(other.descriptor()),
         data_{other.data_},
         rowCount_{other.rowCount_},
-        nonNulls_{other.nonNulls_} {}
+        nonNulls_{other.nonNulls_},
+        stats_{std::move(other.stats_)} {}
 
   StreamDataView(const StreamDataView&) = delete;
 
@@ -142,10 +146,15 @@ class StreamDataView final : public StreamData {
     NIMBLE_UNREACHABLE("StreamDataView is non-owning");
   }
 
+  const std::optional<ChunkStats>& stats() const {
+    return stats_;
+  }
+
  private:
   const std::string_view data_;
   const uint32_t rowCount_;
   const std::optional<std::span<const bool>> nonNulls_;
+  std::optional<ChunkStats> stats_;
 };
 
 /// Content only data stream.
