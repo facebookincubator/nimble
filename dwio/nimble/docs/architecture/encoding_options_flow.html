@@ -412,6 +412,165 @@ code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:colo
 </div>
 
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- PART 3: Read Path (Selective Reader) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="part">Part 3: Read Path (Selective Reader)</div>
+<div class="part-sub">How <code>Encoding::Options</code> flows through the selective reader &mdash; factory creation, per-column stats, chunk-level overrides, and child encoding propagation</div>
+
+<!-- 3a: Factory Creation -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:#7c3aed">3a</span> Factory Creation (once per reader)</div>
+
+<div class="node" style="border-color:#7c3aed">
+  <h3 style="color:#7c3aed">SelectiveNimbleRowReader</h3>
+  <div class="d">zeroCopy? <code>EncodingFactory()</code> : <code>legacy::EncodingFactory()</code><br>
+  <span style="color:var(--muted)">shared across all columns &mdash; default Options{}</span></div>
+</div>
+<div class="fp">dwio/nimble/velox/selective/SelectiveNimbleReader.cpp</div>
+</div>
+
+<!-- 3b: Per-Column Setup -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:#dc2626">3b</span> Per-Column Setup (once per column)</div>
+
+<div class="node" style="border-color:#dc2626">
+  <h3 style="color:#dc2626">NimbleParams::toFormatData()</h3>
+  <div class="d"><span style="color:#dc2626;font-weight:600">per-column</span>: gets <code>DecodingStats*</code> from <code>runtimeStatistics().decodingStatsSet</code><br>
+  using <code>type-&gt;id()</code> + <code>type-&gt;type()-&gt;kind()</code> as key</div>
+</div>
+<div class="ar"><div class="a" style="background:#dc2626"></div></div>
+<div class="node" style="border-color:#dc2626">
+  <h3 style="color:#dc2626">NimbleData</h3>
+  <div class="d"><span style="color:#dc2626;font-weight:600">per-column</span>: holds <code>encodingFactory_</code> (shared) + <code>decodingStats_</code> (per-column)<br>
+  creates ChunkedDecoders for each stream (values, nulls, lengths, micros, nanos)<br>
+  <span style="color:var(--muted)">all streams for the same column share the same decodingStats_</span></div>
+</div>
+<div class="fp">dwio/nimble/velox/selective/NimbleData.cpp</div>
+</div>
+
+<!-- 3c: Chunk-Level Options Override -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:#7c3aed">3c</span> Chunk-Level Options Override (per chunk load)</div>
+
+<div class="node" style="border-color:#7c3aed;background:color-mix(in srgb, #7c3aed 8%, var(--surface))">
+  <h3 style="color:#7c3aed">ChunkedDecoder::loadNextChunk()</h3>
+  <div class="d" style="margin-bottom:0.15rem">copies factory&rsquo;s base options, overrides per-create:</div>
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0.2rem 0.35rem;text-align:left;font-family:'JetBrains Mono',monospace;font-size:0.45rem;line-height:1.7;color:var(--text)">
+    <span style="color:var(--muted)">// Copy, not reference.</span><br>
+    auto options = encodingFactory_-&gt;options();<br>
+    options.<span style="color:#7c3aed;font-weight:600">preserveDictionaryEncoding</span> = preserveDictionaryEncoding;<br>
+    options.<span style="color:#dc2626;font-weight:600">decodingStats</span> = decodingStats_;<br>
+    encodingFactory_-&gt;create(pool, data, sbf, <span style="color:#dc2626;font-weight:700">options</span>);
+  </div>
+</div>
+<div class="callout" style="background:color-mix(in srgb, #7c3aed 5%, var(--surface));border:1px solid color-mix(in srgb, #7c3aed 15%, transparent)">
+  <span>&#9654;</span>
+  <div>Uses the <b>4-arg</b> <code>create()</code> overload. <code>create()</code> is <b>virtual</b> &mdash; dispatch depends on <code>zeroCopy</code> flag (see 3d).</div>
+</div>
+<div class="fp">dwio/nimble/velox/selective/ChunkedDecoder.cpp</div>
+</div>
+
+<!-- 3d: Virtual Dispatch & Options Propagation -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:var(--step)">3d</span> Virtual Dispatch &amp; Options Propagation</div>
+
+<!-- Virtual dispatch box -->
+<div style="display:flex;flex-direction:column;align-items:center;gap:0;margin-bottom:0.4rem;">
+  <div class="node" style="border-color:#7c3aed;padding:0.3rem 0.8rem">
+    <h3 style="color:#7c3aed;font-size:0.6rem">encodingFactory_-&gt;create(pool, data, sbf, <span style="color:#dc2626">options</span>)</h3>
+    <div class="d">virtual dispatch &mdash; depends on zeroCopy flag</div>
+  </div>
+</div>
+
+<div style="display:flex;gap:0.5rem;">
+  <!-- Left: EncodingFactory (zeroCopy=true) -->
+  <div style="flex:1;border:2px solid var(--step);border-radius:10px;padding:0.4rem 0.5rem;background:color-mix(in srgb, var(--step) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:700;color:var(--step);margin-bottom:0.15rem">nimble::EncodingFactory</div>
+    <div class="d" style="margin-bottom:0.15rem">zeroCopy = true</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:0.42rem;line-height:1.8;color:var(--text)">
+      create(pool, data, sbf, <span style="color:#dc2626;font-weight:700">options</span>) {<br>
+      &nbsp;&nbsp;switch(data[0]) &rarr;<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;Encoding(pool, data, sbf, <span style="color:#dc2626;font-weight:700">options</span>)<br>
+      }
+    </div>
+    <div class="d" style="margin-top:0.1rem;color:var(--step)"><span style="color:#dc2626">options</span> forwarded &rarr; decodingStats propagates &#10003;</div>
+  </div>
+
+  <!-- Right: legacy::EncodingFactory (zeroCopy=false, default) -->
+  <div style="flex:1;border:2px solid var(--warm);border-radius:10px;padding:0.4rem 0.5rem;background:color-mix(in srgb, var(--warm) 4%, var(--surface));">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:700;color:var(--warm);margin-bottom:0.15rem">legacy::EncodingFactory</div>
+    <div class="d" style="margin-bottom:0.15rem">zeroCopy = false <span style="color:var(--warm)">(prod default)</span></div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:0.42rem;line-height:1.8;color:var(--text)">
+      create(pool, data, sbf,<br>
+      &nbsp;&nbsp;const Options&amp; <span style="color:var(--muted);text-decoration:line-through">/*options*/</span>) {<br>
+      &nbsp;&nbsp;<span style="color:var(--muted)">// drops options, delegates to 3-arg</span><br>
+      &nbsp;&nbsp;return create(pool, data, sbf);<br>
+      }
+    </div>
+    <div class="d" style="margin-top:0.1rem;color:var(--warm)"><span style="color:#dc2626">options</span> dropped &rarr; no decodingStats &#10007;</div>
+  </div>
+</div>
+
+<!-- Encoding tree (zeroCopy=true only) -->
+<div class="ar"><div class="a" style="background:var(--step)"></div></div>
+<div style="border:1.5px solid var(--step);border-radius:10px;background:color-mix(in srgb, var(--step) 4%, var(--surface));padding:0.4rem 0.6rem;">
+<div style="font-family:'Space Grotesk',sans-serif;font-size:0.58rem;font-weight:600;color:var(--step);margin-bottom:0.15rem">Encoding tree (zeroCopy=true path only)</div>
+<div style="font-family:'JetBrains Mono',monospace;font-size:0.45rem;line-height:2;color:var(--text)">
+<span style="color:var(--step);font-weight:600">NullableEncoding</span>(pool, data, sbf, const Options&amp; <span style="color:#dc2626;font-weight:700">options</span>)<br>
+&nbsp;&nbsp;base copies <span style="color:#dc2626">options</span> &rarr; <code><span style="color:#7c3aed">options_</span></code><br>
+&nbsp;&nbsp;<span style="color:var(--step)">nimble::</span>EncodingFactory(<span style="color:#dc2626">options</span>).create(pool, ...)&nbsp;&nbsp;<span style="color:var(--muted)">// local, always base class</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--muted)">&rarr;</span> <span style="color:var(--step);font-weight:600">DictionaryEncoding</span>(..., <span style="color:#dc2626;font-weight:700">options</span>)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--step)">nimble::</span>EncodingFactory(<span style="color:#dc2626">options</span>).create(pool, ...)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--muted)">&rarr;</span> <span style="color:var(--step);font-weight:600">TrivialEncoding</span>(..., <span style="color:#dc2626;font-weight:700">options</span>)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dc2626;font-weight:700">Compression::uncompress</span>(..., <span style="color:#dc2626">options</span>.decompressCounter(), bufferPool)
+</div>
+</div>
+
+<div class="callout" style="background:color-mix(in srgb, var(--warm) 5%, var(--surface));border:1px solid color-mix(in srgb, var(--warm) 15%, transparent);margin-top:0.3rem">
+  <span style="color:var(--warm)">&#9654;</span>
+  <div>Decompression time tracking only works on the <code>zeroCopy=true</code> path. The legacy factory drops <code>options</code> (including <code>decodingStats</code>) in its 4-arg override. Once <code>zeroCopy</code> becomes the prod default, tracking works everywhere.</div>
+</div>
+
+<div class="callout" style="background:color-mix(in srgb, var(--step) 5%, var(--surface));border:1px solid color-mix(in srgb, var(--step) 15%, transparent)">
+  <span>&#9654;</span>
+  <div>All 12 production encodings use this pattern: ALP, Dictionary, Delta, Nullable, MainlyConstant, FreqPartition, ForEncoding, RLE, BBP, SubIntSplit, Trivial (string), DeltaEncoding.</div>
+</div>
+
+</div>
+
+<!-- 3e: Encodings that call Compression::uncompress -->
+<div class="sec">
+<div class="sec-head"><span class="sn" style="background:#dc2626">3e</span> Encodings that call Compression::uncompress</div>
+
+<div style="border:1.5px solid var(--border);border-radius:10px;background:var(--surface);padding:0.4rem 0.5rem;overflow-x:auto;">
+<table style="width:100%;border-collapse:collapse;font-size:0.55rem;">
+  <thead>
+    <tr>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:var(--muted);padding:0.25rem 0.4rem;text-align:left;border-bottom:2px solid var(--border)">Encoding</th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:left;border-bottom:2px solid var(--border)">What it decompresses</th>
+      <th style="font-family:'Space Grotesk',sans-serif;font-size:0.48rem;font-weight:600;color:var(--muted);padding:0.25rem 0.3rem;text-align:center;border-bottom:2px solid var(--border)">Passes decompressCounter?</th>
+    </tr>
+  </thead>
+  <tbody style="font-family:'JetBrains Mono',monospace;font-size:0.5rem;color:var(--sub)">
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">Trivial&lt;T&gt;</td><td style="padding:0.2rem 0.3rem;border-bottom:1px solid var(--border)">values blob</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#dc2626">&#9679;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">Trivial&lt;string&gt;</td><td style="padding:0.2rem 0.3rem;border-bottom:1px solid var(--border)">data blob + bitmap</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#dc2626">&#9679;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">FixedBitWidth</td><td style="padding:0.2rem 0.3rem;border-bottom:1px solid var(--border)">packed bit array</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#dc2626">&#9679;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;border-bottom:1px solid var(--border);font-weight:600">BlockBitPacking</td><td style="padding:0.2rem 0.3rem;border-bottom:1px solid var(--border)">packed blocks</td><td style="text-align:center;border-bottom:1px solid var(--border);color:#dc2626">&#9679;</td></tr>
+    <tr><td style="padding:0.2rem 0.4rem;font-weight:600">ForEncoding</td><td style="padding:0.2rem 0.3rem">packed data</td><td style="text-align:center;color:#dc2626">&#9679;</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout" style="background:color-mix(in srgb, #dc2626 5%, var(--surface));border:1px solid color-mix(in srgb, #dc2626 15%, transparent)">
+  <span>&#9654;</span>
+  <div>Legacy encodings (under <code>encodings/legacy/</code>) also call <code>Compression::uncompress()</code> but pass <code>/*decompressCounter=*/nullptr</code> &mdash; no stats tracking. <code>decompressCounter</code> is a required parameter (no default) to ensure future encodings don&rsquo;t accidentally omit it.</div>
+</div>
+<div class="fp">dwio/nimble/compression/Compression.h &middot; velox/dwio/common/Statistics.h</div>
+</div>
+
+
 <div class="footer">Ke Wang &middot; 2026-06-25</div>
 </div>
 </body>
