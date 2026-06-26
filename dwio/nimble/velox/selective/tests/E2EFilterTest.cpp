@@ -798,6 +798,58 @@ TEST_P(E2EFilterTest, integerBiasedFixedBitWidth) {
       biasedEncodingFactors(EncodingType::FixedBitWidth));
 }
 
+// Biased variant that forces BlockBitPacking encoding selection.
+TEST_P(E2EFilterTest, integerBiasedBlockBitPacking) {
+  testWithTypes(
+      "tiny_val:tinyint,"
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int8_t>(
+            "tiny_val",
+            /*min=*/1,
+            /*max=*/15,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int16_t>(
+            "short_val",
+            /*min=*/10,
+            /*max=*/1000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int32_t>(
+            "int_val",
+            /*min=*/100,
+            /*max=*/100000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+        makeIntDistribution<int64_t>(
+            "long_val",
+            /*min=*/1000,
+            /*max=*/1000000,
+            /*repeats=*/1,
+            /*rareFrequency=*/0,
+            /*rareMin=*/0,
+            /*rareMax=*/0,
+            /*keepNulls=*/false);
+      },
+      /*wrapInStruct=*/false,
+      {"tiny_val", "short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true,
+      biasedEncodingFactors(EncodingType::BlockBitPacking));
+}
+
 // Biased variant that forces Trivial encoding selection.
 TEST_P(E2EFilterTest, integerBiasedTrivial) {
   testWithTypes(
