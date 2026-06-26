@@ -264,34 +264,32 @@ void StringColumnReader::read(
       : 0;
   NIMBLE_CHECK_LE(numReadRows, endReadRow);
 
-  // Build the row set for the flat read.
-  // - Fresh read (numReadRows == 0): use the original rows directly.
-  // - Continuation after an abandoned dict read: numReadRows is the chunk
-  //   boundary where the decoder is parked. The remaining rows are the
-  //   suffix of the (sorted) original rows at positions >= the boundary — a
-  //   contiguous subrange we reference in place (no copy). The flat read
-  //   resumes the decode at numReadRows and skips to the first such row.
-  velox::RowSet readRowSet;
+  // Always read against the complete original rows so the visitor — and hence
+  // null prep — sees the full output range. On a continuation after an
+  // abandoned dict read, numReadRows is the chunk boundary where the decoder is
+  // parked; advance the visitor to the first row at/after it so the flat read
+  // resumes there (the dict portion was already produced) instead of re-reading
+  // the prefix.
+  velox::vector_size_t startRowIndex = 0;
   if (numReadRows == 0) {
     prepareRead<std::string_view>(offset, rows, incomingNulls);
-    readRowSet = rows;
   } else {
-    const auto* remainingRowStart =
-        std::lower_bound(rows.data(), rows.data() + rows.size(), numReadRows);
-    readRowSet = velox::RowSet(
-        remainingRowStart,
-        static_cast<size_t>(rows.data() + rows.size() - remainingRowStart));
+    startRowIndex = static_cast<velox::vector_size_t>(
+        std::lower_bound(rows.data(), rows.data() + rows.size(), numReadRows) -
+        rows.data());
   }
 
   dwio::common::StringColumnReadWithVisitorHelper<
       /*kEncodingHasNulls=*/false,
-      /*kDictionary=*/false>(*this, readRowSet)([&](auto visitor) {
+      /*kDictionary=*/false>(*this, rows)([&](auto visitor) {
     if (numReadRows == 0) {
       decoder_.readWithVisitor(visitor);
     } else {
-      // Append string buffers from the flat read to the existing ones
-      // (which include the dict portion's string buffer from
+      // Resume the flat read at the abandoned chunk boundary: skip the rows the
+      // dict portion already produced, then append the new string buffers to
+      // the existing ones (which include the dict portion's buffer from
       // abandonDictionaryEncoding).
+      visitor.setRowIndex(startRowIndex);
       decoder_.readWithVisitor(
           visitor,
           /*readOffset=*/numReadRows,

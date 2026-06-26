@@ -115,42 +115,45 @@ class ChunkedDecoder {
     NIMBLE_CHECK(
         readOffset == 0 || stringDecoderZeroCopy_,
         "readOffset is only valid for dict→flat encoding fallback reads");
+    // The visitor always carries the complete output row set. When a read is
+    // resumed mid-range (readOffset > 0 — e.g. the dict→flat abandon-dictionary
+    // fallback), the caller advances the visitor's rowIndex past the
+    // already-read prefix instead of slicing the row set, so null prep still
+    // sees the full range for buffer sizing and the return-nulls mode.
     const velox::RowSet rows(visitor.rows(), visitor.numRows());
     NIMBLE_DCHECK(std::is_sorted(rows.begin(), rows.end()));
     const auto numRows = visitor.numRows();
     ReadWithVisitorParams params{};
     params.numScanned = readOffset;
-    bool resultNullsPrepared{false};
-    if (readOffset > 0) {
-      // Flat encoding fallback (resuming mid-batch after an abandoned
-      // dictionary read). The dictionary phase already prepared the result
-      // null buffer and the return-nulls mode for the full output; this read
-      // only appends. Re-preparing here would clear/re-base the shared null
-      // buffer (wiping the dict portion's nulls) and re-evaluate the mode on
-      // the non-dense continuation row set. So both are no-ops — prepare once.
-      params.prepareResultNulls = [] {};
-      params.setReturnNullsMode = [] {};
-    } else {
-      // Allocate one extra byte (8 bits) for nulls to handle multi-chunk
-      // reading, where each chunk we need to align the result nulls to byte
-      // boundary then shift.
-      params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
-        if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
-          // Pass the real read-range null state so prepareNulls short-circuits
-          // (no allocate/clear) when the range carries no nulls. Only mark the
-          // buffer prepared when prepareNulls actually allocated it: on a
-          // null-free call it no-ops, so a later chunk that does carry nulls
-          // must still trigger a real prepare.
-          const bool hasNulls =
-              visitor.reader().rawNullsInReadRange() != nullptr;
-          visitor.reader().prepareNulls(rows, hasNulls, /*extraRows=*/8);
-          resultNullsPrepared = hasNulls;
-        }
-      };
-      params.setReturnNullsMode = [&visitor, &rows] {
-        visitor.reader().setReturnNullsMode(rows);
-      };
-    }
+    // readOffset > 0 means a single read range is being decoded in segments
+    // across multiple readWithVisitor calls (e.g. the dict→flat
+    // abandon-dictionary fallback resuming at the abandoned chunk boundary), so
+    // the lazy null-prep hooks below must prepare resultNulls_ for the WHOLE
+    // read range, not just this segment. An earlier segment already prepared it
+    // for the full output IFF that segment emitted nulls (reader hasNulls()):
+    // seed the guard to skip re-preparing in that case — appending to, rather
+    // than clobbering, the earlier segment's nulls — and leave it unset when
+    // the earlier segment produced no nulls, so a nullable chunk in this
+    // segment prepares the buffer.
+    bool resultNullsPrepared{readOffset > 0 && visitor.reader().hasNulls()};
+    // Allocate one extra byte (8 bits) for nulls to handle multi-chunk
+    // reading, where each chunk we need to align the result nulls to byte
+    // boundary then shift.
+    params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
+      if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
+        // Pass the real read-range null state so prepareNulls short-circuits
+        // (no allocate/clear) when the range carries no nulls. Only mark the
+        // buffer prepared when prepareNulls actually allocated it: on a
+        // null-free call it no-ops, so a later chunk that does carry nulls must
+        // still trigger a real prepare.
+        const bool hasNulls = visitor.reader().rawNullsInReadRange() != nullptr;
+        visitor.reader().prepareNulls(rows, hasNulls, /*extraRows=*/8);
+        resultNullsPrepared = hasNulls;
+      }
+    };
+    params.setReturnNullsMode = [&visitor, &rows] {
+      visitor.reader().setReturnNullsMode(rows);
+    };
     bool readerNullsMade{false};
     if (auto& nulls = visitor.reader().nullsInReadRange()) {
       // For flat map child columns, NimbleData::readNulls() may alias inMap_
