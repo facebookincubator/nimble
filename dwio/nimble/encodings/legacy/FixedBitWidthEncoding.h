@@ -99,7 +99,8 @@ FixedBitWidthEncoding<T>::FixedBitWidthEncoding(
         pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
-        {pos, static_cast<size_t>(data.end() - pos)});
+        {pos, static_cast<size_t>(data.end() - pos)},
+        /*decompressCounter=*/nullptr);
     fixedBitArray_ = FixedBitArray{
         {uncompressedData_->as<char>(), uncompressedData_->size()}, bitWidth_};
   } else {

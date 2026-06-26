@@ -22,6 +22,7 @@
 #include "folly/io/IOBuf.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/buffer/BufferPool.h"
+#include "velox/common/base/IoCounter.h"
 
 namespace facebook::nimble {
 
@@ -82,6 +83,7 @@ class Compression {
       CompressionType compressionType,
       DataType dataType,
       std::string_view data,
+      velox::io::IoCounter* decompressCounter,
       velox::BufferPool* bufferPool = nullptr);
 
   static std::optional<size_t> uncompressedSize(

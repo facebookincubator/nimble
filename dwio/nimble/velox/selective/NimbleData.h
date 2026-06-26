@@ -22,6 +22,7 @@
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
 #include "velox/dwio/common/FormatData.h"
+#include "velox/dwio/common/Statistics.h"
 
 namespace facebook::nimble {
 
@@ -37,7 +38,8 @@ class NimbleData : public velox::dwio::common::FormatData {
       const EncodingFactory& encodingFactory,
       bool stringDecoderZeroCopy,
       bool nimblePreserveDictionaryEncoding = false,
-      bool lazyColumnIo = false);
+      bool lazyColumnIo = false,
+      velox::dwio::common::DecodingStats* decodingStats = nullptr);
 
   /// Read internal node nulls. For leaf nodes, we only copy `incomingNulls' if
   /// it exists.
@@ -118,6 +120,9 @@ class NimbleData : public velox::dwio::common::FormatData {
   const EncodingFactory* const encodingFactory_;
   bool nimblePreserveDictionaryEncoding_{false};
   bool lazyColumnIo_{false};
+  // Per-column decoding statistics. May be nullptr if column stats collection
+  // is disabled.
+  velox::dwio::common::DecodingStats* const decodingStats_{nullptr};
 };
 
 class NimbleParams : public velox::dwio::common::FormatParams {

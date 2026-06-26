@@ -199,7 +199,8 @@ TrivialEncoding<T>::TrivialEncoding(
         pool,
         compressionType,
         TypeTraits<physicalType>::dataType,
-        {data.data() + kDataOffset, data.size() - kDataOffset});
+        {data.data() + kDataOffset, data.size() - kDataOffset},
+        /*decompressCounter=*/nullptr);
     values_ = reinterpret_cast<const T*>(uncompressed_->as<char>());
     NIMBLE_CHECK_EQ(
         reinterpret_cast<const char*>(values_ + this->rowCount()),

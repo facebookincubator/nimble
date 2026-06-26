@@ -19,6 +19,7 @@
 #include "dwio/nimble/compression/OpenZLCompressor.h"
 #include "dwio/nimble/compression/ZstdCompressor.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "velox/dwio/common/Statistics.h"
 
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
 #include "dwio/nimble/compression/fb/MetaInternalCompressor.h"
@@ -75,9 +76,13 @@ ICompressor& getCompressor(CompressionType compressionType) {
     CompressionType compressionType,
     DataType dataType,
     std::string_view data,
+    velox::io::IoCounter* decompressCounter,
     velox::BufferPool* bufferPool) {
-  return getCompressor(compressionType)
-      .uncompress(pool, compressionType, dataType, data, bufferPool);
+  auto& compressor = getCompressor(compressionType);
+  return velox::dwio::common::withDecompressStats(decompressCounter, [&] {
+    return compressor.uncompress(
+        pool, compressionType, dataType, data, bufferPool);
+  });
 }
 
 /* static */ std::optional<size_t> Compression::uncompressedSize(

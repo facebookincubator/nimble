@@ -189,7 +189,11 @@ ForEncoding<T>::ForEncoding(
 
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
-        *this->pool_, compressionType, DataType::Undefined, packedDataView);
+        *this->pool_,
+        compressionType,
+        DataType::Undefined,
+        packedDataView,
+        options.decompressCounter());
     packedData_ = uncompressedData_->as<char>();
   } else {
     packedData_ = packedDataView.data();
