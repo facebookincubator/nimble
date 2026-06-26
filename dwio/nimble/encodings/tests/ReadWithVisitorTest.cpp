@@ -1068,8 +1068,8 @@ ReadWithVisitorParams makeReadWithVisitorParams(
   params.prepareResultNulls = [&visitor, &rows] {
     visitor.reader().prepareNulls(rows, true, 8);
   };
-  params.initReturnReaderNulls = [&visitor, &rows] {
-    visitor.reader().initReturnReaderNulls(rows);
+  params.setReturnNullsMode = [&visitor, &rows] {
+    visitor.reader().setReturnNullsMode(rows);
   };
   const auto numRows = visitor.numRows();
   params.makeReaderNulls = [memPool, numRows, &visitor] {

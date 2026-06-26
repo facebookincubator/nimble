@@ -129,20 +129,26 @@ class ChunkedDecoder {
       // buffer (wiping the dict portion's nulls) and re-evaluate the mode on
       // the non-dense continuation row set. So both are no-ops — prepare once.
       params.prepareResultNulls = [] {};
-      params.initReturnReaderNulls = [] {};
+      params.setReturnNullsMode = [] {};
     } else {
       // Allocate one extra byte (8 bits) for nulls to handle multi-chunk
       // reading, where each chunk we need to align the result nulls to byte
       // boundary then shift.
       params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
         if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
-          visitor.reader().prepareNulls(
-              rows, /*hasNulls=*/true, /*extraRows=*/8);
-          resultNullsPrepared = true;
+          // Pass the real read-range null state so prepareNulls short-circuits
+          // (no allocate/clear) when the range carries no nulls. Only mark the
+          // buffer prepared when prepareNulls actually allocated it: on a
+          // null-free call it no-ops, so a later chunk that does carry nulls
+          // must still trigger a real prepare.
+          const bool hasNulls =
+              visitor.reader().rawNullsInReadRange() != nullptr;
+          visitor.reader().prepareNulls(rows, hasNulls, /*extraRows=*/8);
+          resultNullsPrepared = hasNulls;
         }
       };
-      params.initReturnReaderNulls = [&visitor, &rows] {
-        visitor.reader().initReturnReaderNulls(rows);
+      params.setReturnNullsMode = [&visitor, &rows] {
+        visitor.reader().setReturnNullsMode(rows);
       };
     }
     bool readerNullsMade{false};
@@ -336,12 +342,18 @@ class ChunkedDecoder {
     // boundary then shift.
     params.prepareResultNulls = [&resultNullsPrepared, &visitor, &rows] {
       if (FOLLY_UNLIKELY(!resultNullsPrepared)) {
-        visitor.reader().prepareNulls(rows, /*hasNulls=*/true, /*extraRows=*/8);
-        resultNullsPrepared = true;
+        // Pass the real read-range null state so prepareNulls short-circuits
+        // (no allocate/clear) when the range carries no nulls. Only mark the
+        // buffer prepared when prepareNulls actually allocated it: on a
+        // null-free call it no-ops, so a later chunk that does carry nulls must
+        // still trigger a real prepare.
+        const bool hasNulls = visitor.reader().rawNullsInReadRange() != nullptr;
+        visitor.reader().prepareNulls(rows, hasNulls, /*extraRows=*/8);
+        resultNullsPrepared = hasNulls;
       }
     };
-    params.initReturnReaderNulls = [&visitor, &rows] {
-      visitor.reader().initReturnReaderNulls(rows);
+    params.setReturnNullsMode = [&visitor, &rows] {
+      visitor.reader().setReturnNullsMode(rows);
     };
     bool readerNullsMade{false};
     if (auto& nulls = visitor.reader().nullsInReadRange()) {

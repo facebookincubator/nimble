@@ -75,6 +75,37 @@ struct E2EFilterTestParam {
   }
 };
 
+// Applies the multi-chunk writer config used by the shared write path so that
+// standalone tests (which build their own writer) also produce multiple chunks
+// per stream within a stripe, exercising the cross-chunk reader resume paths.
+// Note: chunks are emitted at write() boundaries, so a single write() still
+// yields one chunk — callers that write a single batch must split it.
+void applyMultiChunkOptions(VeloxWriterOptions& options) {
+  options.enableChunking = true;
+  options.minStreamChunkRawSize = 0;
+  options.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+}
+
+// Writes `batch` as `numChunks` row-slices so the multi-chunk options above
+// emit a separate chunk per slice (a single write() would yield one chunk).
+void writeInChunks(
+    VeloxWriter& writer,
+    const RowVectorPtr& batch,
+    int numChunks = 3) {
+  const vector_size_t total = batch->size();
+  const vector_size_t per =
+      std::max<vector_size_t>(1, (total + numChunks - 1) / numChunks);
+  for (vector_size_t offset = 0; offset < total; offset += per) {
+    writer.write(
+        std::dynamic_pointer_cast<RowVector>(
+            batch->slice(offset, std::min(per, total - offset))));
+  }
+}
+
 class E2EFilterTest
     : public dwio::common::E2EFilterTestBase,
       public ::testing::WithParamInterface<E2EFilterTestParams> {
@@ -550,9 +581,10 @@ class E2EFilterTest
       auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
       VeloxWriterOptions writerOptions;
       writerOptions.encodingLayoutTree.emplace(std::move(layoutTree));
+      applyMultiChunkOptions(writerOptions);
       VeloxWriter writer(
           type, std::move(writeFile), *rootPool_, std::move(writerOptions));
-      writer.write(batch);
+      writeInChunks(writer, batch);
       writer.close();
     }
 
@@ -2021,11 +2053,11 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
         Kind::Row, {}, "", std::move(children)};
 
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions options;
+    options.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
+    applyMultiChunkOptions(options);
     VeloxWriter writer(
-        rowType_,
-        std::move(writeFile),
-        *rootPool_,
-        {.encodingLayoutTree = std::move(encodingLayoutTree)});
+        rowType_, std::move(writeFile), *rootPool_, std::move(options));
     for (auto& batch : batches) {
       writer.write(batch);
     }
@@ -2315,8 +2347,9 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
   auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
   VeloxWriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
+  applyMultiChunkOptions(writerOptions);
   VeloxWriter writer(type, std::move(writeFile), *rootPool_, writerOptions);
-  writer.write(batch);
+  writeInChunks(writer, batch);
   writer.close();
 
   // Read back and verify the data is correct.
@@ -2519,9 +2552,10 @@ TEST_P(E2EFilterTest, fuzzMainlyConstantDictionaryVector) {
     VeloxWriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedMainlyConstantDictionaryEncodingLayoutTree());
+    applyMultiChunkOptions(writerOptions);
     VeloxWriter writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
-    writer.write(batch);
+    writeInChunks(writer, batch);
     writer.close();
   }
 
@@ -2634,9 +2668,10 @@ TEST_P(E2EFilterTest, fuzzRleDictionaryVector) {
     VeloxWriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedRleDictionaryEncodingLayoutTree());
+    applyMultiChunkOptions(writerOptions);
     VeloxWriter writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
-    writer.write(batch);
+    writeInChunks(writer, batch);
     writer.close();
   }
 
@@ -2712,9 +2747,11 @@ TEST_P(E2EFilterTest, constantStringDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions options;
+    applyMultiChunkOptions(options);
     VeloxWriter writer(
-        type, std::move(writeFile), *rootPool_, VeloxWriterOptions{});
-    writer.write(batch);
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    writeInChunks(writer, batch);
     writer.close();
   }
 
@@ -2780,9 +2817,11 @@ TEST_P(E2EFilterTest, constantStringWithNullsDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions options;
+    applyMultiChunkOptions(options);
     VeloxWriter writer(
-        type, std::move(writeFile), *rootPool_, VeloxWriterOptions{});
-    writer.write(batch);
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    writeInChunks(writer, batch);
     writer.close();
   }
 
@@ -2996,10 +3035,11 @@ class NimbleExtractionTest : public E2EFilterTest {
     // Write.
     rowType_ = asRowType(data->type());
     VeloxWriterOptions options;
+    applyMultiChunkOptions(options);
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     VeloxWriter writer(
         rowType_, std::move(writeFile), *rootPool_, std::move(options));
-    writer.write(data);
+    writeInChunks(writer, data);
     writer.close();
 
     // Read.
