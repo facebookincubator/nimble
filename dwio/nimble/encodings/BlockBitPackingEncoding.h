@@ -33,6 +33,7 @@
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/dwio/common/BitPackDecoder.h"
 #include "velox/dwio/common/DecoderUtil.h"
 #include "velox/dwio/common/Lemire/BitPacking/bitpackinghelpers.h"
 
@@ -510,19 +511,28 @@ void BlockBitPackingEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
   using OutputType = detail::ValueType<typename V::DataType>;
-  constexpr bool kIsSuitableWidth =
+  constexpr bool kIsWideType =
       (isFourByteIntegralType<physicalType>() ||
        isEightByteIntegralType<physicalType>());
+  constexpr bool kIsNarrowType =
+      std::is_integral_v<physicalType> && !kIsWideType;
   constexpr bool kIsFluidCast = sizeof(OutputType) >= sizeof(physicalType) &&
       std::is_integral_v<OutputType> && std::is_integral_v<physicalType>;
+  // Wide types (4/8 byte): full fast path with filter/scatter/hook support.
+  // Narrow types (1/2 byte): fast path only without filter/scatter/hook AND
+  // without nulls, because processFixedWidthRun requires >= 4-byte types
+  // and the scatter path (used for nullable columns) calls it.
+  constexpr bool kCanUseFastPath =
+      (kIsWideType || (kIsNarrowType && !V::kHasFilter && !V::kHasHook));
   if constexpr (
-      kIsSuitableWidth &&
+      kCanUseFastPath &&
       std::is_same_v<
           typename V::Extract,
           velox::dwio::common::ExtractToReader> &&
       kIsFluidCast) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
-    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+    if (velox::dwio::common::useFastPath(visitor, nulls) &&
+        (kIsWideType || nulls == nullptr)) {
       detail::readWithVisitorFast(*this, visitor, params, nulls);
       return;
     }
@@ -546,10 +556,6 @@ void BlockBitPackingEncoding<T>::bulkScan(
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
   using OutputType = detail::ValueType<typename V::DataType>;
-  static_assert(
-      isFourByteIntegralType<physicalType>() ||
-          isEightByteIntegralType<physicalType>(),
-      "bulkScan only supports 4-byte or 8-byte integral types");
 
   if (numSelected == 0) {
     return;
@@ -644,31 +650,39 @@ void BlockBitPackingEncoding<T>::bulkScan(
     return;
   }
 
-  if constexpr (!V::kHasHook) {
-    values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
-  }
+  // processFixedWidthRun requires >= 4-byte OutputType. Narrow types
+  // with filters/hooks are routed to the slow path by readWithVisitor,
+  // so this branch is unreachable for them.
+  if constexpr (sizeof(OutputType) >= 4) {
+    if constexpr (!V::kHasHook) {
+      values = reinterpret_cast<OutputType*>(visitor.reader().rawValues());
+    }
 
-  auto numValues = visitor.reader().numValues();
-  int32_t* filterHits = nullptr;
-  if constexpr (V::kHasFilter) {
-    filterHits = visitor.outputRows(numSelected) - numValues;
-  }
+    auto numValues = visitor.reader().numValues();
+    int32_t* filterHits = nullptr;
+    if constexpr (V::kHasFilter) {
+      filterHits = visitor.outputRows(numSelected) - numValues;
+    }
 
-  velox::dwio::common::
-      processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
-          velox::RowSet(selectedRows, numSelected),
-          0,
-          numSelected,
-          scatterRows,
-          values,
-          filterHits,
-          numValues,
-          visitor.filter(),
-          visitor.hook());
+    velox::dwio::common::
+        processFixedWidthRun<OutputType, V::kFilterOnly, kScatter, V::dense>(
+            velox::RowSet(selectedRows, numSelected),
+            0,
+            numSelected,
+            scatterRows,
+            values,
+            filterHits,
+            numValues,
+            visitor.filter(),
+            visitor.hook());
 
-  if constexpr (!V::kHasHook) {
-    visitor.addNumValues(
-        V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+    if constexpr (!V::kHasHook) {
+      visitor.addNumValues(
+          V::kHasFilter ? numValues - visitor.reader().numValues() : numRows);
+    }
+  } else {
+    NIMBLE_UNREACHABLE(
+        "Narrow-type bulkScan with filter/hook should use the slow path.");
   }
   visitor.setRowIndex(visitor.numRows());
 }
