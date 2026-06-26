@@ -65,6 +65,10 @@
 ///  encodings
 ///     have slightly different semantics than other encodings.
 
+namespace facebook::velox::dwio::common {
+struct DecodingStats;
+} // namespace facebook::velox::dwio::common
+
 namespace facebook::nimble {
 
 template <typename T, typename Filter, typename ExtractValues, bool kIsDense>
@@ -128,6 +132,14 @@ class Encoding {
     /// are packed per block. Written to the stream header; the reader
     /// reads it back from the stream (self-describing).
     uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
+
+    /// Per-column decoding statistics for timing decompression.
+    velox::dwio::common::DecodingStats* decodingStats = nullptr;
+
+    velox::io::IoCounter* decompressCounter() const {
+      return decodingStats != nullptr ? &decodingStats->decompressCPUTimeNanos
+                                      : nullptr;
+    }
   };
 
   static constexpr int kEncodingTypeOffset =

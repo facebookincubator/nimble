@@ -57,8 +57,10 @@ bool ChunkedDecoder::loadNextChunk(
     return buffer->asMutable<void>();
   };
   auto data = std::string_view(chunkData, chunkSize);
+  // Copy, not reference.
   auto options = encodingFactory_->options();
   options.preserveDictionaryEncoding = preserveDictionaryEncoding;
+  options.decodingStats = decodingStats_;
   encoding_ =
       encodingFactory_->create(*pool_, data, stringBufferFactory, options);
   remainingValues_ = encoding_->rowCount();

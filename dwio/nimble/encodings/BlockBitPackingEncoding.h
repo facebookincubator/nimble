@@ -322,6 +322,7 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
         compressionType,
         DataType::Undefined,
         {pos, static_cast<size_t>(data.end() - pos)},
+        options.decompressCounter(),
         options.bufferPool);
     packedData_ = uncompressedData_->as<char>();
   } else {

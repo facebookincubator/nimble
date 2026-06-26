@@ -59,7 +59,8 @@ class ChunkedDecoder {
       bool decodeValuesWithNulls,
       const EncodingFactory* encodingFactory,
       velox::memory::MemoryPool* pool,
-      bool stringDecoderZeroCopy = false)
+      bool stringDecoderZeroCopy = false,
+      velox::dwio::common::DecodingStats* decodingStats = nullptr)
       : input_{std::move(input)},
         pool_{pool},
         decodeValuesWithNulls_{decodeValuesWithNulls},
@@ -68,7 +69,8 @@ class ChunkedDecoder {
         streamIndex_{std::move(streamIndex)},
         streamRowCount_{
             streamIndex_ ? std::optional<uint32_t>(streamIndex_->rowCount())
-                         : std::nullopt} {
+                         : std::nullopt},
+        decodingStats_{decodingStats} {
     NIMBLE_CHECK_NOT_NULL(input_);
     NIMBLE_CHECK_NOT_NULL(encodingFactory_);
   }
@@ -851,6 +853,9 @@ class ChunkedDecoder {
   // Tracks the current row position in the stream.
   uint32_t rowPosition_{0};
 
+  // Per-column decoding statistics. Owned by ColumnReaderStatistics; valid for
+  // the lifetime of this decoder.
+  velox::dwio::common::DecodingStats* const decodingStats_{nullptr};
   friend class ChunkedDecoderTestHelper;
 };
 

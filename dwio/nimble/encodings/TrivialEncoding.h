@@ -245,6 +245,7 @@ TrivialEncoding<T>::TrivialEncoding(
         compressionType,
         TypeTraits<physicalType>::dataType,
         {data.data() + valuesOffset, data.size() - valuesOffset},
+        options.decompressCounter(),
         options.bufferPool);
     values_ = reinterpret_cast<const T*>(uncompressed_->as<char>());
     NIMBLE_CHECK_EQ(

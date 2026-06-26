@@ -2612,59 +2612,76 @@ TEST_P(SelectiveNimbleReaderTest, mapAsStructAllNulls) {
   velox::test::assertEqualVectors(expected, batch);
 }
 
-// TODO: Re-enable after the decompression time tracking diff lands and
-// updates the member access from columnMetricsSet to decodingStatsSet.
-// TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
-//   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
-//   const int numRows = 10'000;
-//   auto input = makeRowVector({
-//       makeFlatVector<int64_t>(numRows, [](auto i) { return i; }),
-//       makeFlatVector<std::string>(
-//           numRows, [](auto i) { return std::to_string(i); }),
-//   });
-//   auto scanSpec = std::make_shared<common::ScanSpec>("root");
-//   scanSpec->addAllChildFields(*asRowType(input->type()));
-//   auto file = test::createNimbleFile(*rootPool(), input);
-//   auto readFile = std::make_shared<InMemoryReadFile>(file);
-//   auto factory =
-//       dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
-//   dwio::common::ReaderOptions options(pool());
-//   options.setDataIoStats(dataIoStats_);
-//   options.setMetadataIoStats(metadataIoStats_);
-//   options.setScanSpec(scanSpec);
-//   auto reader = factory->createReader(
-//       std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
-//       options);
-//   dwio::common::RowReaderOptions rowOptions;
-//   rowOptions.setScanSpec(scanSpec);
-//   rowOptions.setRequestedType(asRowType(input->type()));
-//   rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
-//   rowOptions.setCollectColumnStats(true);
-//   rowOptions.setEagerFirstStripeLoad(true);
-//   auto rowReader = reader->createRowReader(rowOptions);
-//
-//   VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
-//   uint64_t totalRows = 0;
-//   while (auto n = rowReader->next(1'000, result)) {
-//     totalRows += n;
-//     auto* row = result->as<RowVector>();
-//     for (auto i = 0; i < row->childrenSize(); ++i) {
-//       row->childAt(i)->loadedVector();
-//     }
-//   }
-//   EXPECT_EQ(totalRows, numRows) << "should read all rows";
-//
-//   dwio::common::RuntimeStatistics stats;
-//   rowReader->updateRuntimeStats(stats);
-//   ASSERT_TRUE(stats.columnReaderStats.decodingStatsSet.has_value());
-//
-//   auto* col1 = stats.columnReaderStats.decodingStatsSet->getOrCreate(1);
-//   EXPECT_GT(col1->decodeCPUTimeNanos.count(), 0)
-//       << "column 1 decode count should be > 0";
-//   auto* col2 = stats.columnReaderStats.decodingStatsSet->getOrCreate(2);
-//   EXPECT_GT(col2->decodeCPUTimeNanos.count(), 0)
-//       << "column 2 decode count should be > 0";
-// }
+TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
+  const int numRows = 100'000;
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(numRows, [](auto i) { return i * 7 + 13; }),
+      makeFlatVector<std::string>(
+          numRows, [](auto i) { return std::string(20, 'a' + (i % 26)); }),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*asRowType(input->type()));
+  nimble::CompressionOptions comprOpts;
+  comprOpts.compressionAcceptRatio = 100.0f;
+  comprOpts.compressionAcceptRatioOverrides = {};
+  nimble::ManualEncodingSelectionPolicyFactory encodingFactory(
+      {{{nimble::EncodingType::Trivial, 1.0}}}, comprOpts);
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyFactory = [&](nimble::DataType dt) {
+    return encodingFactory.createPolicy(dt);
+  };
+  auto file =
+      test::createNimbleFile(*rootPool(), input, std::move(writerOptions));
+  auto readFile = std::make_shared<InMemoryReadFile>(file);
+  auto factory =
+      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+  dwio::common::ReaderOptions options(pool());
+  options.setDataIoStats(dataIoStats_);
+  options.setMetadataIoStats(metadataIoStats_);
+  options.setScanSpec(scanSpec);
+  auto reader = factory->createReader(
+      std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
+      options);
+  dwio::common::RowReaderOptions rowOptions;
+  rowOptions.setScanSpec(scanSpec);
+  rowOptions.setRequestedType(asRowType(input->type()));
+  // zeroCopy=true uses nimble::EncodingFactory (not legacy), which forwards
+  // Encoding::Options including decodingStats to encoding constructors.
+  rowOptions.setStringDecoderZeroCopy(true);
+  rowOptions.setCollectColumnStats(true);
+  rowOptions.setEagerFirstStripeLoad(true);
+  auto rowReader = reader->createRowReader(rowOptions);
+
+  VectorPtr result = BaseVector::create(asRowType(input->type()), 0, pool());
+  uint64_t totalRows = 0;
+  while (auto n = rowReader->next(1'000, result)) {
+    totalRows += n;
+    auto* row = result->as<RowVector>();
+    for (auto i = 0; i < row->childrenSize(); ++i) {
+      row->childAt(i)->loadedVector();
+    }
+  }
+  EXPECT_EQ(totalRows, numRows) << "should read all rows";
+
+  dwio::common::RuntimeStatistics stats;
+  rowReader->updateRuntimeStats(stats);
+  ASSERT_TRUE(stats.columnReaderStats.decodingStatsSet.has_value());
+
+  auto* col1 = stats.columnReaderStats.decodingStatsSet->getOrCreate(1);
+  EXPECT_GT(col1->decodeCPUTimeNanos.count(), 0)
+      << "column 1 decode count should be > 0";
+  EXPECT_GT(col1->decompressCPUTimeNanos.count(), 0)
+      << "column 1 decompress count should be > 0";
+  // Decompression is a subset of the full decode path. Both use CPU time
+  // (withDecompressStats / NanosecondCPUTimer), so the comparison is safe.
+  EXPECT_LE(col1->decompressCPUTimeNanos.sum(), col1->decodeCPUTimeNanos.sum())
+      << "decompress time should be <= decode time (it is a subset)";
+  auto* col2 = stats.columnReaderStats.decodingStatsSet->getOrCreate(2);
+  EXPECT_GT(col2->decodeCPUTimeNanos.count(), 0)
+      << "column 2 decode count should be > 0";
+  EXPECT_GT(col2->decompressCPUTimeNanos.count(), 0)
+      << "column 2 decompress count should be > 0";
+}
 
 // Tests for FixedBitWidthEncoding fast path.
 // The fast path is used for 4-byte integral types without filters or hooks.

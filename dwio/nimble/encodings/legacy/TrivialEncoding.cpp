@@ -38,7 +38,8 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
         pool,
         dataCompressionType,
         DataType::String,
-        {blob_, static_cast<size_t>(data.end() - blob_)});
+        {blob_, static_cast<size_t>(data.end() - blob_)},
+        /*decompressCounter=*/nullptr);
     blob_ = dataUncompressed_->as<char>();
     uncompressedDataBytes_ = dataUncompressed_->size();
   } else {
@@ -148,7 +149,8 @@ TrivialEncoding<bool>::TrivialEncoding(
         pool,
         compressionType,
         DataType::Undefined,
-        {bitmap_, static_cast<size_t>(data.end() - bitmap_)});
+        {bitmap_, static_cast<size_t>(data.end() - bitmap_)},
+        /*decompressCounter=*/nullptr);
     bitmap_ = uncompressed_->as<char>();
     NIMBLE_CHECK_EQ(
         bitmap_ + FixedBitArray::bufferSize(rowCount(), 1),
