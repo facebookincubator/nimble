@@ -86,9 +86,11 @@ struct ReadWithVisitorParams {
   // across potential multiple chunks.
   std::function<uint64_t*()> makeReaderNulls;
 
-  // Initialize `SelectiveColumnReader::returnReaderNulls_' field.  Need to be
-  // called after decoding nulls in `NullableEncoding'.
-  std::function<void()> initReturnReaderNulls;
+  // Resolves which buffer `SelectiveColumnReader::resultNulls()' returns for
+  // this read by setting the `returnReaderNulls_' flag (and `anyNulls_').
+  // Resolves the flag only; allocates no buffer.  Must be called after decoding
+  // nulls in `NullableEncoding'.
+  std::function<void()> setReturnNullsMode;
 
   // Create the result nulls if not already exists.  Similar to
   // `makeReaderNulls', we create one single buffer for all the results nulls
@@ -449,7 +451,8 @@ T castFromPhysicalType(const PhysicalType& value) {
 // not pre-populate nullsInReadRange_ in prepareRead() for scalar columns (their
 // nulls are materialized lazily during decode), so prepareRead() did not size
 // resultNulls_; the dense filtered path must allocate it before the first
-// addNull(). No-op without a filter (no processNull path) or without nulls.
+// addNull(). No-op without a filter (no processNull path); the call itself
+// no-ops when the read range has no nulls (prepareNulls short-circuits).
 //
 // TODO: This is intentionally eager -- it allocates resultNulls_ whenever a
 // filtered read sees a null bitmap, even for value filters where no null row
@@ -458,13 +461,9 @@ T castFromPhysicalType(const PhysicalType& value) {
 // kHasFilter branch entirely and handles null emission post-hoc, at which point
 // this helper and its call sites should be deleted.
 template <typename V>
-void prepareResultNullsForDenseFilter(
-    const ReadWithVisitorParams& params,
-    const uint64_t* rawNulls) {
+void prepareResultNullsForDenseFilter(const ReadWithVisitorParams& params) {
   if constexpr (V::kHasFilter) {
-    if (rawNulls != nullptr) {
-      params.prepareResultNulls();
-    }
+    params.prepareResultNulls();
   }
 }
 
@@ -490,7 +489,7 @@ void readDenseMaterializedIndices(
     uint32_t numNonNulls) {
   // On the filtered path, allocate the result-nulls buffer up front so the
   // per-row processNull() -> addNull() below has somewhere to write.
-  prepareResultNullsForDenseFilter<V>(params, rawNulls);
+  prepareResultNullsForDenseFilter<V>(params);
   const auto readOffset = params.numScanned;
   // When the visitor has a filter, materialize indices into a temp buffer
   // and dispatch through the visitor's process()/processNull() per row.
@@ -592,6 +591,9 @@ void readSparseMaterializedIndices(
   // When the visitor has a filter, dispatch through process()/processNull()
   // per row so the visitor evaluates the filter and handles outputRows.
   if constexpr (V::kHasFilter) {
+    // Allocate the result-nulls buffer up front (self-no-ops when the range has
+    // no nulls) so the per-row processNull() -> addNull() below has a buffer.
+    prepareResultNulls();
     uint32_t indexOffset = 0;
     bool atEnd = false;
     if (rawNulls != nullptr) {
@@ -609,11 +611,6 @@ void readSparseMaterializedIndices(
           ++indexOffset;
         } else {
           if (readCurrentRow) {
-            // Ensure the result-nulls buffer exists before processNull() ->
-            // addNull() writes rawResultNulls_. On the filtered path
-            // returnReaderNulls_ is false, so only prepareResultNulls()
-            // allocates it. Idempotent.
-            prepareResultNulls();
             visitor.processNull(atEnd);
           }
         }
@@ -639,10 +636,18 @@ void readSparseMaterializedIndices(
       reinterpret_cast<int32_t*>(visitor.reader().rawValues());
   const auto valueOutputOffset = visitor.reader().numValues();
 
+  // Allocate and clear resultNulls_ before the loop rather than on the first
+  // emitted null: the loop only writes null positions, so a read whose
+  // surviving rows are all non-null would leave a reused buffer untouched and
+  // leak stale null bits into the output. Called unconditionally: the callback
+  // passes the read-range null state to prepareNulls, which self-short-circuits
+  // (no allocate/clear) when there are no nulls.
+  prepareResultNulls();
+
   const auto startRowIndex = visitor.rowIndex();
   uint32_t indexOffset = 0;
   auto readRowIndex = startRowIndex;
-  bool nullsEmitted = false;
+  bool anyNull = false;
   for (uint32_t row = 0; row < numReadRows && readRowIndex < visitor.numRows();
        ++row) {
     const bool readCurrentRow =
@@ -651,13 +656,9 @@ void readSparseMaterializedIndices(
         !velox::bits::isBitSet(rawNulls, readOffset + row);
     if (isNull) {
       if (readCurrentRow) {
-        if (!nullsEmitted) {
-          nullsEmitted = true;
-          prepareResultNulls();
-          visitor.reader().setHasNulls();
-        }
+        anyNull = true;
         // In the sparse case, returnReaderNulls_ is false
-        // (initReturnReaderNulls only sets it for dense rows). resultNulls()
+        // (setReturnNullsMode only sets it for dense rows). resultNulls()
         // then returns resultNulls_ instead of nullsInReadRange_. We must
         // explicitly write null bits to resultNulls_ so
         // DictionaryVector::validate() knows to skip these positions. Also
@@ -675,6 +676,9 @@ void readSparseMaterializedIndices(
       ++readRowIndex;
     }
     ++indexOffset;
+  }
+  if (anyNull) {
+    visitor.reader().setHasNulls();
   }
   visitor.addNumValues(visitor.numRows() - visitor.rowIndex());
   visitor.setRowIndex(visitor.numRows());

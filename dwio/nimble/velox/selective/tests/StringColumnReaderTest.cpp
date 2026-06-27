@@ -119,13 +119,28 @@ class StringColumnReaderTest : public ::testing::Test,
       const RowVector& input,
       dwio::common::RowReader& rowReader,
       int batchSize,
-      const std::function<bool(int)>& filter) {
+      const std::function<bool(int)>& filter,
+      std::optional<VectorEncoding::Simple> expectedChildEncoding =
+          std::nullopt,
+      int childIndex = 0) {
     auto result = BaseVector::create(asRowType(input.type()), 0, pool());
     int numScanned = 0;
     int i = 0;
     while (numScanned < input.size()) {
       numScanned += rowReader.next(batchSize, result);
       result->validate();
+      // When set, assert the column under test was materialized with the
+      // expected encoding (e.g. DICTIONARY for the dict-index path, FLAT for
+      // the flat path), so a silent encoding fallback cannot mask the read
+      // path.
+      if (expectedChildEncoding.has_value() && result->size() > 0) {
+        EXPECT_EQ(
+            BaseVector::loadedVectorShared(
+                result->asUnchecked<RowVector>()->childAt(childIndex))
+                ->encoding(),
+            *expectedChildEncoding)
+            << "Unexpected encoding for child " << childIndex;
+      }
       for (int j = 0; j < result->size(); ++j) {
         for (;;) {
           ASSERT_LT(i, input.size());
@@ -2866,6 +2881,176 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkReadCorrectness) {
     auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
     validate(*expected, *readers.rowReader, batchSize);
   }
+}
+
+// Regression for the prepareResultNulls guard bug. A sibling filter on c0
+// forces ONE sparse readWithVisitor over c1 that spans both chunks: chunk 1's
+// c1 values are non-null and chunk 2's are nullable. The null-free chunk-1
+// portion calls prepareResultNulls with hasNulls=false (prepareNulls no-ops and
+// allocates nothing); if the shared resultNullsPrepared guard is flipped
+// regardless, the nullable chunk-2 portion skips the real prepare and writes
+// nulls into an unallocated resultNulls_ -> crash. Exercises the
+// dictionary-index read path (readDictionaryIndices).
+TEST_P(StringColumnReaderTest, multiChunkLateNullPreparationDictPath) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRowsPerChunk = 200;
+  // c1 low-cardinality -> Dictionary. chunk 1 non-null, chunk 2 nullable.
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(kRowsPerChunk, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          kRowsPerChunk,
+          [](auto i) {
+            return std::vector<std::string>{"aa", "bb", "cc"}[i % 3];
+          }),
+  });
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(
+          kRowsPerChunk, [](auto i) { return kRowsPerChunk + i; }),
+      makeFlatVector<std::string>(
+          kRowsPerChunk,
+          [](auto i) { return std::vector<std::string>{"xx", "yy"}[i % 2]; },
+          nullEvery(7)),
+  });
+
+  // Force c1 to a bare Dictionary via the encoding layout tree, driving the
+  // dictionary-index read path. The writer wraps it in Nullable automatically
+  // for the nullable chunk.
+  EncodingLayout c1DictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {}, "c0"},
+          EncodingLayoutTree{
+              Kind::Scalar, {{0, std::move(c1DictLayout)}}, "c1"}});
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  // Filter c0 to [100, 300]: a row set spanning the chunk boundary at 200, so
+  // c1 (no filter) is read sparsely across both chunks in a single
+  // readWithVisitor.
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(100, 300, /*nullAllowed=*/false));
+
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(2 * kRowsPerChunk, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          2 * kRowsPerChunk,
+          [](auto i) {
+            return i < kRowsPerChunk
+                ? std::vector<std::string>{"aa", "bb", "cc"}[i % 3]
+                : std::vector<std::string>{"xx", "yy"}[(i - kRowsPerChunk) % 2];
+          },
+          [](auto i) {
+            return i >= kRowsPerChunk && ((i - kRowsPerChunk) % 7 == 0);
+          }),
+  });
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(
+      *input,
+      *readers.rowReader,
+      2 * kRowsPerChunk,
+      [](int i) { return i >= 100 && i <= 300; },
+      VectorEncoding::Simple::DICTIONARY,
+      /*childIndex=*/1);
+}
+
+// Same regression for the non-dictionary (flat) read path (readWithVisitor):
+// unique values force Trivial, so c1 goes through readWithVisitorFast rather
+// than the dictionary-index path.
+TEST_P(StringColumnReaderTest, multiChunkLateNullPreparationFlatPath) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Repro requires the dict-vector flags";
+  }
+
+  constexpr int kRowsPerChunk = 200;
+  // c1 unique -> Trivial (flat). chunk 1 non-null, chunk 2 nullable.
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(kRowsPerChunk, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          kRowsPerChunk, [](auto i) { return "u_" + std::to_string(i); }),
+  });
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(
+          kRowsPerChunk, [](auto i) { return kRowsPerChunk + i; }),
+      makeFlatVector<std::string>(
+          kRowsPerChunk,
+          [](auto i) { return "u_" + std::to_string(kRowsPerChunk + i); },
+          nullEvery(7)),
+  });
+
+  // Force c1 to Trivial via the encoding layout tree, driving the flat
+  // readWithVisitorFast path. The writer wraps it in Nullable automatically for
+  // the nullable chunk.
+  EncodingLayout c1TrivialLayout{
+      EncodingType::Trivial, {}, CompressionType::Uncompressed, {std::nullopt}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {}, "c0"},
+          EncodingLayoutTree{
+              Kind::Scalar, {{0, std::move(c1TrivialLayout)}}, "c1"}});
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(100, 300, /*nullAllowed=*/false));
+
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(2 * kRowsPerChunk, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          2 * kRowsPerChunk,
+          [](auto i) { return "u_" + std::to_string(i); },
+          [](auto i) {
+            return i >= kRowsPerChunk && ((i - kRowsPerChunk) % 7 == 0);
+          }),
+  });
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(
+      *input,
+      *readers.rowReader,
+      2 * kRowsPerChunk,
+      [](int i) { return i >= 100 && i <= 300; },
+      VectorEncoding::Simple::FLAT,
+      /*childIndex=*/1);
 }
 
 INSTANTIATE_TEST_CASE_P(

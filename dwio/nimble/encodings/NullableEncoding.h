@@ -318,7 +318,7 @@ void NullableEncoding<T>::materializeNullsForVisitor(
     auto* nulls = params.makeReaderNulls();
     nulls_->materializeBoolsAsBits(rowCount, nulls, params.numScanned);
   }
-  params.initReturnReaderNulls();
+  params.setReturnNullsMode();
 }
 
 template <typename T>
