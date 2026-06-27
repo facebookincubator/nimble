@@ -464,9 +464,11 @@ folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
   // Each unique stream is wrapped zero-copy into the output chain. Streams that
   // are physically contiguous in the DataInput read buffer are merged into a
   // single IOBuf node — fewer nodes means cheaper appendToChain here and
-  // cheaper cloneAsValue per request in buildResult. The first node holds the
-  // DataInput::Handle (takeOwnership) to keep the loaded data alive; the rest
-  // wrapBuffer it, since the chain is always cloned/destroyed as a unit.
+  // cheaper cloneAsValue per request in buildResult. Every node takes ownership
+  // of its own refcounted DataInput::Handle on the read buffer, so the whole
+  // chain is managed (folly::IOBuf::isManaged()) and self-contained: each node
+  // keeps the loaded data alive independently, so no node dangles if it is
+  // separated from its siblings.
   std::unique_ptr<folly::IOBuf> chain;
   const char* runData = nullptr;
   uint64_t runLength = 0;
@@ -474,14 +476,19 @@ folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
     if (runData == nullptr) {
       return;
     }
+    // TODO: each run allocates a fresh DataInput::Handle (a heap shared_ptr
+    // copy pinning the read buffer). If this allocation shows up in CPU
+    // profiling, use a slab cache or reuse a single Handle/buffer across the
+    // chain's nodes.
+    auto node = folly::IOBuf::takeOwnership(
+        const_cast<char*>(runData),
+        runLength,
+        freeDataHandle,
+        new DataInput::Handle(ctx_.dataHandle));
     if (chain == nullptr) {
-      chain = folly::IOBuf::takeOwnership(
-          const_cast<char*>(runData),
-          runLength,
-          freeDataHandle,
-          new DataInput::Handle(ctx_.dataHandle));
+      chain = std::move(node);
     } else {
-      chain->appendToChain(folly::IOBuf::wrapBuffer(runData, runLength));
+      chain->appendToChain(std::move(node));
     }
     runData = nullptr;
     runLength = 0;

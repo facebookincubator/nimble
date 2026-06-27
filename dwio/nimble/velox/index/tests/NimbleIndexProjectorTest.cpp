@@ -456,6 +456,63 @@ TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
   EXPECT_EQ(colAResult->valueAt(rowRange.startRow), 500);
 }
 
+// Every IOBuf node in a result slice chain should be managed (own/refcount its
+// own buffer) so the chain is self-contained. This currently fails when the
+// projected streams are non-contiguous in the read buffer, because packStripe
+// wraps the additional run(s) with folly::IOBuf::wrapBuffer (unmanaged). It
+// asserts the invariant we are moving toward.
+TEST_P(NimbleIndexProjectorTest, resultSlicesAreManaged) {
+  // 4 columns; project a NON-adjacent subset (col_a, col_c) so the skipped
+  // col_b stream sits between them in the read buffer, forcing a second run.
+  auto rowType =
+      ROW({"key", "col_a", "col_b", "col_c"},
+          {BIGINT(), INTEGER(), INTEGER(), INTEGER()});
+
+  const int numRows = 200;
+  std::vector<int64_t> keys(numRows);
+  std::vector<int32_t> colA(numRows);
+  std::vector<int32_t> colB(numRows);
+  std::vector<int32_t> colC(numRows);
+  for (int i = 0; i < numRows; ++i) {
+    keys[i] = i * 10;
+    colA[i] = i * 100;
+    colB[i] = i * 1000;
+    colC[i] = i * 7;
+  }
+  auto batch = vectorMaker_->rowVector(
+      {"key", "col_a", "col_b", "col_c"},
+      {vectorMaker_->flatVector<int64_t>(keys),
+       vectorMaker_->flatVector<int32_t>(colA),
+       vectorMaker_->flatVector<int32_t>(colB),
+       vectorMaker_->flatVector<int32_t>(colC)});
+
+  writeData({batch}, {"key"}, /*flatMapColumns=*/{}, /*stripeSize=*/1 << 10);
+
+  // Skip col_b: its stream lands between col_a's and col_c's in the read
+  // buffer, so packStripe cannot extend a single contiguous run.
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("col_a");
+  subfields.emplace_back("col_c");
+  auto projector = createProjector(subfields);
+
+  // Range scan over all keys hits every stripe.
+  auto rangeBounds = makeRangeLookup(rowType, {"key"}, 0, numRows * 10);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {rangeBounds};
+  auto result = projector->project(request, {});
+
+  ASSERT_EQ(result.responses.size(), 1);
+  const auto& response = result.responses[0];
+  ASSERT_FALSE(response.slices.empty());
+
+  for (size_t s = 0; s < response.slices.size(); ++s) {
+    const auto& slice = response.slices[s];
+    EXPECT_TRUE(slice.isManaged())
+        << "slice " << s << "/" << response.slices.size()
+        << " has an unmanaged (wrapBuffer) IOBuf node";
+  }
+}
+
 TEST_P(NimbleIndexProjectorTest, emptyResult) {
   auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
 
