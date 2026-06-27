@@ -1147,6 +1147,164 @@ TEST_P(StringColumnReaderTest, flatMapStringDictionaryPath) {
   ASSERT_EQ(0, rowReader->next(1, result));
 }
 
+// Flatmap string column read through a BARE DictionaryEncoding with EXTERNAL
+// (inMap) nulls. This is the genuine regression guard for
+// ChunkedDecoder::readDictionaryIndicesImpl<kHasNulls=true> handling nulls that
+// originate from the flatmap inMap bitmap rather than from the encoding itself.
+//
+// Why a dedicated test is needed: flatMapStringDictionaryPath above uses data
+// whose value stream is encoded as MainlyConstant<Dictionary>. MC's own
+// readIndicesWithVisitor maps rows to values internally, so that test passes
+// with OR without the kHasNulls fix and never exercises the external-null
+// batching in readDictionaryIndicesImpl. Here MainlyConstant is removed from
+// the writer's read factors so the value stream is encoded as a bare
+// DictionaryEncoding (dictionaryEnabled() == true, no inner null handling). The
+// decode then flows read() -> readWithDictionary() ->
+// decoder_.readDictionaryIndices() -> readDictionaryIndicesImpl<true>, which
+// must use computeNextRowIndex<kHasNulls> to skip the inMap-null rows when
+// batching indices. If kHasNulls were ignored, the decoder would over-read the
+// index stream and land values at the wrong (null) row positions.
+//
+// Key 1 is present in every row (dense, no inMap nulls). Key 2 is absent when
+// i % 3 == 0, so its child column receives external inMap nulls at exactly
+// those rows. The alphabets are small with no dominant value, so Dictionary is
+// the natural choice for the sub-encoding once MainlyConstant is excluded.
+TEST_P(
+    StringColumnReaderTest,
+    flatMapStringDictionaryPathExternalNullsBareDict) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  // Write map<int8_t, varchar> as a flatmap. Key 1 is present in all rows;
+  // key 2 is present only when i % 3 != 0, creating inMap nulls for key 2.
+  constexpr int kRows = 120;
+  std::vector<int8_t> allKeys;
+  std::vector<std::string> allVals;
+  std::vector<vector_size_t> mapOffsets;
+  std::vector<vector_size_t> mapSizes;
+  // Cycle through small alphabets with no single dominant value so the value
+  // streams are encoded as a bare Dictionary (not Trivial or MainlyConstant).
+  const std::vector<std::string> key1Alphabet = {
+      "alpha", "bravo", "charlie", "delta"};
+  const std::vector<std::string> key2Alphabet = {"echo", "foxtrot", "golf"};
+  for (int i = 0; i < kRows; ++i) {
+    mapOffsets.push_back(static_cast<vector_size_t>(allKeys.size()));
+    allKeys.push_back(1);
+    allVals.push_back(key1Alphabet[i % key1Alphabet.size()]);
+    if (i % 3 != 0) {
+      allKeys.push_back(2);
+      allVals.push_back(key2Alphabet[i % key2Alphabet.size()]);
+    }
+    mapSizes.push_back(
+        static_cast<vector_size_t>(allKeys.size() - mapOffsets.back()));
+  }
+  auto keysFv = makeFlatVector<int8_t>(allKeys);
+  auto valsFv = makeFlatVector<std::string>(allVals);
+  auto offBuf = allocateOffsets(kRows, pool());
+  auto sizBuf = allocateSizes(kRows, pool());
+  auto* rawOff = offBuf->asMutable<vector_size_t>();
+  auto* rawSiz = sizBuf->asMutable<vector_size_t>();
+  for (int i = 0; i < kRows; ++i) {
+    rawOff[i] = mapOffsets[i];
+    rawSiz[i] = mapSizes[i];
+  }
+  auto input = makeRowVector({std::make_shared<MapVector>(
+      pool(),
+      MAP(TINYINT(), VARCHAR()),
+      nullptr,
+      kRows,
+      offBuf,
+      sizBuf,
+      keysFv,
+      valsFv)});
+
+  // Exclude MainlyConstant so the flatmap value streams pick a bare Dictionary
+  // encoding, forcing the read through readDictionaryIndicesImpl rather than
+  // MC's internal row->value mapping.
+  auto readFactors = ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+  std::erase_if(readFactors, [](const auto& pair) {
+    return pair.first == EncodingType::MainlyConstant;
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c0", {}}};
+  writerOptions.encodingSelectionPolicyFactory =
+      [readFactors](DataType dataType) {
+        return ManualEncodingSelectionPolicyFactory(readFactors)
+            .createPolicy(dataType);
+      };
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  // Read back as struct with flatmap-as-struct projection.
+  auto outType = ROW({"c0"}, {ROW({"1", "2"}, {VARCHAR(), VARCHAR()})});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outType);
+  scanSpec->childByName("c0")->setFlatMapAsStruct(true);
+
+  auto readFile = std::make_shared<InMemoryReadFile>(file);
+  auto factory =
+      dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
+  dwio::common::ReaderOptions options(pool());
+  options.setDataIoStats(dataIoStats_);
+  options.setMetadataIoStats(metadataIoStats_);
+  options.setScanSpec(scanSpec);
+  auto reader = factory->createReader(
+      std::make_unique<dwio::common::BufferedInput>(readFile, *pool()),
+      options);
+  dwio::common::RowReaderOptions rowOptions;
+  rowOptions.setScanSpec(scanSpec);
+  rowOptions.setRequestedType(asRowType(input->type()));
+  rowOptions.setStringDecoderZeroCopy(true);
+  rowOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowOptions);
+
+  // Build expected output: key 1 always present, key 2 null when i % 3 == 0.
+  auto expected = makeRowVector({makeRowVector(
+      {"1", "2"},
+      {
+          makeFlatVector<std::string>(
+              kRows,
+              [&](auto i) { return key1Alphabet[i % key1Alphabet.size()]; }),
+          makeFlatVector<std::string>(
+              kRows,
+              [&](auto i) { return key2Alphabet[i % key2Alphabet.size()]; },
+              [](auto i) { return i % 3 == 0; }),
+      })});
+
+  using E = VectorEncoding::Simple;
+  auto result = BaseVector::create(outType, 0, pool());
+  int numScanned = 0;
+  int offset = 0;
+  while (numScanned < kRows) {
+    // Batch size 23 forces several batches so the external-null batching runs
+    // repeatedly within the chunk.
+    numScanned += rowReader->next(23, result);
+    result->validate();
+    if (result->size() == 0) {
+      continue;
+    }
+    // Assert the key-2 child (the one with external inMap nulls) decoded into a
+    // DictionaryVector, proving the bare-dictionary index path was taken.
+    // Load through any lazy/wrapping layers before reaching the nested struct.
+    auto c0 = BaseVector::loadedVectorShared(
+        result->asUnchecked<RowVector>()->childAt(0));
+    auto key2Child = BaseVector::loadedVectorShared(
+        c0->asUnchecked<RowVector>()->childAt(1));
+    EXPECT_EQ(key2Child->encoding(), E::DICTIONARY)
+        << "key 2 child should be a bare DictionaryVector at output offset "
+        << offset;
+    for (int j = 0; j < result->size(); ++j) {
+      ASSERT_TRUE(result->equalValueAt(expected.get(), j, offset + j))
+          << "Mismatch at row " << (offset + j) << ": expected "
+          << expected->toString(offset + j) << " got " << result->toString(j);
+    }
+    offset += result->size();
+  }
+  ASSERT_EQ(numScanned, kRows);
+  ASSERT_EQ(0, rowReader->next(1, result));
+}
+
 // Multi-chunk flatmap string dictionary path. Tests kHasNulls=true dict
 // index reading across chunk boundaries with inMap nulls. Key 2 is absent
 // in some rows (inMap=0), and the batch spans two chunks.
@@ -1627,6 +1785,153 @@ TEST_P(StringColumnReaderTest, dictionaryIsNullFilterProjected) {
   // IsNull passes exactly the null rows (every 3rd).
   validateWithFilter(
       *input, *readers.rowReader, 23, [](auto i) { return i % 3 == 0; });
+}
+
+// Regression for the stale-resultNulls_ bug in filterDictionaryIndices ("3c").
+// A no-null read at a SPARSE (non-contiguous) row set must not inspect a
+// resultNulls_ left dirty by an earlier null-containing batch. resultNulls_ for
+// non-dense reads is populated lazily (only when a null is actually hit) and is
+// not reset per read, so an earlier null batch can leave it stale. If
+// filterDictionaryIndices reads it unconditionally, extractNonNullEntries
+// wrongly drops rows and the wrong null-handling path runs.
+//
+// Setup: a dict-encoded string column c1 with a filter on it, plus a sibling
+// integer column c0 whose filter narrows the row set to a sparse set within
+// each batch. The first batch covers rows [0,99] where c1 has nulls (dirtying
+// resultNulls_); the second batch covers rows [100,199] where c1 has no nulls.
+// The second batch is the no-null sparse read whose filterDictionaryIndices
+// must not be misled by the stale buffer.
+TEST_P(StringColumnReaderTest, dictionaryFilterSparseNoNullsAfterNullBatch) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 200;
+  // c1: small alphabet so Dictionary applies. Nulls only in the first half
+  // (rows [0,99], every 7th); the second half (rows [100,199]) is all non-null.
+  auto c0 = makeFlatVector<int64_t>(kRows, [](auto i) { return i; });
+  auto c1 = makeFlatVector<std::string>(
+      kRows,
+      [](auto i) { return "v_" + std::to_string(i % 4); },
+      [](auto i) { return i < 100 && i % 7 == 0; });
+  auto input = makeRowVector({c0, c1});
+
+  // Force plain Dictionary encoding for c1; the writer wraps it in Nullable for
+  // the first-half null rows (Nullable -> Dictionary).
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {}, "c0"},
+          EncodingLayoutTree{
+              Kind::Scalar, {{0, std::move(dictLayout)}}, "c1"}});
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  // Sibling filter on c0 keeps only even rows -> a sparse (non-contiguous) row
+  // set reaches c1 in every batch. Filter on c1 accepts a subset of the
+  // alphabet so filterDictionaryIndices runs on the sparse rows.
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintValuesUsingBitmask>(
+          0,
+          kRows,
+          [] {
+            std::vector<int64_t> evens;
+            for (int i = 0; i < kRows; i += 2) {
+              evens.push_back(i);
+            }
+            return evens;
+          }(),
+          /*nullAllowed=*/false));
+  scanSpec->childByName("c1")->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>{"v_1", "v_3"}, false));
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  // Batch size 100 splits into batch 1 = rows [0,99] (c1 has nulls) and
+  // batch 2 = rows [100,199] (c1 no nulls, sparse). A row survives only when
+  // c0 is even, c1 is non-null, and c1 in {"v_1","v_3"}.
+  validateWithFilter(*input, *readers.rowReader, 100, [](int i) {
+    if (i % 2 != 0) {
+      return false;
+    }
+    if (i < 100 && i % 7 == 0) {
+      return false;
+    }
+    auto v = i % 4;
+    return v == 1 || v == 3;
+  });
+}
+
+// IS NULL filter on a nullable dict-encoded string column read at a SPARSE row
+// set. dictionaryIsNullFilterProjected covers the DENSE case; this exercises
+// filterDictionaryIndices' null-accepting row-ordered merge (path 3) under a
+// non-contiguous row set produced by a sibling column's filter. The surviving
+// (null) rows and their row mapping must be correct.
+TEST_P(StringColumnReaderTest, dictionaryIsNullFilterSparseRows) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 200;
+  auto c0 = makeFlatVector<int64_t>(kRows, [](auto i) { return i; });
+  // c1: small alphabet (Dictionary applies); null every 3rd row.
+  auto c1 = makeFlatVector<std::string>(
+      kRows, [](auto i) { return "v_" + std::to_string(i % 5); }, nullEvery(3));
+  auto input = makeRowVector({c0, c1});
+
+  // Force plain Dictionary encoding for c1 (Nullable -> Dictionary).
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {}, "c0"},
+          EncodingLayoutTree{
+              Kind::Scalar, {{0, std::move(dictLayout)}}, "c1"}});
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  // Sibling filter on c0 keeps only even rows -> a sparse row set reaches c1.
+  // IS NULL on c1 then passes exactly the null rows within that sparse set.
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintValuesUsingBitmask>(
+          0,
+          kRows,
+          [] {
+            std::vector<int64_t> evens;
+            for (int i = 0; i < kRows; i += 2) {
+              evens.push_back(i);
+            }
+            return evens;
+          }(),
+          /*nullAllowed=*/false));
+  scanSpec->childByName("c1")->setFilter(std::make_unique<common::IsNull>());
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  // A row survives only when c0 is even and c1 is null (every 3rd row).
+  validateWithFilter(*input, *readers.rowReader, 100, [](int i) {
+    return i % 2 == 0 && i % 3 == 0;
+  });
 }
 
 // Mainly-constant string column with chunking where read batches align with

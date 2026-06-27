@@ -446,27 +446,6 @@ T castFromPhysicalType(const PhysicalType& value) {
   }
 }
 
-// Ensures the reader's result-nulls buffer exists before a filtered dense index
-// read emits a null via processNull() -> addNull(). Unlike DWRF, Nimble does
-// not pre-populate nullsInReadRange_ in prepareRead() for scalar columns (their
-// nulls are materialized lazily during decode), so prepareRead() did not size
-// resultNulls_; the dense filtered path must allocate it before the first
-// addNull(). No-op without a filter (no processNull path); the call itself
-// no-ops when the read range has no nulls (prepareNulls short-circuits).
-//
-// TODO: This is intentionally eager -- it allocates resultNulls_ whenever a
-// filtered read sees a null bitmap, even for value filters where no null row
-// ever passes (so the buffer goes unused). The SIMD follow-up
-// (StringColumnReader::filterDictionaryIndices) removes the in-visitor
-// kHasFilter branch entirely and handles null emission post-hoc, at which point
-// this helper and its call sites should be deleted.
-template <typename V>
-void prepareResultNullsForDenseFilter(const ReadWithVisitorParams& params) {
-  if constexpr (V::kHasFilter) {
-    params.prepareResultNulls();
-  }
-}
-
 // Materializes dictionary indices into the reader's rawValues_ and scatters
 // for null gaps. Used by DictionaryEncoding and MainlyConstantEncoding
 // readIndicesWithVisitor as the dense no-filter fast path.
@@ -487,48 +466,7 @@ void readDenseMaterializedIndices(
     const uint64_t* rawNulls,
     uint32_t numReadRows,
     uint32_t numNonNulls) {
-  // On the filtered path, allocate the result-nulls buffer up front so the
-  // per-row processNull() -> addNull() below has somewhere to write.
-  prepareResultNullsForDenseFilter<V>(params);
   const auto readOffset = params.numScanned;
-  // When the visitor has a filter, materialize indices into a temp buffer
-  // and dispatch through the visitor's process()/processNull() per row.
-  // This lets the visitor evaluate the filter (e.g., filterCache lookup)
-  // and handle nulls correctly. The bulk path below skips process() and
-  // writes directly to rawValues_, which is only safe without a filter.
-  if constexpr (V::kHasFilter) {
-    // TODO: Avoid this per-call scratch allocation. This in-visitor filter
-    // path is superseded by the bulk SIMD post-hoc filter
-    // (StringColumnReader::filterDictionaryIndices), which removes the whole
-    // kHasFilter branch here in a follow-up. Until that lands, keep the simple
-    // allocation rather than thrashing this function's signature to thread a
-    // reusable buffer through every caller.
-    std::vector<uint32_t> tempIndices(numNonNulls);
-    encoding.materializeIndices(numNonNulls, tempIndices.data());
-    uint32_t nonNullIdx = 0;
-    bool atEnd = false;
-    if (rawNulls != nullptr) {
-      NIMBLE_CHECK_NOT_NULL(
-          visitor.reader().rawResultNulls(),
-          "prepareResultNullsForDenseFilter() must have allocated the "
-          "result-nulls buffer before a filtered dense read with nulls reaches "
-          "processNull() -> addNull().");
-      for (uint32_t row = 0; row < numReadRows && !atEnd; ++row) {
-        if (velox::bits::isBitSet(rawNulls, readOffset + row)) {
-          visitor.process(
-              static_cast<int32_t>(tempIndices[nonNullIdx++]), atEnd);
-        } else {
-          visitor.processNull(atEnd);
-        }
-      }
-    } else {
-      for (uint32_t row = 0; row < numReadRows && !atEnd; ++row) {
-        visitor.process(static_cast<int32_t>(tempIndices[nonNullIdx++]), atEnd);
-      }
-    }
-    return;
-  }
-
   auto* rawOutputValues =
       reinterpret_cast<int32_t*>(visitor.reader().rawValues());
   const auto valueOutputOffset = visitor.reader().numValues();
@@ -587,50 +525,6 @@ void readSparseMaterializedIndices(
     uint32_t numNonNulls,
     uint32_t* indicesBuffer) {
   encoding.materializeIndices(numNonNulls, indicesBuffer);
-
-  // When the visitor has a filter, dispatch through process()/processNull()
-  // per row so the visitor evaluates the filter and handles outputRows.
-  if constexpr (V::kHasFilter) {
-    // Allocate the result-nulls buffer up front (self-no-ops when the range has
-    // no nulls) so the per-row processNull() -> addNull() below has a buffer.
-    prepareResultNulls();
-    uint32_t indexOffset = 0;
-    bool atEnd = false;
-    if (rawNulls != nullptr) {
-      for (uint32_t row = 0; row < numReadRows && !atEnd &&
-           visitor.rowIndex() < visitor.numRows();
-           ++row) {
-        const bool readCurrentRow = row ==
-            static_cast<uint32_t>(visitor.rowAt(visitor.rowIndex()) -
-                                  readOffset);
-        if (velox::bits::isBitSet(rawNulls, readOffset + row)) {
-          if (readCurrentRow) {
-            visitor.process(
-                static_cast<int32_t>(indicesBuffer[indexOffset]), atEnd);
-          }
-          ++indexOffset;
-        } else {
-          if (readCurrentRow) {
-            visitor.processNull(atEnd);
-          }
-        }
-      }
-    } else {
-      for (uint32_t row = 0; row < numReadRows && !atEnd &&
-           visitor.rowIndex() < visitor.numRows();
-           ++row) {
-        const bool readCurrentRow = row ==
-            static_cast<uint32_t>(visitor.rowAt(visitor.rowIndex()) -
-                                  readOffset);
-        if (readCurrentRow) {
-          visitor.process(
-              static_cast<int32_t>(indicesBuffer[indexOffset]), atEnd);
-        }
-        ++indexOffset;
-      }
-    }
-    return;
-  }
 
   auto* rawOutputValues =
       reinterpret_cast<int32_t*>(visitor.reader().rawValues());
