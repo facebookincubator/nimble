@@ -2694,6 +2694,90 @@ TEST_P(StringColumnReaderTest, sparseRowsAcrossChunkAbandonNullsBothPortions) {
   });
 }
 
+// Like sparseRowsAcrossChunkAbandonNullsBothPortions, but the dict portion
+// (chunk1) is ALL non-null while only the flat-fallback portion (chunk2) has
+// nulls. An all-non-null dict chunk never allocates/prepares the result null
+// buffer during the dict phase (rawNullsInReadRange stays null), so the
+// readOffset>0 flat continuation is the first to discover nulls and must
+// prepare the buffer over the complete output itself rather than assuming the
+// dict phase already did. Regression for the resume branch no-op'ing
+// prepareResultNulls/setReturnNullsMode and emitting nulls into an unprepared
+// resultNulls_.
+TEST_P(
+    StringColumnReaderTest,
+    sparseRowsAcrossChunkAbandonNullsOnlyInFlatPortion) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  // chunk1: low cardinality, NO nulls → Dictionary (dict path, no null buffer).
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(300, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          300,
+          [](auto i) { return std::vector<std::string>{"aaa", "bbb"}[i % 2]; }),
+  });
+  // chunk2: all-unique long strings (non-dict → forces abandon) WITH nulls →
+  // Nullable→Trivial. The flat fallback emits these nulls into a result null
+  // buffer the all-non-null dict phase never prepared.
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(300, [](auto i) { return 300 + i; }),
+      makeFlatVector<std::string>(
+          300,
+          [](auto i) {
+            return fmt::format("unique_chunk2_row_{}_pad_to_avoid_inline", i);
+          },
+          nullEvery(5)),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  // Sibling filter on c0 selects a non-dense set spanning both chunks:
+  // [50,199] in chunk1 (dict, no nulls) and [400,549] in chunk2 (non-dict,
+  // with nulls).
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  std::vector<std::unique_ptr<common::BigintRange>> ranges;
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(50, 199, /*nullAllowed=*/false));
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(400, 549, /*nullAllowed=*/false));
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintMultiRange>(
+          std::move(ranges), /*nullAllowed=*/false));
+
+  // Full 600-row content. Nulls only in chunk2 (chunk2-local (i-300) % 5 == 0).
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(600, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          600,
+          [](auto i) {
+            if (i < 300) {
+              return std::vector<std::string>{"aaa", "bbb"}[i % 2];
+            }
+            return fmt::format(
+                "unique_chunk2_row_{}_pad_to_avoid_inline", i - 300);
+          },
+          [](auto i) { return i >= 300 && (i - 300) % 5 == 0; }),
+  });
+
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(*expected, *readers.rowReader, 600, [](int i) {
+    return (i >= 50 && i <= 199) || (i >= 400 && i <= 549);
+  });
+}
+
 // Fuzz test: randomizes the number of chunks, rows per chunk, batch size,
 // and null probability. Exercises multi-chunk dict reads with merged
 // alphabets across chunk boundaries.
