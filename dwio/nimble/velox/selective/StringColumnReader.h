@@ -59,10 +59,12 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
   struct DictionaryState {
     std::vector<std::string_view> alphabet;
     velox::VectorPtr alphabetVector;
+    velox::raw_vector<uint8_t> filterCache;
 
     void clear() {
       alphabet.clear();
       alphabetVector.reset();
+      filterCache.clear();
     }
   };
 
@@ -105,13 +107,52 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
       int32_t& alphabetOffset,
       velox::vector_size_t& valueOffset);
 
-  // Populates scanState_.dictionary and scanState_.filterCache from the given
-  // chunk's local alphabet so the visitor's process() can evaluate filters on
-  // that chunk's raw (local) dictionary indices. Called once per chunk during a
-  // filtered dictionary read; the filterCache is reset on each call because a
-  // local index maps to a different value in each chunk.
-  void updateDictionaryScanState(
-      const std::vector<std::string_view>& chunkAlphabet);
+  // Grows dictionaryState_.filterCache to one byte per merged-alphabet entry,
+  // initializing newly added bytes to FilterResult::kUnknown. Extend-only: it
+  // never shrinks, relying on DictionaryState::clear() to drop the cache
+  // together with the alphabet so no stale verdict outlives its entry.
+  void ensureFilterCache();
+
+  // Switches off the dense returnReaderNulls_ fast path and ensures
+  // resultNulls_ is a writable, output-indexed buffer of at least `size` bits.
+  // The dict-filter path pre-compacts values, so compactScalarValues' null move
+  // is skipped; this provides a buffer to write the compacted output nulls
+  // into.
+  void ensureWritableResultNulls(velox::vector_size_t size);
+
+  // Applies the pushed-down filter to the just-materialized dictionary indices,
+  // post-hoc on the merged alphabet (the bulk index read suppressed the
+  // filter). Compacts in place to the passing rows and rewrites the reader's
+  // output state:
+  //   - rawValues_: overwritten with the passing dictionary indices, compacted.
+  //   - outputRows_: set to the passing file rows, resized to the pass count.
+  //   - numValues_: set to the number of passing rows.
+  // When nulls are present it also realigns the result-null bitmap to the
+  // compacted output layout via ensureWritableResultNulls() (which allocates
+  // resultNulls_ and clears returnReaderNulls_), because pre-compaction makes
+  // the framework's compactScalarValues null move a no-op. Reads the
+  // output-indexed null bitmap from resultNulls() and consults
+  // dictionaryState_.alphabet and filterCache (lazily filled via
+  // ensureFilterCache()).
+  void filterDictionaryIndices(
+      const velox::RowSet& rows,
+      const velox::common::Filter* filter);
+
+  // Merges, in ascending row order, the null rows (which pass because the
+  // filter accepts nulls) with the byte-filter-passing non-null rows held in
+  // passIndices/passRows. Writes the merged dictionary indices into 'indices',
+  // the merged file rows into 'outputRows', and the per-output null bits into
+  // rawResultNulls_ (null positions marked null, index 0 as a placeholder).
+  // Returns the merged output count (the new numValues_).
+  velox::vector_size_t processNullAndPassingRows(
+      const uint64_t* nulls,
+      const velox::RowSet& rows,
+      velox::vector_size_t readCount,
+      const int32_t* passIndices,
+      const int32_t* passRows,
+      int32_t numPass,
+      int32_t* indices,
+      int32_t* outputRows);
 
   // Converts the dict indices in rawValues_ to flat StringView values by
   // resolving each index against the merged alphabet. The StringViews point

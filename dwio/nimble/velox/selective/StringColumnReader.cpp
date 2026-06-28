@@ -16,6 +16,7 @@
 
 #include "dwio/nimble/velox/selective/StringColumnReader.h"
 
+#include <folly/ScopeGuard.h>
 #include <algorithm>
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
@@ -48,32 +49,238 @@ void StringColumnReader::ensureDictionaryState() {
       decoder_.currentEncoding());
 }
 
-void StringColumnReader::updateDictionaryScanState(
-    const std::vector<std::string_view>& chunkAlphabet) {
+void StringColumnReader::ensureFilterCache() {
   using FilterResult = velox::dwio::common::FilterResult;
-  const auto alphabetSize = static_cast<int32_t>(chunkAlphabet.size());
-
-  auto values =
-      velox::AlignedBuffer::allocate<velox::StringView>(alphabetSize, pool_);
-  auto* rawValues = values->asMutable<velox::StringView>();
-  for (int32_t i = 0; i < alphabetSize; ++i) {
-    rawValues[i] =
-        velox::StringView(chunkAlphabet[i].data(), chunkAlphabet[i].size());
+  const auto alphabetSize = dictionaryState_.alphabet.size();
+  const auto oldSize = dictionaryState_.filterCache.size();
+  // The filter cache size and the merged-alphabet (dictionary) size increase
+  // monotonically: the alphabet only grows by appending within a read and the
+  // cache extends to match; on a chunk boundary both are cleared and rebuilt
+  // together (the cache is never reused across a different chunk), and the
+  // reader is rebuilt per stripe. So oldSize never exceeds alphabetSize — it is
+  // either equal (same alphabet reused) or smaller (alphabet grew).
+  NIMBLE_CHECK_LE(oldSize, alphabetSize);
+  if (oldSize >= alphabetSize) {
+    return;
   }
-  scanState_.dictionary.values = std::move(values);
-  scanState_.dictionary.numValues = alphabetSize;
+  dictionaryState_.filterCache.resize(alphabetSize);
+  velox::simd::memset(
+      dictionaryState_.filterCache.data() + oldSize,
+      static_cast<uint8_t>(FilterResult::kUnknown),
+      static_cast<int32_t>(alphabetSize - oldSize));
+}
 
-  // The filter dictionary is per-chunk: a given local index maps to a
-  // different value in each chunk, so the cache must be rebuilt (reset to
-  // kUnknown), not extended, at every chunk boundary.
-  if (velox::dwio::common::DictionaryValues::hasFilter(scanSpec_->filter())) {
-    scanState_.filterCache.resize(alphabetSize);
-    velox::simd::memset(
-        scanState_.filterCache.data(),
-        static_cast<uint8_t>(FilterResult::kUnknown),
-        alphabetSize);
+namespace {
+
+// Compacts the non-null (index, row) pairs out of a materialized run. Writes
+// the dictionary index and file row of each non-null position into
+// outIndices/outRows (caller-sized to at least numValues) and returns the
+// non-null count. A null 'nulls' bitmap means no nulls, so every entry is
+// copied. Pure: touches no reader member state.
+int32_t extractNonNullEntries(
+    const int32_t* indices,
+    const velox::RowSet& rows,
+    const uint64_t* nulls,
+    velox::vector_size_t numValues,
+    int32_t* outIndices,
+    int32_t* outRows) {
+  int32_t count = 0;
+  for (velox::vector_size_t i = 0; i < numValues; ++i) {
+    if (nulls != nullptr && velox::bits::isBitNull(nulls, i)) {
+      continue;
+    }
+    outIndices[count] = indices[i];
+    outRows[count] = rows[i];
+    ++count;
   }
-  scanState_.updateRawState();
+  return count;
+}
+
+// Filters a run of materialized dictionary indices through the merged alphabet
+// and the per-index filterCache. Writes the passing indices to outputIndices
+// and their rows to outputRows (both caller-sized, compacted to the survivors),
+// records each newly resolved verdict into filterCache (kSuccess/kFailure), and
+// returns the number of passing rows.
+int32_t filterByCache(
+    const int32_t* inputIndices,
+    const int32_t* inputRows,
+    int32_t numInput,
+    const std::vector<std::string_view>& alphabet,
+    const velox::common::Filter& filter,
+    uint8_t* filterCache,
+    int32_t* outputIndices,
+    int32_t* outputRows) {
+  // Delegate to the shared SIMD dictionary-filter kernel. Nimble's merged
+  // alphabet is single-tier, so the per-index test resolves the dictionary
+  // entry directly and applies the byte filter. The Nimble path always emits
+  // both indices and rows, hence kFilterOnly=false.
+  return velox::dwio::common::filterDictionaryRunSimd</*kFilterOnly=*/false>(
+      inputIndices,
+      numInput,
+      inputRows,
+      filterCache,
+      outputRows,
+      outputIndices,
+      /*numValues=*/0,
+      [&](int32_t dictIndex) {
+        const auto& sv = alphabet[dictIndex];
+        return filter.testBytes(sv.data(), static_cast<int32_t>(sv.size()));
+      });
+}
+
+} // namespace
+
+void StringColumnReader::ensureWritableResultNulls(velox::vector_size_t size) {
+  if (!returnReaderNulls_) {
+    // Non-dense reads already hold an output-indexed resultNulls_ allocated by
+    // prepareRead/prepareNulls; nothing to do.
+    return;
+  }
+  // Dense reads with nulls park the null flags in nullsInReadRange_ and return
+  // them directly (returnReaderNulls_). The dict-filter path pre-compacts
+  // values, so it must instead write compacted output nulls into resultNulls_.
+  // Mirror compactScalarValues' allocation and switch the fast path off.
+  if (!(resultNulls_ && resultNulls_->unique() &&
+        resultNulls_->capacity() >=
+            velox::bits::nbytes(size) + velox::simd::kPadding)) {
+    resultNulls_ = velox::AlignedBuffer::allocate<bool>(
+        size + velox::simd::kPadding * 8, pool_);
+    rawResultNulls_ = resultNulls_->asMutable<uint64_t>();
+  }
+  returnReaderNulls_ = false;
+}
+
+void StringColumnReader::filterDictionaryIndices(
+    const RowSet& rows,
+    const velox::common::Filter* filter) {
+  NIMBLE_CHECK_NOT_NULL(filter);
+  ensureFilterCache();
+
+  const auto readCount = numValues_;
+  constexpr int32_t kSimdPadding = xsimd::batch<int32_t>::size;
+  std::vector<int32_t> nonNullIndices(readCount + kSimdPadding, 0);
+  std::vector<int32_t> nonNullRows(readCount + kSimdPadding, 0);
+  // The dict indices in rawValues_ are output-indexed, so the null check must
+  // use the output-indexed bitmap. resultNulls() is the single source of truth
+  // for it (nullsInReadRange_ for dense reads, resultNulls_ for non-dense). Use
+  // it instead of rawNullsInReadRange(), which is file-indexed and wrong for
+  // non-dense reads (nested-under-nullable, cross-stripe, sibling-filter).
+  const auto& resultNullsBuffer = resultNulls();
+  const auto* nulls =
+      resultNullsBuffer ? resultNullsBuffer->as<uint64_t>() : nullptr;
+
+  const auto numNonNull = extractNonNullEntries(
+      reinterpret_cast<const int32_t*>(rawValues_),
+      rows,
+      nulls,
+      readCount,
+      nonNullIndices.data(),
+      nonNullRows.data());
+
+  if (nulls == nullptr) {
+    // No nulls in range: filter the dictionary indices in place. There is no
+    // null bitmap to realign.
+    auto* outputRows = mutableOutputRows(numNonNull);
+    numValues_ = filterByCache(
+        nonNullIndices.data(),
+        nonNullRows.data(),
+        numNonNull,
+        dictionaryState_.alphabet,
+        *filter,
+        dictionaryState_.filterCache.data(),
+        reinterpret_cast<int32_t*>(rawValues_),
+        outputRows);
+    outputRows_.resize(numValues_);
+    return;
+  }
+
+  // Nulls are present. The dict-filter path pre-compacts rawValues_/outputRows_
+  // to the passing rows, which makes the framework's compactScalarValues a
+  // no-op (rows.size() == numValues_) and skips its null move. So realign the
+  // result null bitmap to the compacted output layout here; otherwise
+  // getValues() would hand DictionaryVector a read-range-indexed bitmap against
+  // compacted indices and misplace nulls.
+  if (!filter->testNull()) {
+    // The filter rejects nulls, so every null row is dropped and the
+    // SIMD-filtered non-null passing rows are the entire output. Filter in
+    // place, then mark the compacted output all-non-null.
+    auto* outputRows = mutableOutputRows(numNonNull);
+    numValues_ = filterByCache(
+        nonNullIndices.data(),
+        nonNullRows.data(),
+        numNonNull,
+        dictionaryState_.alphabet,
+        *filter,
+        dictionaryState_.filterCache.data(),
+        reinterpret_cast<int32_t*>(rawValues_),
+        outputRows);
+    outputRows_.resize(numValues_);
+    ensureWritableResultNulls(readCount);
+    velox::bits::fillBits(
+        rawResultNulls_, 0, numValues_, velox::bits::kNotNull);
+    return;
+  }
+
+  // The filter accepts nulls (e.g. IS NULL): retain every null row and merge
+  // it, in ascending row order, with the SIMD-filtered non-null passing rows.
+  // The non-null rows are filtered into temporaries because the merge writes
+  // the interleaved result back into rawValues_/outputRows_ in row order.
+  std::vector<int32_t> passIndices(numNonNull + kSimdPadding, 0);
+  std::vector<int32_t> passRows(numNonNull + kSimdPadding, 0);
+  const auto numPass = filterByCache(
+      nonNullIndices.data(),
+      nonNullRows.data(),
+      numNonNull,
+      dictionaryState_.alphabet,
+      *filter,
+      dictionaryState_.filterCache.data(),
+      passIndices.data(),
+      passRows.data());
+
+  ensureWritableResultNulls(readCount);
+  auto* indices = reinterpret_cast<int32_t*>(rawValues_);
+  auto* outputRows = mutableOutputRows(readCount);
+  numValues_ = processNullAndPassingRows(
+      nulls,
+      rows,
+      readCount,
+      passIndices.data(),
+      passRows.data(),
+      numPass,
+      indices,
+      outputRows);
+  outputRows_.resize(numValues_);
+}
+
+velox::vector_size_t StringColumnReader::processNullAndPassingRows(
+    const uint64_t* nulls,
+    const velox::RowSet& rows,
+    velox::vector_size_t readCount,
+    const int32_t* passIndices,
+    const int32_t* passRows,
+    int32_t numPass,
+    int32_t* indices,
+    int32_t* outputRows) {
+  velox::vector_size_t count = 0;
+  int32_t passCursor = 0;
+  for (velox::vector_size_t i = 0; i < readCount; ++i) {
+    if (velox::bits::isBitNull(nulls, i)) {
+      // Null row: passes because the filter accepts nulls. The index is
+      // unused for a null position; write 0 as a safe placeholder.
+      velox::bits::setNull(rawResultNulls_, count, /*isNull=*/true);
+      indices[count] = 0;
+      outputRows[count] = rows[i];
+      ++count;
+    } else if (passCursor < numPass && passRows[passCursor] == rows[i]) {
+      // Non-null row that passed the byte filter.
+      velox::bits::setNull(rawResultNulls_, count, /*isNull=*/false);
+      indices[count] = passIndices[passCursor];
+      outputRows[count] = rows[i];
+      ++count;
+      ++passCursor;
+    }
+  }
+  return count;
 }
 
 void StringColumnReader::updateDictionaryIndices(
@@ -116,9 +323,6 @@ bool StringColumnReader::tryExtendDictionaryAtChunkBoundary(
       chunkAlphabet.begin(),
       chunkAlphabet.end());
   dictionaryState_.alphabetVector.reset();
-  if (scanSpec_->hasFilter()) {
-    updateDictionaryScanState(chunkAlphabet);
-  }
   crossChunkRead_ = true;
   return true;
 }
@@ -171,9 +375,6 @@ bool StringColumnReader::readWithDictionary(
 
   prepareRead<int32_t>(offset, rows, incomingNulls);
   ensureDictionaryState();
-  if (scanSpec_->hasFilter()) {
-    updateDictionaryScanState(dictionaryState_.alphabet);
-  }
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::StringColumnReader::readWithDictionary",
       &dictionaryState_.alphabet);
@@ -193,17 +394,25 @@ bool StringColumnReader::readWithDictionary(
   //     readDictionaryIndices stops and the reactive flat fallback below
   //     takes over.
   //
-  // When a filter is active, the visitor's process()/processNull() in
-  // readDenseMaterializedIndices handle filter evaluation and outputRows
-  // via the if constexpr (kHasFilter) path in the encoding layer.
-  // kEncodingHasNulls must be false: unlike DWRF, Nimble does not pre-populate
-  // nullsInReadRange_ before the read. Nulls are materialized lazily by
-  // NullableEncoding during the decode (inside readDictionaryIndices). Passing
-  // true would route IsNull/IsNotNull through
-  // SelectiveColumnReader::filterNulls, which reads the still-empty
-  // nullsInReadRange_ and silently drops every matching row. With false,
-  // IsNull/IsNotNull go through the visitor/decode path (processNull) like
-  // every other filter, matching the flat read() below.
+  // Save and suppress the filter during index reading so the bulk
+  // materializeIndices path runs (not approach C's per-row process path).
+  // The SIMD filterDictionaryIndices applies the filter post-hoc.
+  std::unique_ptr<velox::common::Filter> savedFilter;
+  if (scanSpec_->hasFilter()) {
+    savedFilter = scanSpec_->filter()->clone();
+    scanSpec_->setFilter(nullptr);
+  }
+  // If the read below throws, reinstall the suppressed filter so scanSpec_ is
+  // not left permanently filterless, which would silently drop the pushed-down
+  // filter on subsequent reads.
+  auto filterGuard = folly::makeGuard([&] {
+    if (savedFilter != nullptr) {
+      scanSpec_->setFilter(std::move(savedFilter));
+    }
+  });
+
+  // kEncodingHasNulls must be false: Nimble materializes nulls lazily during
+  // decode and does not pre-populate nullsInReadRange_.
   dwio::common::StringColumnReadWithVisitorHelper<
       /*kEncodingHasNulls=*/false,
       /*kDictionary=*/false>(*this, rows)([&](auto visitor) {
@@ -229,8 +438,51 @@ bool StringColumnReader::readWithDictionary(
     // Offset the final chunk's indices into the merged alphabet.
     updateDictionaryIndices(alphabetOffset, valueOffset);
   });
+  // Reinstate the filter before the post-hoc SIMD filtering below needs it; the
+  // guard then no-ops since savedFilter has been moved out.
+  filterGuard.dismiss();
+  if (savedFilter != nullptr) {
+    scanSpec_->setFilter(std::move(savedFilter));
+  }
 
   if (!abandonDictionary) {
+    // Reconcile the reader's null state after the bulk dictionary read, for
+    // DENSE reads only. A dense read records its nulls in nullsInReadRange_
+    // (fresh per read, output==file), but the bulk index path (unlike the
+    // per-row processNull path) does not set anyNulls_/returnReaderNulls_;
+    // without this, resultNulls() reports no nulls and
+    // filterDictionaryIndices/getValues read the uninitialized index slots at
+    // null positions. Set returnReaderNulls_ directly rather than via
+    // resolveReturnNullBuffer(), which forces it false for filtered reads.
+    //
+    // Non-dense reads are intentionally NOT reconciled here: they set anyNulls_
+    // via their own per-row processNull path, and their resultNulls_ must not
+    // be inspected — it is populated lazily (only when a null is hit), so a
+    // no-null non-dense read leaves it stale from a prior read and would
+    // falsely report nulls, marking non-null rows null.
+    //
+    // Contract this couples to (keep in sync with SelectiveColumnReader): a
+    // dense read is exactly rows == [0, rows.size()), the same test the
+    // framework's useBulkPath()/resolveReturnNullBuffer() apply; and for a
+    // dense bulk read with nulls, resultNulls() must return nullsInReadRange_
+    // (returnReaderNulls_ == true). resolveReturnNullBuffer() would establish
+    // that, but it forces the flag false whenever a filter is present, so we
+    // set it directly here. Revisit if the framework changes how
+    // returnReaderNulls_ is derived for dense reads.
+    const bool isDense = !rows.empty() && rows.back() == rows.size() - 1;
+    if (!anyNulls_ && numValues_ > 0 && isDense &&
+        nullsInReadRange() != nullptr &&
+        !velox::bits::isAllSet(
+            nullsInReadRange()->as<uint64_t>(),
+            0,
+            numValues_,
+            velox::bits::kNotNull)) {
+      anyNulls_ = true;
+      returnReaderNulls_ = true;
+    }
+    if (scanSpec_->hasFilter()) {
+      filterDictionaryIndices(rows, scanSpec_->filter());
+    }
     readOffset_ += endReadRow;
     return true;
   }
