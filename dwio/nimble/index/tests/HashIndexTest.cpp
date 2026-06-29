@@ -23,9 +23,7 @@
 #include "dwio/nimble/index/IndexLookup.h"
 
 #include "dwio/nimble/tablet/TabletReader.h"
-#include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
-#include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
@@ -51,14 +49,25 @@ class HashIndexTestBase {
   // Creates a batch of numRows with id=[startRow, startRow+numRows) and
   // value="v_{id}".
   velox::VectorPtr makeBatch(int32_t startRow, int32_t numRows) {
+    std::vector<int32_t> ids;
+    ids.reserve(numRows);
+    for (int i = 0; i < numRows; ++i) {
+      ids.push_back(startRow + i);
+    }
+    return makeBatch(ids);
+  }
+
+  // Creates a batch with id values and value="v_{id}".
+  velox::VectorPtr makeBatch(const std::vector<int32_t>& idValues) {
+    const auto numRows = idValues.size();
     auto ids =
         velox::BaseVector::create(velox::INTEGER(), numRows, leafPool_.get());
     auto values =
         velox::BaseVector::create(velox::VARCHAR(), numRows, leafPool_.get());
     auto* flatIds = ids->asFlatVector<int32_t>();
     auto* flatValues = values->asFlatVector<velox::StringView>();
-    for (int i = 0; i < numRows; ++i) {
-      const int32_t id = startRow + i;
+    for (auto i = 0; i < numRows; ++i) {
+      const int32_t id = idValues[i];
       flatIds->set(i, id);
       valueStrings_.emplace_back("v_" + std::to_string(id));
       flatValues->set(i, velox::StringView(valueStrings_.back()));
@@ -240,6 +249,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_P(HashIndexParamTest, roundTrip) {
   std::vector<velox::VectorPtr> batches;
+  batches.reserve(3);
   for (int b = 0; b < 3; ++b) {
     batches.push_back(makeBatch(b * 100, 100));
   }
@@ -347,6 +357,37 @@ TEST_P(HashIndexParamTest, bloomFilterSkips) {
   }
 }
 
+TEST_P(HashIndexParamTest, bloomFilterSkipsInRangeMisses) {
+  std::vector<int32_t> evenIds;
+  evenIds.reserve(50);
+  for (int32_t i = 0; i < 50; ++i) {
+    evenIds.push_back(i * 2);
+  }
+  const std::vector<velox::VectorPtr> batches{makeBatch(evenIds)};
+
+  const auto filePath = tempFilePath("bloom_filter_in_range_misses");
+  auto config = indexConfig();
+  config.bloomFilter = BloomFilterConfig{.bitsPerKey = 40.0f};
+  writeFile(filePath, batches, std::move(config));
+
+  auto tablet = openTablet(filePath);
+  auto* hashIndex = tablet->denseIndex(columns());
+  ASSERT_NE(hashIndex, nullptr);
+
+  constexpr int32_t kNumMissing = 49;
+  for (int32_t key = 1; key < 98; key += 2) {
+    auto result = pointLookup(hashIndex, columns(), key);
+    ASSERT_EQ(result.size(), 1);
+    EXPECT_EQ(result[0].size(), 0);
+  }
+
+  const auto stats = hashIndex->stats();
+  EXPECT_EQ(stats.at(HashIndex::kNumLookups).sum, kNumMissing);
+  EXPECT_EQ(stats.count(HashIndex::kNumMinMaxSkips), 0);
+  EXPECT_EQ(stats.at(HashIndex::kNumBloomFilterSkips).sum, kNumMissing);
+  EXPECT_EQ(stats.count(HashIndex::kNumMatchedRows), 0);
+}
+
 TEST_P(HashIndexParamTest, rangeScanThrows) {
   std::vector<velox::VectorPtr> batches;
   batches.push_back(makeBatch(0, 10));
@@ -368,6 +409,7 @@ TEST_P(HashIndexParamTest, rangeScanThrows) {
 
 TEST_P(HashIndexParamTest, multipleStripes) {
   std::vector<velox::VectorPtr> batches;
+  batches.reserve(5);
   for (int b = 0; b < 5; ++b) {
     batches.push_back(makeBatch(b * 20, 20));
   }
@@ -413,6 +455,7 @@ TEST_P(HashIndexParamTest, partitionedIndex) {
 
 TEST_P(HashIndexParamTest, partitionedMultipleBatches) {
   std::vector<velox::VectorPtr> batches;
+  batches.reserve(5);
   for (int b = 0; b < 5; ++b) {
     batches.push_back(makeBatch(b * 40, 40));
   }

@@ -18,19 +18,17 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <set>
 
 #include <fmt/ranges.h>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/index/BloomFilter.h"
 #include "dwio/nimble/index/HashIndexUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
 #include "flatbuffers/flatbuffers.h"
 
 #include "velox/common/base/BitUtil.h"
-#include "velox/common/base/Nulls.h"
+#include "velox/common/base/BloomFilter.h"
 
 namespace facebook::nimble::index {
 
@@ -44,6 +42,20 @@ std::vector<std::vector<std::string>> extractColumnSets(
     columnSets.emplace_back(config.columns);
   }
   return columnSets;
+}
+
+int32_t bloomFilterCapacity(uint64_t numEntries, float bitsPerKey) {
+  constexpr double kVeloxBloomFilterBitsPerCapacity{16.0};
+  const auto capacity = std::max<double>(
+      1.0,
+      std::ceil(
+          static_cast<double>(numEntries) * bitsPerKey /
+          kVeloxBloomFilterBitsPerCapacity));
+  NIMBLE_CHECK_LE(
+      capacity,
+      static_cast<double>(std::numeric_limits<int32_t>::max()),
+      "Bloom filter capacity exceeds Velox BloomFilter limit");
+  return static_cast<int32_t>(capacity);
 }
 
 } // namespace
@@ -108,14 +120,20 @@ HashIndexWriter::buildBloomFilter(
     return 0;
   }
   const auto bitsPerKey = accumulator.config.bloomFilter->bitsPerKey;
-  BloomFilter bloomFilter(accumulator.entries.size(), bitsPerKey, pool_);
+  NIMBLE_CHECK_GT(bitsPerKey, 0.0f, "bitsPerKey must be positive");
+  velox::BloomFilter<> bloomFilter;
+  bloomFilter.reset(
+      bloomFilterCapacity(accumulator.entries.size(), bitsPerKey));
   for (const auto& entry : accumulator.entries) {
-    bloomFilter.insert(entry.key);
+    bloomFilter.insert(bloomFilterHash(entry.key));
   }
-  auto dataVec =
-      builder.CreateVector(bloomFilter.data(), bloomFilter.dataSize());
-  return serialization::CreateBloomFilter(
-      builder, bloomFilter.numBlocks(), bitsPerKey, dataVec);
+  std::string bloomFilterData;
+  bloomFilterData.resize(bloomFilter.serializedSize());
+  bloomFilter.serialize(bloomFilterData.data());
+  auto dataVec = builder.CreateVector(
+      reinterpret_cast<const uint8_t*>(bloomFilterData.data()),
+      bloomFilterData.size());
+  return serialization::CreateBloomFilter(builder, dataVec);
 }
 
 void HashIndexWriter::buildIndexFlatBuffer(

@@ -24,6 +24,7 @@
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataInput.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/common/base/BloomFilter.h"
 
 namespace facebook::nimble::index {
 
@@ -72,19 +73,17 @@ std::string_view getMaxKey(const MetadataBuffer& metadata) {
   return maxKey->string_view();
 }
 
-std::unique_ptr<BloomFilter> buildBloomFilter(
-    const MetadataBuffer& metadata,
-    velox::memory::MemoryPool* pool) {
+std::optional<std::string_view> getSerializedBloomFilter(
+    const MetadataBuffer& metadata) {
   const auto* bloomFilter = getHashIndexRoot(metadata)->bloom_filter();
   if (bloomFilter == nullptr) {
-    return nullptr;
+    return std::nullopt;
   }
   NIMBLE_CHECK_NOT_NULL(bloomFilter->data());
-  NIMBLE_CHECK_GT(bloomFilter->data()->size(), 0u);
-  const auto numBlocks = bloomFilter->num_blocks();
   const auto* rawData = bloomFilter->data();
-  return std::make_unique<BloomFilter>(
-      numBlocks, rawData->data(), rawData->size(), pool);
+  NIMBLE_CHECK_GT(rawData->size(), 0u, "Bloom filter data must not be empty");
+  return std::string_view(
+      reinterpret_cast<const char*>(rawData->data()), rawData->size());
 }
 
 // Sorts row numbers and merges consecutive rows into contiguous RowRanges.
@@ -136,16 +135,15 @@ HashIndex::HashIndex(
     std::vector<std::string> columns,
     std::unique_ptr<MetadataBuffer> indexMetadata,
     std::shared_ptr<MetadataInput> metadataInput,
-    velox::memory::MemoryPool* pool)
+    velox::memory::MemoryPool* /*pool*/)
     : IndexLookup{IndexType::Hash},
       columns_{std::move(columns)},
       indexMetadata_{std::move(indexMetadata)},
-      pool_{pool},
       numBuckets_{getNumBuckets(*indexMetadata_)},
       bucketMask_{numBuckets_ - 1},
       minKey_{getMinKey(*indexMetadata_)},
       maxKey_{getMaxKey(*indexMetadata_)},
-      bloomFilter_{buildBloomFilter(*indexMetadata_, pool_)},
+      serializedBloomFilter_{getSerializedBloomFilter(*indexMetadata_)},
       partitions_{buildPartitionDescriptors(*indexMetadata_, numBuckets_)},
       metadataInput_{std::move(metadataInput)},
       partitionCache_{
@@ -237,7 +235,9 @@ IndexLookup::LookupResult HashIndex::lookup(
     }
 
     // Check bloom filter for fast negative.
-    if (bloomFilter_ != nullptr && !bloomFilter_->testKey(key)) {
+    if (serializedBloomFilter_.has_value() &&
+        !velox::BloomFilter<>::mayContain(
+            serializedBloomFilter_->data(), bloomFilterHash(key))) {
       ++numBloomFilterSkips_;
       resultOffsets.push_back(rowRanges.size());
       continue;

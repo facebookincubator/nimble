@@ -26,6 +26,7 @@
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/tests/HashIndexTestUtils.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
+#include "velox/common/base/BloomFilter.h"
 #include "velox/common/base/tests/GTestUtils.h"
 
 #include "velox/common/memory/Memory.h"
@@ -526,11 +527,11 @@ TEST_F(HashIndexWriterTest, withBloomFilter) {
       {"disabled", std::nullopt, false},
   };
 
-  for (const auto& tc : testCases) {
-    SCOPED_TRACE(tc.debugString());
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.debugString());
     HashIndexConfig indexConfig{
         .columns = {"col1"},
-        .bloomFilter = tc.bloomFilter,
+        .bloomFilter = testCase.bloomFilter,
     };
     auto writer = HashIndexWriter::create({indexConfig}, type_, pool_.get());
     writer->write(makeInput({1, 2, 3, 4, 5}));
@@ -542,11 +543,94 @@ TEST_F(HashIndexWriterTest, withBloomFilter) {
     const auto* hashIndex = flatbuffers::GetRoot<serialization::HashIndex>(
         store.sections.back().data());
     ASSERT_NE(hashIndex, nullptr);
-    if (tc.expectBloomFilter) {
-      EXPECT_NE(hashIndex->bloom_filter(), nullptr);
+    if (testCase.expectBloomFilter) {
+      const auto* bloomFilter = hashIndex->bloom_filter();
+      ASSERT_NE(bloomFilter, nullptr);
+      ASSERT_NE(bloomFilter->data(), nullptr);
+      EXPECT_GT(bloomFilter->data()->size(), 0);
+      const auto* serializedBloomFilter =
+          reinterpret_cast<const char*>(bloomFilter->data()->data());
+      ASSERT_GE(store.sections.size(), 2);
+      const auto* partition =
+          flatbuffers::GetRoot<serialization::HashIndexPartition>(
+              store.sections.front().data());
+      ASSERT_NE(partition, nullptr);
+      const auto* encodedKeys = partition->encoded_keys();
+      ASSERT_NE(encodedKeys, nullptr);
+      ASSERT_EQ(encodedKeys->size(), 5);
+      for (size_t i = 0; i < encodedKeys->size(); ++i) {
+        const auto* encodedKey = encodedKeys->Get(i);
+        ASSERT_NE(encodedKey, nullptr);
+        EXPECT_TRUE(
+            velox::BloomFilter<>::mayContain(
+                serializedBloomFilter,
+                bloomFilterHash(encodedKey->string_view())));
+      }
     } else {
       EXPECT_EQ(hashIndex->bloom_filter(), nullptr);
     }
+  }
+}
+
+TEST_F(HashIndexWriterTest, bloomFilterBitsPerKeyControlsSize) {
+  struct TestCase {
+    std::string name;
+    float bitsPerKey;
+
+    std::string debugString() const {
+      return fmt::format("{} bitsPerKey: {}", name, bitsPerKey);
+    }
+  };
+
+  std::vector<int32_t> values;
+  values.reserve(100);
+  for (int i = 0; i < 100; ++i) {
+    values.push_back(i);
+  }
+
+  std::vector<size_t> bloomFilterSizes;
+  for (const auto& testCase :
+       {TestCase{"low", 1.0f}, TestCase{"high", 64.0f}}) {
+    SCOPED_TRACE(testCase.debugString());
+    HashIndexConfig indexConfig{
+        .columns = {"col1"},
+        .bloomFilter = BloomFilterConfig{.bitsPerKey = testCase.bitsPerKey},
+    };
+    auto writer = HashIndexWriter::create({indexConfig}, type_, pool_.get());
+    writer->write(makeInput(values));
+
+    MockSectionStore store;
+    std::string directory;
+    writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+
+    const auto* hashIndex = flatbuffers::GetRoot<serialization::HashIndex>(
+        store.sections.back().data());
+    ASSERT_NE(hashIndex, nullptr);
+    const auto* bloomFilter = hashIndex->bloom_filter();
+    ASSERT_NE(bloomFilter, nullptr);
+    ASSERT_NE(bloomFilter->data(), nullptr);
+    bloomFilterSizes.push_back(bloomFilter->data()->size());
+  }
+
+  ASSERT_EQ(bloomFilterSizes.size(), 2);
+  EXPECT_LT(bloomFilterSizes[0], bloomFilterSizes[1]);
+}
+
+TEST_F(HashIndexWriterTest, rejectInvalidBloomFilterBitsPerKey) {
+  for (float bitsPerKey : {0.0f, -1.0f}) {
+    SCOPED_TRACE(fmt::format("bitsPerKey: {}", bitsPerKey));
+    HashIndexConfig indexConfig{
+        .columns = {"col1"},
+        .bloomFilter = BloomFilterConfig{.bitsPerKey = bitsPerKey},
+    };
+    auto writer = HashIndexWriter::create({indexConfig}, type_, pool_.get());
+    writer->write(makeInput({1, 2, 3}));
+
+    MockSectionStore store;
+    std::string directory;
+    NIMBLE_ASSERT_THROW(
+        writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory)),
+        "bitsPerKey must be positive");
   }
 }
 
