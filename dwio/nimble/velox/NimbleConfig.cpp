@@ -350,4 +350,8 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
 /* static */ Config::Entry<bool> Config::ENABLE_VECTORIZED_STATS(
     "nimble.stats.enable_vectorized",
     true);
+
+/* static */ Config::Entry<bool> Config::ENABLE_CACHED_ENCODING(
+    "nimble.encoding.enable_cached",
+    false);
 } // namespace facebook::nimble

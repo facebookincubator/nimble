@@ -88,6 +88,10 @@ class Config : public velox::config::ConfigBase {
   /// Enable vectorized column statistics for row size estimation.
   static Entry<bool> ENABLE_VECTORIZED_STATS;
 
+  /// Cache encoding layout from the first encoding of each stream and replay
+  /// on subsequent chunks/stripes.
+  static Entry<bool> ENABLE_CACHED_ENCODING;
+
   static constexpr const char* kNimbleWriteTargetRawStripeSize =
       "nimble_write_target_raw_stripe_size";
 
