@@ -181,7 +181,8 @@ inline Vector<bool> makeDenseBool(uint32_t n = kNumElements) {
 inline std::unique_ptr<EncodingSelectionPolicyBase> makeDefaultPolicy(
     DataType dataType) {
   static ManualEncodingSelectionPolicyFactory factory{
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(), std::nullopt};
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
+      std::nullopt};
   return factory.createPolicy(dataType);
 }
 

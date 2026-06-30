@@ -69,7 +69,7 @@ class VectorizedStatistic {
   }
 
   virtual std::string_view serialize(
-      const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
+      const EncodingSelectionPolicyCreator& encodingSelectionPolicyCreator,
       nimble::Buffer& buffer) = 0;
 
   virtual void deserializeFrom(
@@ -101,7 +101,7 @@ class TypedVectorizedStatistic : public VectorizedStatistic {
   std::optional<T> valueAt(size_t idx) const;
 
   std::string_view serialize(
-      const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
+      const EncodingSelectionPolicyCreator& encodingSelectionPolicyCreator,
       nimble::Buffer& buffer) override;
 
   void deserializeFrom(
@@ -156,7 +156,7 @@ class VectorizedFileStats {
 
   std::set<StatType> statTypes_;
   std::map<StatStreamType, std::unique_ptr<VectorizedStatistic>> statStreams_;
-  EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_ =
+  EncodingSelectionPolicyCreator encodingSelectionPolicyCreator_ =
       [encodingFactory = ManualEncodingSelectionPolicyFactory{}](
           DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
     return encodingFactory.createPolicy(dataType);

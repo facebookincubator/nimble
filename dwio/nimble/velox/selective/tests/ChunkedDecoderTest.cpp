@@ -1492,15 +1492,15 @@ class ChunkedDecoderDictTest : public ChunkedDecoderTest {
     std::string streamData;
 
     for (const auto& chunk : chunks) {
-      // The factory must outlive the policy because
+      // The creator must outlive the policy because
       // ReplayedEncodingSelectionPolicy stores it by reference.
-      EncodingSelectionPolicyFactory factory =
+      EncodingSelectionPolicyCreator creator =
           [](DataType type) -> std::unique_ptr<EncodingSelectionPolicyBase> {
         UNIQUE_PTR_FACTORY(type, TrivialNestedPolicy);
       };
       auto policy =
           std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
-              layout, CompressionOptions{}, factory);
+              layout, CompressionOptions{}, creator);
       auto encoded = EncodingFactory::encode<std::string_view>(
           std::move(policy),
           std::span<const std::string_view>(chunk.data(), chunk.size()),
@@ -1535,15 +1535,15 @@ class ChunkedDecoderDictTest : public ChunkedDecoderTest {
 
       // Pass just the data layout; ReplayedEncodingSelectionPolicy::
       // selectNullable() will automatically wrap it in a Nullable layout.
-      // The factory must outlive the policy because
+      // The creator must outlive the policy because
       // ReplayedEncodingSelectionPolicy stores it by reference.
-      EncodingSelectionPolicyFactory factory =
+      EncodingSelectionPolicyCreator creator =
           [](DataType type) -> std::unique_ptr<EncodingSelectionPolicyBase> {
         UNIQUE_PTR_FACTORY(type, TrivialNestedPolicy);
       };
       auto policy =
           std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
-              dataLayout, CompressionOptions{}, factory);
+              dataLayout, CompressionOptions{}, creator);
 
       auto encoded = EncodingFactory::encodeNullable<std::string_view>(
           std::move(policy),

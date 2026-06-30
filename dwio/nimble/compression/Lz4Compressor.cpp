@@ -27,7 +27,7 @@ CompressionResult Lz4Compressor::compress(
     DataType /* dataType */,
     int /* bitWidth */,
     const CompressionPolicy& compressionPolicy) {
-  auto parameters = compressionPolicy.compression().parameters.lz4;
+  auto parameters = compressionPolicy.config().parameters.lz4;
   Vector<char> buffer{&memoryPool, data.size() + sizeof(uint32_t)};
   auto pos = buffer.data();
   encoding::writeUint32(data.size(), pos);

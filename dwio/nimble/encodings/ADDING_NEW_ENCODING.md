@@ -235,14 +235,14 @@ case EncodingType::MyEncoding: {
 
 ### Step 7: Enable in Encoding Selection Policy
 
-**File:** `dwio/nimble/encodings/selection/EncodingSelectionPolicy.h`
+**File:** `dwio/nimble/encodings/selection/EncodingSelectionPolicy.cpp`
 
 Add the encoding to `ManualEncodingSelectionPolicyFactory`:
 
-1. **`defaultReadFactors()`** — add the encoding with a read cost factor (1.0 = baseline, lower = preferred):
+1. **`defaultEncodingReadFactors()`** — add the encoding with a read cost factor (1.0 = baseline, lower = preferred) if it should be selected by default:
 
 ```cpp
-static std::vector<std::pair<EncodingType, float>> defaultReadFactors() {
+static std::vector<std::pair<EncodingType, float>> defaultEncodingReadFactors() {
   return {
       // ... existing ...
       {EncodingType::MyEncoding, 1.0},
@@ -250,7 +250,7 @@ static std::vector<std::pair<EncodingType, float>> defaultReadFactors() {
 }
 ```
 
-2. **`possibleEncodings()`** — add the encoding type:
+2. **`possibleEncodings()`** — add the encoding type if it should be accepted in `parseEncodingReadFactors()` runtime config:
 
 ```cpp
 static std::vector<EncodingType> possibleEncodings() {
@@ -351,14 +351,14 @@ Once an encoding is registered in the factory (Steps 4-5), it can always **decod
 
 ### Encoding Selection Candidates (Default Behavior)
 
-The `ManualEncodingSelectionPolicyFactory` in `encodings/selection/EncodingSelectionPolicy.h` controls which encodings are candidates during write. Two lists define the defaults:
+The `ManualEncodingSelectionPolicyFactory` in `encodings/selection/EncodingSelectionPolicy.cpp` controls which encodings are candidates during write. Two lists control the candidate surface:
 
-- **`defaultReadFactors()`** — encoding + cost weight pairs. Only encodings in this list are considered. A lower read factor makes an encoding more favorable.
-- **`possibleEncodings()`** — parallel list used for string-based config parsing.
+- **`defaultEncodingReadFactors()`** — encoding + cost weight pairs. Only encodings in this list are considered. A lower read factor makes an encoding more favorable.
+- **`possibleEncodings()`** — private list used for string-based config parsing.
 
-**To disable an encoding globally:** Remove it from both `defaultReadFactors()` and `possibleEncodings()`. The encoding still works for decoding existing data — only new writes stop using it.
+**To disable an encoding globally:** Remove it from `defaultEncodingReadFactors()`. The encoding still works for decoding existing data — only new writes stop using it by default.
 
-**To enable a previously disabled encoding:** Add it back to both lists. For example, `Delta` and `Prefix` are registered in the factory but intentionally absent from the default candidates — they are special-purpose encodings triggered explicitly.
+**To make an encoding configurable but not default:** Keep it in `possibleEncodings()` and leave it out of `defaultEncodingReadFactors()`. For example, `Delta`, `Prefix`, and experimental encodings can be triggered explicitly without being selected by default.
 
 ### Custom Read Factors at Write Time
 
@@ -369,7 +369,7 @@ The `ManualEncodingSelectionPolicyFactory` constructor accepts custom read facto
 ManualEncodingSelectionPolicyFactory factory{
     {{EncodingType::Trivial, 1.0}, {EncodingType::RLE, 0.5}}};
 
-writerOptions.encodingSelectionPolicyFactory =
+writerOptions.encodingSelectionPolicyCreator =
     [factory](DataType dataType) {
       return factory.createPolicy(dataType);
     };
@@ -379,10 +379,10 @@ Encodings not in the provided list are excluded from selection. This is the prim
 
 ### String-Based Configuration (Parseable Read Factors)
 
-`ManualEncodingSelectionPolicyFactory::parseReadFactors()` parses a semicolon-delimited string of `EncodingType=factor` pairs:
+`ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors()` parses a semicolon-delimited string of `EncodingType=factor` pairs:
 
 ```cpp
-auto factors = ManualEncodingSelectionPolicyFactory::parseReadFactors(
+auto factors = ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
     "Trivial=0.7;RLE=1.0;Dictionary=1.0");
 ManualEncodingSelectionPolicyFactory factory{factors};
 ```
@@ -411,10 +411,10 @@ When an `EncodingLayoutTree` is set, the writer uses the specified encodings dir
 
 ### Custom Encoding Selection Policy
 
-For full control, implement a custom `EncodingSelectionPolicy<T>` and wire it through `VeloxWriterOptions::encodingSelectionPolicyFactory`:
+For full control, implement a custom `EncodingSelectionPolicy<T>` and wire it through `VeloxWriterOptions::encodingSelectionPolicyCreator`:
 
 ```cpp
-writerOptions.encodingSelectionPolicyFactory =
+writerOptions.encodingSelectionPolicyCreator =
     [](DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
   // Return a custom policy that implements select() and selectNullable()
   UNIQUE_PTR_FACTORY(dataType, MyCustomPolicy);
@@ -427,11 +427,11 @@ The custom policy's `select()` method receives data statistics and returns an `E
 
 | Layer | Scope | How |
 |-------|-------|-----|
-| Library defaults | All writers | Edit `defaultReadFactors()` / `possibleEncodings()` in `EncodingSelectionPolicy.h` |
+| Library defaults | All writers | Edit `defaultEncodingReadFactors()` in `EncodingSelectionPolicy.cpp` |
 | Per-writer read factors | Single writer | Pass custom read factors to `ManualEncodingSelectionPolicyFactory` constructor |
-| Runtime config string | Single writer | Use `parseReadFactors("Trivial=0.7;RLE=1.0")` from flags/config |
+| Runtime config string | Single writer | Use `parseEncodingReadFactors("Trivial=0.7;RLE=1.0")` from flags/config |
 | Encoding layout tree | Per-stream | Set `writerOptions.encodingLayoutTree` to force specific encodings |
-| Custom policy | Single writer | Implement `EncodingSelectionPolicy<T>` and set `encodingSelectionPolicyFactory` |
+| Custom policy | Single writer | Implement `EncodingSelectionPolicy<T>` and set `encodingSelectionPolicyCreator` |
 
 **Important:** Disabling an encoding at the selection layer only affects **writes**. The read path (`EncodingFactory::create()`) always supports all registered encodings, ensuring backward compatibility with existing files.
 

@@ -157,19 +157,19 @@ class Encoder {
     explicit TestCompressPolicy(CompressionType compressionType)
         : compressionType_{compressionType} {}
 
-    nimble::CompressionInformation compression() const override {
+    nimble::CompressionConfig config() const override {
       if (compressionType_ == CompressionType::Uncompressed) {
         return {.compressionType = CompressionType::Uncompressed};
       }
 
       if (compressionType_ == CompressionType::Zstd) {
-        nimble::CompressionInformation information{
+        nimble::CompressionConfig information{
             .compressionType = nimble::CompressionType::Zstd};
         information.parameters.zstd.compressionLevel = 3;
         return information;
       }
 
-      nimble::CompressionInformation information{
+      nimble::CompressionConfig information{
           .compressionType = nimble::CompressionType::MetaInternal};
       information.parameters.metaInternal.compressionLevel = 9;
       information.parameters.metaInternal.decompressionLevel = 2;

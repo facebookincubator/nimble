@@ -356,7 +356,7 @@ class E2EFilterTest
       // Use custom encoding factors if set.
       // Capture by value to avoid dangling reference.
       auto factors = encodingFactors_.value();
-      options.encodingSelectionPolicyFactory = [factors](DataType dataType) {
+      options.encodingSelectionPolicyCreator = [factors](DataType dataType) {
         ManualEncodingSelectionPolicyFactory factory(factors);
         return factory.createPolicy(dataType);
       };
@@ -393,6 +393,10 @@ class E2EFilterTest
       // Need to set encodingLayoutTree at construction time.
       options.encodingLayoutTree.emplace(
           buildForcedDictionaryEncodingLayoutTree());
+    }
+    if (useForcedFsstEncoding_) {
+      options.fsstCompressionTargetRatio = 10.0;
+      options.encodingLayoutTree.emplace(buildForcedFsstEncodingLayoutTree());
     }
     VeloxWriter writer(
         writeSchema_, std::move(writeFile), *rootPool_, std::move(options));
@@ -444,6 +448,8 @@ class E2EFilterTest
   // where dictionary is not at the top level (e.g., Nullable -> Dictionary).
   bool useForcedDictionaryEncoding_{false};
 
+  bool useForcedFsstEncoding_{false};
+
   // Builds an encoding layout tree that forces dictionary encoding for string
   // columns. When data has nulls, the writer will wrap this with nullable
   // encoding, creating a Nullable -> Dictionary nesting.
@@ -477,6 +483,36 @@ class E2EFilterTest
                           // Indices (id=1): let writer decide
                           std::nullopt,
                       }}}},
+                std::string(childName)});
+      } else {
+        children.push_back(
+            EncodingLayoutTree{Kind::Scalar, {}, std::string(childName)});
+      }
+    }
+    return EncodingLayoutTree{Kind::Row, {}, "", std::move(children)};
+  }
+
+  EncodingLayoutTree buildForcedFsstEncodingLayoutTree() {
+    std::vector<EncodingLayoutTree> children;
+    for (column_index_t i = 0;
+         i < static_cast<column_index_t>(rowType_->size());
+         ++i) {
+      const auto& childType = rowType_->childAt(i);
+      const auto& childName = rowType_->nameOf(i);
+
+      if (childType->isVarchar() || childType->isVarbinary()) {
+        children.push_back(
+            EncodingLayoutTree{
+                Kind::Scalar,
+                {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                  EncodingLayout{
+                      EncodingType::Fsst,
+                      {},
+                      CompressionType::Uncompressed,
+                      {EncodingLayout{
+                          EncodingType::Trivial,
+                          {},
+                          CompressionType::Uncompressed}}}}},
                 std::string(childName)});
       } else {
         children.push_back(
@@ -739,6 +775,51 @@ class E2EFilterTest
           EXPECT_EQ(expectedEncodingType, capture.encodingType())
               << "Column " << col << " stripe " << i;
         }
+      }
+    }
+  }
+
+  void verifyColumnEncodingOnDisk(
+      const std::string& columnName,
+      EncodingType expectedEncodingType) {
+    auto readFile = std::make_shared<InMemoryReadFile>(sinkData_);
+    auto& pool = *leafPool_;
+    auto tablet = TabletReader::create(
+        readFile, &pool, test::makeTestTabletOptions(&pool));
+    auto section = tablet->loadOptionalSection(std::string(kSchemaSection));
+    ASSERT_TRUE(section.has_value());
+    auto schema = SchemaDeserializer::deserialize(section->content().data());
+
+    std::optional<column_index_t> column;
+    for (column_index_t col = 0;
+         col < static_cast<column_index_t>(rowType_->size());
+         ++col) {
+      if (rowType_->nameOf(col) == columnName) {
+        column = col;
+        break;
+      }
+    }
+    ASSERT_TRUE(column.has_value()) << columnName;
+
+    auto& childNode = schema->asRow().childAt(*column)->asScalar();
+    for (auto i = 0; i < tablet->stripeCount(); ++i) {
+      auto stripeIdentifier = tablet->stripeIdentifier(i);
+      std::vector<uint32_t> identifiers{childNode.scalarDescriptor().offset()};
+      auto streams = tablet->load(stripeIdentifier, identifiers);
+
+      InMemoryChunkedStream chunkedStream{pool, std::move(streams[0])};
+      if (!chunkedStream.hasNext()) {
+        continue;
+      }
+      auto capture = EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      if (capture.encodingType() == EncodingType::Nullable) {
+        ASSERT_TRUE(capture.child(1).has_value())
+            << "Column " << columnName << " stripe " << i;
+        EXPECT_EQ(expectedEncodingType, capture.child(1)->encodingType())
+            << "Column " << columnName << " stripe " << i;
+      } else {
+        EXPECT_EQ(expectedEncodingType, capture.encodingType())
+            << "Column " << columnName << " stripe " << i;
       }
     }
   }
@@ -1310,6 +1391,28 @@ TEST_P(E2EFilterTest, stringDictionary) {
       true,
       {"string_val", "string_val_2"},
       20);
+}
+
+TEST_P(E2EFilterTest, fsstStringFilterPushdown) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "FSST string decoding requires zero-copy string decoder.";
+  }
+
+  useForcedFsstEncoding_ = true;
+  testWithTypes(
+      "string_val:string,"
+      "string_val_2:string,"
+      "long_val:bigint",
+      [&]() {
+        makeStringDistribution("string_val", 50, true, true);
+        makeStringDistribution("string_val_2", 80, true, false);
+      },
+      /*wrapInStruct=*/false,
+      {"string_val"},
+      /*numCombinations=*/5,
+      /*withRecursiveNulls=*/false);
+  verifyColumnEncodingOnDisk("string_val", EncodingType::Fsst);
+  useForcedFsstEncoding_ = false;
 }
 
 TEST_P(E2EFilterTest, listAndMapNoRecursiveNulls) {

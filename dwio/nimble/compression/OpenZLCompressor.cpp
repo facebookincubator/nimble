@@ -349,7 +349,7 @@ CompressionResult OpenZLCompressor::compress(
     DataType dataType,
     int /* bitWidth */,
     const CompressionPolicy& compressionPolicy) {
-  const auto parameters = compressionPolicy.compression().parameters.openzl;
+  const auto parameters = compressionPolicy.config().parameters.openzl;
 
   openzl::Compressor compressor;
   compressor.selectStartingGraph(

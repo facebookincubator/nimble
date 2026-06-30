@@ -1559,7 +1559,7 @@ TEST_F(EncodeTypedCompressionTest, withEncodingLayout) {
   facebook::nimble::Buffer buffer(*pool_);
 
   ManualEncodingSelectionPolicyFactory factory{
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
   auto policyFactory = [&factory](DataType dataType) {
     return factory.createPolicy(dataType);
@@ -1620,7 +1620,7 @@ TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
 
   // Factory with compression disabled.
   ManualEncodingSelectionPolicyFactory noCompressFactory{
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
   auto noCompressPolicyFactory = [&noCompressFactory](DataType dataType) {
     return noCompressFactory.createPolicy(dataType);
@@ -1653,12 +1653,12 @@ TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
   EXPECT_EQ(decoded, data);
 }
 
-// Verify that the default SerializerOptions.encodingSelectionPolicyFactory
+// Verify that the default SerializerOptions.encodingSelectionPolicyCreator
 // creates policies with compression disabled.
 TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
   SerializerOptions options{};
 
-  auto policy = options.encodingSelectionPolicyFactory(DataType::Uint32);
+  auto policy = options.encodingSelectionPolicyCreator(DataType::Uint32);
   auto* typed = dynamic_cast<EncodingSelectionPolicy<uint32_t>*>(policy.get());
   ASSERT_NE(typed, nullptr);
 
@@ -1666,7 +1666,7 @@ TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
   auto result = typed->select(data, Statistics<uint32_t>::create(data));
   auto compressionPolicy = result.compressionPolicyFactory();
   EXPECT_EQ(
-      compressionPolicy->compression().compressionType,
+      compressionPolicy->config().compressionType,
       CompressionType::Uncompressed);
 }
 

@@ -58,12 +58,12 @@ class TestCompressPolicy : public nimble::CompressionPolicy {
       : compress_{compress},
         useVariableBitWidthCompressor_{useVariableBitWidthCompressor} {}
 
-  nimble::CompressionInformation compression() const override {
+  nimble::CompressionConfig config() const override {
     if (!compress_) {
       return {.compressionType = nimble::CompressionType::Uncompressed};
     }
 
-    nimble::CompressionInformation information{
+    nimble::CompressionConfig information{
         .compressionType = nimble::CompressionType::MetaInternal};
     information.parameters.metaInternal.compressionLevel = 9;
     information.parameters.metaInternal.decompressionLevel = 2;

@@ -130,7 +130,8 @@ std::string_view encodeWithLayout(
     const std::optional<nimble::CompressionOptions>& compressionOpts,
     nimble::Buffer& buffer) {
   nimble::ManualEncodingSelectionPolicyFactory fallbackFactory{
-      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      nimble::ManualEncodingSelectionPolicyFactory::
+          defaultEncodingReadFactors(),
       compressionOpts};
 
   auto policy =
@@ -152,7 +153,8 @@ std::string_view encodeAutoSelect(
     nimble::Buffer& buffer) {
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<int64_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           compressionOpts,
           std::nullopt);
 

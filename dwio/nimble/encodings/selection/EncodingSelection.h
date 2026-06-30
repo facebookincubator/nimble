@@ -106,6 +106,11 @@ class EncodingSelection {
     return policy;
   }
 
+  template <typename NestedT>
+  std::unique_ptr<EncodingSelectionPolicyBase> createNestedPolicy(
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier);
+
   /// Returns a config value for the given key, or std::nullopt if not found.
   /// The caller is responsible for type casting the returned string value.
   std::optional<std::string> getConfig(const std::string& key) const {
@@ -118,7 +123,7 @@ class EncodingSelection {
   /// are selected).
   template <typename NestedT>
   std::string_view encodeNested(
-      NestedEncodingIdentifier identifier,
+      NestedEncodingIdentifier nestedEncodingIdentifier,
       std::span<const NestedT> values,
       Buffer& buffer,
       const Encoding::Options& options = {});
@@ -142,9 +147,12 @@ class EncodingSelectionPolicyBase {
  public:
   template <typename NestedT>
   std::unique_ptr<EncodingSelectionPolicyBase> create(
-      EncodingType encodingType,
-      NestedEncodingIdentifier identifier) {
-    return createImpl(encodingType, identifier, TypeTraits<NestedT>::dataType);
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier) {
+    return createImpl(
+        parentEncodingType,
+        nestedEncodingIdentifier,
+        TypeTraits<NestedT>::dataType);
   }
 
   virtual ~EncodingSelectionPolicyBase() = default;
@@ -155,13 +163,23 @@ class EncodingSelectionPolicyBase {
   /// This method allows transferring state between parent and nested encoding
   /// selection policy instances.
   /// A child encoding selection policy instance will be created for every
-  /// nested stream of the parent encoding. The identifier passed in allows to
-  /// differentiate between the nested streams.
+  /// nested stream of the parent encoding. The nested encoding identifier
+  /// differentiates between the nested streams.
   virtual std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
-      EncodingType encodingType,
-      NestedEncodingIdentifier identifier,
-      DataType type) = 0;
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier,
+      DataType nestedDataType) = 0;
 };
+
+template <typename T>
+template <typename NestedT>
+std::unique_ptr<EncodingSelectionPolicyBase>
+EncodingSelection<T>::createNestedPolicy(
+    EncodingType parentEncodingType,
+    NestedEncodingIdentifier nestedEncodingIdentifier) {
+  return selectionPolicy_->create<NestedT>(
+      parentEncodingType, nestedEncodingIdentifier);
+}
 
 /// This is the main base class for defining an encoding selection policy.
 template <typename T>
@@ -197,7 +215,7 @@ std::unique_ptr<T> unique_ptr_cast(std::unique_ptr<S> src) {
 template <typename T>
 template <typename NestedT>
 std::string_view EncodingSelection<T>::encodeNested(
-    NestedEncodingIdentifier identifier,
+    NestedEncodingIdentifier nestedEncodingIdentifier,
     std::span<const NestedT> values,
     Buffer& buffer,
     const Encoding::Options& options) {
@@ -205,7 +223,9 @@ std::string_view EncodingSelection<T>::encodeNested(
   // strongly templated type.
   auto nestedPolicy = std::unique_ptr<EncodingSelectionPolicy<NestedT>>(
       static_cast<EncodingSelectionPolicy<NestedT>*>(
-          selectionPolicy_->template create<NestedT>(encodingType(), identifier)
+          selectionPolicy_
+              ->template create<NestedT>(
+                  encodingType(), nestedEncodingIdentifier)
               .release()));
   auto statistics = Statistics<NestedT>::create(values);
   auto selectionResult = nestedPolicy->select(values, statistics, options);

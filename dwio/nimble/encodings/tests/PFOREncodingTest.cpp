@@ -56,7 +56,7 @@ class PFOREncodingTest : public ::testing::Test {
     return std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(layout),
         CompressionOptions{},
-        encodingSelectionPolicyFactory_);
+        encodingSelectionPolicyCreator_);
   }
 
   std::unique_ptr<Encoding> encodeAndCreate(const std::vector<T>& values) {
@@ -86,7 +86,7 @@ class PFOREncodingTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::vector<char> encodedStorage_;
   ManualEncodingSelectionPolicyFactory manualPolicyFactory_;
-  EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_ =
+  EncodingSelectionPolicyCreator encodingSelectionPolicyCreator_ =
       [this](DataType dataType) {
         return manualPolicyFactory_.createPolicy(dataType);
       };
@@ -257,7 +257,7 @@ class PFOREncodingFuzzerTest : public ::testing::Test {
     std::mt19937 rng(seed);
 
     ManualEncodingSelectionPolicyFactory manualFactory;
-    EncodingSelectionPolicyFactory factory =
+    EncodingSelectionPolicyCreator creator =
         [&manualFactory](DataType dataType) {
           return manualFactory.createPolicy(dataType);
         };
@@ -288,7 +288,7 @@ class PFOREncodingFuzzerTest : public ::testing::Test {
           CompressionType::Uncompressed,
           {std::nullopt, std::nullopt}};
       auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
-          std::move(layout), CompressionOptions{}, factory);
+          std::move(layout), CompressionOptions{}, creator);
       auto encoded = EncodingFactory::encode<T>(
           std::move(policy),
           std::span<const T>{values.data(), values.size()},
@@ -362,11 +362,11 @@ TEST_F(PFOREncodingFuzzerTest, encodeRejectsEmpty) {
       CompressionType::Uncompressed,
       {std::nullopt, std::nullopt}};
   ManualEncodingSelectionPolicyFactory manualFactory;
-  EncodingSelectionPolicyFactory factory = [&manualFactory](DataType dataType) {
+  EncodingSelectionPolicyCreator creator = [&manualFactory](DataType dataType) {
     return manualFactory.createPolicy(dataType);
   };
   auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
-      std::move(layout), CompressionOptions{}, factory);
+      std::move(layout), CompressionOptions{}, creator);
   std::vector<uint32_t> empty;
   NIMBLE_ASSERT_THROW(
       EncodingFactory::encode<uint32_t>(

@@ -111,6 +111,10 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier BitWidths = 1;
     static constexpr NestedEncodingIdentifier Offsets = 2;
   };
+
+  struct Fsst {
+    static constexpr NestedEncodingIdentifier Lengths = 0;
+  };
 };
 
 } // namespace facebook::nimble

@@ -50,7 +50,7 @@ class PrefixEncodingTest : public ::testing::Test {
     return std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
         std::move(layout),
         CompressionOptions{},
-        encodingSelectionPolicyFactory_);
+        encodingSelectionPolicyCreator_);
   }
 
   // Helper function to create a string buffer factory for decoding
@@ -65,7 +65,7 @@ class PrefixEncodingTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::vector<velox::BufferPtr> stringBuffers_;
   ManualEncodingSelectionPolicyFactory manualPolicyFactory_;
-  EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_ =
+  EncodingSelectionPolicyCreator encodingSelectionPolicyCreator_ =
       [this](DataType dataType) {
         return manualPolicyFactory_.createPolicy(dataType);
       };
@@ -466,7 +466,7 @@ TEST_F(PrefixEncodingTest, customRestartInterval) {
         std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
             std::move(layout),
             CompressionOptions{},
-            encodingSelectionPolicyFactory_);
+            encodingSelectionPolicyCreator_);
 
     auto encoded = EncodingFactory::encode<std::string_view>(
         std::move(policy), values, buffer);
@@ -507,7 +507,7 @@ TEST_F(PrefixEncodingTest, invalidRestartIntervalThrows) {
         std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
             std::move(layout),
             CompressionOptions{},
-            encodingSelectionPolicyFactory_);
+            encodingSelectionPolicyCreator_);
 
     NIMBLE_ASSERT_THROW(
         EncodingFactory::encode<std::string_view>(

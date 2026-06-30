@@ -123,6 +123,8 @@ class StringColumnReaderTest : public ::testing::Test,
       std::optional<VectorEncoding::Simple> expectedChildEncoding =
           std::nullopt,
       int childIndex = 0) {
+    // The RowReader already has the actual ScanSpec filter. This predicate
+    // identifies the input rows expected to pass that filter.
     auto result = BaseVector::create(asRowType(input.type()), 0, pool());
     int numScanned = 0;
     int i = 0;
@@ -171,6 +173,15 @@ class StringColumnReaderTest : public ::testing::Test,
 // Returns the encoding of a vector, loading through lazy wrappers if present.
 VectorEncoding::Simple getEncoding(const VectorPtr& vector) {
   return BaseVector::loadedVectorShared(vector)->encoding();
+}
+
+EncodingLayout makeFsstEncodingLayout() {
+  return EncodingLayout{
+      EncodingType::Fsst,
+      {},
+      CompressionType::Uncompressed,
+      {EncodingLayout{
+          EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
 }
 
 // Validates correctness and checks the expected encoding per batch.
@@ -398,6 +409,67 @@ TEST_P(StringColumnReaderTest, stringFilterWithSiblingColumn) {
           << expectedRow << ")";
       ++expectedRow;
     }
+  }
+}
+
+TEST_P(StringColumnReaderTest, fsstWithSiblingFilter) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "FSST is only available in the current encoding factory.";
+  }
+
+  constexpr int kRows = 2'000;
+  auto filterCol = makeFlatVector<int64_t>(kRows, [](auto i) { return i; });
+  auto dataCol = makeFlatVector<std::string>(kRows, [](auto i) {
+    return fmt::format("common/prefix/for/fsst/selective/{}", i % 32);
+  });
+  auto input = makeRowVector({filterCol, dataCol});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.fsstCompressionTargetRatio = 10.0;
+  writerOptions.encodingLayoutTree.emplace(
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{Kind::Scalar, {}, "c0"},
+          EncodingLayoutTree{
+              Kind::Scalar,
+              {{EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream,
+                makeFsstEncodingLayout()}},
+              "c1"}});
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  {
+    SCOPED_TRACE("sibling filter");
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BigintRange>(
+            250, 1'249, /*nullAllowed=*/false));
+    auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+
+    validateWithFilter(*input, *readers.rowReader, 137, [](auto i) {
+      return i >= 250 && i <= 1'249;
+    });
+  }
+
+  {
+    SCOPED_TRACE("FSST string filter");
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c1")->setFilter(
+        std::make_unique<common::BytesValues>(
+            std::vector<std::string>{
+                "common/prefix/for/fsst/selective/3",
+                "common/prefix/for/fsst/selective/17"},
+            false));
+    auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+
+    validateWithFilter(*input, *readers.rowReader, 137, [](auto i) {
+      return i % 32 == 3 || i % 32 == 17;
+    });
   }
 }
 
@@ -1012,13 +1084,14 @@ TEST_P(StringColumnReaderTest, readAcrossStripeBoundary) {
         return std::vector<std::string>{"delta", "echo"}[i % 2];
       })});
 
-  auto readFactors = ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+  auto readFactors =
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors();
   std::erase_if(readFactors, [](const auto& pair) {
     return pair.first == EncodingType::MainlyConstant;
   });
   VeloxWriterOptions writerOptions;
   writerOptions.enableChunking = true;
-  writerOptions.encodingSelectionPolicyFactory =
+  writerOptions.encodingSelectionPolicyCreator =
       [readFactors](DataType dataType) {
         return ManualEncodingSelectionPolicyFactory(readFactors)
             .createPolicy(dataType);
@@ -1223,13 +1296,14 @@ TEST_P(
   // Exclude MainlyConstant so the flatmap value streams pick a bare Dictionary
   // encoding, forcing the read through readDictionaryIndicesImpl rather than
   // MC's internal row->value mapping.
-  auto readFactors = ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+  auto readFactors =
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors();
   std::erase_if(readFactors, [](const auto& pair) {
     return pair.first == EncodingType::MainlyConstant;
   });
   VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}};
-  writerOptions.encodingSelectionPolicyFactory =
+  writerOptions.encodingSelectionPolicyCreator =
       [readFactors](DataType dataType) {
         return ManualEncodingSelectionPolicyFactory(readFactors)
             .createPolicy(dataType);

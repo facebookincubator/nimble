@@ -91,7 +91,7 @@ VeloxWriterOptions makeWriterOptions(
     EncodingType encoding,
     std::optional<CompressionOptions> comprOpts) {
   VeloxWriterOptions writerOptions;
-  writerOptions.encodingSelectionPolicyFactory =
+  writerOptions.encodingSelectionPolicyCreator =
       [encodingFactory =
            ManualEncodingSelectionPolicyFactory{{{encoding, 1.0}}, comprOpts}](
           DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {

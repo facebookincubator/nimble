@@ -75,11 +75,11 @@ std::optional<T> TypedVectorizedStatistic<T>::valueAt(size_t idx) const {
 
 template <typename T>
 std::string_view TypedVectorizedStatistic<T>::serialize(
-    const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory,
+    const EncodingSelectionPolicyCreator& encodingSelectionPolicyCreator,
     nimble::Buffer& buffer) {
   auto policy = std::unique_ptr<EncodingSelectionPolicy<T>>(
       static_cast<EncodingSelectionPolicy<T>*>(
-          encodingSelectionPolicyFactory(TypeTraits<T>::dataType).release()));
+          encodingSelectionPolicyCreator(TypeTraits<T>::dataType).release()));
   return EncodingFactory::encodeNullable<T>(
       std::move(policy), values_, isValid_, buffer);
 }
@@ -401,7 +401,7 @@ std::string_view VectorizedFileStats::serialize(nimble::Buffer& buffer) {
   std::vector<std::string_view> encodedStatStreams{};
   for (auto& statStream : statStreams_) {
     auto encoded =
-        statStream.second->serialize(encodingSelectionPolicyFactory_, buffer);
+        statStream.second->serialize(encodingSelectionPolicyCreator_, buffer);
     encodedStatStreams.push_back(encoded);
     totalLength += encoded.size();
   }

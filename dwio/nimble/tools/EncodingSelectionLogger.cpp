@@ -52,9 +52,9 @@ void logEncodingSelection(const std::vector<std::string>& source) {
           facebook::nimble::ManualEncodingSelectionPolicyFactory{
               FLAGS_read_factors.empty()
                   ? nimble::ManualEncodingSelectionPolicyFactory::
-                        defaultReadFactors()
+                        defaultEncodingReadFactors()
                   : nimble::ManualEncodingSelectionPolicyFactory::
-                        parseReadFactors(FLAGS_read_factors),
+                        parseEncodingReadFactors(FLAGS_read_factors),
               nimble::CompressionOptions{
                   .compressionAcceptRatio =
                       folly::to<float>(FLAGS_compression_acceptance_ratio)}}
@@ -65,8 +65,7 @@ void logEncodingSelection(const std::vector<std::string>& source) {
   auto serialized =
       nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
 
-  LOG(INFO) << "Encoding: " << GREEN
-            << nimble::tools::getEncodingLabel(serialized) << RESET_COLOR;
+  LOG(INFO) << "Encoding: " << nimble::tools::getEncodingLabel(serialized);
 }
 
 int main(int argc, char* argv[]) {

@@ -81,11 +81,11 @@ std::string_view encodeWithNonRecursiveSubIntSplit(
     const std::vector<T>& values,
     nimble::Buffer& buffer);
 
-nimble::EncodingSelectionPolicyFactory makeLeafPolicyFactory() {
+nimble::EncodingSelectionPolicyCreator makeLeafPolicyCreator() {
   return [](nimble::DataType type)
              -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
-    auto readFactors =
-        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+    auto readFactors = nimble::ManualEncodingSelectionPolicyFactory::
+        defaultEncodingReadFactors();
     readFactors.erase(
         std::remove_if(
             readFactors.begin(),
@@ -125,8 +125,8 @@ class NonRecursiveSubIntSplitPolicy final
       nimble::EncodingType /* encodingType */,
       nimble::NestedEncodingIdentifier /* identifier */,
       nimble::DataType type) override {
-    auto readFactors =
-        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+    auto readFactors = nimble::ManualEncodingSelectionPolicyFactory::
+        defaultEncodingReadFactors();
     readFactors.erase(
         std::remove_if(
             readFactors.begin(),
@@ -154,10 +154,10 @@ std::string_view encodeWithReplayLayout(
     const nimble::EncodingLayout& layout,
     const std::vector<T>& values,
     nimble::Buffer& buffer) {
-  auto leafFactory = makeLeafPolicyFactory();
+  auto leafCreator = makeLeafPolicyCreator();
   return nimble::EncodingFactory::encode<T>(
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<T>>(
-          layout, std::nullopt, leafFactory),
+          layout, std::nullopt, leafCreator),
       values,
       buffer);
 }
@@ -371,11 +371,11 @@ TEST(SubIntSplitEncodingTests, PreserveModeRequiresBoundaries) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*pool};
 
-  auto leafFactory = makeLeafPolicyFactory();
+  auto leafCreator = makeLeafPolicyCreator();
   EXPECT_THROW(
       (nimble::EncodingFactory::encode<int64_t>(
           std::make_unique<nimble::ReplayedEncodingSelectionPolicy<int64_t>>(
-              layout, std::nullopt, leafFactory),
+              layout, std::nullopt, leafCreator),
           values,
           buffer)),
       nimble::NimbleInternalError);

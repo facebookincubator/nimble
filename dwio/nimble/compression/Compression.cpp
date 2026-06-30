@@ -65,7 +65,7 @@ ICompressor& getCompressor(CompressionType compressionType) {
     DataType dataType,
     int bitWidth,
     const CompressionPolicy& compressionPolicy) {
-  auto compression = compressionPolicy.compression();
+  auto compression = compressionPolicy.config();
 
   return getCompressor(compression.compressionType)
       .compress(pool, data, dataType, bitWidth, compressionPolicy);

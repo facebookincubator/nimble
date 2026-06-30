@@ -17,7 +17,10 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "dwio/nimble/common/Constants.h"
 #include "dwio/nimble/common/Types.h"
 #include "folly/json/json.h"
 
@@ -103,15 +106,46 @@ struct CompressionParameters {
   OpenZLCompressionParameters openzl{};
 };
 
-struct CompressionInformation {
+struct CompressionConfig {
   CompressionType compressionType{};
   CompressionParameters parameters{};
   uint64_t minCompressionSize = 0;
 };
 
+struct CompressionOptions {
+  /// Rejects compression when compressedSize exceeds uncompressedSize
+  /// multiplied by this ratio. Currently only Zstrong/MetaInternal enforces
+  /// this through CompressionPolicy::shouldAccept().
+  /// TODO: Apply this consistently for Zstd and other compression types.
+  float compressionAcceptRatio = 0.98f;
+#ifndef DISABLE_META_INTERNAL_COMPRESSOR
+  CompressionType compressionType = CompressionType::MetaInternal;
+#else
+  CompressionType compressionType = CompressionType::Zstd;
+#endif
+  uint64_t zstdMinCompressionSize = kZstdMinCompressionSize;
+  uint32_t zstdCompressionLevel = 3;
+  uint64_t lz4MinCompressionSize = kLz4MinCompressionSize;
+  uint32_t lz4AccelerationLevel = 1;
+  uint64_t internalMinCompressionSize = kMetaInternalMinCompressionSize;
+  uint32_t internalCompressionLevel = 4;
+  uint32_t internalDecompressionLevel = 2;
+  bool useVariableBitWidthCompressor = false;
+  MetaInternalCompressionKey metaInternalCompressionKey;
+  uint64_t openzlMinCompressionSize = kOpenZLMinCompressionSize;
+  int32_t openzlCompressionLevel = 6;
+  int32_t openzlDecompressionLevel = 3;
+  int32_t openzlFormatVersion = 25;
+  /// Per-encoding overrides for compressionAcceptRatio.
+  /// BlockBitPacking default 0.7: data is already well-packed via per-block
+  /// baselines, so compression must save at least 30% to justify CPU cost.
+  std::vector<std::pair<EncodingType, float>> compressionAcceptRatioOverrides =
+      {{EncodingType::BlockBitPacking, 0.7f}};
+};
+
 class CompressionPolicy {
  public:
-  virtual CompressionInformation compression() const = 0;
+  virtual CompressionConfig config() const = 0;
   virtual bool shouldAccept(
       CompressionType /* compressionType */,
       uint64_t /* uncompressedSize */,
@@ -124,7 +158,7 @@ class CompressionPolicy {
 /// provided) is to not compress.
 class NoCompressionPolicy : public CompressionPolicy {
  public:
-  CompressionInformation compression() const override {
+  CompressionConfig config() const override {
     return {.compressionType = CompressionType::Uncompressed};
   }
 
@@ -134,6 +168,50 @@ class NoCompressionPolicy : public CompressionPolicy {
       uint64_t /* compressedSize */) const override {
     return false;
   }
+};
+
+/// Compression policy backed by CompressionOptions.
+/// Requests the configured compression type and uses
+/// CompressionOptions::compressionAcceptRatio to decide whether to keep the
+/// compressed result.
+class ConfiguredCompressionPolicy : public CompressionPolicy {
+ public:
+  ConfiguredCompressionPolicy(
+      CompressionOptions compressionOptions,
+      EncodingType encodingType);
+
+  CompressionConfig config() const override;
+
+  virtual bool shouldAccept(
+      CompressionType compressionType,
+      uint64_t uncompressedSize,
+      uint64_t compressedSize) const override;
+
+ private:
+  float getAcceptRatio(EncodingType encodingType) const;
+
+  const CompressionOptions compressionOptions_;
+  const float effectiveAcceptRatio_;
+};
+
+/// Compression policy for replaying an encoding layout's captured compression
+/// type while using current CompressionOptions parameters.
+class ReplayedCompressionPolicy : public CompressionPolicy {
+ public:
+  ReplayedCompressionPolicy(
+      CompressionType compressionType,
+      CompressionOptions compressionOptions);
+
+  CompressionConfig config() const override;
+
+  virtual bool shouldAccept(
+      CompressionType compressionType,
+      uint64_t uncompressedSize,
+      uint64_t compressedSize) const override;
+
+ private:
+  const CompressionType compressionType_;
+  const CompressionOptions compressionOptions_;
 };
 
 } // namespace facebook::nimble

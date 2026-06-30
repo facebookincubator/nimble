@@ -18,6 +18,7 @@ add_subdirectory(legacy)
 add_library(
   nimble_encodings
   ConstantEncoding.cpp
+  FsstEncoding.cpp
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RLEEncoding.cpp
@@ -26,8 +27,16 @@ add_library(
   common/Encoding.cpp
   common/EncodingFactory.cpp
   common/EncodingLayout.cpp
+  selection/EncodingSelectionPolicy.cpp
   selection/Statistics.cpp
 )
+
+set(FSST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/fsst")
+if(NOT TARGET fsst AND EXISTS "${FSST_SOURCE_DIR}/CMakeLists.txt")
+  add_subdirectory("${FSST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/fsst")
+endif()
+
+target_include_directories(nimble_encodings PUBLIC "${FSST_SOURCE_DIR}")
 
 target_link_libraries(
   nimble_encodings
@@ -35,6 +44,7 @@ target_link_libraries(
   nimble_common
   velox_common_base
   velox_fastpforlib
+  fsst
   Folly::folly
   absl::flat_hash_map
   protobuf::libprotobuf

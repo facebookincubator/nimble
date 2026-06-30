@@ -142,6 +142,10 @@ class Encoding {
       return decodingStats != nullptr ? &decodingStats->decompressCPUTimeNanos
                                       : nullptr;
     }
+
+    /// FSST is kept only when its final encoded size is at most this fraction
+    /// of the original string bytes.
+    double fsstCompressionTargetRatio = 0.6;
   };
 
   static constexpr int kEncodingTypeOffset =

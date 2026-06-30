@@ -35,7 +35,7 @@ namespace facebook::nimble {
 
 namespace detail {
 std::unordered_map<std::string, std::string> defaultMetadata();
-}
+} // namespace detail
 
 // NOTE: the object could be large when encodingOverrides are
 // supplied. It's strongly advised to move instead of copying
@@ -133,9 +133,15 @@ struct VeloxWriterOptions {
   // Block size for BlockBitPacking encoding.
   uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 
+  /// FSST is kept only when its final encoded size is at most this fraction of
+  /// the original string bytes.
+  double fsstCompressionTargetRatio{0.6};
+
   /// Builds Encoding::Options from VeloxWriterOptions fields.
   Encoding::Options buildEncodingOptions() const {
-    return {.blockBitPackingBlockSize = blockBitPackingBlockSize};
+    return {
+        .blockBitPackingBlockSize = blockBitPackingBlockSize,
+        .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
   }
 
   // In low-memory mode, the writer is trying to perform smaller (and more
@@ -175,7 +181,7 @@ struct VeloxWriterOptions {
   // Encoding selection policy is the way to balance the tradeoffs of
   // different performance factors (at both read and write times). Heuristics
   // based, ML based or specialized policies can be specified.
-  EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+  EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = ManualEncodingSelectionPolicyFactory{}](
           DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
     return encodingFactory.createPolicy(dataType);

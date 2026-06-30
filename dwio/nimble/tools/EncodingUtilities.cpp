@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
 namespace facebook::nimble::tools {
@@ -52,6 +53,7 @@ void extractCompressionType(
     case EncodingType::MainlyConstant:
     case EncodingType::Prefix:
     case EncodingType::ALP:
+    case EncodingType::Fsst:
     case EncodingType::PFOR:
     case EncodingType::SimdForBitpack:
     // SubIntSplit integration is disabled; it carries no separate compression
@@ -90,8 +92,8 @@ void traverseEncodings(
         std::unordered_map<
             EncodingPropertyType,
             EncodingProperty> /* properties */)> visitor) {
-  NIMBLE_CHECK(
-      stream.size() >= kEncodingPrefixSize, "Unexpected end of stream.");
+  NIMBLE_CHECK_GE(
+      stream.size(), kEncodingPrefixSize, "Unexpected end of stream.");
 
   const EncodingType encodingType = static_cast<EncodingType>(stream[0]);
   auto dataType = static_cast<DataType>(stream[1]);
@@ -177,6 +179,15 @@ void traverseEncodings(
         traverseEncodings(
             {pos, lengthsBytes}, level + 1, 0, "Lengths", visitor);
       }
+      break;
+    }
+    case EncodingType::Fsst: {
+      traverseEncodings(
+          FsstEncoding::lengthsEncoding(stream),
+          level + 1,
+          0,
+          "Lengths",
+          visitor);
       break;
     }
     case EncodingType::SparseBool: {

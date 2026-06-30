@@ -34,7 +34,7 @@ namespace {
 
 class TestCompressPolicy : public CompressionPolicy {
  public:
-  CompressionInformation compression() const override {
+  CompressionConfig config() const override {
     return {.compressionType = CompressionType::Uncompressed};
   }
 

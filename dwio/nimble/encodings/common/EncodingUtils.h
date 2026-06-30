@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 */
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -94,6 +95,8 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
     case EncodingType::Prefix:
       return f(static_cast<PrefixEncoding&>(encoding));
+    case EncodingType::Fsst:
+      return f(static_cast<FsstEncoding&>(encoding));
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

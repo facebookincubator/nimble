@@ -112,8 +112,8 @@ class CompressionEncoder {
       : dataSize_{uncompressedBuffer.size()},
         compressionType_{CompressionType::Uncompressed} {
     if (dataSize_ == 0 ||
-        dataSize_ < compressionPolicy.compression().minCompressionSize ||
-        compressionPolicy.compression().compressionType ==
+        dataSize_ < compressionPolicy.config().minCompressionSize ||
+        compressionPolicy.config().compressionType ==
             CompressionType::Uncompressed) {
       // No compression, just use the original buffer.
       data_ = uncompressedBuffer;
@@ -153,8 +153,8 @@ class CompressionEncoder {
         dataSize_{uncompressedSize},
         compressionType_{CompressionType::Uncompressed} {
     if (uncompressedSize == 0 ||
-        uncompressedSize < compressionPolicy.compression().minCompressionSize ||
-        compressionPolicy.compression().compressionType ==
+        uncompressedSize < compressionPolicy.config().minCompressionSize ||
+        compressionPolicy.config().compressionType ==
             CompressionType::Uncompressed) {
       // No compression. Do not encode the data yet. It will be encoded later
       // (in write()) directly into the output buffer.
