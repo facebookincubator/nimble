@@ -33,7 +33,6 @@
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/common/base/BitUtil.h"
-#include "velox/dwio/common/BitPackDecoder.h"
 #include "velox/dwio/common/DecoderUtil.h"
 #include "velox/dwio/common/Lemire/BitPacking/bitpackinghelpers.h"
 
@@ -611,15 +610,22 @@ void BlockBitPackingEncoding<T>::bulkScan(
       }
     }
   } else {
-    // Sparse: decode full block into tmp, then pick selected values.
-    // Simpler than per-element decode — no branching on block type.
+    // Sparse: per-block strategy based on block type and selectivity:
+    //  - skipEncoding: direct array access, no decode
+    //  - bitWidth == 0: constant block, return baseline
+    //  - low selectivity (<5%): FBA per-element for selected rows only
+    //  - high selectivity: full block decode, pick rows
+    constexpr uint32_t kMaxFbaSelectivityPct = 5;
+
     vector_size_t i = 0;
     while (i < numSelected) {
       const auto absRow = static_cast<uint32_t>(selectedRows[i]) +
           static_cast<uint32_t>(offset);
       const auto blockIndex = absRow / blockSize_;
       const auto blockStart = static_cast<uint32_t>(blockIndex) * blockSize_;
+      const auto& meta = blocksMetadata_[blockIndex];
 
+      // Find all selected rows belonging to this block.
       vector_size_t runEnd = i + 1;
       while (runEnd < numSelected) {
         const auto nextAbsRow = static_cast<uint32_t>(selectedRows[runEnd]) +
@@ -630,13 +636,44 @@ void BlockBitPackingEncoding<T>::bulkScan(
         ++runEnd;
       }
 
-      physicalType tmp[kMaxBlockSize];
-      const auto blockRows = blockRowCount(blockIndex);
-      materializeBlockRange(blockIndex, 0, blockRows, tmp);
-      for (vector_size_t j = i; j < runEnd; ++j) {
-        const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
-            static_cast<uint32_t>(offset) - blockStart;
-        values[j] = static_cast<OutputType>(tmp[blockOffset]);
+      const auto runLength = static_cast<uint32_t>(runEnd - i);
+      const auto numBlockRows = blockRowCount(blockIndex);
+
+      // Raw: direct index, no decode.
+      if (meta.skipEncoding) {
+        const auto* rawValues = reinterpret_cast<const physicalType*>(
+            packedData_ + blockOffsets_[blockIndex]);
+        for (vector_size_t j = i; j < runEnd; ++j) {
+          const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
+              static_cast<uint32_t>(offset) - blockStart;
+          values[j] = static_cast<OutputType>(rawValues[blockOffset]);
+        }
+        // Constant: every value equals baseline.
+      } else if (meta.bitWidth == 0) {
+        for (vector_size_t j = i; j < runEnd; ++j) {
+          values[j] = static_cast<OutputType>(meta.baseline);
+        }
+      } else if (runLength * 100 < numBlockRows * kMaxFbaSelectivityPct) {
+        // Low selectivity: FBA per-element decode for selected rows only.
+        FixedBitArray fba{
+            {packedData_ + blockOffsets_[blockIndex],
+             FixedBitArray::bufferSize(numBlockRows, meta.bitWidth)},
+            meta.bitWidth};
+        for (vector_size_t j = i; j < runEnd; ++j) {
+          const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
+              static_cast<uint32_t>(offset) - blockStart;
+          values[j] = static_cast<OutputType>(
+              static_cast<physicalType>(fba.get(blockOffset)) + meta.baseline);
+        }
+      } else {
+        // High selectivity: full block decode, pick rows.
+        physicalType tmp[kMaxBlockSize];
+        materializeBlockRange(blockIndex, 0, numBlockRows, tmp);
+        for (vector_size_t j = i; j < runEnd; ++j) {
+          const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
+              static_cast<uint32_t>(offset) - blockStart;
+          values[j] = static_cast<OutputType>(tmp[blockOffset]);
+        }
       }
       i = runEnd;
     }
