@@ -14,16 +14,20 @@
  * limitations under the License.
  */
 
-/// End-to-end read benchmark comparing integer encoding strategies through the
-/// selective Nimble reader.
+/// E2E benchmark: measures total column decode CPU time through the full
+/// Velox selective reader pipeline. Writes a 10M-row Nimble file, reads it
+/// back with filters at various selectivities. Includes all reader overhead:
+/// encoding construction, row selection, lazy materialization, filter
+/// evaluation — not just the raw decode step.
+///
+/// For isolated decode-only microbenchmarks, see BlockBitPackingBenchmark.cpp.
 ///
 /// Two-column schema: ROW(c0: INTEGER, c1: INTEGER).
-///   - c0: filter column — random values in [0, 99]. A BigintRange filter on
+///   - c0: filter column — random values in [0, 499]. A BigintRange filter on
 ///     c0 determines which rows pass. c0 is always scanned densely.
 ///   - c1: data column — the column under test with varying encoding. When c0
 ///     has a filter, c1 is read SPARSELY (only rows passing c0's filter),
-///     exercising the sparse bulkScan path where BlockBitPacking decodes the
-///     full 1024-row block into a temp buffer then picks selected rows.
+///     exercising the sparse bulkScan path.
 ///
 /// Encodings under test (applied globally to both columns):
 ///   - Trivial + MetaInternal compression
@@ -34,11 +38,6 @@
 ///   - NarrowBlocks: per-block 4 bits, global ~20 bits (BBP sweet spot)
 ///   - Uniform: ~20 bits everywhere (all encodings comparable)
 ///
-/// Selectivity (controlled by filter on c0):
-///   - NoFilter: full scan, c1 read densely
-///   - Select20%: BigintRange(0, 19) on c0 → ~20% pass, c1 read sparsely
-///   - Select1%: BigintRange(0, 0) on c0 → ~1% pass, c1 read sparsely
-///
 /// Run:
 ///   buck2 run @//mode/opt \
 ///     fbcode//dwio/nimble/velox/selective/tests:int_encoding_benchmark
@@ -47,22 +46,22 @@
 ///
 /// NarrowBlocks (int32, per-block 4-bit, decode_ms(decompress_ms)):
 ///              Dense     50%      20%      10%       8%       1%     0.2%
-///  Trivial+MI  41(36)   38(35)   39(36)   39(36)   38(35)   38(35)   38(35)
+///  Trivial+MI  40(34)   38(35)   39(36)   39(36)   38(35)   38(35)   38(35)
 ///  FBW+MI      71(42)   69(41)   56(42)   49(42)   48(41)   48(42)   46(42)
-///  BBP          6(0)     4(0)    10(0)     7(0)     7(0)     6(0)     5(0)
+///  BBP          5(0)     4(0)     9(0)     5(0)     5(0)     4(0)     4(0)
 ///
 /// Uniform (int32, ~20-bit uniform, decode_ms(decompress_ms)):
 ///              Dense     50%      20%      10%       8%       1%     0.2%
-///  Trivial+MI  49(44)   46(44)   47(44)   46(44)   48(44)   48(44)   47(44)
+///  Trivial+MI  46(44)   46(44)   47(44)   46(44)   48(44)   48(44)   47(44)
 ///  FBW+MI      58(28)   56(29)   55(28)   37(29)   35(28)   34(29)   32(28)
-///  BBP          9(0)     7(0)    13(0)    10(0)    10(0)     8(0)     7(0)
+///  BBP          8(0)     6(0)    12(0)     8(0)     7(0)     5(0)     4(0)
 ///
 /// BBP multi-type (decode_ms(decompress_ms)):
-///              Dense     50%      20%      10%       1%
-///  int8         8(0)     6(0)     6(0)     6(0)     7(0)
-///  int16        7(0)     5(0)    11(0)     9(0)     7(0)
-///  int32        9(0)     7(0)    13(0)    10(0)     7(0)
-///  int64        9(0)     6(0)    12(0)    10(0)     8(0)
+///              Dense     50%      20%      10%       8%      *5%*      1%
+///  int8         8(0)     7(0)     7(0)     7(0)     9(0)     6(0)     4(0)
+///  int16        7(0)     5(0)    11(0)     9(0)     8(0)     6(0)     4(0)
+///  int32        8(0)     6(0)    12(0)    10(0)    10(0)     7(0)     5(0)
+///  int64        9(0)     7(0)    13(0)    10(0)    10(0)     8(0)     5(0)
 
 #include <random>
 
@@ -536,8 +535,12 @@ void runMultiTypeBenchmarks() {
       {"Dense     ", std::nullopt},
       {"Sparse50% ", {{0, 249}}},
       {"Sparse20% ", {{0, 99}}},
+      {"Sparse15% ", {{0, 74}}},
       {"Sparse10% ", {{0, 49}}},
+      {"Sparse8%  ", {{0, 39}}},
+      {"Sparse5%  ", {{0, 24}}},
       {"Sparse1%  ", {{0, 4}}},
+      {"Sparse0.4%", {{0, 1}}},
   };
 
   auto filterCol = s.generateFilterColumn();
