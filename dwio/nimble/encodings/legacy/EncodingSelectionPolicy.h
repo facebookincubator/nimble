@@ -15,7 +15,6 @@
  */
 #pragma once
 
-#include <glog/logging.h>
 #include <algorithm>
 #include <optional>
 #include <utility>
@@ -28,29 +27,8 @@
 
 namespace facebook::nimble::legacy {
 
-using EncodingSelectionPolicyFactory =
+using EncodingSelectionPolicyCreator =
     std::function<std::unique_ptr<EncodingSelectionPolicyBase>(DataType)>;
-
-// The following enables encoding selection debug messages. By default, these
-// logs are turned off (with zero overhead). In tests (or in debug sessions), we
-// enable these logs.
-#define RED "\033[31m"
-#define GREEN "\033[32m"
-#define YELLOW "\033[33m"
-#define BLUE "\033[34m"
-#define PURPLE "\033[35m"
-#define CYAN "\033[36m"
-#define RESET_COLOR "\033[0m"
-
-#ifndef NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS
-#define NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS 50
-#endif
-
-#ifdef NIMBLE_ENCODING_SELECTION_DEBUG
-#define NIMBLE_SELECTION_LOG(stream) LOG(INFO) << stream << RESET_COLOR
-#else
-#define NIMBLE_SELECTION_LOG(stream)
-#endif
 
 #define COMMA ,
 #define UNIQUE_PTR_FACTORY_EXTRA(data_type, class, extra_types, ...)        \
@@ -101,6 +79,10 @@ using EncodingSelectionPolicyFactory =
   UNIQUE_PTR_FACTORY_EXTRA(data_type, class, , __VA_ARGS__)
 
 struct CompressionOptions {
+  /// Rejects compression when compressedSize exceeds uncompressedSize
+  /// multiplied by this ratio. Currently only Zstrong/MetaInternal enforces
+  /// this through CompressionPolicy::shouldAccept().
+  /// TODO: Apply this consistently for Zstd and other compression types.
   float compressionAcceptRatio = 0.98f;
   uint64_t zstdMinCompressionSize = kZstdMinCompressionSize;
   uint32_t zstdCompressionLevel = 3;
@@ -117,46 +99,16 @@ struct CompressionOptions {
 // appropriate encoding based on the provided statistics.
 template <typename T, bool FixedByteWidth = true>
 class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
+ public:
   using physicalType = typename TypeTraits<T>::physicalType;
 
- public:
   ManualEncodingSelectionPolicy(
-      std::vector<std::pair<EncodingType, float>> readFactors,
+      std::vector<std::pair<EncodingType, float>> encodingReadFactors,
       std::optional<CompressionOptions> compressionOptions,
       std::optional<NestedEncodingIdentifier> identifier)
-      : readFactors_{std::move(readFactors)},
+      : candidateEncodingReadFactors_{std::move(encodingReadFactors)},
         compressionOptions_{std::move(compressionOptions)},
         identifier_{identifier} {}
-
-  std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
-      EncodingType encodingType,
-      NestedEncodingIdentifier identifier,
-      DataType type) override {
-    // In each sub-level of the encoding selection, we exclude the encodings
-    // selected in parent levels. Although this is not required (as hopefully,
-    // the model will not pick a nested encoding of the same type as the
-    // parent), it provides an additional safty net, making sure the encoding
-    // selection will eventually converge, and also slightly speeds up nested
-    // encoding selection.
-    // TODO: validate the assumptions here compared to brute forcing, to see if
-    // the same encoding is selected multiple times in the tree (for example,
-    // should we allow trivial string lengths to be encoded using trivial
-    // encoding?)
-    std::vector<std::pair<EncodingType, float>> filteredReadFactors;
-    filteredReadFactors.reserve(readFactors_.size() - 1);
-    for (const auto& pair : readFactors_) {
-      if (pair.first != encodingType) {
-        filteredReadFactors.push_back(pair);
-      }
-    }
-    UNIQUE_PTR_FACTORY_EXTRA(
-        type,
-        ManualEncodingSelectionPolicy,
-        COMMA FixedByteWidth,
-        std::move(filteredReadFactors),
-        compressionOptions_,
-        identifier);
-  }
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
@@ -172,24 +124,19 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     EncodingType selectedEncoding = EncodingType::Trivial;
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
-    for (const auto& pair : readFactors_) {
-      auto encodingType = pair.first;
+    for (const auto& entry : candidateEncodingReadFactors_) {
+      auto encodingType = entry.first;
       auto size =
           nimble::legacy::detail::EncodingSizeEstimation<T, FixedByteWidth>::
               estimateSize(encodingType, values.size(), statistics);
       if (!size.has_value()) {
-        NIMBLE_SELECTION_LOG(
-            PURPLE << encodingType << " encoding is incompatible.");
         continue;
       }
 
       // We use read factor weights to raise/lower the favorability of each
       // encoding.
-      auto readFactor = pair.second;
-      auto cost = size.value() * readFactor;
-      NIMBLE_SELECTION_LOG(
-          YELLOW << "Encoding: " << encodingType << ", Size: " << size.value()
-                 << ", Factor: " << readFactor << ", Cost: " << cost);
+      const auto readFactor = entry.second;
+      const auto cost = size.value() * readFactor;
       if (cost < minCost) {
         minCost = cost;
         selectedEncoding = encodingType;
@@ -208,9 +155,9 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
           : compressionOptions_{std::move(compressionOptions)},
             effectiveAcceptRatio_{getAcceptRatio(encodingType)} {}
 
-      CompressionInformation compression() const override {
+      CompressionConfig config() const override {
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
-        CompressionInformation information{
+        CompressionConfig information{
             .compressionType = CompressionType::MetaInternal,
             .minCompressionSize =
                 compressionOptions_.internalMinCompressionSize};
@@ -224,7 +171,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
             compressionOptions_.metaInternalCompressionKey;
         return information;
 #else
-        CompressionInformation information{
+        CompressionConfig information{
             .compressionType = CompressionType::Zstd,
             .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
         information.parameters.zstd.compressionLevel =
@@ -234,22 +181,13 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       }
 
       virtual bool shouldAccept(
-          CompressionType compressionType,
+          CompressionType /* compressionType */,
           uint64_t uncompressedSize,
           uint64_t compressedSize) const override {
         if (uncompressedSize * effectiveAcceptRatio_ < compressedSize) {
-          NIMBLE_SELECTION_LOG(
-              BLUE << compressionType
-                   << " compression rejected. Original size: "
-                   << uncompressedSize
-                   << ", Compressed size: " << compressedSize);
           return false;
         }
 
-        NIMBLE_SELECTION_LOG(
-            CYAN << compressionType
-                 << " compression accepted. Original size: " << uncompressedSize
-                 << ", Compressed size: " << compressedSize);
         return true;
       }
 
@@ -268,24 +206,6 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       const float effectiveAcceptRatio_;
     };
 
-    NIMBLE_SELECTION_LOG(
-        "Selected Encoding"
-        << (identifier_.has_value()
-                ? folly::to<std::string>(
-                      " [NestedEncodingIdentifier: ", identifier_.value(), "]")
-                : "")
-        << ": " << GREEN << selectedEncoding << RESET_COLOR
-        << ", Sampled Data: "
-        << folly::join(
-               ",",
-               std::span<const physicalType>{
-                   values.data(),
-                   std::min(
-                       size_t(NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS),
-                       values.size())})
-        << (values.size() > size_t(NIMBLE_ENCODING_SELECTION_DEBUG_MAX_ITEMS)
-                ? "..."
-                : ""));
     if (!compressionOptions_.has_value()) {
       return {.encodingType = selectedEncoding};
     }
@@ -309,53 +229,66 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     };
   }
 
-  const std::vector<std::pair<EncodingType, float>>& readFactors() const {
-    return readFactors_;
+  const std::vector<std::pair<EncodingType, float>>&
+  candidateEncodingReadFactors() const {
+    return candidateEncodingReadFactors_;
+  }
+
+ protected:
+  std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier,
+      DataType nestedDataType) override {
+    // In each sub-level of the encoding selection, we exclude the encodings
+    // selected in parent levels. Although this is not required (as hopefully,
+    // the model will not pick a nested encoding of the same type as the
+    // parent), it provides an additional safty net, making sure the encoding
+    // selection will eventually converge, and also slightly speeds up nested
+    // encoding selection.
+    // TODO: validate the assumptions here compared to brute forcing, to see if
+    // the same encoding is selected multiple times in the tree (for example,
+    // should we allow trivial string lengths to be encoded using trivial
+    // encoding?)
+    std::vector<std::pair<EncodingType, float>> nestedEncodingReadFactors;
+    nestedEncodingReadFactors.reserve(candidateEncodingReadFactors_.size() - 1);
+    for (const auto& entry : candidateEncodingReadFactors_) {
+      if (entry.first != parentEncodingType) {
+        nestedEncodingReadFactors.emplace_back(entry);
+      }
+    }
+    UNIQUE_PTR_FACTORY_EXTRA(
+        nestedDataType,
+        ManualEncodingSelectionPolicy,
+        COMMA FixedByteWidth,
+        std::move(nestedEncodingReadFactors),
+        compressionOptions_,
+        nestedEncodingIdentifier);
   }
 
  private:
-  // These read factors are used to raise or lower the chances of an encoding to
-  // be picked. Right now, these represent mostly the cpu cost to decode the
-  // values. Trivial is being boosed as we factor in the added benefit of
-  // applying compression.
+  // Candidate encodings and their read-cost factors. Encoding selection uses
+  // estimatedSize * readFactor as the cost, so a lower factor makes an
+  // encoding more likely to be picked. Right now, these represent mostly the
+  // CPU cost to decode values. Trivial is boosted with a lower factor because
+  // it also benefits from applying compression.
   // See ManualEncodingSelectionPolicyFactory::defaultReadFactors for the
   // default.
-  const std::vector<std::pair<EncodingType, float>> readFactors_;
+  const std::vector<std::pair<EncodingType, float>>
+      candidateEncodingReadFactors_;
   // When nullopt, compression is disabled for this policy and all nested
   // policies created from it.
   const std::optional<CompressionOptions> compressionOptions_;
   const std::optional<NestedEncodingIdentifier> identifier_;
 };
 
-// This model is trained offline and parameters are updated here.
-// The parameters are relatively robust and do not need to be updated
-// unless we add / remove an encoding type.
-template <typename T>
-struct EncodingPredictionModel {
-  using physicalType = typename TypeTraits<T>::physicalType;
-  explicit EncodingPredictionModel()
-      : maxRepeatParam(1.52), minRepeatParam(1.13), uniqueParam(2.589) {}
-  float maxRepeatParam;
-  float minRepeatParam;
-  float uniqueParam;
-  float predict(const Statistics<physicalType>& statistics) {
-    // TODO: Utilize more features within statistics for prediction.
-    auto maxRepeat = statistics.maxRepeat();
-    auto minRepeat = statistics.minRepeat();
-    auto unique = statistics.uniqueCounts().value().size();
-    return maxRepeatParam * maxRepeat + minRepeatParam * minRepeat +
-        uniqueParam * unique;
-  }
-};
-
 class ManualEncodingSelectionPolicyFactory {
  public:
   ManualEncodingSelectionPolicyFactory(
-      std::vector<std::pair<EncodingType, float>> readFactors =
+      std::vector<std::pair<EncodingType, float>> encodingReadFactors =
           defaultReadFactors(),
       std::optional<CompressionOptions> compressionOptions =
           CompressionOptions{})
-      : readFactors_{std::move(readFactors)},
+      : encodingReadFactors_{std::move(encodingReadFactors)},
         compressionOptions_{std::move(compressionOptions)} {}
 
   std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
@@ -363,7 +296,7 @@ class ManualEncodingSelectionPolicyFactory {
     UNIQUE_PTR_FACTORY(
         dataType,
         ManualEncodingSelectionPolicy,
-        readFactors_,
+        encodingReadFactors_,
         compressionOptions_,
         std::nullopt);
   }
@@ -394,21 +327,22 @@ class ManualEncodingSelectionPolicyFactory {
     };
   }
 
-  static std::vector<std::pair<nimble::EncodingType, float>> parseReadFactors(
-      const std::string& val) {
-    std::vector<std::pair<nimble::EncodingType, float>> readFactors;
+  /// Parses semicolon-delimited runtime read-factor config.
+  static std::vector<std::pair<nimble::EncodingType, float>>
+  parseEncodingReadFactors(const std::string& readFactorsConfig) {
+    std::vector<std::pair<nimble::EncodingType, float>> encodingReadFactors;
     std::vector<std::string> parts;
-    folly::split(';', folly::trimWhitespace(val), parts);
-    readFactors.reserve(parts.size());
+    folly::split(';', folly::trimWhitespace(readFactorsConfig), parts);
+    encodingReadFactors.reserve(parts.size());
 
     std::vector<nimble::EncodingType> possibleEncodings =
         ManualEncodingSelectionPolicyFactory::possibleEncodings();
-    std::vector<std::string> possibleEncodingStrings;
-    possibleEncodingStrings.reserve(possibleEncodings.size());
+    std::vector<std::string> possibleEncodingStrs;
+    possibleEncodingStrs.reserve(possibleEncodings.size());
     std::transform(
         possibleEncodings.cbegin(),
         possibleEncodings.cend(),
-        std::back_inserter(possibleEncodingStrings),
+        std::back_inserter(possibleEncodingStrs),
         [](const auto& encoding) { return toString(encoding); });
     for (const auto& part : parts) {
       std::vector<std::string> kv;
@@ -417,23 +351,23 @@ class ManualEncodingSelectionPolicyFactory {
           kv.size(),
           2,
           "Invalid read factor format. "
-          "Expected format is <EncodingType>=<facor>;<EncodingType>=<facor>. "
+          "Expected format is <EncodingType>=<factor>;<EncodingType>=<factor>. "
           "Unable to parse '{}'.",
           part);
-      auto value = folly::tryTo<float>(kv[1]);
+      const auto value = folly::tryTo<float>(kv[1]);
       NIMBLE_CHECK(
           value.hasValue(),
           "Unable to parse read factor value '{}' in '{}'. Expected valid float value.",
           kv[1],
           part);
       bool found = false;
-      auto key = folly::trimWhitespace(kv[0]);
+      const auto key = folly::trimWhitespace(kv[0]);
       for (auto i = 0; i < possibleEncodings.size(); ++i) {
         auto encoding = possibleEncodings[i];
         // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
-        if (key == possibleEncodingStrings[i]) {
+        if (key == possibleEncodingStrs[i]) {
           found = true;
-          readFactors.emplace_back(encoding, value.value());
+          encodingReadFactors.emplace_back(encoding, value.value());
           break;
         }
       }
@@ -441,13 +375,13 @@ class ManualEncodingSelectionPolicyFactory {
           found,
           "Unknown or unexpected read factor encoding '{}'. Allowed values: {}",
           key,
-          folly::join(",", possibleEncodingStrings));
+          folly::join(",", possibleEncodingStrs));
     }
-    return readFactors;
+    return encodingReadFactors;
   }
 
  private:
-  const std::vector<std::pair<EncodingType, float>> readFactors_;
+  const std::vector<std::pair<EncodingType, float>> encodingReadFactors_;
   const std::optional<CompressionOptions> compressionOptions_;
 };
 
@@ -457,10 +391,31 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   using physicalType = typename TypeTraits<T>::physicalType;
 
  public:
+  // This model is trained offline and parameters are updated here. The
+  // parameters are relatively robust and do not need to be updated unless we
+  // add or remove an encoding type.
+  struct EncodingPredictionModel {
+    explicit EncodingPredictionModel()
+        : maxRepeatParam(1.52), minRepeatParam(1.13), uniqueParam(2.589) {}
+
+    float maxRepeatParam;
+    float minRepeatParam;
+    float uniqueParam;
+
+    float predict(const Statistics<physicalType>& statistics) {
+      // TODO: Utilize more features within statistics for prediction.
+      const auto maxRepeat = statistics.maxRepeat();
+      const auto minRepeat = statistics.minRepeat();
+      const auto unique = statistics.uniqueCounts().value().size();
+      return maxRepeatParam * maxRepeat + minRepeatParam * minRepeat +
+          uniqueParam * unique;
+    }
+  };
+
   LearnedEncodingSelectionPolicy(
       std::vector<EncodingType> encodingChoices,
       std::optional<NestedEncodingIdentifier> identifier,
-      EncodingPredictionModel<T> encodingModel = EncodingPredictionModel<T>())
+      EncodingPredictionModel encodingModel = EncodingPredictionModel())
       : encodingChoices_{std::move(encodingChoices)},
         identifier_{identifier},
         mlModel_{encodingModel} {}
@@ -469,31 +424,12 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       : LearnedEncodingSelectionPolicy{
             possibleEncodingChoices(),
             std::nullopt,
-            EncodingPredictionModel<T>()} {}
+            EncodingPredictionModel()} {}
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& /* options */ = {}) override {
-    if (values.empty()) {
-      return {
-          .encodingType = EncodingType::Trivial,
-      };
-    }
-
-    float prediction = mlModel_.predict(statistics);
-    if (prediction > 0.1) {
-      return {
-          .encodingType = EncodingType::Trivial,
-      };
-    }
-    // TODO: Implement a multi-class Encoding model so that we can predict not
-    // only a trivial encoding but also other encodings.
-
-    return {
-        .encodingType = EncodingType::Trivial,
-    };
-  }
+      const Encoding::Options& options = {}) override;
 
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
@@ -506,9 +442,9 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   }
 
   std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
-      EncodingType encodingType,
-      NestedEncodingIdentifier identifier,
-      DataType type) override {
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier,
+      DataType nestedDataType) override {
     // In each sub-level of the encoding selection, we exclude the encodings
     // selected in parent levels. Although this is not required (as hopefully,
     // the model will not pick a nested encoding of the same type as the
@@ -519,18 +455,18 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // the same encoding is selected multiple times in the tree (for example,
     // should we allow trivial string lengths to be encoded using trivial
     // encoding?)
-    std::vector<EncodingType> filteredReadFactors;
-    filteredReadFactors.reserve(encodingChoices_.size() - 1);
+    std::vector<EncodingType> nestedEncodingChoices;
+    nestedEncodingChoices.reserve(encodingChoices_.size() - 1);
     for (const auto& encodingType_ : encodingChoices_) {
-      if (encodingType_ != encodingType) {
-        filteredReadFactors.push_back(encodingType_);
+      if (encodingType_ != parentEncodingType) {
+        nestedEncodingChoices.push_back(encodingType_);
       }
     }
     UNIQUE_PTR_FACTORY(
-        type,
+        nestedDataType,
         LearnedEncodingSelectionPolicy,
-        std::move(filteredReadFactors),
-        identifier);
+        std::move(nestedEncodingChoices),
+        nestedEncodingIdentifier);
   }
 
  private:
@@ -549,90 +485,53 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
   std::vector<EncodingType> encodingChoices_;
   std::optional<NestedEncodingIdentifier> identifier_;
-  EncodingPredictionModel<T> mlModel_;
+  EncodingPredictionModel mlModel_;
 };
 
-class ReplayedCompressionPolicy : public CompressionPolicy {
- public:
-  explicit ReplayedCompressionPolicy(
-      nimble::CompressionType compressionType,
-      CompressionOptions compressionOptions)
-      : compressionType_{compressionType},
-        compressionOptions_{std::move(compressionOptions)} {}
-
-  CompressionInformation compression() const override {
-    if (compressionType_ == nimble::CompressionType::Uncompressed) {
-      return {.compressionType = nimble::CompressionType::Uncompressed};
-    }
-
-    if (compressionType_ == nimble::CompressionType::Zstd) {
-      CompressionInformation information{
-          .compressionType = nimble::CompressionType::Zstd,
-          .minCompressionSize = compressionOptions_.zstdMinCompressionSize};
-      information.parameters.zstd.compressionLevel =
-          compressionOptions_.zstdCompressionLevel;
-      return information;
-    }
-
-    CompressionInformation information{
-        .compressionType = nimble::CompressionType::MetaInternal,
-        .minCompressionSize = compressionOptions_.internalMinCompressionSize};
-    information.parameters.metaInternal.compressionLevel =
-        compressionOptions_.internalCompressionLevel;
-    information.parameters.metaInternal.decompressionLevel =
-        compressionOptions_.internalDecompressionLevel;
-    information.parameters.metaInternal.useVariableBitWidthCompressor =
-        compressionOptions_.useVariableBitWidthCompressor;
-    information.parameters.metaInternal.compressionKey =
-        compressionOptions_.metaInternalCompressionKey;
-    return information;
+template <typename T>
+EncodingSelectionResult LearnedEncodingSelectionPolicy<T>::select(
+    std::span<const typename LearnedEncodingSelectionPolicy<T>::physicalType>
+        values,
+    const Statistics<typename LearnedEncodingSelectionPolicy<T>::physicalType>&
+        statistics,
+    const Encoding::Options& /* options */) {
+  if (values.empty()) {
+    return {
+        .encodingType = EncodingType::Trivial,
+    };
   }
 
-  virtual bool shouldAccept(
-      nimble::CompressionType /* compressionType */,
-      uint64_t uncompressedSize,
-      uint64_t compressedSize) const override {
-    if (uncompressedSize * compressionOptions_.compressionAcceptRatio <
-        compressedSize) {
-      NIMBLE_SELECTION_LOG(
-          BLUE << compressionType_ << " compression rejected. Original size: "
-               << uncompressedSize << ", Compressed size: " << compressedSize);
-      return false;
-    }
-
-    NIMBLE_SELECTION_LOG(
-        CYAN << compressionType_ << " compression accepted. Original size: "
-             << uncompressedSize << ", Compressed size: " << compressedSize);
-    return true;
+  const auto prediction = mlModel_.predict(statistics);
+  if (prediction > 0.1) {
+    return {
+        .encodingType = EncodingType::Trivial,
+    };
   }
+  // TODO: Implement a multi-class Encoding model so that we can predict not
+  // only a trivial encoding but also other encodings.
 
- private:
-  const nimble::CompressionType compressionType_;
-  const CompressionOptions compressionOptions_;
-};
+  return {
+      .encodingType = EncodingType::Trivial,
+  };
+}
 
-template <typename TInner>
-class ReplayedEncodingSelectionPolicy;
-
-template <typename TInner>
-class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
-  using physicalType = typename nimble::TypeTraits<TInner>::physicalType;
-
+template <typename T>
+class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
  public:
+  using physicalType = typename nimble::TypeTraits<T>::physicalType;
+
   ReplayedEncodingSelectionPolicy(
       EncodingLayout encodingLayout,
       std::optional<CompressionOptions> compressionOptions,
-      const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory)
+      const EncodingSelectionPolicyCreator& encodingSelectionPolicyCreator)
       : compressionOptions_{std::move(compressionOptions)},
-        encodingSelectionPolicyFactory_{encodingSelectionPolicyFactory},
+        encodingSelectionPolicyCreator_{encodingSelectionPolicyCreator},
         encodingLayout_{std::move(encodingLayout)} {}
 
   EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
       const nimble::Statistics<physicalType>& /* statistics */,
       const Encoding::Options& /* options */ = {}) override {
-    NIMBLE_SELECTION_LOG(
-        CYAN << "Replaying encoding " << encodingLayout_.encodingType());
     if (!compressionOptions_.has_value()) {
       return {
           .encodingType = encodingLayout_.encodingType(),
@@ -651,9 +550,9 @@ class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
       std::span<const bool> /* nulls */,
       const Statistics<physicalType>& /* statistics */,
       const Encoding::Options& /* options */ = {}) override {
-    NIMBLE_SELECTION_LOG(
-        CYAN << "Replaying nullable encoding "
-             << encodingLayout_.encodingType());
+    // NullableEncoding asks createImpl() for nullable data and nulls children.
+    // The replay policy is initialized with the data layout, so synthesize the
+    // nullable parent shape here.
     encodingLayout_ = EncodingLayout{
         EncodingType::Nullable,
         {},
@@ -667,31 +566,32 @@ class ReplayedEncodingSelectionPolicy : public EncodingSelectionPolicy<TInner> {
     };
   }
 
+ protected:
   std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
-      nimble::EncodingType /* encodingType */,
-      nimble::NestedEncodingIdentifier identifier,
-      nimble::DataType type) override {
+      nimble::EncodingType /* parentEncodingType */,
+      nimble::NestedEncodingIdentifier nestedEncodingIdentifier,
+      nimble::DataType nestedDataType) override {
     NIMBLE_CHECK_LT(
-        identifier,
+        nestedEncodingIdentifier,
         encodingLayout_.childrenCount(),
         "Sub-encoding identifier out of range.");
-    auto child = encodingLayout_.child(identifier);
+    auto child = encodingLayout_.child(nestedEncodingIdentifier);
 
     if (child.has_value()) {
       UNIQUE_PTR_FACTORY(
-          type,
+          nestedDataType,
           ReplayedEncodingSelectionPolicy,
           child.value(),
           compressionOptions_,
-          encodingSelectionPolicyFactory_);
+          encodingSelectionPolicyCreator_);
     } else {
-      return encodingSelectionPolicyFactory_(type);
+      return encodingSelectionPolicyCreator_(nestedDataType);
     }
   }
 
  private:
   const std::optional<CompressionOptions> compressionOptions_;
-  const EncodingSelectionPolicyFactory& encodingSelectionPolicyFactory_;
+  const EncodingSelectionPolicyCreator& encodingSelectionPolicyCreator_;
   EncodingLayout encodingLayout_;
 };
 

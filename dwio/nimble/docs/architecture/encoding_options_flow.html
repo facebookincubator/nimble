@@ -268,7 +268,7 @@ code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:colo
   <div style="text-align:left;margin-top:0.5rem;border:1.5px solid color-mix(in srgb, var(--hl) 30%, var(--border));border-radius:6px;padding:0.35rem 0.5rem;background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
     <div class="d" style="color:var(--hl);font-weight:700;font-size:0.6rem;margin-bottom:0.15rem">Encoding</div>
     <div class="d" style="text-align:left;line-height:1.7">
-      <span style="color:#1d4ed8;font-weight:600">encodingSelectionPolicyFactory</span> &larr; opaque lambda<br>
+      <span style="color:#1d4ed8;font-weight:600">encodingSelectionPolicyCreator</span> &larr; opaque lambda<br>
       &nbsp;&nbsp;&#9500; <span style="color:#1d4ed8">readFactors</span> <span style="color:var(--muted)">(which encodings to try + weights)</span><br>
       &nbsp;&nbsp;&#9492; <span style="color:#1d4ed8">compressionOptions</span> <span style="color:var(--muted)">(codec, levels, accept ratio)</span><br>
       <span style="color:#2563eb;font-weight:600">blockBitPackingBlockSize</span> + <span style="color:#2563eb">buildEncodingOptions()</span> <span style="color:var(--muted)">&rarr; Encoding::Options</span><br>
@@ -378,7 +378,7 @@ code { font-family:'JetBrains Mono',monospace; font-size:0.6rem; background:colo
 <div class="ar"><div class="a"></div></div>
 <div class="node" style="border-color:color-mix(in srgb, var(--hl) 30%, var(--border));background:color-mix(in srgb, var(--hl) 5%, var(--surface))">
   <h3>select(values, stats, <span style="color:#2563eb">options</span>)</h3>
-  <div class="d">readFactors_ from policy + <span style="color:#2563eb;font-weight:600">blockSize</span> from <span style="color:#2563eb">options</span> <span style="color:var(--warm);font-weight:600">(new)</span> &rarr; EncodingCandidates &rarr; estimation</div>
+  <div class="d">encodingReadFactors_ from policy + <span style="color:#2563eb;font-weight:600">blockSize</span> from <span style="color:#2563eb">options</span> <span style="color:var(--warm);font-weight:600">(new)</span> &rarr; EncodingCandidates &rarr; estimation</div>
   <div class="d">picks best encoding &rarr; returns EncodingSelectionResult{BBP, comprFactory}</div>
 </div>
 

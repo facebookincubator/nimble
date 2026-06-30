@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 */
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -286,6 +287,14 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       return std::make_unique<PrefixEncoding>(
           pool, data, stringBufferFactory, options);
     }
+    case EncodingType::Fsst: {
+      NIMBLE_CHECK_EQ(
+          dataType,
+          DataType::String,
+          "Trying to deserialize a FsstEncoding with a non-string data type.");
+      return std::make_unique<FsstEncoding>(
+          pool, data, stringBufferFactory, options);
+    }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
@@ -478,6 +487,14 @@ bool).");
             "Prefix encoding should only be selected for string_view data types.");
       } else {
         return PrefixEncoding::encode(selection, castedValues, buffer, options);
+      }
+    }
+    case EncodingType::Fsst: {
+      if constexpr (!std::is_same<T, std::string_view>::value) {
+        NIMBLE_INCOMPATIBLE_ENCODING(
+            "Fsst encoding should only be selected for string_view data types.");
+      } else {
+        return FsstEncoding::encode(selection, castedValues, buffer, options);
       }
     }
     case EncodingType::Delta: {

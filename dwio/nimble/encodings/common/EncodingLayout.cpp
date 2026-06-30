@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 // SubIntSplit integration commented out (disabled):
 // #include "dwio/nimble/encodings/SubIntSplitConfig.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
@@ -432,6 +433,10 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
         children.emplace_back(
             EncodingLayoutCapture::capture({pos, lengthsBytes}));
       }
+      break;
+    }
+    case EncodingType::Fsst: {
+      FsstEncoding::captureNestedEncoding(encoding, children);
       break;
     }
     case EncodingType::SparseBool: {

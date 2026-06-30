@@ -14,6 +14,7 @@
 add_library(
   nimble_compression
   Compression.cpp
+  CompressionPolicy.cpp
   Lz4Compressor.cpp
   OpenZLCompressor.cpp
   ZstdCompressor.cpp

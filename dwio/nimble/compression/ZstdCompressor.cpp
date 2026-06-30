@@ -29,7 +29,7 @@ CompressionResult ZstdCompressor::compress(
     DataType dataType,
     int /* bitWidth */,
     const CompressionPolicy& compressionPolicy) {
-  auto parameters = compressionPolicy.compression().parameters.zstd;
+  auto parameters = compressionPolicy.config().parameters.zstd;
   Vector<char> buffer{&pool, data.size() + sizeof(uint32_t)};
   auto pos = buffer.data();
   encoding::writeUint32(data.size(), pos);

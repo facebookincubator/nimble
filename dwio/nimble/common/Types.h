@@ -128,6 +128,10 @@ enum class EncodingType {
   // Frame of Reference: stores offsets from per-frame minimum values.
   // Supports O(1) random access. Preserves row order.
   FOR = 18,
+  // Stores string data compressed with FSST (Fast Static Symbol Table).
+  // Trains a per-stripe symbol table and compresses each string independently,
+  // enabling random access decompression without touching neighboring strings.
+  Fsst = 19,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

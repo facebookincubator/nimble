@@ -69,7 +69,7 @@ TEST(OptionsTest, serializerOptionsDefaults) {
   EXPECT_FALSE(options.compressionOptions.has_value());
 
   // Verify default encoding selection policy factory creates a valid policy.
-  auto policy = options.encodingSelectionPolicyFactory(DataType::Int32);
+  auto policy = options.encodingSelectionPolicyCreator(DataType::Int32);
   EXPECT_NE(policy, nullptr);
 }
 

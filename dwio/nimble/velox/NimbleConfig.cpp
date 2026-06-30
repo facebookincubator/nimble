@@ -133,13 +133,13 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
 /* static */ Config::Entry<const std::vector<std::pair<EncodingType, float>>>
     Config::MANUAL_ENCODING_SELECTION_READ_FACTORS(
         "alpha.encodingselection.read.factors",
-        ManualEncodingSelectionPolicyFactory::parseReadFactors(
+        ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
             FLAGS_nimble_selection_read_factors),
-        [](const std::vector<std::pair<EncodingType, float>>& val) {
+        [](const std::vector<std::pair<EncodingType, float>>& readFactors) {
           std::vector<std::string> encodingFactorStrings;
           std::transform(
-              val.cbegin(),
-              val.cend(),
+              readFactors.cbegin(),
+              readFactors.cend(),
               std::back_inserter(encodingFactorStrings),
               [](const auto& readFactor) {
                 return fmt::format(
@@ -147,8 +147,9 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
               });
           return folly::join(";", encodingFactorStrings);
         },
-        [](const std::string& /* key */, const std::string& val) {
-          return ManualEncodingSelectionPolicyFactory::parseReadFactors(val);
+        [](const std::string& /* key */, const std::string& readFactorsConfig) {
+          return ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
+              readFactorsConfig);
         });
 
 /* static */ Config::Entry<float>
@@ -160,22 +161,23 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     Config::COMPRESSION_ACCEPT_RATIO_OVERRIDES(
         "alpha.encodingselection.compression.accept.ratio.overrides",
         {},
-        [](const std::vector<std::pair<EncodingType, float>>& val) {
+        [](const std::vector<std::pair<EncodingType, float>>& readFactors) {
           std::vector<std::string> parts;
           std::transform(
-              val.cbegin(),
-              val.cend(),
+              readFactors.cbegin(),
+              readFactors.cend(),
               std::back_inserter(parts),
               [](const auto& p) {
                 return fmt::format("{}={}", toString(p.first), p.second);
               });
           return folly::join(";", parts);
         },
-        [](const std::string& /* key */, const std::string& val) {
-          if (val.empty()) {
+        [](const std::string& /* key */, const std::string& readFactorsConfig) {
+          if (readFactorsConfig.empty()) {
             return std::vector<std::pair<EncodingType, float>>{};
           }
-          return ManualEncodingSelectionPolicyFactory::parseReadFactors(val);
+          return ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
+              readFactorsConfig);
         });
 
 // Attempt to compress the data only if the data size is equal or greater than

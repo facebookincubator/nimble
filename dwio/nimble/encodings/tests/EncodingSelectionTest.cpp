@@ -1012,7 +1012,8 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
   // Encode with compression enabled (explicit CompressionOptions).
   auto compressPolicy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           nimble::CompressionOptions{},
           std::nullopt);
   auto result =
@@ -1020,7 +1021,7 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
   auto compressionPolicy = result.compressionPolicyFactory();
   // Compression should be attempted (non-Uncompressed type).
   EXPECT_NE(
-      compressionPolicy->compression().compressionType,
+      compressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 
   // Default factory parameters — compression should also be enabled.
@@ -1035,14 +1036,15 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
         typedDefault->select(data, nimble::Statistics<uint32_t>::create(data));
     auto defaultCompressionPolicy = defaultResult.compressionPolicyFactory();
     EXPECT_NE(
-        defaultCompressionPolicy->compression().compressionType,
+        defaultCompressionPolicy->config().compressionType,
         nimble::CompressionType::Uncompressed);
   }
 
   // Encode with compression disabled (nullopt).
   auto noCompressPolicy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           /*compressionOptions=*/std::nullopt,
           std::nullopt);
   auto noCompressResult = noCompressPolicy->select(
@@ -1050,7 +1052,7 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
   auto noCompressionPolicy = noCompressResult.compressionPolicyFactory();
   // Compression should be Uncompressed (default NoCompressionPolicy).
   EXPECT_EQ(
-      noCompressionPolicy->compression().compressionType,
+      noCompressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 
   // Both should select the same encoding type.
@@ -1064,7 +1066,8 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlagPropagesToNested) {
   // compression disabled.
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           /*compressionOptions=*/std::nullopt,
           std::nullopt);
 
@@ -1082,7 +1085,7 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlagPropagesToNested) {
       typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
   auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
   EXPECT_EQ(
-      nestedCompressionPolicy->compression().compressionType,
+      nestedCompressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 }
 
@@ -1174,7 +1177,8 @@ TEST(ManualEncodingSelectionPolicyFactoryTest, noCompressFactory) {
   // Factory with nullopt compressionOptions should create policies that skip
   // compression.
   nimble::ManualEncodingSelectionPolicyFactory factory{
-      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      nimble::ManualEncodingSelectionPolicyFactory::
+          defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
 
   auto policy = factory.createPolicy(nimble::DataType::Uint32);
@@ -1186,7 +1190,7 @@ TEST(ManualEncodingSelectionPolicyFactoryTest, noCompressFactory) {
   auto result = typed->select(data, nimble::Statistics<uint32_t>::create(data));
   auto compressionPolicy = result.compressionPolicyFactory();
   EXPECT_EQ(
-      compressionPolicy->compression().compressionType,
+      compressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 }
 
@@ -1196,7 +1200,8 @@ TEST(
   // Factory with nullopt compressionOptions should create policies whose
   // nested children also have compression disabled.
   nimble::ManualEncodingSelectionPolicyFactory factory{
-      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      nimble::ManualEncodingSelectionPolicyFactory::
+          defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
 
   auto policy = factory.createPolicy(nimble::DataType::Uint32);
@@ -1218,7 +1223,7 @@ TEST(
       typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
   auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
   EXPECT_EQ(
-      nestedCompressionPolicy->compression().compressionType,
+      nestedCompressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 }
 
@@ -1229,9 +1234,10 @@ TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
   nimble::Buffer buffer(*pool);
 
   nimble::ManualEncodingSelectionPolicyFactory factory{
-      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      nimble::ManualEncodingSelectionPolicyFactory::
+          defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
-  nimble::EncodingSelectionPolicyFactory policyFactory =
+  nimble::EncodingSelectionPolicyCreator policyCreator =
       [&factory](nimble::DataType dataType) {
         return factory.createPolicy(dataType);
       };
@@ -1241,7 +1247,7 @@ TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
     std::optional<nimble::CompressionOptions> compressionOptions;
     std::vector<uint32_t> data;
     // Children layouts for compound encodings (e.g., RLE needs RunLengths
-    // and RunValues slots). nullopt children fall back to policyFactory.
+    // and RunValues slots). nullopt children fall back to policyCreator.
     std::vector<std::optional<const nimble::EncodingLayout>> children;
     std::string debugString() const {
       return fmt::format(
@@ -1273,7 +1279,7 @@ TEST(ReplayedEncodingSelectionPolicyTest, encodingRoundTrip) {
         testData.children};
     auto policy =
         std::make_unique<nimble::ReplayedEncodingSelectionPolicy<uint32_t>>(
-            std::move(layout), testData.compressionOptions, policyFactory);
+            std::move(layout), testData.compressionOptions, policyCreator);
 
     auto encoded = nimble::EncodingFactory::encode<uint32_t>(
         std::move(policy), std::span<const uint32_t>(testData.data), buffer);
@@ -1329,7 +1335,8 @@ TEST(ManualEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
     buffer.reset();
 
     nimble::ManualEncodingSelectionPolicyFactory factory{
-        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+        nimble::ManualEncodingSelectionPolicyFactory::
+            defaultEncodingReadFactors(),
         testData.compressionOptions};
     auto basePolicy = factory.createPolicy(nimble::DataType::Uint32);
     auto* rawTyped = dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(
@@ -1389,7 +1396,8 @@ TEST(ReplayedEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
   nimble::Buffer buffer(*pool);
 
   nimble::ManualEncodingSelectionPolicyFactory fallbackFactory{
-      nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      nimble::ManualEncodingSelectionPolicyFactory::
+          defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
   auto policyFactory = [&fallbackFactory](nimble::DataType dataType) {
     return fallbackFactory.createPolicy(dataType);
@@ -1482,13 +1490,14 @@ TEST(ManualEncodingSelectionPolicyTest, defaultCompressionType) {
 
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           nimble::CompressionOptions{},
           std::nullopt);
   auto result =
       policy->select(data, nimble::Statistics<uint32_t>::create(data));
   auto compressionPolicy = result.compressionPolicyFactory();
-  auto info = compressionPolicy->compression();
+  auto info = compressionPolicy->config();
 
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
   EXPECT_EQ(info.compressionType, nimble::CompressionType::MetaInternal);
@@ -1507,13 +1516,14 @@ TEST(ManualEncodingSelectionPolicyTest, explicitZstdCompressionType) {
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
   auto result =
       policy->select(data, nimble::Statistics<uint32_t>::create(data));
   auto compressionPolicy = result.compressionPolicyFactory();
-  auto info = compressionPolicy->compression();
+  auto info = compressionPolicy->config();
 
   EXPECT_EQ(info.compressionType, nimble::CompressionType::Zstd);
   EXPECT_EQ(
@@ -1532,13 +1542,14 @@ TEST(ManualEncodingSelectionPolicyTest, explicitMetaInternalCompressionType) {
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
   auto result =
       policy->select(data, nimble::Statistics<uint32_t>::create(data));
   auto compressionPolicy = result.compressionPolicyFactory();
-  auto info = compressionPolicy->compression();
+  auto info = compressionPolicy->config();
 
   EXPECT_EQ(info.compressionType, nimble::CompressionType::MetaInternal);
   EXPECT_EQ(
@@ -1562,7 +1573,8 @@ TEST(ManualEncodingSelectionPolicyTest, compressionTypeRoundTrip) {
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
 
@@ -1591,7 +1603,8 @@ TEST(ManualEncodingSelectionPolicyTest, compressionAcceptRatioOverride) {
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
   auto result =
@@ -1604,12 +1617,31 @@ TEST(ManualEncodingSelectionPolicyTest, compressionAcceptRatioOverride) {
   // Constant encoding has override ratio=0.0, so compression is attempted but
   // shouldAccept() will always reject (0 < compressedSize).
   EXPECT_NE(
-      compressionPolicy->compression().compressionType,
+      compressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
   EXPECT_FALSE(compressionPolicy->shouldAccept(
       nimble::CompressionType::Zstd,
       /*uncompressedSize=*/100,
       /*compressedSize=*/1));
+}
+
+TEST(ManualEncodingSelectionPolicyFactoryTest, fsstRequiresExplicitOptIn) {
+  const auto defaultEncodingReadFactors = nimble::
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors();
+  EXPECT_EQ(
+      std::find_if(
+          defaultEncodingReadFactors.begin(),
+          defaultEncodingReadFactors.end(),
+          [](const auto& entry) {
+            return entry.first == nimble::EncodingType::Fsst;
+          }),
+      defaultEncodingReadFactors.end());
+
+  EXPECT_EQ(
+      nimble::ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
+          "Fsst=1.0"),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::Fsst, 1.0}}));
 }
 
 TEST(
@@ -1625,7 +1657,8 @@ TEST(
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
   auto result =
@@ -1638,7 +1671,7 @@ TEST(
   // No override for Constant, so the global ratio applies — compression
   // should be attempted.
   EXPECT_NE(
-      compressionPolicy->compression().compressionType,
+      compressionPolicy->config().compressionType,
       nimble::CompressionType::Uncompressed);
 }
 
@@ -1656,7 +1689,8 @@ TEST(
   };
   auto policy =
       std::make_unique<nimble::ManualEncodingSelectionPolicy<uint32_t>>(
-          nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+          nimble::ManualEncodingSelectionPolicyFactory::
+              defaultEncodingReadFactors(),
           options,
           std::nullopt);
   auto result =

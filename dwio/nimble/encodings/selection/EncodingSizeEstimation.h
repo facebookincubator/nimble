@@ -17,7 +17,6 @@
 
 #include <glog/logging.h>
 #include <algorithm>
-#include <cmath>
 #include <optional>
 #include <span>
 #include "dwio/nimble/common/Exceptions.h"
@@ -27,6 +26,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -178,7 +178,8 @@ struct EncodingSizeEstimation {
   static std::optional<uint64_t> estimateStringSize(
       const EncodingType encodingType,
       const size_t entryCount,
-      const Statistics<std::string_view>& statistics) {
+      const Statistics<std::string_view>& statistics,
+      const Encoding::Options& options = {}) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<std::string_view>::estimateSize(statistics);
@@ -199,6 +200,13 @@ struct EncodingSizeEstimation {
         return RLEEncoding<std::string_view>::estimateSize(
             entryCount, statistics, FixedByteWidth);
       }
+      case EncodingType::Fsst: {
+        return FsstEncoding::estimateSize(
+            entryCount,
+            statistics,
+            FixedByteWidth,
+            options.fsstCompressionTargetRatio);
+      }
       default: {
         return std::nullopt;
       }
@@ -215,7 +223,7 @@ struct EncodingSizeEstimation {
     } else if constexpr (isBoolType<physicalType>()) {
       return estimateBoolSize(encodingType, entryCount, statistics);
     } else if constexpr (isStringType<physicalType>()) {
-      return estimateStringSize(encodingType, entryCount, statistics);
+      return estimateStringSize(encodingType, entryCount, statistics, options);
     }
 
     NIMBLE_UNREACHABLE(

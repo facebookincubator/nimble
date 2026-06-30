@@ -289,9 +289,9 @@ code {
       <div class="step-label">Encoding selection</div>
       <h3>EncodingSelectionPolicy::select(values, statistics)</h3>
       <div class="formula" style="text-align:left">
-        hasPerBlockEncoding = any_of(readFactors_, == BlockBitPacking);<br>
+        hasPerBlockEncoding = any_of(encodingReadFactors_, == BlockBitPacking);<br>
         <br>
-        for (const auto&amp; [encodingType, readFactor] : readFactors_) {<br>
+        for (const auto&amp; [encodingType, readFactor] : encodingReadFactors_) {<br>
         &nbsp;&nbsp;estimatedSize = EncodingSizeEstimation::estimateSize(encodingType, count, statistics, hasPerBlockEncoding);<br>
         &nbsp;&nbsp;<span class="comment">// dispatches by type:</span><br>
         &nbsp;&nbsp;<span class="comment">//   numeric → estimateNumericSize()</span><br>

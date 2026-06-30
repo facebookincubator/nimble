@@ -13,7 +13,7 @@ Nimble uses a **top-down greedy approach** to build an encoding tree:
 ## 📝 Key Components
 
 ### 1. **EncodingSelectionPolicy** (Policy Interface)
-- **Base class**: `EncodingSelectionPolicy<T>` 
+- **Base class**: `EncodingSelectionPolicy<T>`
 - **Purpose**: Pluggable policy for selecting the best encoding for given data
 - **Key methods**:
   - `select(values, statistics)` → Returns `EncodingSelectionResult`
@@ -88,7 +88,7 @@ auto encoded = EncodingFactory::encode<uint32_t>(
    ```cpp
    return EncodingFactory::encode<T>(std::move(selection), physicalValues, buffer);
    ```
-   
+
    This dispatches to the selected encoding's `encode()` method:
    ```cpp
    switch (selection.encodingType()) {
@@ -122,32 +122,32 @@ auto encoded = EncodingFactory::encode<uint32_t>(
            {alphabet},
            tempBuffer);
    ```
-   
+
    **What happens inside `encodeNested`** (`EncodingSelection::encodeNested`, line 264-283):
-   
+
    a. **Create Child Policy** (line 270-273)
       ```cpp
       auto nestedPolicy = selectionPolicy_->template create<physicalType>(
           EncodingType::Dictionary,
           EncodingIdentifiers::Dictionary::Alphabet);
       ```
-      
+
       This calls `ManualEncodingSelectionPolicy::createImpl` (line 130-158):
       - Filters out parent encoding from candidate list (prevents infinite recursion)
       - Creates new policy instance with same configuration
-   
+
    b. **Create Statistics for Nested Data** (line 274)
       ```cpp
       auto statistics = Statistics<physicalType>::create(alphabet);
       ```
-   
+
    c. **Select Encoding for Alphabet** (line 275)
       ```cpp
       auto selectionResult = nestedPolicy->select(alphabet, statistics);
       ```
       - Policy might select `TrivialEncoding` for small alphabets
       - Or `FixedBitWidthEncoding` for numeric alphabets
-   
+
    d. **Recursively Encode** (line 276-282)
       ```cpp
       return EncodingFactory::encode<physicalType>(
@@ -192,9 +192,9 @@ After encoding is complete, compression is applied:
    auto policy = selectionResult_.compressionPolicyFactory();
    ```
 
-2. **Compression Information** (from `AlwaysCompressPolicy::compression()`)
+2. **Compression Information** (from `ConfiguredCompressionPolicy::config()`)
    ```cpp
-   CompressionInformation info{
+   CompressionConfig info{
        .compressionType = CompressionType::MetaInternal,
        .compressionLevel = 4,
        // ... other parameters
@@ -322,7 +322,7 @@ ReplayedEncodingSelectionPolicy<T> : EncodingSelectionPolicy<T>
 
 The **EncodingSelectionPolicy** system enables Nimble to:
 1. **Automatically select optimal encodings** based on data characteristics
-2. **Build nested encoding trees** recursively and efficiently  
+2. **Build nested encoding trees** recursively and efficiently
 3. **Apply compression intelligently** at each level
 4. **Support pluggable policies** (manual, learned, replayed)
 5. **Make type-safe selections** across different data types

@@ -86,7 +86,7 @@ template <typename T, typename TCollection = std::vector<T>>
 nimble::EncodingLayout encodeAndCapture(
     nimble::EncodingLayout encodingLayout,
     TCollection data) {
-  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+  nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
       -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
@@ -100,7 +100,7 @@ nimble::EncodingLayout encodeAndCapture(
           std::move(encodingLayout),
           nimble::CompressionOptions{
               .compressionAcceptRatio = 100, .internalMinCompressionSize = 0},
-          encodingSelectionPolicyFactory),
+          encodingSelectionPolicyCreator),
       data,
       buffer);
 
@@ -139,7 +139,8 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
       nimble::NestedEncodingIdentifier /* identifier */,
       nimble::DataType type) override {
     nimble::ManualEncodingSelectionPolicyFactory factory{
-        nimble::ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+        nimble::ManualEncodingSelectionPolicyFactory::
+            defaultEncodingReadFactors(),
         std::nullopt};
     return factory.createPolicy(type);
   }
@@ -522,7 +523,7 @@ TEST(EncodingLayoutTests, Nullable) {
 
   testSerialization(expected);
 
-  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+  nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
       -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
@@ -535,7 +536,7 @@ TEST(EncodingLayoutTests, Nullable) {
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<uint32_t>>(
           expected.child(nimble::EncodingIdentifiers::Nullable::Data).value(),
           nimble::CompressionOptions{},
-          encodingSelectionPolicyFactory),
+          encodingSelectionPolicyCreator),
       std::vector<uint32_t>{1, 1, 1, 1, 5, 1},
       std::array<bool, 6>{false, false, true, false, false, false},
       buffer);
@@ -616,7 +617,7 @@ TEST(EncodingLayoutTests, SubIntSplitSerialization) {
 // Verify that EncodingLayoutCapture correctly reads the SubIntSplit binary
 // format and that the captured tree round-trips through serialize/deserialize.
 TEST(EncodingLayoutTests, SubIntSplitCapture) {
-  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+  nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
       -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
@@ -714,7 +715,7 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
 }
 
 TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
-  nimble::EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
+  nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
       -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
@@ -743,7 +744,7 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
 
   auto encoding = nimble::EncodingFactory::encode<int64_t>(
       std::make_unique<nimble::ReplayedEncodingSelectionPolicy<int64_t>>(
-          preserveLayout, std::nullopt, encodingSelectionPolicyFactory),
+          preserveLayout, std::nullopt, encodingSelectionPolicyCreator),
       data,
       buffer);
 

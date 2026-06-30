@@ -32,7 +32,7 @@ class TestLz4CompressionPolicy : public CompressionPolicy {
     compressionInfo_.parameters.lz4.accelerationLevel = 1;
   }
 
-  CompressionInformation compression() const override {
+  CompressionConfig config() const override {
     return compressionInfo_;
   }
 
@@ -44,7 +44,7 @@ class TestLz4CompressionPolicy : public CompressionPolicy {
   }
 
  private:
-  CompressionInformation compressionInfo_;
+  CompressionConfig compressionInfo_;
 };
 
 } // namespace

@@ -26,6 +26,7 @@ add_executable(
   CompressionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  FsstEncodingTest.cpp
   Lz4CompressorTest.cpp
   ForEncodingTest.cpp
   FrequencyPartitionEncodingTest.cpp

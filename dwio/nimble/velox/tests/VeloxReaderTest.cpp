@@ -1375,6 +1375,17 @@ class VeloxReaderTest : public ::testing::TestWithParam<TestParam> {
   uint64_t nextFileId_{0};
 };
 
+nimble::EncodingLayout makeFsstEncodingLayout() {
+  return nimble::EncodingLayout{
+      nimble::EncodingType::Fsst,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {nimble::EncodingLayout{
+          nimble::EncodingType::Trivial,
+          {},
+          nimble::CompressionType::Uncompressed}}};
+}
+
 TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
@@ -1708,6 +1719,55 @@ TEST_P(VeloxReaderTest, lifetime) {
         << "\nReference: " << vector->toString(i)
         << "\nResult: " << result->toString(i);
   }
+}
+
+TEST_P(VeloxReaderTest, fsstStringBatchReader) {
+  if (!optimizeStringBufferHandling()) {
+    GTEST_SKIP() << "FSST is only available in the current encoding factory.";
+  }
+
+  constexpr int kRows = 2'000;
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {vectorMaker.flatVector<int64_t>(kRows, [](auto i) { return i; }),
+       vectorMaker.flatVector<std::string>(kRows, [](auto i) {
+         return fmt::format("common/prefix/for/fsst/batch/{}", i % 32);
+       })});
+
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.fsstCompressionTargetRatio = 10.0;
+  writerOptions.encodingLayoutTree.emplace(
+      nimble::Kind::Row,
+      std::unordered_map<
+          nimble::EncodingLayoutTree::StreamIdentifier,
+          nimble::EncodingLayout>{},
+      "",
+      std::vector<nimble::EncodingLayoutTree>{
+          nimble::EncodingLayoutTree{nimble::Kind::Scalar, {}, "c0"},
+          nimble::EncodingLayoutTree{
+              nimble::Kind::Scalar,
+              {{nimble::EncodingLayoutTree::StreamIdentifiers::Scalar::
+                    ScalarStream,
+                makeFsstEncodingLayout()}},
+              "c1"}});
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+      std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
+  auto reader = createVeloxReader(readFile, *leafPool_, std::move(selector));
+
+  velox::VectorPtr result;
+  int32_t offset = 0;
+  while (offset < kRows) {
+    ASSERT_TRUE(reader->next(137, result));
+    for (int32_t i = 0; i < result->size(); ++i) {
+      ASSERT_TRUE(vector->equalValueAt(result.get(), offset + i, i))
+          << "Mismatch at row " << (offset + i);
+    }
+    offset += result->size();
+  }
+  ASSERT_FALSE(reader->next(1, result));
 }
 
 TEST_P(VeloxReaderTest, allValuesNulls) {
@@ -6330,7 +6390,7 @@ TEST_P(VeloxReaderTest, estimatedRowSizeComplex) {
 
       // TODO: Remove the customized policy after estimation is supported for
       // all encoding types.
-      writerOptions.encodingSelectionPolicyFactory =
+      writerOptions.encodingSelectionPolicyCreator =
           [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
                {nimble::EncodingType::Constant, 1.0},
                {nimble::EncodingType::Trivial, 0.7},
@@ -6479,7 +6539,7 @@ TEST_P(VeloxReaderTest, estimatedRowSizeMix) {
       writerOptions.enableChunking = false;
       // TODO: Remove the customized policy after estimation is supported
       // for all encoding types.
-      writerOptions.encodingSelectionPolicyFactory =
+      writerOptions.encodingSelectionPolicyCreator =
           [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
                {nimble::EncodingType::Constant, 1.0},
                {nimble::EncodingType::Trivial, 0.7},
@@ -6598,7 +6658,7 @@ TEST_P(VeloxReaderTest, readNonExistingFlatMapFeature) {
 
     // TODO: Remove the customized policy after estimation is supported for
     // all encoding types.
-    writerOptions.encodingSelectionPolicyFactory =
+    writerOptions.encodingSelectionPolicyCreator =
         [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{{
              {nimble::EncodingType::Constant, 1.0},
              {nimble::EncodingType::Trivial, 0.7},
@@ -7399,11 +7459,11 @@ TEST_P(VeloxReaderTest, openZLCompressionRoundTrip) {
   // The default write path drives compression off the encoding selection policy
   // (not VeloxWriterOptions::compressionOptions), so force OpenZL via the
   // factory so the codec is actually exercised end-to-end.
-  writerOptions.encodingSelectionPolicyFactory =
+  writerOptions.encodingSelectionPolicyCreator =
       [factory =
            nimble::ManualEncodingSelectionPolicyFactory{
                nimble::ManualEncodingSelectionPolicyFactory::
-                   defaultReadFactors(),
+                   defaultEncodingReadFactors(),
                nimble::CompressionOptions{
                    .compressionAcceptRatio = 100,
                    .compressionType = nimble::CompressionType::OpenZL,

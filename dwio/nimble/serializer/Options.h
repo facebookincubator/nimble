@@ -186,10 +186,10 @@ inline std::ostream& operator<<(
   return os << toString(version);
 }
 
-/// Returns the default encoding selection policy factory. The underlying
+/// Returns the default encoding selection policy creator. The underlying
 /// ManualEncodingSelectionPolicyFactory (and its default read-factor vector) is
-/// initialized once and shared across all returned factories.
-EncodingSelectionPolicyFactory defaultEncodingSelectionPolicyFactory();
+/// initialized once and shared across all returned creators.
+EncodingSelectionPolicyCreator defaultEncodingSelectionPolicyCreator();
 
 struct SerializerOptions {
   /// Legacy (kLegacy) compression settings. These only apply when version is
@@ -224,14 +224,14 @@ struct SerializerOptions {
   /// When encodingLayoutTree is specified, used as fallback for streams or
   /// nested encodings not captured in the layout tree. When encodingLayoutTree
   /// is not specified, used directly for all streams.
-  EncodingSelectionPolicyFactory encodingSelectionPolicyFactory =
-      defaultEncodingSelectionPolicyFactory();
+  EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
+      defaultEncodingSelectionPolicyCreator();
 
   /// Optional captured encoding layout tree.
   /// When specified, encodings are replayed from this tree instead of using
-  /// encodingSelectionPolicyFactory. This speeds up writes by skipping runtime
+  /// encodingSelectionPolicyCreator. This speeds up writes by skipping runtime
   /// encoding selection and can provide better encodings based on historical
-  /// data. Falls back to encodingSelectionPolicyFactory for streams not in the
+  /// data. Falls back to encodingSelectionPolicyCreator for streams not in the
   /// tree.
   std::optional<EncodingLayoutTree> encodingLayoutTree{};
 

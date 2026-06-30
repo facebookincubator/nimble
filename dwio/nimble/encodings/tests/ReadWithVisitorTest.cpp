@@ -145,7 +145,7 @@ class NonRecursiveSubIntSplitPolicy final : public EncodingSelectionPolicy<T> {
       NestedEncodingIdentifier /* identifier */,
       DataType type) override {
     auto readFactors =
-        ManualEncodingSelectionPolicyFactory::defaultReadFactors();
+        ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors();
     readFactors.erase(
         std::remove_if(
             readFactors.begin(),

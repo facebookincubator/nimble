@@ -827,7 +827,7 @@ TEST_P(SelectiveNimbleReaderTest, multiChunkNulls) {
   };
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
   VeloxWriterOptions options;
-  options.encodingSelectionPolicyFactory = [&](DataType dataType) {
+  options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
   options.enableChunking = true;
@@ -876,7 +876,7 @@ TEST_P(SelectiveNimbleReaderTest, multiChunkInt16RowSetOverBoundary) {
   std::vector<std::pair<EncodingType, float>> readFactors;
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
   VeloxWriterOptions options;
-  options.encodingSelectionPolicyFactory = [&](DataType dataType) {
+  options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
   options.enableChunking = true;
@@ -1062,7 +1062,7 @@ TEST_P(SelectiveNimbleReaderTest, smallDictionaryValue) {
   };
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
   VeloxWriterOptions options;
-  options.encodingSelectionPolicyFactory = [&](DataType dataType) {
+  options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
   auto readers = makeReaders(
@@ -2627,7 +2627,7 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   nimble::ManualEncodingSelectionPolicyFactory encodingFactory(
       {{{nimble::EncodingType::Trivial, 1.0}}}, comprOpts);
   nimble::VeloxWriterOptions writerOptions;
-  writerOptions.encodingSelectionPolicyFactory = [&](nimble::DataType dt) {
+  writerOptions.encodingSelectionPolicyCreator = [&](nimble::DataType dt) {
     return encodingFactory.createPolicy(dt);
   };
   auto file =

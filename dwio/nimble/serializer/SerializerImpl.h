@@ -50,7 +50,7 @@ namespace detail {
 FOLLY_ALWAYS_INLINE std::unique_ptr<EncodingSelectionPolicyBase>
 createDefaultEncodingPolicy(DataType dataType) {
   static const ManualEncodingSelectionPolicyFactory factory{
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt};
   return factory.createPolicy(dataType);
 }
@@ -88,7 +88,7 @@ template <typename T>
 std::string_view encodeTyped(
     std::span<const T> values,
     nimble::Buffer& encodingBuffer,
-    const EncodingSelectionPolicyFactory& policyFactory,
+    const EncodingSelectionPolicyCreator& policyFactory,
     const Encoding::Options& encodingOptions = {.useVarintRowCount = true},
     const EncodingLayout* encodingLayout = nullptr,
     std::optional<CompressionOptions> compressionOptions = std::nullopt) {
@@ -460,7 +460,7 @@ std::string_view encodeTyped(
   return encodeTyped<T>(
       values,
       encodingBuffer,
-      options.encodingSelectionPolicyFactory,
+      options.encodingSelectionPolicyCreator,
       options.encodingOptions,
       encodingLayout,
       options.compressionOptions);

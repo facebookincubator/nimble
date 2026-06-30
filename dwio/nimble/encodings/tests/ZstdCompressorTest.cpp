@@ -33,7 +33,7 @@ class TestCompressionPolicy : public CompressionPolicy {
     compressionInfo_.parameters.zstd.compressionLevel = 3;
   }
 
-  CompressionInformation compression() const override {
+  CompressionConfig config() const override {
     return compressionInfo_;
   }
 
@@ -45,7 +45,7 @@ class TestCompressionPolicy : public CompressionPolicy {
   }
 
  private:
-  CompressionInformation compressionInfo_;
+  CompressionConfig compressionInfo_;
 };
 
 } // namespace

@@ -108,6 +108,116 @@ TEST_F(VeloxWriterTest, emptyFile) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
+TEST_F(VeloxWriterTest, buildEncodingOptionsPropagatesFsstCompressionTarget) {
+  nimble::VeloxWriterOptions options;
+  options.fsstCompressionTargetRatio = 0.42;
+
+  const auto encodingOptions = options.buildEncodingOptions();
+
+  EXPECT_DOUBLE_EQ(encodingOptions.fsstCompressionTargetRatio, 0.42);
+}
+
+TEST_F(VeloxWriterTest, fsstEncodingTargetControlsWriterEncoding) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {vectorMaker.flatVector<std::string>({std::string(2'000, 'x')})});
+
+  struct TestCase {
+    std::string name;
+    double targetRatio;
+    nimble::CompressionType fsstCompressionType;
+    nimble::CompressionOptions compressionOptions;
+    nimble::EncodingType expectedEncodingType;
+    nimble::CompressionType expectedCompressionType;
+  };
+
+  nimble::CompressionOptions zstdCompressionOptions;
+  zstdCompressionOptions.compressionType = nimble::CompressionType::Zstd;
+  zstdCompressionOptions.zstdMinCompressionSize = 0;
+
+  for (const auto& testCase : std::vector<TestCase>{
+           {
+               .name = "permissive_target_uses_fsst",
+               .targetRatio = 10.0,
+               .fsstCompressionType = nimble::CompressionType::Uncompressed,
+               .expectedEncodingType = nimble::EncodingType::Fsst,
+               .expectedCompressionType = nimble::CompressionType::Uncompressed,
+           },
+           {
+               .name = "strict_target_falls_back_to_compressed_trivial",
+               .targetRatio = 0.0,
+               .fsstCompressionType = nimble::CompressionType::Zstd,
+               .compressionOptions = zstdCompressionOptions,
+               .expectedEncodingType = nimble::EncodingType::Trivial,
+               .expectedCompressionType = nimble::CompressionType::Zstd,
+           },
+       }) {
+    SCOPED_TRACE(testCase.name);
+
+    nimble::EncodingLayout fsstLayout{
+        nimble::EncodingType::Fsst,
+        {},
+        testCase.fsstCompressionType,
+        {nimble::EncodingLayout{
+            nimble::EncodingType::Trivial,
+            {},
+            nimble::CompressionType::Uncompressed}}};
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        vector->type(),
+        std::move(writeFile),
+        *rootPool_,
+        {
+            .encodingLayoutTree =
+                nimble::EncodingLayoutTree{
+                    nimble::Kind::Row,
+                    {},
+                    "",
+                    {nimble::EncodingLayoutTree{
+                        nimble::Kind::Scalar,
+                        {{nimble::EncodingLayoutTree::StreamIdentifiers::
+                              Scalar::ScalarStream,
+                          std::move(fsstLayout)}},
+                        "c0"}}},
+            .compressionOptions = testCase.compressionOptions,
+            .fsstCompressionTargetRatio = testCase.targetRatio,
+        });
+    writer.write(vector);
+    writer.close();
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+    auto section =
+        tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+    NIMBLE_CHECK(section.has_value(), "Schema not found.");
+    auto schema =
+        nimble::SchemaDeserializer::deserialize(section->content().data());
+    const auto& scalarNode = schema->asRow().childAt(0)->asScalar();
+
+    ASSERT_EQ(tablet->stripeCount(), 1);
+    std::vector<uint32_t> streamIdentifiers{
+        scalarNode.scalarDescriptor().offset()};
+    auto streams = tablet->load(tablet->stripeIdentifier(0), streamIdentifiers);
+    nimble::InMemoryChunkedStream chunkedStream{
+        *leafPool_, std::move(streams[0])};
+    ASSERT_TRUE(chunkedStream.hasNext());
+    const auto capture =
+        nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+
+    EXPECT_EQ(capture.encodingType(), testCase.expectedEncodingType);
+    EXPECT_EQ(capture.compressionType(), testCase.expectedCompressionType);
+    if (testCase.expectedEncodingType == nimble::EncodingType::Fsst) {
+      EXPECT_EQ(
+          capture.child(nimble::EncodingIdentifiers::Fsst::Lengths)
+              ->encodingType(),
+          nimble::EncodingType::Trivial);
+    }
+  }
+}
+
 TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
   auto type = velox::ROW({
       {"key_col", velox::INTEGER()},
@@ -1098,11 +1208,11 @@ TEST_F(VeloxWriterTest, openZLCompressionNumericRoundTrip) {
   // (not VeloxWriterOptions::compressionOptions), so force OpenZL via the
   // factory. Accept ratio 100 + min size 0 ensure the codec is actually applied
   // even to tiny streams.
-  writerOptions.encodingSelectionPolicyFactory =
+  writerOptions.encodingSelectionPolicyCreator =
       [factory =
            nimble::ManualEncodingSelectionPolicyFactory{
                nimble::ManualEncodingSelectionPolicyFactory::
-                   defaultReadFactors(),
+                   defaultEncodingReadFactors(),
                nimble::CompressionOptions{
                    .compressionAcceptRatio = 100,
                    .compressionType = nimble::CompressionType::OpenZL,

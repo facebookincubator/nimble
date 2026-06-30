@@ -15,7 +15,7 @@ Compression is applied at **leaf encoding nodes** in the encoding tree (e.g. `Tr
 ```
 VeloxWriterOptions::compressionOptions
   → ManualEncodingSelectionPolicy (encoding selection)
-    → AlwaysCompressPolicy (created per-stream at leaf level)
+    → ConfiguredCompressionPolicy (created per-stream at leaf level)
       → Compression::compress() (static dispatch)
         → CompressorRegistry → ICompressor::compress()
 ```
@@ -246,7 +246,7 @@ struct CompressionParameters {
 
 ### Step 5: Add configuration fields
 
-**`dwio/nimble/encodings/selection/EncodingSelectionPolicy.h`** — add fields to `CompressionOptions`:
+**`dwio/nimble/compression/CompressionPolicy.h`** — add fields to `CompressionOptions`:
 
 ```cpp
 struct CompressionOptions {
@@ -256,13 +256,13 @@ struct CompressionOptions {
 };
 ```
 
-**`dwio/nimble/encodings/selection/EncodingSelectionPolicy.h`** — update `AlwaysCompressPolicy::compression()` inside `ManualEncodingSelectionPolicy::select()` to handle the new codec:
+**`dwio/nimble/compression/CompressionPolicy.cpp`** — update `ConfiguredCompressionPolicy::config()` to handle the new codec:
 
 ```cpp
-CompressionInformation compression() const override {
+CompressionConfig config() const override {
   // ... existing Zstd and Lz4 branches ...
   if (compressionOptions_.compressionType == CompressionType::MyCodec) {
-    CompressionInformation information{
+    CompressionConfig information{
         .compressionType = CompressionType::MyCodec,
         .minCompressionSize = compressionOptions_.myCodecMinCompressionSize};
     information.parameters.myCodec.myOption =
@@ -322,8 +322,8 @@ Add compression round-trip tests in `dwio/nimble/encodings/tests/` or `dwio/nimb
 - [ ] Add min compression size constant to `Constants.h`
 - [ ] Register in `CompressorRegistry` in `Compression.cpp`
 - [ ] Add parameter struct to `CompressionPolicy.h`
-- [ ] Add fields to `CompressionOptions` in `EncodingSelectionPolicy.h`
-- [ ] Handle new codec in `AlwaysCompressPolicy::compression()`
+- [ ] Add fields to `CompressionOptions` in `CompressionPolicy.h`
+- [ ] Handle new codec in `ConfiguredCompressionPolicy::config()`
 - [ ] Add source/header to `compression/BUCK`
 - [ ] (Optional) Add serde parameters in `NimbleConfig.{h,cpp}` and `NimbleWriterOptionBuilder.cpp`
 - [ ] Add unit tests
@@ -336,12 +336,13 @@ Add compression round-trip tests in `dwio/nimble/encodings/tests/` or `dwio/nimb
 | `common/Constants.h` | Min compression size constants |
 | `compression/Compression.h` | `ICompressor` interface, `CompressionEncoder`, `Compression` static API |
 | `compression/Compression.cpp` | `CompressorRegistry`, dispatch logic |
-| `compression/CompressionPolicy.h` | `CompressionPolicy` interface, parameter structs |
+| `compression/CompressionPolicy.h` | `CompressionPolicy` interface, parameter structs, compression options |
+| `compression/CompressionPolicy.cpp` | `ConfiguredCompressionPolicy` implementation |
 | `compression/ZstdCompressor.{h,cpp}` | Zstd codec (good reference implementation) |
 | `compression/Lz4Compressor.{h,cpp}` | LZ4 codec |
 | `compression/fb/MetaInternalCompressor.{h,cpp}` | Zstrong/Managed Compression (internal only) |
 | `compression/BUCK` | Build target for all compression code |
-| `encodings/selection/EncodingSelectionPolicy.h` | `CompressionOptions`, `AlwaysCompressPolicy` |
+| `encodings/selection/EncodingSelectionPolicy.h` | Encoding selection policy |
 | `velox/VeloxWriterOptions.h` | `VeloxWriterOptions::compressionOptions` |
 | `tablet/Footer.fbs` | FlatBuffers schema (stores `CompressionType` per metadata section) |
 | `dwio/api/NimbleConfig.{h,cpp}` | Serde parameter definitions |

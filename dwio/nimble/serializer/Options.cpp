@@ -52,14 +52,14 @@ EncodingType getTrailerEncodingType(EncodingType encodingType) {
   }
 }
 
-EncodingSelectionPolicyFactory defaultEncodingSelectionPolicyFactory() {
+EncodingSelectionPolicyCreator defaultEncodingSelectionPolicyCreator() {
   // Initialize the default factory once. It is const and createPolicy() does
   // not mutate it, so a single instance can be safely shared across all default
   // SerializerOptions instead of rebuilding the read-factor vector on every
   // construction. The returned lambda is captureless and refers to the shared
   // factory directly.
   static const ManualEncodingSelectionPolicyFactory factory(
-      ManualEncodingSelectionPolicyFactory::defaultReadFactors(),
+      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
       /*compressionOptions=*/std::nullopt);
   return [](DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
     return factory.createPolicy(dataType);

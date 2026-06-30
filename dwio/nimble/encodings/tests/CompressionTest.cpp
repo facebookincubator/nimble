@@ -50,7 +50,7 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
     compressionInfo_.parameters.metaInternal.decompressionLevel = 2;
   }
 
-  nimble::CompressionInformation compression() const override {
+  nimble::CompressionConfig config() const override {
     return compressionInfo_;
   }
 
@@ -62,7 +62,7 @@ class TestCompressionPolicy : public nimble::CompressionPolicy {
   }
 
  private:
-  nimble::CompressionInformation compressionInfo_;
+  nimble::CompressionConfig compressionInfo_;
 };
 
 template <typename T>
@@ -150,6 +150,55 @@ TEST(CompressionTests, VerifyDefaultMinCompressionSize) {
       nimble::kZstdMinCompressionSize);
   EXPECT_EQ(
       compressionOptions.lz4MinCompressionSize, nimble::kLz4MinCompressionSize);
+}
+
+TEST(CompressionTests, NoCompressionPolicy) {
+  nimble::NoCompressionPolicy policy;
+
+  EXPECT_EQ(
+      policy.config().compressionType, nimble::CompressionType::Uncompressed);
+  EXPECT_FALSE(policy.shouldAccept(
+      nimble::CompressionType::Zstd,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/1));
+}
+
+TEST(CompressionTests, ConfiguredCompressionPolicyUsesCompressionOptions) {
+  nimble::CompressionOptions options{
+      .compressionType = nimble::CompressionType::Zstd,
+      .zstdMinCompressionSize = 123,
+      .zstdCompressionLevel = 7,
+  };
+
+  nimble::ConfiguredCompressionPolicy policy{
+      options, nimble::EncodingType::FixedBitWidth};
+  const auto compression = policy.config();
+
+  EXPECT_EQ(compression.compressionType, nimble::CompressionType::Zstd);
+  EXPECT_EQ(compression.minCompressionSize, 123);
+  EXPECT_EQ(compression.parameters.zstd.compressionLevel, 7);
+}
+
+TEST(CompressionTests, ConfiguredCompressionPolicyAcceptRatioOverride) {
+  nimble::ConfiguredCompressionPolicy blockBitPackingPolicy{
+      nimble::CompressionOptions{}, nimble::EncodingType::BlockBitPacking};
+
+  EXPECT_FALSE(blockBitPackingPolicy.shouldAccept(
+      nimble::CompressionType::MetaInternal,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/80));
+  EXPECT_TRUE(blockBitPackingPolicy.shouldAccept(
+      nimble::CompressionType::MetaInternal,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/60));
+
+  nimble::ConfiguredCompressionPolicy trivialPolicy{
+      nimble::CompressionOptions{}, nimble::EncodingType::Trivial};
+
+  EXPECT_TRUE(trivialPolicy.shouldAccept(
+      nimble::CompressionType::MetaInternal,
+      /*uncompressedSize=*/100,
+      /*compressedSize=*/80));
 }
 
 TEST(CompressionTests, MinCompresssionSizeIsApplied) {

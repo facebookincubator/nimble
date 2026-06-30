@@ -337,13 +337,13 @@ std::string_view encode(
     policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(encodingLayout.value()),
         context.options().compressionOptions,
-        context.options().encodingSelectionPolicyFactory);
+        context.options().encodingSelectionPolicyCreator);
 
   } else {
     policy = std::unique_ptr<EncodingSelectionPolicy<T>>(
         static_cast<EncodingSelectionPolicy<T>*>(
             context.options()
-                .encodingSelectionPolicyFactory(TypeTraits<T>::dataType)
+                .encodingSelectionPolicyCreator(TypeTraits<T>::dataType)
                 .release()));
   }
 
