@@ -80,6 +80,11 @@ class Config : public velox::config::ConfigBase {
   /// Valid values: "prefix" (default), "trivial".
   static Entry<std::string> INDEX_ENCODING_TYPE;
 
+  /// Maximum rows per key chunk within a cluster index partition. Controls
+  /// search granularity and encoding batch size. 0 means no splitting (one
+  /// chunk per partition), which can hang on large tables. Default: 10000.
+  static Entry<uint64_t> INDEX_MAX_ROWS_PER_KEY_CHUNK;
+
   static Entry<uint16_t> BLOCK_BIT_PACKING_BLOCK_SIZE;
 
   /// Enable column statistics collection during writing.

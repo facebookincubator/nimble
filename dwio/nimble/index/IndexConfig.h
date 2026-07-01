@@ -62,8 +62,7 @@ struct ClusterIndexConfig {
   /// Maximum rows per chunk within a partition. Controls in-memory search
   /// granularity — chunks have start/end keys for binary search. Smaller values
   /// give finer-grained lookups at the cost of more metadata.
-  /// 0 means no splitting (one chunk per partition).
-  uint64_t maxRowsPerKeyChunk{0};
+  uint64_t maxRowsPerKeyChunk{10'000};
 };
 
 /// Configuration for bloom filter.

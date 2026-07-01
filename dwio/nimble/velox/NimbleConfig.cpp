@@ -341,6 +341,10 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.index.encoding_type",
     "prefix");
 
+/* static */ Config::Entry<uint64_t> Config::INDEX_MAX_ROWS_PER_KEY_CHUNK(
+    "nimble.index.max_rows_per_key_chunk",
+    10'000);
+
 /* static */ Config::Entry<uint16_t> Config::BLOCK_BIT_PACKING_BLOCK_SIZE(
     "nimble.blockbitpacking.block.size",
     kBlockBitPackingBlockSize);
