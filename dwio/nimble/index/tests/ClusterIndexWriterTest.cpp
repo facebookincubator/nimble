@@ -1190,5 +1190,10 @@ INSTANTIATE_TEST_SUITE_P(
       return fmt::format("maxRowsPerKeyChunk_{}", info.param);
     });
 
+TEST_F(ClusterIndexWriterTest, defaultMaxRowsPerKeyChunk) {
+  ClusterIndexConfig config{.columns = {std::string(kCol1)}};
+  EXPECT_EQ(config.maxRowsPerKeyChunk, 10'000);
+}
+
 } // namespace
 } // namespace facebook::nimble::index::test
