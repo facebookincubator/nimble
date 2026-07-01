@@ -843,4 +843,45 @@ TEST_F(PrefixEncodingTest, fuzzerEncode) {
   }
 }
 
+TEST_F(PrefixEncodingTest, encodeLargeInputRoundTrip) {
+  constexpr uint32_t kNumValues = 500'000;
+
+  std::vector<std::string> keyStrings;
+  keyStrings.reserve(kNumValues);
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    keyStrings.push_back(fmt::format("key_{:010d}_suffix_{:05d}", i / 100, i));
+  }
+  std::vector<std::string_view> values;
+  values.reserve(kNumValues);
+  for (const auto& s : keyStrings) {
+    values.push_back(s);
+  }
+
+  Buffer buffer{*pool_};
+
+  const auto startTime = std::chrono::steady_clock::now();
+  auto encoded = EncodingFactory::encode<std::string_view>(
+      createSelectionPolicy(), values, buffer);
+  const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - startTime)
+                           .count();
+  EXPECT_FALSE(encoded.empty());
+  // Without the reserve() fix, encoding 500K values takes 600+ seconds due to
+  // O(n^2) reallocations. With the fix it completes in under a second. Use a
+  // generous 120s limit to avoid flakes under ASAN/TSAN/loaded machines.
+  EXPECT_LT(elapsed, 120) << "Encoding " << kNumValues << " values took "
+                          << elapsed << "s";
+
+  stringBuffers_.clear();
+  auto encoding =
+      EncodingFactory().create(*pool_, encoded, createStringBufferFactory());
+  EXPECT_EQ(encoding->rowCount(), kNumValues);
+
+  std::vector<std::string_view> decoded(kNumValues);
+  encoding->materialize(kNumValues, decoded.data());
+  for (uint32_t i = 0; i < kNumValues; ++i) {
+    EXPECT_EQ(decoded[i], values[i]) << "Mismatch at row " << i;
+  }
+}
+
 } // namespace facebook::nimble::test

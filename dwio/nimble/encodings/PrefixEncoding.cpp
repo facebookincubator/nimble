@@ -195,6 +195,13 @@ std::string_view PrefixEncoding::encode(
   restartOffsets.reserve(numRestarts);
   Vector<char> encodedData{&buffer.getMemoryPool()};
 
+  // Reserve upfront to avoid O(n^2) reallocations in the insert() loop below.
+  uint64_t estimatedSize = 0;
+  for (const auto& v : values) {
+    estimatedSize += 2 * sizeof(uint32_t) + v.size();
+  }
+  encodedData.reserve(estimatedSize);
+
   std::string_view lastValue;
   char buf[sizeof(uint32_t)];
 
