@@ -50,6 +50,8 @@ class Config : public velox::config::ConfigBase {
       INPUT_BUFFER_DEFAULT_GROWTH_CONFIGS;
   static Entry<const std::map<uint64_t, float>> STRING_BUFFER_GROWTH_CONFIGS;
   static Entry<bool> ENABLE_CHUNKING;
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   static Entry<bool> ENABLE_CHUNK_INDEX;
   static Entry<uint64_t> CHUNKING_WRITER_MEMORY_HIGH_THRESHOLD;
   static Entry<uint64_t> CHUNKING_WRITER_MEMORY_LOW_THRESHOLD;
@@ -58,6 +60,9 @@ class Config : public velox::config::ConfigBase {
   static Entry<uint64_t> CHUNKING_WRITER_MIN_CHUNK_SIZE;
   static Entry<uint64_t> CHUNKING_WRITER_MAX_CHUNK_SIZE;
   static Entry<uint64_t> CHUNKING_WRITER_WIDE_SCHEMA_MAX_CHUNK_SIZE;
+
+  // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+  // production tables without consulting the Nimble team (oncall: dwios).
 
   /// Index columns to build cluster index during writing.
   /// Column names are separated by commas.
@@ -85,6 +90,9 @@ class Config : public velox::config::ConfigBase {
   /// chunk per partition), which can hang on large tables. Default: 10000.
   static Entry<uint64_t> INDEX_MAX_ROWS_PER_KEY_CHUNK;
 
+  // EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
+  // enable for production tables without consulting the Nimble team
+  // (oncall: dwios).
   static Entry<uint16_t> BLOCK_BIT_PACKING_BLOCK_SIZE;
 
   /// Enable column statistics collection during writing.

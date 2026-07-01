@@ -56,6 +56,8 @@ struct VeloxWriterOptions {
   // enabling O(1) chunk-level seeking within stripes. Independent of
   // the cluster index (clusterIndexConfig). When clusterIndexConfig is set,
   // chunk index is always enabled regardless of this flag.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   bool enableChunkIndex{false};
 
   // Skip writing chunk index for a stripe group if the average number
@@ -65,16 +67,22 @@ struct VeloxWriterOptions {
 
   /// If set, the cluster index on the specified columns will be built during
   /// writing. The index stores the per-chunk min and max key for each stripe.
+  // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+  // production tables without consulting the Nimble team (oncall: dwios).
   std::optional<ClusterIndexConfig> clusterIndexConfig;
 
   /// Hash index configurations. Each config builds an independent hash-based
   /// point lookup index on the specified columns. Unlike cluster index, hash
   /// index does not require sorted data.
+  // EXPERIMENTAL: Hash index is not production-ready. Do not enable for
+  // production tables without consulting the Nimble team (oncall: dwios).
   std::vector<HashIndexConfig> hashIndexConfigs;
 
   /// Sorted index configurations. Each config builds an independent sorted
   /// key stream index supporting both point lookups and range scans on
   /// unsorted data.
+  // EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
+  // production tables without consulting the Nimble team (oncall: dwios).
   std::vector<SortedIndexConfig> sortedIndexConfigs;
 
   // Columns that should be encoded as flat maps. Maps column name to a set
@@ -131,6 +139,9 @@ struct VeloxWriterOptions {
   CompressionOptions compressionOptions;
 
   // Block size for BlockBitPacking encoding.
+  // EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
+  // enable for production tables without consulting the Nimble team
+  // (oncall: dwios).
   uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 
   /// FSST is kept only when its final encoded size is at most this fraction of

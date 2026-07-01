@@ -111,6 +111,9 @@ ManualEncodingSelectionPolicyFactory::possibleEncodings() {
       EncodingType::Dictionary,
       EncodingType::RLE,
       EncodingType::Varint,
+      // EXPERIMENTAL: The following encodings are not production-ready. Do not
+      // enable for production tables without consulting the Nimble team
+      // (oncall: dwios).
       EncodingType::PFOR,
       EncodingType::SimdForBitpack,
       EncodingType::SubIntSplit,

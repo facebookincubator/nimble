@@ -28,6 +28,8 @@ namespace facebook::nimble {
 /// Configuration for index generation.
 /// The index allows efficient filtering and pruning of data based on
 /// the specified index columns.
+// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+// production tables without consulting the Nimble team (oncall: dwios).
 struct ClusterIndexConfig {
   /// Columns to be indexed for data pruning.
   /// These columns will be encoded using KeyWriter to generate index keys
@@ -78,6 +80,8 @@ struct BloomFilterConfig {
 /// A hash index provides point lookups from composite key columns to row
 /// numbers without requiring data to be sorted. Multiple hash indices can
 /// coexist per file, each on a different set of columns.
+// EXPERIMENTAL: Hash index is not production-ready. Do not enable for
+// production tables without consulting the Nimble team (oncall: dwios).
 struct HashIndexConfig {
   /// Columns forming the composite key for point lookups.
   std::vector<std::string> columns;
@@ -102,6 +106,8 @@ struct HashIndexConfig {
 /// A sorted index stores a sorted key stream with embedded row IDs for
 /// point lookups and range scans on unsorted data. Unlike ClusterIndex
 /// (which requires sorted data), this is a secondary index.
+// EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
+// production tables without consulting the Nimble team (oncall: dwios).
 struct SortedIndexConfig {
   /// Columns forming the composite key.
   std::vector<std::string> columns;
