@@ -17,6 +17,7 @@
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
+#include <limits>
 #include <random>
 
 #include "dwio/nimble/common/Buffer.h"
@@ -25,6 +26,8 @@
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace ::facebook;
@@ -136,6 +139,49 @@ TYPED_TEST(PFOREncodingTest, sparseOutliers) {
     }
     this->roundTripAndExpect(values);
   }
+}
+
+TEST(PFOREncodingBufferPoolTest, reusesExceptionBuffers) {
+  using Value = uint64_t;
+  using EncodingType = PFOREncoding<Value>;
+
+  auto encodePool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Buffer encodeBuffer{*encodePool};
+  std::vector<Value> input;
+  input.reserve(1'000);
+  for (uint32_t i = 0; i < 1'000; ++i) {
+    input.push_back(
+        i % 10 == 0 ? std::numeric_limits<Value>::max() - i
+                    : static_cast<Value>(i % 64));
+  }
+
+  Vector<Value> values{encodePool.get()};
+  values.insert(values.end(), input.data(), input.data() + input.size());
+  const auto encoded = Encoder<EncodingType>::encode(encodeBuffer, values);
+  const std::vector<char> encodedStorage{encoded.begin(), encoded.end()};
+
+  auto decodePool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
+  const Encoding::Options options{.bufferPool = &bufferPool};
+  std::function<void*(uint32_t)> stringBufferFactory;
+
+  auto decodeAndVerify = [&]() {
+    EncodingType encoding{
+        *decodePool,
+        {encodedStorage.data(), encodedStorage.size()},
+        stringBufferFactory,
+        options};
+    std::vector<Value> output(input.size());
+    encoding.materialize(static_cast<uint32_t>(input.size()), output.data());
+    EXPECT_EQ(input, output);
+  };
+
+  decodeAndVerify();
+  const auto numAllocsAfterFirstDecode = decodePool->stats().numAllocs;
+  EXPECT_GT(bufferPool.size(), 0);
+
+  decodeAndVerify();
+  EXPECT_EQ(decodePool->stats().numAllocs, numAllocsAfterFirstDecode);
 }
 
 TYPED_TEST(PFOREncodingTest, residualsAtBitWidthBoundary) {
