@@ -109,17 +109,25 @@ enum class EncodingType {
   // Patched Frame-of-Reference. Subtracts a min baseline, bitpacks ~90% of
   // residuals at a narrow base bit width, and stores the remaining outliers
   // ("exceptions") as a parallel position+value array.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   PFOR = 13,
   // SIMD Frame-of-Reference bitpacking. Subtracts baseline (global min),
   // packs residuals in groups of 32 via Lemire FastPFor SIMD bitpacking.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   SimdForBitpack = 14,
   // Decomposes each value into bit-range sub-streams and encodes each
   // independently. Optimal splits are chosen via a sample-driven DP algorithm.
   // Only supported for 32- and 64-bit numeric types.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   SubIntSplit = 16,
   // Stores integer data in fixed-size chunks (default 1024 rows), each with
   // its own baseline and bit width. Adapts per-chunk variable bit widths for
   // better compression on data with locally narrow value ranges.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   BlockBitPacking = 15,
   // Partitions data by value frequency. Also, frequent values get shorter
   // bit-width
@@ -131,6 +139,8 @@ enum class EncodingType {
   // Stores string data compressed with FSST (Fast Static Symbol Table).
   // Trains a per-stripe symbol table and compresses each string independently,
   // enabling random access decompression without touching neighboring strings.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   Fsst = 19,
 };
 std::string toString(EncodingType encodingType);

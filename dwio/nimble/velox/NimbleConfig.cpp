@@ -259,6 +259,8 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
 /// Enable chunk index for chunk-level seeking and per-chunk statistics
 /// for filter pushdown. When enabled, a chunk index optional section is
 /// written alongside chunk position data in the file.
+// EXPERIMENTAL: Not production-ready. Do not enable for production tables
+// without consulting the Nimble team (oncall: dwios).
 /* static */ Config::Entry<bool> Config::ENABLE_CHUNK_INDEX(
     "nimble.chunk.index.enabled",
     false);
@@ -307,6 +309,8 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
         "nimble.chunking.writer.wide.schema.max.chunk.size",
         kChunkingWriterWideSchemaMaxChunkSize);
 
+// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+// production tables without consulting the Nimble team (oncall: dwios).
 /* static */ Config::Entry<const std::vector<std::string>>
     Config::INDEX_COLUMNS(
         "nimble.index.columns",
@@ -345,6 +349,9 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.index.max_rows_per_key_chunk",
     10'000);
 
+// EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
+// enable for production tables without consulting the Nimble team
+// (oncall: dwios).
 /* static */ Config::Entry<uint16_t> Config::BLOCK_BIT_PACKING_BLOCK_SIZE(
     "nimble.blockbitpacking.block.size",
     kBlockBitPackingBlockSize);
