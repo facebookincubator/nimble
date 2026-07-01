@@ -60,6 +60,8 @@ class BlockBitPackingEncoding final
   ~BlockBitPackingEncoding() override {
     this->releaseBuffer(uncompressedData_);
     this->releaseVectorBuffer(buffer_);
+    this->releaseVectorBuffer(blockOffsets_);
+    this->releaseVectorBuffer(blocksMetadata_);
   }
 
   void reset() final;
@@ -271,10 +273,10 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
     const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
-      blocksMetadata_{&pool},
-      blockOffsets_{&pool},
+      blocksMetadata_{this->template getVectorBuffer<BlockMeta>()},
+      blockOffsets_{this->template getVectorBuffer<uint32_t>()},
       packedData_{nullptr},
-      buffer_(this->template getVectorBuffer<physicalType>()) {
+      buffer_{&pool} {
   auto pos = data.data() + this->dataOffset();
   auto compressionType = static_cast<CompressionType>(encoding::readChar(pos));
   blockSize_ = encoding::read<const uint16_t>(pos);
@@ -290,9 +292,9 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
   // offsets) as self-describing nested encodings, letting Nimble's recursive
   // encoding selection pick the best encoding for each metadata stream. The
   // packed block data stays raw.
-  Vector<physicalType> baselines{&pool};
+  auto baselines = this->template getVectorBuffer<physicalType>();
   baselines.resize(numBlocks_);
-  Vector<uint8_t> bitWidths{&pool};
+  auto bitWidths = this->template getVectorBuffer<uint8_t>();
   bitWidths.resize(numBlocks_);
 
   // Each metadata stream: read its 4-byte size, decode the nested sub-encoding
@@ -315,6 +317,8 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
     blocksMetadata_[i].bitWidth =
         blocksMetadata_[i].skipEncoding ? 0 : bitWidths[i];
   }
+  this->releaseVectorBuffer(bitWidths);
+  this->releaseVectorBuffer(baselines);
 
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
@@ -590,6 +594,9 @@ void BlockBitPackingEncoding<T>::bulkScan(
         currentAbsRow += toDecode;
       }
     } else if constexpr (kIsUpcast) {
+      if (buffer_.capacity() == 0) {
+        buffer_ = this->template getVectorBuffer<physicalType>();
+      }
       buffer_.resize(numSelected);
       auto* rawBuf = buffer_.data();
       uint32_t decodedRows = 0;

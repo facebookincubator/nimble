@@ -81,6 +81,11 @@ class PFOREncoding final
       const std::function<void*(uint32_t)>& stringBufferFactory,
       const Encoding::Options& options = {});
 
+  ~PFOREncoding() override {
+    this->releaseVectorBuffer(exceptionValues_);
+    this->releaseVectorBuffer(exceptionPositions_);
+  }
+
   void reset() final;
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
@@ -206,8 +211,8 @@ PFOREncoding<T>::PFOREncoding(
     const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
-      exceptionPositions_{this->pool_},
-      exceptionValues_{this->pool_} {
+      exceptionPositions_{this->template getVectorBuffer<uint32_t>()},
+      exceptionValues_{this->template getVectorBuffer<physicalType>()} {
   if constexpr (!isIntegralType<physicalType>()) {
     NIMBLE_INCOMPATIBLE_ENCODING(
         "Pfor encoding only supports integral data types.");

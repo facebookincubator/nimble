@@ -22,6 +22,7 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/base/BitUtil.h"
 #include "velox/dwio/common/Lemire/BitPacking/bitpackinghelpers.h"
 
@@ -199,6 +200,44 @@ TEST_F(BlockBitPackingEncodingTest, resetAndReread) {
   std::vector<uint32_t> output2(count);
   encoding->materialize(count, output2.data());
   ASSERT_EQ(values, output2);
+}
+
+TEST_F(BlockBitPackingEncodingTest, bufferPoolReusesMetadataBuffers) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+  std::vector<uint32_t> input(blockSize * 8);
+  for (uint32_t i = 0; i < input.size(); ++i) {
+    input[i] = (i / blockSize) * 1'000 + (i % 127);
+  }
+
+  auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+  const std::vector<char> encodedStorage{encoded.begin(), encoded.end()};
+
+  auto decodePool =
+      facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  facebook::velox::BufferPool bufferPool{
+      facebook::velox::BufferPool::kDefaultCapacity};
+  const nimble::Encoding::Options options{.bufferPool = &bufferPool};
+  std::function<void*(uint32_t)> stringBufferFactory;
+
+  auto decodeAndVerify = [&]() {
+    Enc encoding{
+        *decodePool,
+        {encodedStorage.data(), encodedStorage.size()},
+        stringBufferFactory,
+        options};
+    std::vector<uint32_t> output(input.size());
+    encoding.materialize(static_cast<uint32_t>(input.size()), output.data());
+    EXPECT_EQ(input, output);
+  };
+
+  decodeAndVerify();
+  const auto numAllocsAfterFirstDecode = decodePool->stats().numAllocs;
+  EXPECT_GT(bufferPool.size(), 0);
+
+  decodeAndVerify();
+  EXPECT_EQ(decodePool->stats().numAllocs, numAllocsAfterFirstDecode);
 }
 
 TEST_F(BlockBitPackingEncodingTest, sizeVsFixedBitWidth) {
