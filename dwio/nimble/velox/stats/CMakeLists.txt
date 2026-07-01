@@ -13,7 +13,12 @@
 # limitations under the License.
 
 add_library(nimble_column_stats ColumnStatistics.cpp VectorizedStatistics.cpp)
-target_link_libraries(nimble_column_stats nimble_common velox_dwio_common)
+target_link_libraries(
+  nimble_column_stats
+  nimble_common
+  nimble_encodings
+  velox_dwio_common
+)
 
 add_library(nimble_column_stats_utils ColumnStatsUtils.cpp)
 target_link_libraries(
