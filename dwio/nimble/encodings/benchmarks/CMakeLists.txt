@@ -21,3 +21,15 @@ target_link_libraries(
   Folly::folly
   velox_memory
 )
+
+add_executable(nimble_fsst_benchmark FsstBenchmark.cpp)
+
+target_link_libraries(
+  nimble_fsst_benchmark
+  nimble_encodings
+  nimble_common
+  Folly::follybenchmark
+  Folly::folly
+  velox_memory
+  fsst
+)
