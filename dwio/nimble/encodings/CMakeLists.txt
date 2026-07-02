@@ -35,8 +35,40 @@ set(FSST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/fsst")
 if(NOT TARGET fsst AND EXISTS "${FSST_SOURCE_DIR}/CMakeLists.txt")
   add_subdirectory("${FSST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/fsst")
 endif()
+if(NOT TARGET fsst)
+  include(FetchContent)
+  FetchContent_Declare(
+    fsst
+    GIT_REPOSITORY https://github.com/cwida/fsst.git
+    GIT_TAG 50dd308befd5121bd1121428a833f42cce6e1f9d
+  )
+  FetchContent_MakeAvailable(fsst)
+  set(FSST_SOURCE_DIR "${fsst_SOURCE_DIR}")
+endif()
 
-target_include_directories(nimble_encodings PUBLIC "${FSST_SOURCE_DIR}")
+if(TARGET fsst)
+  target_include_directories(fsst PUBLIC "${FSST_SOURCE_DIR}")
+  target_compile_definitions(
+    fsst
+    PRIVATE
+      fsst_create=nimble_fsst_create
+      fsst_duplicate=nimble_fsst_duplicate
+      fsst_export=nimble_fsst_export
+      fsst_destroy=nimble_fsst_destroy
+      fsst_import=nimble_fsst_import
+      fsst_decoder=nimble_fsst_decoder
+      fsst_compress=nimble_fsst_compress
+      fsst_decompress=nimble_fsst_decompress
+  )
+  if(TARGET binary)
+    set_target_properties(binary PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
+  if(TARGET binary12)
+    set_target_properties(binary12 PROPERTIES EXCLUDE_FROM_ALL TRUE)
+  endif()
+else()
+  target_include_directories(nimble_encodings PUBLIC "${FSST_SOURCE_DIR}")
+endif()
 
 target_link_libraries(
   nimble_encodings

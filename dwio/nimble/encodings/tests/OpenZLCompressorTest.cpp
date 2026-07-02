@@ -28,13 +28,13 @@ namespace {
 class TestOpenZLCompressionPolicy : public CompressionPolicy {
  public:
   explicit TestOpenZLCompressionPolicy(uint64_t minCompressionSize = 0) {
-    compressionInfo_ = {
+    compressionConfig_ = {
         .compressionType = CompressionType::OpenZL,
         .minCompressionSize = minCompressionSize};
   }
 
-  CompressionInformation compression() const override {
-    return compressionInfo_;
+  CompressionConfig config() const override {
+    return compressionConfig_;
   }
 
   bool shouldAccept(
@@ -45,7 +45,7 @@ class TestOpenZLCompressionPolicy : public CompressionPolicy {
   }
 
  private:
-  CompressionInformation compressionInfo_;
+  CompressionConfig compressionConfig_;
 };
 
 // Builds a serial byte buffer from a numeric vector for feeding into the
