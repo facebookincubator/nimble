@@ -54,6 +54,10 @@
 /// encoded stream, and in the worst case (totally random data) the encoded data
 /// will be the same size as the raw data.
 
+namespace facebook::velox::dwio::common {
+class BufferedInput;
+}
+
 namespace facebook::nimble {
 
 namespace test {
@@ -232,7 +236,8 @@ class TabletReader {
 
   /// Configures TabletReader::Options from Velox ReaderOptions.
   static Options configureOptions(
-      const velox::dwio::common::ReaderOptions& options);
+      const velox::dwio::common::ReaderOptions& options,
+      const velox::dwio::common::BufferedInput* input = nullptr);
 
   /// Returns a collection of stream loaders for the given stripe. The stream
   /// loaders are returned in the same order as the input stream identifiers

@@ -1271,6 +1271,35 @@ TEST_P(TabletTest, duplicateStreamStats) {
   EXPECT_EQ(tabletWriter->stats().duplicateStreamBytes, data.size());
 }
 
+TEST_P(TabletTest, passesFileIoContextToFooterReads) {
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(&writeFile, *pool_, {});
+  tabletWriter->writeStripe(
+      1,
+      {nimble::Stream{
+          .offset = 0,
+          .chunks = {{.rowCount = 1, .content = {std::string_view{"abc"}}}},
+      }});
+  tabletWriter->close();
+  writeFile.close();
+
+  auto readFile = std::make_shared<nimble::testing::TrackingReadFile>(
+      std::make_shared<velox::InMemoryReadFile>(file));
+  velox::IoStats fileIoStats;
+  velox::FileIoContext fileIoContext{&fileIoStats};
+  nimble::TabletReader::Options options;
+  options.ioOptions.emplace(pool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  options.ioOptions->setFileIoContext(&fileIoContext);
+  options.maxFooterIoBytes = 0;
+
+  auto tablet = nimble::TabletReader::create(readFile, pool_.get(), options);
+
+  EXPECT_EQ(tablet->tabletRowCount(), 1);
+  EXPECT_GT(fileIoStats.stats().at("trackingReadFile.pread").sum, 0);
+}
+
 TEST_P(TabletTest, chunkContentSize) {
   nimble::Chunk chunk;
   EXPECT_EQ(chunk.contentSize(), 0);

@@ -84,7 +84,7 @@ std::shared_ptr<ReaderBase> ReaderBase::create(
     const velox::dwio::common::ReaderOptions& options) {
   input = maybePreloadInput(std::move(input), options);
 
-  auto tabletOptions = TabletReader::configureOptions(options);
+  auto tabletOptions = TabletReader::configureOptions(options, input.get());
 
   auto tablet = TabletReader::create(
       input->getReadFile(), &options.memoryPool(), tabletOptions);

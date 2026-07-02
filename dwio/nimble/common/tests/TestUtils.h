@@ -426,6 +426,7 @@ class TrackingReadFile : public velox::ReadFile {
       void* buf,
       const velox::FileIoContext& context = {}) const override {
     updateMaxReadOffset(offset + length);
+    incrementIoCount(context, "trackingReadFile.pread");
     maybeThrow();
     maybeDelay();
     return delegate_->pread(offset, length, buf, context);
@@ -436,6 +437,7 @@ class TrackingReadFile : public velox::ReadFile {
       uint64_t length,
       const velox::FileIoContext& context = {}) const override {
     updateMaxReadOffset(offset + length);
+    incrementIoCount(context, "trackingReadFile.pread");
     maybeThrow();
     maybeDelay();
     return delegate_->pread(offset, length, context);
@@ -451,6 +453,7 @@ class TrackingReadFile : public velox::ReadFile {
     }
     updateMaxReadOffset(offset + totalLength);
     ioGroups_.wlock()->push_back({offset, totalLength});
+    incrementIoCount(context, "trackingReadFile.preadv");
     maybeThrow();
     maybeDelay();
     return delegate_->preadv(offset, buffers, context);
@@ -463,6 +466,7 @@ class TrackingReadFile : public velox::ReadFile {
     for (const auto& region : regions) {
       updateMaxReadOffset(region.offset + region.length);
     }
+    incrementIoCount(context, "trackingReadFile.preadv");
     maybeThrow();
     maybeDelay();
     return delegate_->preadv(regions, iobufs, context);
@@ -515,6 +519,14 @@ class TrackingReadFile : public velox::ReadFile {
   }
 
  private:
+  static void incrementIoCount(
+      const velox::FileIoContext& context,
+      const std::string& name) {
+    if (context.ioStats != nullptr) {
+      context.ioStats->addCounter(name, velox::RuntimeCounter(1));
+    }
+  }
+
   void updateMaxReadOffset(uint64_t endOffset) const {
     auto current = maxReadOffset_.load(std::memory_order_relaxed);
     while (endOffset > current &&

@@ -59,8 +59,12 @@ class MetadataInput {
     // When both fileHandle and cache are set, creates CachedMetadataInput.
     const velox::FileHandle* fileHandle{nullptr};
     velox::cache::AsyncDataCache* cache{nullptr};
+    // Borrowed, caller-owned context forwarded to direct ReadFile calls. May
+    // be null. The pointee must outlive the MetadataInput.
+    const velox::FileIoContext* fileIoContext{nullptr};
   };
 
+  /// Creates a MetadataInput (direct or cached based on Options).
   static std::unique_ptr<MetadataInput> create(
       velox::ReadFile* file,
       const Options& options);
@@ -85,7 +89,7 @@ class MetadataInput {
 
   /// Raw tracked read for bootstrap IO (e.g. speculative footer read)
   /// before section boundaries are known. Records bytes and latency into
-  /// the same ioStats used by load().
+  /// the same ioStats used by load(). Uses the FileIoContext from Options.
   void readRaw(uint64_t offset, uint64_t size, void* dest);
 
   /// Caches data at the given offset from multiple contiguous ranges.
@@ -190,6 +194,9 @@ class MetadataInput {
   const int64_t maxCoalesceBytes_;
   folly::Executor* const executor_;
   const std::shared_ptr<velox::io::IoStatistics> ioStats_;
+  // Borrowed, caller-owned context forwarded to direct ReadFile calls. May be
+  // null; consumers fall back to a default context.
+  const velox::FileIoContext* const fileIoContext_;
 };
 
 /// Direct metadata loading with IO coalescing, no caching.

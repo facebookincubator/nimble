@@ -257,6 +257,39 @@ TEST_F(DirectMetadataInputTest, duplicateSectionsThrow) {
       "Metadata input must not contain duplicate regions");
 }
 
+TEST_F(DirectMetadataInputTest, passesFileIoContextToReadFile) {
+  const std::string data0 = "first-section";
+  const std::string data1 = "second-section";
+
+  nimble::MetadataSection section0{
+      0,
+      static_cast<uint32_t>(data0.size()),
+      nimble::CompressionType::Uncompressed,
+      static_cast<uint32_t>(data0.size())};
+  nimble::MetadataSection section1{
+      32,
+      static_cast<uint32_t>(data1.size()),
+      nimble::CompressionType::Uncompressed,
+      static_cast<uint32_t>(data1.size())};
+
+  const auto fileContent =
+      buildFileContent({section0, section1}, {data0, data1});
+  auto readFile = std::make_shared<nimble::testing::TrackingReadFile>(
+      std::make_shared<velox::InMemoryReadFile>(fileContent));
+  velox::IoStats fileIoStats;
+  velox::FileIoContext fileIoContext{&fileIoStats};
+
+  auto options = makeMetadataInputOptions();
+  options.fileIoContext = &fileIoContext;
+  auto input = nimble::MetadataInput::create(readFile.get(), options);
+
+  auto results = input->load(std::array{section0, section1});
+
+  EXPECT_EQ(results[0]->content(), data0);
+  EXPECT_EQ(results[1]->content(), data1);
+  EXPECT_EQ(fileIoStats.stats().at("trackingReadFile.preadv").sum, 1);
+}
+
 TEST_F(DirectMetadataInputTest, repeatedLoad) {
   const std::string data = "repeat-test";
   nimble::MetadataSection section{
