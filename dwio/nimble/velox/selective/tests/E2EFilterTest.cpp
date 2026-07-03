@@ -3813,7 +3813,7 @@ TEST_P(E2EFilterTest, crossChunkEncodingChangeWithFilter) {
   // across the encoding transition.
   std::vector<std::string> accepted = {"DICT_VAL_0"};
   // Also include one unique value to verify the flat path works with filter.
-  accepted.push_back("UNIQUE_VAL_BATCH1_ROW0_EXTRA_PADDING");
+  accepted.emplace_back("UNIQUE_VAL_BATCH1_ROW0_EXTRA_PADDING");
   std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
 
   // Compute expected count.
@@ -3883,12 +3883,12 @@ TEST_P(E2EFilterTest, isNullFilterWithNullableDictionary) {
     longVals.push_back(i);
     if (i % 7 == 0) {
       // ~14% nulls.
-      stringVals.push_back(std::nullopt);
-      stringStorage.push_back("");
+      stringVals.emplace_back(std::nullopt);
+      stringStorage.emplace_back("");
       ++expectedNullCount;
     } else {
       stringStorage.push_back(fmt::format("VAL_{}", i % 10));
-      stringVals.push_back(velox::StringView(stringStorage.back()));
+      stringVals.emplace_back(velox::StringView(stringStorage.back()));
     }
   }
 
