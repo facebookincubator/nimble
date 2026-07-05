@@ -1721,11 +1721,26 @@ TEST_P(VeloxReaderTest, lifetime) {
   }
 }
 
-TEST_P(VeloxReaderTest, fsstStringBatchReader) {
-  if (!optimizeStringBufferHandling()) {
-    GTEST_SKIP() << "FSST is only available in the current encoding factory.";
+// FSST is only produced by the optimizeStringBufferHandling encoding factory,
+// so the test below can only run for that subset of params. Instantiating it on
+// the full VeloxReaderTest param set left the
+// optimizeStringBufferHandling=false instances perpetually skipped, which the
+// test-health monitor flags. Restrict this fixture to the
+// optimizeStringBufferHandling=true params so every instance actually runs.
+class VeloxReaderFsstTest : public VeloxReaderTest {
+ public:
+  static std::vector<TestParam> getFsstTestParams() {
+    std::vector<TestParam> params;
+    for (const auto& param : VeloxReaderTest::getTestParams()) {
+      if (param.optimizeStringBufferHandling) {
+        params.push_back(param);
+      }
+    }
+    return params;
   }
+};
 
+TEST_P(VeloxReaderFsstTest, fsstStringBatchReader) {
   constexpr int kRows = 2'000;
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(
@@ -7492,6 +7507,14 @@ INSTANTIATE_TEST_SUITE_P(
     VeloxReaderTestSuite,
     VeloxReaderTest,
     ::testing::ValuesIn(VeloxReaderTest::getTestParams()),
+    [](const ::testing::TestParamInfo<TestParam>& info) {
+      return info.param.debugString();
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    VeloxReaderFsstTestSuite,
+    VeloxReaderFsstTest,
+    ::testing::ValuesIn(VeloxReaderFsstTest::getFsstTestParams()),
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return info.param.debugString();
     });
