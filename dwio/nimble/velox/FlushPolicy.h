@@ -17,6 +17,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
+#include <random>
 
 namespace facebook::nimble {
 
@@ -107,6 +109,80 @@ class ChunkFlushPolicy : public FlushPolicy {
  private:
   const ChunkFlushPolicyConfig config_;
   bool lastChunkDecision_;
+};
+
+/// Test-only policy driving chunk and stripe boundaries for the fuzzer, seeded
+/// so a failing run can be reproduced from the logged seed. It chunks and
+/// flushes probabilistically, with an encoded-size flush guard. Per-type tuning
+/// (the nimble.flush_policy_config "type") is assembled by
+/// FlushPolicyFactoryFactory, not here. Instances are created only by
+/// TestFlushPolicyFactory, which owns the shared rng State (see State below) so
+/// decisions vary across the per-write() policy instances the writer creates.
+class TestFlushPolicy final : public FlushPolicy {
+ public:
+  /// Default chunk/stripe flush probabilities. Prod-representative values
+  /// ported from the (removed) Vader validation-service policy.
+  static constexpr double kDefaultFlushChunkProbability = 1.0 / 3;
+  static constexpr double kDefaultFlushStripeProbability = 1.0 / 20;
+
+  /// Tuning for TestFlushPolicy; unset fields keep the defaults below.
+  struct Options {
+    /// Seed for the policy's rng. Log it to reproduce a failing run.
+    uint64_t seed{0};
+    /// Probability in [0, 1] of cutting a chunk on each write.
+    double flushChunkProbability{kDefaultFlushChunkProbability};
+    /// Probability in [0, 1] of flushing the stripe on each write, independent
+    /// of the size guard below.
+    double flushStripeProbability{kDefaultFlushStripeProbability};
+    /// Encoded-size flush guard: flush once the predicted encoded stripe size
+    /// reaches this many bytes.
+    uint64_t maxStripePhysicalSize{128 * 1024L * 1024L};
+    /// Raw->encoded ratio used to predict the encoded stripe size before any
+    /// data has been encoded (once a stripe has encoded bytes the observed
+    /// ratio is used instead). 3.7 is the prod-representative value the Vader
+    /// validation service used.
+    double estimatedCompressionFactor{3.7};
+  };
+
+  /// Flushes the stripe with probability options.flushStripeProbability, or
+  /// when the predicted encoded stripe size would exceed
+  /// options.maxStripePhysicalSize.
+  bool shouldFlush(const StripeProgress& stripeProgress) override;
+
+  /// Cuts a chunk with probability options.flushChunkProbability, independent
+  /// of accumulated size.
+  bool shouldChunk(const StripeProgress& stripeProgress) override;
+
+ private:
+  // TestFlushPolicyFactory owns the shared State and constructs policies that
+  // borrow it, so it needs access to the private State and constructor.
+  friend class TestFlushPolicyFactory;
+
+  /// Shared rng state, owned by TestFlushPolicyFactory and outliving the
+  /// per-write() policy instances the writer recreates. VeloxWriter rebuilds
+  /// the flush policy from its factory on every write() (see
+  /// VeloxWriter::evaluateFlushPolicy), so an rng owned by the policy itself
+  /// would reseed identically each call and make the same decision every
+  /// write(). Holding it here instead lets decisions vary across writes while
+  /// staying reproducible from the seed.
+  struct State {
+    explicit State(uint64_t seed) : rng{seed} {}
+
+    // TODO: rng is not thread-safe; TestFlushPolicy must be driven from a
+    // single writer thread.
+    std::mt19937_64 rng;
+  };
+
+  /// 'state' is the shared rng container (see State), owned by the factory and
+  /// outliving this policy; it must be non-null. Every tuning value is
+  /// sanity-checked here; an already range-validated Options from
+  /// FlushPolicyFactoryFactory always passes.
+  TestFlushPolicy(State* state, Options options);
+
+  const Options options_;
+  // Borrowed, non-owning: the factory (owner) outlives this policy, which the
+  // writer recreates on every write().
+  State* const state_;
 };
 
 } // namespace facebook::nimble

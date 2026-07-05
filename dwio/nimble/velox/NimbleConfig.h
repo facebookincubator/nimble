@@ -61,6 +61,20 @@ class Config : public velox::config::ConfigBase {
   static Entry<uint64_t> CHUNKING_WRITER_MAX_CHUNK_SIZE;
   static Entry<uint64_t> CHUNKING_WRITER_WIDE_SCHEMA_MAX_CHUNK_SIZE;
 
+  /// Selects and tunes the writer flush policy via a comma-separated
+  /// "key:value" spec whose "type" key chooses the policy. An absent key keeps
+  /// the standard size-based behavior. Test-only types: "type:test_per_batch"
+  /// cuts a chunk every batch; "type:test_random" randomizes chunk/stripe
+  /// boundaries. The remaining keys tune the test types: seed,
+  /// flush_chunk_probability, flush_stripe_probability,
+  /// max_stripe_physical_size (bytes; accepts a KB/MB/GB suffix),
+  /// estimated_compression_factor; unset keys keep the TestFlushPolicy::Options
+  /// defaults. This only selects the flush policy; enable and size chunking
+  /// separately via the CHUNKING_WRITER_* configs. Not for production use. E.g.
+  /// "type:test_random,flush_chunk_probability:0.1,seed:42".
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<std::string> FLUSH_POLICY_CONFIG;
+
   // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   // production tables without consulting the Nimble team (oncall: dwios).
 
