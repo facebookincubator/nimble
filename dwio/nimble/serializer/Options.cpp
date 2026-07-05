@@ -26,12 +26,14 @@ std::string toString(SerializationVersion version) {
       return "kLegacy";
     case SerializationVersion::kLegacyCompact:
       return "kLegacyCompact";
-    case SerializationVersion::kTablet:
-      return "kTablet";
+    case SerializationVersion::kLegacySerialization:
+      return "kLegacySerialization";
     case SerializationVersion::kSerialization:
       return "kSerialization";
     case SerializationVersion::kProjection:
       return "kProjection";
+    case SerializationVersion::kTablet:
+      return "kTablet";
     default:
       NIMBLE_FAIL(
           "Unknown SerializationVersion: {}", static_cast<int>(version));
@@ -75,7 +77,7 @@ SerializationVersion SerializerOptions::serializationVersion() const {
 }
 
 bool SerializerOptions::enableEncoding() const {
-  return isCompactFormat(serializationVersion());
+  return nonLegacyFormat(serializationVersion());
 }
 
 } // namespace facebook::nimble

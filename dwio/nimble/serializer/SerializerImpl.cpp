@@ -531,7 +531,7 @@ std::vector<std::string_view> parseStreams(
 
   std::vector<std::string_view> streams;
 
-  if (isCompactFormat(version)) {
+  if (nonLegacyFormat(version) && !isTabletVersion(version)) {
     // Walk the sparse (streamIds, streamSizes) trailer and place each
     // stream at its offset slot. Gaps remain empty string_views. Legacy
     // kLegacyCompact blobs are decoded via the frozen legacy reader.

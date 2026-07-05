@@ -53,7 +53,8 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
     const ColumnEncodings& columnEncodings = {});
 
 /// Builds a projected nimble schema from a source nimble schema and emits
-/// the source stream-offset mapping in one pass. Used by
+/// the source stream-offset mapping plus a Row/FlatMap null stream mask in one
+/// pass. Used by
 /// `nimble::serde::Projector` and `nimble::NimbleIndexProjector` to derive
 /// everything the byte-copy pipeline needs from `(type, projectedSubfields)`.
 ///
@@ -62,7 +63,7 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
 /// builds the projected schema via the velox-source `buildProjectedNimbleType`
 /// overload, and walks the source nimble in the matching DFS pre-order +
 /// FlatMap-children-alphabetical traversal to emit one source stream offset
-/// per projected stream position.
+/// and Row/FlatMap null stream bit per projected stream position.
 ///
 /// Missing FlatMap keys are allowed: each subscript whose key does not exist
 /// in the source FlatMap produces a synthetic child in the returned schema
@@ -78,9 +79,13 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
 /// @param projectedSubfields      Subfields to project; must not be empty.
 /// @param projectedStreamOffsets  Output: appended in projected-stream-
 ///                                position order. Must be empty on entry.
+/// @param rowOrFlatMapNullStreams Output: parallel to projectedStreamOffsets;
+///                                true when the projected stream is a Row or
+///                                FlatMap null stream. Must be empty on entry.
 std::shared_ptr<const Type> buildProjectedNimbleType(
     const Type* type,
     const std::vector<velox::common::Subfield>& projectedSubfields,
-    std::vector<uint32_t>& projectedStreamOffsets);
+    std::vector<uint32_t>& projectedStreamOffsets,
+    std::vector<bool>& rowOrFlatMapNullStreams);
 
 } // namespace facebook::nimble

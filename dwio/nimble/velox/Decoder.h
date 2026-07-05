@@ -28,15 +28,25 @@ class Decoder {
  public:
   virtual ~Decoder() = default;
 
-  // Decode next 'count' values into 'output'.
-  // For string types, stringBuffers will be populated with buffers holding
-  // the string data. For non-string types, stringBuffers will remain empty.
+  /// Decode next 'count' rows into 'output' and return the number of non-null
+  /// rows materialized.
+  ///
+  /// For string types, stringBuffers will be populated with buffers holding
+  /// the string data. For non-string types, stringBuffers will remain empty.
+  ///
+  /// If the stream is nullable, getOutputNulls must return the mutable null
+  /// bitmap for the output vector. The callback is lazy so callers only
+  /// allocate nulls when the encoded stream actually contains nulls.
+  ///
+  /// If scatterOutputBitmap is provided, decoded rows are written into the
+  /// selected output positions and the null bitmap follows the same scattered
+  /// layout. A null scatterOutputBitmap means dense output.
   virtual uint32_t next(
       uint32_t count,
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
-      std::function<void*()> nulls = nullptr,
-      const velox::bits::Bitmap* scatterBitmap = nullptr) = 0;
+      std::function<void*()> getOutputNulls = nullptr,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr) = 0;
 
   virtual void skip(uint32_t count) = 0;
 

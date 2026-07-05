@@ -28,6 +28,7 @@ target_link_libraries(
   velox_dwio_common
   velox_key_encoder
   velox_memory
+  velox_vector_fuzzer
   velox_vector_test_lib
   gtest
   gtest_main

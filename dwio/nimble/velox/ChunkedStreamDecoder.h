@@ -43,8 +43,8 @@ class ChunkedStreamDecoder : public Decoder {
       uint32_t count,
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
-      std::function<void*()> nulls = nullptr,
-      const velox::bits::Bitmap* scatterBitmap = nullptr) override;
+      std::function<void*()> getOutputNulls = nullptr,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr) override;
 
   void skip(uint32_t count) override;
 

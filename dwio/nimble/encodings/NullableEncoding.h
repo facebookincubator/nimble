@@ -68,8 +68,8 @@ class NullableEncoding final
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      std::function<void*()> nulls,
-      const velox::bits::Bitmap* scatterBitmap = nullptr,
+      std::function<void*()> getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr,
       uint32_t offset = 0) final;
 
   template <typename DecoderVisitor>
@@ -221,8 +221,8 @@ template <typename T>
 uint32_t NullableEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
-    std::function<void*()> nulls,
-    const velox::bits::Bitmap* scatterBitmap,
+    std::function<void*()> getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap,
     uint32_t offset) {
   nullBuffer_.resize(rowCount);
   nulls_->materialize(rowCount, nullBuffer_.data());
@@ -235,9 +235,13 @@ uint32_t NullableEncoding<T>::materializeNullable(
   nonNullValues_->materialize(nonNullCount, buffer);
 
   const auto scatterSize =
-      scatterBitmap ? scatterBitmap->size() - offset : rowCount;
+      scatterOutputBitmap ? scatterOutputBitmap->size() - offset : rowCount;
+  NIMBLE_CHECK_GE(
+      scatterSize,
+      rowCount,
+      "Scattered output must have at least rowCount positions");
   if (nonNullCount != scatterSize) {
-    void* nullBitmap = nulls();
+    void* nullBitmap = getOutputNulls();
     velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterSize};
     nullBits.clear(offset, offset + scatterSize);
 
@@ -250,9 +254,9 @@ uint32_t NullableEncoding<T>::materializeNullable(
     if (scatterSize != rowCount) {
       // In scattered reads, spread the items into the right positions in
       // |buffer| and |nullBitmap| based on the bits set to 1 in
-      // |scatterBitmap|.
+      // |scatterOutputBitmap|.
       while (output != lastNonNull) {
-        if (scatterBitmap->test(pos)) {
+        if (scatterOutputBitmap->test(pos)) {
           if (*nonNullIt--) {
             nullBits.set(pos);
             *output = *lastNonNull;

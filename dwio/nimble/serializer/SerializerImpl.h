@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -85,6 +86,19 @@ void writeMissingStreams(T& buffer, uint32_t lastStream, uint32_t nextStream) {
 /// not captured in the layout tree. When encodingLayout is not provided, uses
 /// policyFactory directly and compressionOptions is ignored.
 template <typename T>
+std::unique_ptr<EncodingSelectionPolicy<T>> makeEncodingPolicy(
+    const EncodingSelectionPolicyCreator& policyFactory,
+    const EncodingLayout* encodingLayout,
+    const std::optional<CompressionOptions>& compressionOptions) {
+  if (encodingLayout != nullptr) {
+    return std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
+        *encodingLayout, compressionOptions, policyFactory);
+  }
+  return velox::checkedPointerCast<EncodingSelectionPolicy<T>>(
+      policyFactory(TypeTraits<T>::dataType));
+}
+
+template <typename T>
 std::string_view encodeTyped(
     std::span<const T> values,
     nimble::Buffer& encodingBuffer,
@@ -92,18 +106,38 @@ std::string_view encodeTyped(
     const Encoding::Options& encodingOptions = {.useVarintRowCount = true},
     const EncodingLayout* encodingLayout = nullptr,
     std::optional<CompressionOptions> compressionOptions = std::nullopt) {
-  std::unique_ptr<EncodingSelectionPolicy<T>> typedPolicy;
-  if (encodingLayout != nullptr) {
-    // Replay the captured encoding layout. policyFactory is used as fallback
-    // for nested encodings not in the layout tree.
-    typedPolicy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
-        *encodingLayout, compressionOptions, policyFactory);
-  } else {
-    typedPolicy = velox::checkedPointerCast<EncodingSelectionPolicy<T>>(
-        policyFactory(TypeTraits<T>::dataType));
-  }
   return EncodingFactory::encode<T>(
-      std::move(typedPolicy), values, encodingBuffer, encodingOptions);
+      makeEncodingPolicy<T>(policyFactory, encodingLayout, compressionOptions),
+      values,
+      encodingBuffer,
+      encodingOptions);
+}
+
+template <typename T>
+std::string_view encodeNullableTyped(
+    const SerializerOptions& options,
+    std::string_view data,
+    std::span<const bool> nonNulls,
+    nimble::Buffer& encodingBuffer,
+    const EncodingLayout* encodingLayout) {
+  const auto count = data.size() / sizeof(T);
+  std::span<const T> values{reinterpret_cast<const T*>(data.data()), count};
+
+  return EncodingFactory::encodeNullable<T>(
+      makeEncodingPolicy<T>(
+          options.encodingSelectionPolicyCreator,
+          encodingLayout,
+          options.compressionOptions),
+      values,
+      nonNulls,
+      encodingBuffer,
+      Encoding::Options{.useVarintRowCount = true});
+}
+
+inline std::string_view boolsAsStringView(std::span<const bool> values) {
+  return {
+      reinterpret_cast<const char*>(values.data()),
+      values.size() * sizeof(bool)};
 }
 
 /// Reads the trailer size (u32) from the last 4 bytes of the buffer.
@@ -396,7 +430,7 @@ void skipStream(const char*& pos) {
 /// contiguous buffer. Fills `streamIds` (non-zero stream slot ids, sorted
 /// ascending) and `streamSizes` (their byte sizes), parallel arrays of
 /// identical length. Both vectors are reusable buffers owned by
-/// the caller (e.g. members on `StreamDataReader`) to keep the per-blob hot
+/// the caller (e.g. members on `StreamDataParser`) to keep the per-blob hot
 /// path alloc-free across invocations.
 void readTrailerStreamMetadata(
     const char* end,
@@ -510,12 +544,70 @@ std::string_view encodeScalar(
       return encodeTyped<double, Buffer>(
           options, data, pool, encodingBuffer, encodingLayout);
     case ScalarKind::String:
+      [[fallthrough]];
     case ScalarKind::Binary:
       return encodeTyped<std::string_view, Buffer>(
           options, data, pool, encodingBuffer, encodingLayout);
     default:
       NIMBLE_UNSUPPORTED(
-          "Unsupported scalar kind for nimble encoding: {}",
+          "Unsupported scalar kind for nimble encoding: {}", scalarKind);
+  }
+}
+
+template <typename Buffer>
+std::string_view encodeNullableScalar(
+    const SerializerOptions& options,
+    ScalarKind scalarKind,
+    std::string_view data,
+    std::span<const bool> nonNulls,
+    nimble::Buffer& encodingBuffer,
+    const EncodingLayout* encodingLayout) {
+  switch (scalarKind) {
+    case ScalarKind::Bool:
+      return encodeNullableTyped<bool>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Int8:
+      return encodeNullableTyped<int8_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::UInt8:
+      return encodeNullableTyped<uint8_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Int16:
+      return encodeNullableTyped<int16_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::UInt16:
+      return encodeNullableTyped<uint16_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Int32:
+      return encodeNullableTyped<int32_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::UInt32:
+      return encodeNullableTyped<uint32_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Int64:
+      return encodeNullableTyped<int64_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::UInt64:
+      return encodeNullableTyped<uint64_t>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Float:
+      return encodeNullableTyped<float>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Double:
+      return encodeNullableTyped<double>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::String:
+      [[fallthrough]];
+    case ScalarKind::Binary:
+      return encodeNullableTyped<std::string_view>(
+          options, data, nonNulls, encodingBuffer, encodingLayout);
+    case ScalarKind::Undefined:
+      NIMBLE_UNSUPPORTED(
+          "Unsupported scalar kind for nullable nimble encoding: {}",
+          toString(scalarKind));
+    default:
+      NIMBLE_UNSUPPORTED(
+          "Unsupported scalar kind for nullable nimble encoding: {}",
           toString(scalarKind));
   }
 }
@@ -525,7 +617,8 @@ template <typename T>
 class StreamDataWriter {
  public:
   /// Constructor. For kLegacy, writes the header immediately. For
-  /// kLegacyCompact, writes the header prefix (version + rowCount).
+  /// kSerialization, writes the compact header prefix (version, row count,
+  /// flags).
   ///
   /// @param pool Memory pool for encoding buffer allocation.
   /// @param streamEncodingLayouts Optional encoding layouts for replaying
@@ -539,20 +632,19 @@ class StreamDataWriter {
       const std::unordered_map<uint32_t, const EncodingLayout*>*
           streamEncodingLayouts);
 
-  /// Write encoded data for a single stream.
-  /// For both formats, writes directly to buffer.
-  /// For kLegacyCompact, also tracks stream sizes for the trailer.
+  /// Write data for a single stream.
   void writeData(const nimble::StreamData& streamData);
 
-  /// Close the writer. For kLegacy, fills trailing zeros up to nodeCount.
-  /// For kLegacyCompact, writes the trailer (encoded sizes).
+  /// Close the writer. For kLegacy, fills trailing zeros up to nodeCount. For
+  /// kSerialization, writes the stream-sizes trailer.
   void close(uint32_t nodeCount = 0);
 
  private:
   void encodeStream(
       ScalarKind scalarKind,
+      uint32_t streamOffset,
       std::string_view data,
-      uint32_t streamOffset);
+      std::span<const bool> nonNulls = {});
 
   // --- Const members ---
   const SerializerOptions& options_;
@@ -572,6 +664,10 @@ class StreamDataWriter {
   // Dense stream sizes. streamSizes_[i] = byte size of stream i (0 for
   // missing/empty).
   std::vector<uint32_t> streamSizes_;
+  // Byte offset of the serialization header flags byte, patched in close().
+  size_t headerFlagsOffset_{0};
+  bool writesHeaderFlags_{false};
+  bool requiresNullBarrier_{false};
 };
 
 template <typename T>
@@ -593,102 +689,147 @@ StreamDataWriter<T>::StreamDataWriter(
       streamEncodingLayouts_ == nullptr || options_.enableEncoding(),
       "streamEncodingLayouts can only be set when encoding is enabled");
   NIMBLE_CHECK_NOT_NULL(pool, "Memory pool cannot be null");
+
   std::optional<SerializationVersion> version;
   if (options_.hasVersionHeader()) {
     version = options_.serializationVersion();
   }
-  writeSerializationHeader(buffer_, version, rowCount);
+
+  writesHeaderFlags_ = usesHeaderFlags(version);
+  if (writesHeaderFlags_) {
+    headerFlagsOffset_ =
+        writeSerializationHeader(buffer_, version.value(), rowCount);
+    NIMBLE_CHECK_LT(
+        headerFlagsOffset_, buffer_.size(), "Invalid null barrier flag offset");
+    NIMBLE_CHECK_EQ(
+        static_cast<uint8_t>(buffer_.data()[headerFlagsOffset_]),
+        0,
+        "Null barrier flag should be initialized to zero");
+  } else {
+    writeLegacySerializationHeader(buffer_, version, rowCount);
+  }
 }
 
 template <typename T>
 void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
+  const auto scalarKind = streamData.descriptor().scalarKind();
+  const auto streamOffset = streamData.descriptor().offset();
   const auto nonNulls = streamData.nonNulls();
   const auto data = streamData.data();
 
+  // Streams with no physical payload are omitted. All-true Row/FlatMap null
+  // streams normally remain unmaterialized and are reconstructed on read.
   if (data.empty() && nonNulls.empty()) {
     return;
   }
-  NIMBLE_CHECK(
-      nonNulls.empty() ||
-          std::all_of(
-              nonNulls.begin(),
-              nonNulls.end(),
-              [](bool notNull) { return notNull; }),
-      "nulls not supported");
 
-  const auto scalarKind = streamData.descriptor().scalarKind();
-  const auto streamOffset = streamData.descriptor().offset();
+  if (!options_.enableEncoding()) {
+    NIMBLE_CHECK(
+        nonNulls.empty() ||
+            std::all_of(
+                nonNulls.begin(),
+                nonNulls.end(),
+                [](bool notNull) { return notNull; }),
+        "Null values are not supported in legacy serialization formats. "
+        "Use kSerialization for nullable support.");
 
-  if (options_.enableEncoding()) {
-    encodeStream(scalarKind, data, streamOffset);
+    NIMBLE_CHECK_LE(lastStream_ + 1, streamOffset, "unexpected stream offset");
+    detail::writeMissingStreams(buffer_, lastStream_, streamOffset);
+    lastStream_ = streamOffset;
+    encodeStream(scalarKind, streamOffset, data);
     return;
   }
 
-  // kLegacy: fill zeros for missing streams before writing.
-  NIMBLE_CHECK_LE(lastStream_ + 1, streamOffset, "unexpected stream offset");
-  detail::writeMissingStreams(buffer_, lastStream_, streamOffset);
-  lastStream_ = streamOffset;
-  encodeStream(scalarKind, data, streamOffset);
+  if (streamData.isNullStream()) {
+    requiresNullBarrier_ |= streamData.hasNullValues();
+    NIMBLE_CHECK(
+        data.empty(), "null streams should not carry a separate data payload");
+    const auto streamPayload = detail::boolsAsStringView(nonNulls);
+    NIMBLE_CHECK(!streamPayload.empty(), "Expected null stream payload");
+    encodeStream(scalarKind, streamOffset, streamPayload);
+    return;
+  }
+
+  // Nullable content streams store only non-null payload values; an all-null
+  // chunk has an empty value payload but still needs its non-null bits encoded.
+  NIMBLE_CHECK(
+      !data.empty() || streamData.hasNullValues(),
+      "Expected content stream payload");
+  encodeStream(scalarKind, streamOffset, data, nonNulls);
 }
 
 template <typename T>
 void StreamDataWriter<T>::encodeStream(
     ScalarKind scalarKind,
+    uint32_t streamOffset,
     std::string_view data,
-    uint32_t streamOffset) {
-  if (options_.enableEncoding()) {
-    // Look up encoding layout for this stream if available.
-    const EncodingLayout* encodingLayout = nullptr;
-    if (streamEncodingLayouts_ != nullptr) {
-      auto it = streamEncodingLayouts_->find(streamOffset);
-      if (it != streamEncodingLayouts_->end()) {
-        encodingLayout = it->second;
+    std::span<const bool> nonNulls) {
+  if (!options_.enableEncoding()) {
+    if (scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
+      // Legacy string encoding: [total_size:u32][len_0:u32][data_0]...
+      const auto size = detail::getStringsTotalSize(data);
+      auto* pos = detail::extend(buffer_, size + sizeof(uint32_t));
+      detail::encodeStrings(data, size, pos);
+    } else {
+      // Legacy scalar encoding:
+      //   Zstd: [size:u32][compType:i8][data...]
+      //   LZ4:  [size:u32][compType:i8][origSize:u32][data...]
+      const auto bufferStart = buffer_.size();
+      const uint32_t maxSize = data.size() + 2 * sizeof(uint32_t) + 1;
+      auto* pos = detail::extend(buffer_, maxSize);
+      const auto encodedSize = detail::encode(options_, data, pos);
+      if (encodedSize < maxSize) {
+        buffer_.resize(bufferStart + encodedSize);
       }
     }
+    return;
+  }
 
-    // Use nimble encoding framework for optimal compression.
-    auto encoded = detail::encodeScalar<T>(
-        options_, scalarKind, data, *pool_, *encodingBuffer_, encodingLayout);
-
-    // Track size for trailer.
-    if (streamOffset >= streamSizes_.size()) {
-      streamSizes_.resize(streamOffset + 1, 0);
-    }
-    streamSizes_[streamOffset] = static_cast<uint32_t>(encoded.size());
-    auto* pos = detail::extend(buffer_, encoded.size());
-    std::memcpy(pos, encoded.data(), encoded.size());
-  } else if (
-      scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
-    // Legacy string encoding: [total_size:u32][len_0:u32][data_0]...
-    const auto size = detail::getStringsTotalSize(data);
-    auto* pos = detail::extend(buffer_, size + sizeof(uint32_t));
-    detail::encodeStrings(data, size, pos);
-  } else {
-    // Legacy scalar encoding:
-    //   Zstd: [size:u32][compType:i8][data...]
-    //   LZ4:  [size:u32][compType:i8][origSize:u32][data...]
-    const auto bufferStart = buffer_.size();
-    const uint32_t maxSize = data.size() + 2 * sizeof(uint32_t) + 1;
-    auto* pos = detail::extend(buffer_, maxSize);
-    const auto encodedSize = detail::encode(options_, data, pos);
-    if (encodedSize < maxSize) {
-      buffer_.resize(bufferStart + encodedSize);
+  const EncodingLayout* encodingLayout = nullptr;
+  if (streamEncodingLayouts_ != nullptr) {
+    auto it = streamEncodingLayouts_->find(streamOffset);
+    if (it != streamEncodingLayouts_->end()) {
+      encodingLayout = it->second;
     }
   }
+
+  // Use nimble encoding framework for optimal compression.
+  std::string_view encoded;
+  if (!facebook::nimble::StreamData::hasNullValues(nonNulls)) {
+    encoded = detail::encodeScalar<T>(
+        options_, scalarKind, data, *pool_, *encodingBuffer_, encodingLayout);
+  } else {
+    encoded = detail::encodeNullableScalar<T>(
+        options_, scalarKind, data, nonNulls, *encodingBuffer_, encodingLayout);
+  }
+
+  // Track size for trailer.
+  if (streamOffset >= streamSizes_.size()) {
+    streamSizes_.resize(streamOffset + 1, 0);
+  }
+  streamSizes_[streamOffset] = static_cast<uint32_t>(encoded.size());
+  auto* pos = detail::extend(buffer_, static_cast<uint32_t>(encoded.size()));
+  std::memcpy(pos, encoded.data(), encoded.size());
 }
 
 template <typename T>
 void StreamDataWriter<T>::close(uint32_t nodeCount) {
-  if (options_.enableEncoding()) {
-    detail::writeTrailer(
-        streamSizes_,
-        options_.streamIndicesEncodingType,
-        options_.streamSizesEncodingType,
-        buffer_);
-  } else {
-    // kLegacy: fill trailing zeros up to nodeCount.
+  if (!options_.enableEncoding()) {
     detail::writeMissingStreams(buffer_, lastStream_, nodeCount);
+    return;
   }
+
+  if (writesHeaderFlags_) {
+    NIMBLE_CHECK_LT(
+        headerFlagsOffset_, buffer_.size(), "Invalid null barrier flag offset");
+    buffer_.data()[headerFlagsOffset_] =
+        static_cast<char>(detail::makeFlagsByte(requiresNullBarrier_));
+  }
+  detail::writeTrailer(
+      streamSizes_,
+      options_.streamIndicesEncodingType,
+      options_.streamSizesEncodingType,
+      buffer_);
 }
 
 } // namespace facebook::nimble::serde

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstring>
 #include <span>
 #include <string_view>
@@ -44,12 +45,33 @@ class StreamData {
   virtual std::span<const bool> nonNulls() const = 0;
   virtual bool hasNulls() const = 0;
 
+  /// Returns true only when the nonNulls bitmap contains at least one null
+  /// value. This differs from hasNulls(), which only says that a validity
+  /// bitmap is present.
+  static bool hasNullValues(std::span<const bool> nonNulls) {
+    return std::any_of(nonNulls.begin(), nonNulls.end(), [](bool notNull) {
+      return !notNull;
+    });
+  }
+
+  /// Returns true only when this stream has a validity bitmap and that bitmap
+  /// contains at least one null value.
+  bool hasNullValues() const {
+    return hasNulls() && hasNullValues(nonNulls());
+  }
+
   virtual bool empty() const = 0;
 
   virtual uint64_t memoryUsed() const = 0;
 
   /// Returns the number of rows in the stream.
   virtual uint32_t rowCount() const = 0;
+
+  /// Returns true for null-only streams. These streams carry boolean
+  /// non-null bits and may omit storage when all rows are non-null.
+  virtual bool isNullStream() const {
+    return false;
+  }
 
   virtual void reset() = 0;
 
@@ -241,6 +263,10 @@ class NullsStreamData : public MutableStreamData {
     return nonNulls_.empty() && bufferedCount_ == 0;
   }
 
+  bool isNullStream() const override {
+    return true;
+  }
+
   inline uint64_t memoryUsed() const override {
     return nonNulls_.size();
   }
@@ -277,7 +303,9 @@ class NullsStreamData : public MutableStreamData {
 };
 
 /// Nullable content data stream.
-/// Used in all cases where data may contain nulls.
+/// Used for scalar content streams where data_ stores row-aligned payload
+/// values and NullsStreamData::nonNulls_ stores the corresponding validity
+/// bits. Payload values for null rows are not semantically meaningful.
 template <typename T>
 class NullableContentStreamData final : public NullsStreamData {
  public:
@@ -301,6 +329,10 @@ class NullableContentStreamData final : public NullsStreamData {
   inline uint64_t memoryUsed() const override {
     return (data_.size() * sizeof(T)) + extraMemory_ +
         NullsStreamData::memoryUsed();
+  }
+
+  bool isNullStream() const override {
+    return false;
   }
 
   inline Vector<T>& mutableData() {
@@ -367,6 +399,10 @@ class NullableContentStringStreamData final : public NullsStreamData {
 
   inline uint64_t bufferSize() const {
     return lengths_.size() * sizeof(std::string_view) + buffer_.size();
+  }
+
+  bool isNullStream() const override {
+    return false;
   }
 
   inline StringBuffer mutableData() {

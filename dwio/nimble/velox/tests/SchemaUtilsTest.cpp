@@ -747,10 +747,14 @@ TEST(SchemaUtilsTest, projectionDeepWithStreamOffsets) {
   subfields.emplace_back(std::move(path));
 
   // Drive the projection through the same nimble-source API the projectors
-  // use: derive (projected schema, source stream offsets) in one pass.
+  // use: derive projected schema metadata in one pass.
   std::vector<uint32_t> projectedStreamOffsets;
+  std::vector<bool> rowOrFlatMapNullStreams;
   auto projectedNimbleType = buildProjectedNimbleType(
-      convertedNimbleType.get(), subfields, projectedStreamOffsets);
+      convertedNimbleType.get(),
+      subfields,
+      projectedStreamOffsets,
+      rowOrFlatMapNullStreams);
 
   // Verify projected schema structure.
   ASSERT_EQ(projectedNimbleType->kind(), Kind::Row);
@@ -781,6 +785,215 @@ TEST(SchemaUtilsTest, projectionDeepWithStreamOffsets) {
   // The walker visits: outer-Row.nulls (1), map_col-FlatMap.nulls (0),
   // key1.Row.nulls (4), key1.inner_b (3), key1.inMap (5).
   EXPECT_EQ(projectedStreamOffsets, std::vector<uint32_t>({1, 0, 4, 3, 5}));
+  EXPECT_EQ(
+      rowOrFlatMapNullStreams,
+      std::vector<bool>({true, true, true, false, false}));
+}
+
+TEST(SchemaUtilsTest, projectionMarksRowOrFlatMapNullStreams) {
+  SchemaBuilder schemaBuilder;
+  test::FlatMapChildAdder featuresAdder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({
+          {"id", NIMBLE_BIGINT()},
+          {"profile",
+           NIMBLE_ROW({
+               {"age", NIMBLE_INTEGER()},
+               {"name", NIMBLE_STRING()},
+           })},
+          {"features",
+           NIMBLE_FLATMAP(
+               String,
+               NIMBLE_ROW({
+                   {"score", NIMBLE_INTEGER()},
+                   {"label", NIMBLE_STRING()},
+               }),
+               featuresAdder)},
+      }));
+  featuresAdder.addChild("a");
+  featuresAdder.addChild("b");
+  auto sourceNimbleType = SchemaReader::getSchema(schemaBuilder.schemaNodes());
+
+  const auto rowChild = [](const RowType& row,
+                           const char* name) -> const Type& {
+    return *row.childAt(row.findChild(name).value());
+  };
+  const auto scalarOffset = [](const Type& type) {
+    return type.asScalar().scalarDescriptor().offset();
+  };
+  struct SourceStreamOffsets {
+    uint32_t rootNull;
+    uint32_t id;
+    uint32_t profileNull;
+    uint32_t profileAge;
+    uint32_t featuresNull;
+    uint32_t featureARowNull;
+    uint32_t featureAScore;
+    uint32_t featureAInMap;
+  };
+  const auto sourceOffsets = [&]() {
+    const auto& root = sourceNimbleType->asRow();
+    const auto& profile = rowChild(root, "profile").asRow();
+    const auto& features = rowChild(root, "features").asFlatMap();
+    const auto featureAIdx = features.findChild("a").value();
+    const auto& featureARow = features.childAt(featureAIdx)->asRow();
+    return SourceStreamOffsets{
+        root.nullsDescriptor().offset(),
+        scalarOffset(rowChild(root, "id")),
+        profile.nullsDescriptor().offset(),
+        scalarOffset(rowChild(profile, "age")),
+        features.nullsDescriptor().offset(),
+        featureARow.nullsDescriptor().offset(),
+        scalarOffset(rowChild(featureARow, "score")),
+        features.inMapDescriptorAt(featureAIdx).offset()};
+  }();
+
+  struct ProjectedMetadata {
+    std::shared_ptr<const Type> schema;
+    std::vector<uint32_t> streamOffsets;
+    std::vector<bool> rowOrFlatMapNullStreams;
+  };
+  auto project = [&](const std::vector<Subfield>& subfields) {
+    ProjectedMetadata metadata;
+    metadata.schema = buildProjectedNimbleType(
+        sourceNimbleType.get(),
+        subfields,
+        metadata.streamOffsets,
+        metadata.rowOrFlatMapNullStreams);
+    return metadata;
+  };
+
+  enum class ProjectedShape {
+    Scalar,
+    RowWithAge,
+    FlatMapWithScore,
+    FlatMapWithFullRow,
+  };
+  struct TestCase {
+    std::string name;
+    std::string subfield;
+    ProjectedShape shape;
+    std::vector<uint32_t> expectedStreamOffsets;
+    std::vector<bool> expectedRowOrFlatMapNullStreams;
+  };
+  const std::vector<TestCase> testCases{
+      {"scalar",
+       "id",
+       ProjectedShape::Scalar,
+       {sourceOffsets.rootNull, sourceOffsets.id},
+       {true, false}},
+      {"nested-row",
+       "profile.age",
+       ProjectedShape::RowWithAge,
+       {sourceOffsets.rootNull,
+        sourceOffsets.profileNull,
+        sourceOffsets.profileAge},
+       {true, true, false}},
+      {"flatmap-row-value",
+       "features[\"a\"].score",
+       ProjectedShape::FlatMapWithScore,
+       {sourceOffsets.rootNull,
+        sourceOffsets.featuresNull,
+        sourceOffsets.featureARowNull,
+        sourceOffsets.featureAScore,
+        sourceOffsets.featureAInMap},
+       {true, true, true, false, false}},
+      {"missing-flatmap-row-value",
+       "features[\"missing\"]",
+       ProjectedShape::FlatMapWithFullRow,
+       {sourceOffsets.rootNull,
+        sourceOffsets.featuresNull,
+        UINT32_MAX,
+        UINT32_MAX,
+        UINT32_MAX,
+        UINT32_MAX},
+       {true, true, true, false, false, false}},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    std::vector<Subfield> subfields;
+    subfields.emplace_back(testCase.subfield);
+
+    auto metadata = project(subfields);
+
+    ASSERT_EQ(metadata.schema->kind(), Kind::Row);
+    const auto& projectedRoot = metadata.schema->asRow();
+    ASSERT_EQ(projectedRoot.childrenCount(), 1);
+    switch (testCase.shape) {
+      case ProjectedShape::Scalar:
+        EXPECT_EQ(projectedRoot.nameAt(0), "id");
+        EXPECT_EQ(projectedRoot.childAt(0)->kind(), Kind::Scalar);
+        break;
+      case ProjectedShape::RowWithAge: {
+        EXPECT_EQ(projectedRoot.nameAt(0), "profile");
+        ASSERT_EQ(projectedRoot.childAt(0)->kind(), Kind::Row);
+        const auto& projectedProfile = projectedRoot.childAt(0)->asRow();
+        ASSERT_EQ(projectedProfile.childrenCount(), 1);
+        EXPECT_EQ(projectedProfile.nameAt(0), "age");
+        break;
+      }
+      case ProjectedShape::FlatMapWithScore: {
+        EXPECT_EQ(projectedRoot.nameAt(0), "features");
+        ASSERT_EQ(projectedRoot.childAt(0)->kind(), Kind::FlatMap);
+        const auto& projectedFeatures = projectedRoot.childAt(0)->asFlatMap();
+        ASSERT_EQ(projectedFeatures.childrenCount(), 1);
+        EXPECT_EQ(projectedFeatures.nameAt(0), "a");
+        ASSERT_EQ(projectedFeatures.childAt(0)->kind(), Kind::Row);
+        const auto& projectedFeatureA = projectedFeatures.childAt(0)->asRow();
+        ASSERT_EQ(projectedFeatureA.childrenCount(), 1);
+        EXPECT_EQ(projectedFeatureA.nameAt(0), "score");
+        break;
+      }
+      case ProjectedShape::FlatMapWithFullRow: {
+        EXPECT_EQ(projectedRoot.nameAt(0), "features");
+        ASSERT_EQ(projectedRoot.childAt(0)->kind(), Kind::FlatMap);
+        const auto& projectedFeatures = projectedRoot.childAt(0)->asFlatMap();
+        ASSERT_EQ(projectedFeatures.childrenCount(), 1);
+        EXPECT_EQ(projectedFeatures.nameAt(0), "missing");
+        ASSERT_EQ(projectedFeatures.childAt(0)->kind(), Kind::Row);
+        const auto& projectedFeature = projectedFeatures.childAt(0)->asRow();
+        ASSERT_EQ(projectedFeature.childrenCount(), 2);
+        EXPECT_EQ(projectedFeature.nameAt(0), "score");
+        EXPECT_EQ(projectedFeature.nameAt(1), "label");
+        break;
+      }
+    }
+    EXPECT_EQ(metadata.streamOffsets, testCase.expectedStreamOffsets);
+    EXPECT_EQ(
+        metadata.rowOrFlatMapNullStreams,
+        testCase.expectedRowOrFlatMapNullStreams);
+  }
+}
+
+TEST(SchemaUtilsTest, nestedFlatMapProjectionFails) {
+  SchemaBuilder schemaBuilder;
+  test::FlatMapChildAdder featuresAdder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({
+          {"nested",
+           NIMBLE_ROW({
+               {"features",
+                NIMBLE_FLATMAP(String, NIMBLE_INTEGER(), featuresAdder)},
+           })},
+      }));
+  featuresAdder.addChild("a");
+  auto sourceNimbleType = SchemaReader::getSchema(schemaBuilder.schemaNodes());
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("nested");
+
+  std::vector<uint32_t> projectedStreamOffsets;
+  std::vector<bool> rowOrFlatMapNullStreams;
+  NIMBLE_ASSERT_THROW(
+      buildProjectedNimbleType(
+          sourceNimbleType.get(),
+          subfields,
+          projectedStreamOffsets,
+          rowOrFlatMapNullStreams),
+      "FlatMap projection is supported only for top-level columns");
 }
 
 TEST(SchemaUtilsTest, projectionEncodingHints_SlidingWindowMap) {
@@ -811,8 +1024,12 @@ TEST(SchemaUtilsTest, projectionEncodingHints_SlidingWindowMap) {
   subfields.emplace_back("dedup_map");
 
   std::vector<uint32_t> projectedStreamOffsets;
+  std::vector<bool> rowOrFlatMapNullStreams;
   auto projectedNimbleType = buildProjectedNimbleType(
-      sourceNimbleType.get(), subfields, projectedStreamOffsets);
+      sourceNimbleType.get(),
+      subfields,
+      projectedStreamOffsets,
+      rowOrFlatMapNullStreams);
 
   // Verify the SlidingWindowMap encoding is preserved (this is the path
   // through getColumnEncodings → deduplicatedMapColumns → velox-source
@@ -828,6 +1045,9 @@ TEST(SchemaUtilsTest, projectionEncodingHints_SlidingWindowMap) {
   // Walker visits: outer-Row.nulls (5), id Scalar (0), dedup_map offsets (3),
   // lengths (4), keys (1), values (2).
   EXPECT_EQ(projectedStreamOffsets, std::vector<uint32_t>({5, 0, 3, 4, 1, 2}));
+  EXPECT_EQ(
+      rowOrFlatMapNullStreams,
+      std::vector<bool>({true, false, false, false, false, false}));
 }
 
 TEST(SchemaUtilsTest, projectionEncodingHints_Mixed) {
@@ -870,8 +1090,12 @@ TEST(SchemaUtilsTest, projectionEncodingHints_Mixed) {
   subfields.emplace_back("features[\"missing\"]");
 
   std::vector<uint32_t> projectedStreamOffsets;
+  std::vector<bool> rowOrFlatMapNullStreams;
   auto projectedNimbleType = buildProjectedNimbleType(
-      sourceNimbleType.get(), subfields, projectedStreamOffsets);
+      sourceNimbleType.get(),
+      subfields,
+      projectedStreamOffsets,
+      rowOrFlatMapNullStreams);
 
   // All three encoding-specific Kinds survive the projection.
   ASSERT_EQ(projectedNimbleType->kind(), Kind::Row);
@@ -899,6 +1123,23 @@ TEST(SchemaUtilsTest, projectionEncodingHints_Mixed) {
       projectedStreamOffsets,
       std::vector<uint32_t>(
           {9, 0, 2, 3, 1, 6, 7, 4, 5, 8, 10, 11, UINT32_MAX, UINT32_MAX}));
+  EXPECT_EQ(
+      rowOrFlatMapNullStreams,
+      std::vector<bool>(
+          {true,
+           false,
+           false,
+           false,
+           false,
+           false,
+           false,
+           false,
+           false,
+           true,
+           false,
+           false,
+           false,
+           false}));
 }
 
 TEST(SchemaUtilsTest, projectionEmptySubfieldsFails) {

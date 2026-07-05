@@ -19,8 +19,13 @@
 #include "dwio/nimble/velox/Decoder.h"
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
+#include "folly/Likely.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/TypeWithId.h"
+
+#include <algorithm>
+#include <limits>
+#include <optional>
 
 namespace facebook::nimble {
 
@@ -81,77 +86,74 @@ inline ScalarKind getScalarKindForType(const Type& type) {
   NIMBLE_UNSUPPORTED("Unsupported type: {}", toString(type.kind()));
 }
 
-// Initializes the nulls buffer on the Velox vector for scattered reads.
-// When count=0, all rows are absent so all bits are cleared (all null).
-// When count < bitmap size, copies the scatter bitmap as the nulls buffer.
-inline void ensureNulls(
-    const std::function<void*()>& nulls,
-    const velox::bits::Bitmap* scatterBitmap,
-    uint32_t count) {
-  if (!nulls || scatterBitmap == nullptr) {
+// Empty scattered reads still need to mark every output row as absent.
+inline void markEmptyScatteredOutputNulls(
+    const std::function<void*()>& getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap) {
+  if (scatterOutputBitmap == nullptr) {
     return;
   }
-  auto* nullsBuffer = static_cast<uint64_t*>(nulls());
-  if (count == 0) {
-    velox::bits::fillBits(nullsBuffer, 0, scatterBitmap->size(), false);
-  } else if (count < scatterBitmap->size()) {
-    velox::bits::copyBits(
-        static_cast<const uint64_t*>(scatterBitmap->bits()),
-        0,
-        nullsBuffer,
-        0,
-        scatterBitmap->size());
-  }
+  NIMBLE_CHECK_EQ(
+      velox::bits::countBits(
+          static_cast<const uint64_t*>(scatterOutputBitmap->bits()),
+          0,
+          scatterOutputBitmap->size()),
+      0,
+      "Empty scattered reads require an empty scatterOutputBitmap");
+  NIMBLE_CHECK_NOT_NULL(
+      getOutputNulls, "Scattered reads require output nulls callback");
+  velox::bits::fillBits(
+      static_cast<uint64_t*>(getOutputNulls()),
+      0,
+      scatterOutputBitmap->size(),
+      velox::bits::kNull);
 }
 
-// Decoder implementation for deserializing stream data from multiple batches.
-class DeserializerImpl : public Decoder {
+// Decoder for one logical stream assembled from per-batch segments.
+class SegmentedStreamDecoder : public Decoder {
  public:
-  // inMapStream: true for FlatMap inMap streams (fills with 'false' when
-  // missing), false for nulls streams (fills with 'true' when missing).
-  // FlatMap is only supported at depth 1 (top-level columns), so gap detection
-  // is enabled whenever the type is FlatMap.
-  DeserializerImpl(
+  SegmentedStreamDecoder(
       const Type* type,
-      bool inMapStream,
+      bool isInMapStream,
       size_t bufferPoolCapacity,
       velox::memory::MemoryPool* pool)
       : type_{type},
         pool_{pool},
-        inMapStream_{inMapStream},
+        isInMapStream_{isInMapStream},
         scalarKind_{getScalarKindForType(*type)},
         typeStorageWidth_{getTypeStorageWidth(*type)},
         bufferPool_{
             bufferPoolCapacity > 0
                 ? std::make_unique<velox::BufferPool>(bufferPoolCapacity)
-                : nullptr} {}
+                : nullptr} {
+    NIMBLE_CHECK(
+        !isInMapStream_ || typeStorageWidth_ == sizeof(bool),
+        "FlatMap in-map stream should be bool");
+  }
 
   uint32_t next(
       uint32_t count,
       void* output,
       std::vector<velox::BufferPtr>& stringBuffers,
-      std::function<void*()> nulls = nullptr,
-      const velox::bits::Bitmap* scatterBitmap = nullptr) override {
+      std::function<void*()> getOutputNulls = nullptr,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr) override {
+    NIMBLE_CHECK(
+        scatterOutputBitmap == nullptr || !isInMapStream(),
+        "scatterOutputBitmap not used for FlatMap in-map streams");
+
     if (count == 0) {
-      ensureNulls(nulls, scatterBitmap, count);
+      markEmptyScatteredOutputNulls(getOutputNulls, scatterOutputBitmap);
       return 0;
     }
 
-    // Three read paths based on stream type:
-    // readFlatMap: For FlatMap nulls/inMap with gap detection
-    // scatteredRead: For scatterBitmap (StructFlatMapFieldReader values)
-    // contiguousRead: For nested types - simple contiguous read
-    if (type_->isFlatMap()) {
-      NIMBLE_CHECK_NULL(
-          scatterBitmap, "scatterBitmap not used for FlatMap streams");
-      return readFlatMap(count, output, typeStorageWidth_, stringBuffers);
-    }
-    if (scatterBitmap != nullptr) {
-      ensureNulls(nulls, scatterBitmap, count);
+    if (scatterOutputBitmap != nullptr) {
       return scatteredRead(
-          count, output, typeStorageWidth_, scatterBitmap, stringBuffers);
+          count, output, getOutputNulls, scatterOutputBitmap, stringBuffers);
     }
-    return contiguousRead(count, output, typeStorageWidth_, stringBuffers);
+    if (isInMapStream()) {
+      return inMapRead(count, output, stringBuffers);
+    }
+    return denseRead(count, output, getOutputNulls, stringBuffers);
   }
 
   void skip(uint32_t /* count */) override {
@@ -159,50 +161,46 @@ class DeserializerImpl : public Decoder {
   }
 
   void reset() override {
-    NIMBLE_UNREACHABLE("unexpected call");
+    clear();
+  }
+
+  void clear() {
+    streamSegments_.clear();
+    presentInMapSegments_.clear();
+    streamData_.reset();
+    streamSegmentIndex_ = 0;
+    presentSegmentIndex_ = 0;
   }
 
   const Encoding* encoding() const override {
     NIMBLE_UNREACHABLE("unexpected call");
   }
 
-  static inline DeserializerImpl* toDecoderImpl(Decoder* d) {
-    return static_cast<DeserializerImpl*>(d);
+  static inline SegmentedStreamDecoder* as(Decoder* d) {
+    return static_cast<SegmentedStreamDecoder*>(d);
   }
 
-  // Clear all state (called at the start of deserialization).
-  void clear() {
-    batchSegments_.clear();
-    streamData_.reset();
-    presentInMapSegments_.clear();
-    topLevelRows_ = 0;
-    currentFlatMapRow_ = 0;
-    currentSegment_ = 0;
-    currentInMapSegment_ = 0;
-  }
-
-  // Add data starting at the given row offset. Stores the raw data without
-  // creating encoding objects. Encodings are created lazily when the segment
-  // is first read, ensuring only one encoding tree exists at a time. This
-  // avoids the memory locality and allocation overhead of creating hundreds
-  // of encoding trees simultaneously in batch decode.
+  // Stores raw data without creating encoding objects. Encodings are created
+  // lazily when the segment is first read, ensuring only one encoding tree
+  // exists at a time. This avoids the memory locality and allocation overhead
+  // of creating hundreds of encoding trees simultaneously in batch decode.
+  // Appends a physical stream segment. Only FlatMap in-map streams use
+  // `startRow` to reconstruct gaps for batches that omitted the stream.
+  // Other streams concatenate by payload order.
   void addBatch(
-      uint32_t rowOffset,
+      uint32_t startRow,
       std::string_view data,
       SerializationVersion version) {
-    if (data.empty()) {
-      return;
-    }
-    batchSegments_.emplace_back(BatchSegment{rowOffset, data, version});
+    NIMBLE_CHECK(!data.empty(), "Physical stream segment must be non-empty");
+    streamSegments_.emplace_back(
+        StreamSegment{.startRow = startRow, .data = data, .version = version});
   }
 
-  // Record a segment where this key is present in every row (in-map stream
-  // skipped by the serializer). Used by fillMissingFlatMapRows to fill gaps
-  // with true (present) instead of false (absent).
-  void addPresentInMapSegment(uint32_t startRow, uint32_t rowCount) {
-    NIMBLE_CHECK(
-        type_->isFlatMap() && inMapStream_,
-        "addPresentInMapSegment requires FlatMap in-map stream");
+  // Records a batch range where this FlatMap key is present in every row.
+  void addPresentInMapBatch(uint32_t startRow, uint32_t rowCount) {
+    NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
+    NIMBLE_CHECK_GT(
+        rowCount, 0, "All-present in-map segment must be non-empty");
     const uint32_t endRow = startRow + rowCount;
     // Merge with the previous segment if contiguous.
     if (!presentInMapSegments_.empty() &&
@@ -213,396 +211,422 @@ class DeserializerImpl : public Decoder {
     }
   }
 
-  void setTopLevelRows(uint32_t rows) {
-    topLevelRows_ = rows;
+  // Records an all-present FlatMap key range for a null-barrier batch, where
+  // the read request determines the effective end row.
+  void addPresentInMapBatch() {
+    NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
+    NIMBLE_CHECK(
+        streamSegments_.empty(),
+        "All-present in-map segment must not be mixed with physical batches");
+    presentInMapSegments_.emplace_back(
+        InMapSegment{.startRow = 0, .endRow = kPresentInMapEndRow});
   }
 
  private:
-  // Lazily creates StreamData for the given segment index.
-  // Destroys the previous StreamData so the allocator reuses the same
-  // cache-hot memory (matching non-batch mode's sequential pattern).
-  // Ensures streamData_ is initialized for the current segment. Creates a new
-  // StreamData lazily on first access or after advanceSegment() resets it.
-  // String buffers from encoding are pushed directly into the caller's
-  // stringBuffers vector, so no explicit release is needed.
+  // Sentinel end row for all-present FlatMap in-map ranges whose actual row
+  // count comes from the current read request. Null-barrier batches use this
+  // because FlatMap child reads are scoped by the parent Row/FlatMap null
+  // stream, not the physical batch row count.
+  static constexpr uint32_t kPresentInMapEndRow =
+      std::numeric_limits<uint32_t>::max();
+
+  // Physical stream data for one batch.
+  struct StreamSegment {
+    // Top-level row where this batch starts. Only relevant for FlatMap in-map
+    // streams to detect gaps when decoding across multiple chunks.
+    uint32_t startRow;
+    std::string_view data;
+    SerializationVersion version;
+  };
+
+  // Row range where a FlatMap key is present in every requested row and the
+  // in-map stream was omitted from the physical payload.
+  struct InMapSegment {
+    uint32_t startRow;
+    uint32_t endRow;
+  };
+
+  // True for the FlatMap child-presence stream, not for the FlatMap
+  // value/null stream itself.
+  bool isInMapStream() const {
+    return isInMapStream_;
+  }
+
+  // Lazily creates StreamData for the current physical segment. String buffers
+  // from encoding are pushed directly into the caller's stringBuffers vector,
+  // so no explicit release is needed.
   serde::StreamData& ensureStreamData(
       std::vector<velox::BufferPtr>& stringBuffers) {
     if (streamData_.has_value()) {
       return *streamData_;
     }
 
-    NIMBLE_CHECK_LT(currentSegment_, batchSegments_.size());
-    const auto& segment = batchSegments_[currentSegment_];
-    const serde::StreamData::Options options{
-        .version = segment.version,
-        .bufferPool = bufferPool_.get(),
-        .decompressionBuffer = &decompressionBuffer_,
-    };
+    NIMBLE_CHECK_LT(streamSegmentIndex_, streamSegments_.size());
+    const auto& segment = streamSegments_[streamSegmentIndex_];
     streamData_.emplace(
-        scalarKind_, segment.data, stringBuffers, pool_, options);
+        scalarKind_,
+        segment.data,
+        stringBuffers,
+        pool_,
+        serde::StreamData::Options{
+            .version = segment.version,
+            .bufferPool = bufferPool_.get(),
+            .decompressionBuffer = &decompressionBuffer_});
     return *streamData_;
   }
 
-  // Advances to the next segment. Destroys current StreamData so the next
-  // ensureStreamData() creates a fresh one for the new segment.
+  // Advances to the next segment. ensureStreamData() will create StreamData for
+  // the new segment before decoding it.
   void advanceSegment() {
     streamData_.reset();
-    ++currentSegment_;
+    ++streamSegmentIndex_;
   }
 
-  uint32_t readFromBatchSegment(
+  uint32_t fillInMapGap(uint32_t rowOffset, uint32_t rowCount, void* output) {
+    NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
+    // rowOffset and rowCount are in the same concatenated batch-run row domain
+    // as StreamSegment::startRow.
+    const auto requestEndRow = rowOffset + rowCount;
+    const auto gapEndRow = streamSegmentIndex_ < streamSegments_.size()
+        ? std::min(requestEndRow, streamSegments_[streamSegmentIndex_].startRow)
+        : requestEndRow;
+    NIMBLE_CHECK_GT(
+        gapEndRow,
+        rowOffset,
+        "FlatMap in-map gap fill requires a non-empty output range");
+    const auto numGapRows = gapEndRow - rowOffset;
+    auto* const outputBools =
+        static_cast<char*>(output) + rowOffset * typeStorageWidth_;
+    constexpr char kInMapAbsent = 0;
+    constexpr char kInMapPresent = 1;
+    std::memset(outputBools, kInMapAbsent, numGapRows * typeStorageWidth_);
+    while (presentSegmentIndex_ < presentInMapSegments_.size()) {
+      const auto& segment = presentInMapSegments_[presentSegmentIndex_];
+      if (segment.startRow >= gapEndRow) {
+        break;
+      }
+      NIMBLE_CHECK_GE(
+          segment.startRow,
+          rowOffset,
+          "Present in-map segment starts before absent row range");
+      const auto presentEndRow = std::min(segment.endRow, gapEndRow);
+      std::memset(
+          outputBools + (segment.startRow - rowOffset) * typeStorageWidth_,
+          kInMapPresent,
+          (presentEndRow - segment.startRow) * typeStorageWidth_);
+      if (segment.endRow > gapEndRow) {
+        // Synthetic all-present ranges can span past the current read request;
+        // physical present ranges are expected to end within this gap.
+        NIMBLE_CHECK_EQ(
+            segment.endRow,
+            kPresentInMapEndRow,
+            "Only all-present in-map segment can extend beyond gap range");
+        break;
+      }
+      ++presentSegmentIndex_;
+    }
+    return numGapRows;
+  }
+
+  serde::StreamData::DecodeResult readLegacyStreamSegment(
+      serde::StreamData& streamData,
+      void* output,
+      uint32_t offset,
+      uint32_t count) {
+    const auto width = typeStorageWidth_;
+    if (width > 0) {
+      return streamData.decodeLegacy(output, offset, count, width);
+    }
+
+    auto* dest = static_cast<std::string_view*>(output) + offset;
+    return streamData.decodeStrings(count, dest);
+  }
+
+  serde::StreamData::DecodeResult readSegment(
       void* output,
       uint32_t offset,
       uint32_t count,
-      uint32_t width,
+      const std::function<void*()>& getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap,
       std::vector<velox::BufferPtr>& stringBuffers) {
+    NIMBLE_CHECK(
+        scatterOutputBitmap == nullptr || !isInMapStream(),
+        "scatterOutputBitmap not used for FlatMap in-map streams");
+
+    NIMBLE_CHECK_LT(streamSegmentIndex_, streamSegments_.size());
     auto& streamData = ensureStreamData(stringBuffers);
-
-    // Nimble encoding path: decode dispatches by type width.
-    // Returns actual count decoded (may be less than requested if encoding
-    // has fewer remaining rows).
-    if (streamData.hasEncoding()) {
-      return streamData.decode(output, offset, count, width);
+    if (!streamData.hasEncoding()) {
+      NIMBLE_CHECK_NULL(
+          scatterOutputBitmap,
+          "scatterOutputBitmap is only used for encoded streams");
+      return readLegacyStreamSegment(streamData, output, offset, count);
     }
 
-    // Legacy path.
-    if (width > 0) {
-      auto* dest = static_cast<char*>(output) + offset * width;
-      const auto copied = streamData.copyTo(dest, count * width);
-      return copied / width;
-    } else {
-      // String type.
-      auto* dest = static_cast<std::string_view*>(output) + offset;
-      return streamData.decodeStrings(count, dest);
-    }
+    const auto width = typeStorageWidth_;
+    return streamData.decode(
+        output, offset, count, width, getOutputNulls, scatterOutputBitmap);
   }
 
-  // Simple contiguous read for nested types. Reads `count` values from
-  // segments directly to output without gap detection or scattering.
-  uint32_t contiguousRead(
+  // Reads `count` non-in-map values into dense output row positions.
+  uint32_t denseRead(
       uint32_t count,
       void* output,
-      uint32_t width,
+      const std::function<void*()>& getOutputNulls,
       std::vector<velox::BufferPtr>& stringBuffers) {
-    NIMBLE_CHECK(!type_->isFlatMap(), "contiguousRead not used for FlatMap");
-
-    // Handle empty batchSegments_ for Row nulls streams. The serializer omits
-    // Row nulls when all values are non-null. Fill with true (all non-null).
-    if (batchSegments_.empty()) {
+    const auto width = typeStorageWidth_;
+    if (FOLLY_UNLIKELY(streamSegments_.empty())) {
       NIMBLE_CHECK(
-          type_->isRow(),
-          "batchSegments_ is empty for unexpected type={}",
-          toString(type_->kind()));
-      fillMissingRows(output, /*offset=*/0, count, width);
+          type_->isRow() || type_->isFlatMap(),
+          "streamSegments_ is empty for unexpected stream type={}",
+          type_->kind());
+      NIMBLE_CHECK_EQ(
+          width, sizeof(bool), "Row/FlatMap null stream should be bool");
+      // All-non-null Row/FlatMap null streams are omitted on the wire and
+      // reconstructed as all-true here (no null rows).
+      std::fill_n(static_cast<bool*>(output), count, true);
       return count;
     }
 
-    uint32_t valuesRead{0};
-    while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-      const uint32_t toRead = count - valuesRead;
-      const uint32_t read = readFromBatchSegment(
-          output, valuesRead, toRead, width, stringBuffers);
-      if (read == 0) {
-        advanceSegment();
-      } else {
-        valuesRead += read;
-        if (read < toRead) {
-          advanceSegment();
+    uint32_t rowsRead{0};
+    uint32_t nonNullCount{0};
+    bool nullsInitialized{false};
+    while (rowsRead < count) {
+      NIMBLE_CHECK_LT(
+          streamSegmentIndex_,
+          streamSegments_.size(),
+          "Non-in-map stream ended before requested rows were decoded");
+      const uint32_t rowsToRead = count - rowsRead;
+      const auto result = readSegment(
+          output,
+          rowsRead,
+          rowsToRead,
+          getOutputNulls,
+          /*scatterOutputBitmap=*/nullptr,
+          stringBuffers);
+      NIMBLE_CHECK_GT(
+          result.numOutputRows, 0, "Current segment returned no rows");
+      NIMBLE_CHECK_LE(
+          result.nonNullOutputRows,
+          result.numOutputRows,
+          "non-null row count exceeds row count");
+      const bool segmentAllNonNull =
+          result.nonNullOutputRows == result.numOutputRows;
+      const bool needsNullHandling = !segmentAllNonNull || nullsInitialized;
+      if (FOLLY_UNLIKELY(needsNullHandling)) {
+        NIMBLE_CHECK_NOT_NULL(
+            getOutputNulls, "nullable segment requires output nulls callback");
+        if (!segmentAllNonNull && !nullsInitialized) {
+          velox::bits::fillBits(
+              static_cast<uint64_t*>(getOutputNulls()),
+              0,
+              rowsRead,
+              velox::bits::kNotNull);
+          nullsInitialized = true;
+        } else if (segmentAllNonNull && nullsInitialized) {
+          // Nullable decoding does not touch the null bitmap for all-non-null
+          // segments, so keep the stitched output range explicitly non-null.
+          velox::bits::fillBits(
+              static_cast<uint64_t*>(getOutputNulls()),
+              rowsRead,
+              rowsRead + result.numOutputRows,
+              velox::bits::kNotNull);
         }
       }
+      rowsRead += result.numOutputRows;
+      nonNullCount += result.nonNullOutputRows;
+      if (FOLLY_LIKELY(result.segmentExhausted)) {
+        advanceSegment();
+      }
     }
-    NIMBLE_CHECK_EQ(valuesRead, count, "Incomplete read");
-    return count;
+
+    NIMBLE_CHECK_EQ(
+        rowsRead,
+        count,
+        "Incomplete read: typeKind={} inMap={} segments={} streamSegmentIndex={}",
+        toString(type_->kind()),
+        isInMapStream_,
+        streamSegments_.size(),
+        streamSegmentIndex_);
+    return nonNullCount;
   }
 
-  // Read for FlatMap nulls/inMap streams with gap detection.
-  // Detects gaps between segments (where certain keys are missing) and fills
-  // with placeholder data. Uses currentFlatMapRow_ to track position and
-  // compare with segment startRow.
-  uint32_t readFlatMap(
+  // FlatMap in-map streams still materialize dense bool output. Their physical
+  // stream can be omitted for all-absent/all-present batch ranges, so this path
+  // reconstructs those gaps while normal dense reads avoid the in-map branches.
+  uint32_t inMapRead(
       uint32_t count,
       void* output,
-      uint32_t width,
       std::vector<velox::BufferPtr>& stringBuffers) {
-    NIMBLE_CHECK(type_->isFlatMap(), "readFlatMap requires FlatMap type");
-    // Only used for FlatMap nulls/inMap streams which are boolean.
-    NIMBLE_CHECK_EQ(width, sizeof(bool), "readFlatMap expects bool width");
-
-    uint32_t rowsRead = 0;
+    uint32_t rowsRead{0};
+    uint32_t nonNullCount{0};
     while (rowsRead < count) {
-      // Gap detection: fill missing rows before current segment starts.
-      if (currentSegment_ < batchSegments_.size() &&
-          currentFlatMapRow_ < batchSegments_[currentSegment_].startRow) {
-        const uint32_t segmentStartRow =
-            batchSegments_[currentSegment_].startRow;
-        const uint32_t numMissingRows =
-            std::min(segmentStartRow - currentFlatMapRow_, count - rowsRead);
-        fillMissingFlatMapRows(output, rowsRead, numMissingRows, width);
-        rowsRead += numMissingRows;
-        currentFlatMapRow_ += numMissingRows;
+      if (streamSegmentIndex_ >= streamSegments_.size()) {
+        const auto rows = fillInMapGap(rowsRead, count - rowsRead, output);
+        rowsRead += rows;
+        nonNullCount += rows;
+        break;
+      }
+
+      const auto nextStreamStartRow =
+          streamSegments_[streamSegmentIndex_].startRow;
+      if (nextStreamStartRow > rowsRead) {
+        const auto rows = fillInMapGap(rowsRead, count - rowsRead, output);
+        NIMBLE_CHECK_EQ(
+            rows,
+            std::min(count, nextStreamStartRow) - rowsRead,
+            "FlatMap in-map gap fill returned unexpected row count");
+        rowsRead += rows;
+        nonNullCount += rows;
         continue;
       }
 
-      if (currentSegment_ >= batchSegments_.size()) {
-        // No more segments - fill remaining with placeholder.
-        if (currentFlatMapRow_ < topLevelRows_) {
-          const uint32_t numMissingRows =
-              std::min(topLevelRows_ - currentFlatMapRow_, count - rowsRead);
-          fillMissingFlatMapRows(output, rowsRead, numMissingRows, width);
-          rowsRead += numMissingRows;
-          currentFlatMapRow_ += numMissingRows;
-          continue;
-        }
-        NIMBLE_FAIL("Incomplete read: no more segments and beyond totalRows");
-      }
-
-      // Read from current segment.
       const uint32_t rowsToRead = count - rowsRead;
-      const uint32_t numRowsRead = readFromBatchSegment(
-          output, /*offset=*/rowsRead, rowsToRead, width, stringBuffers);
-      if (numRowsRead == 0) {
+      const auto result = readSegment(
+          output,
+          rowsRead,
+          rowsToRead,
+          /*getOutputNulls=*/nullptr,
+          /*scatterOutputBitmap=*/nullptr,
+          stringBuffers);
+      NIMBLE_CHECK_GT(
+          result.numOutputRows, 0, "Current in-map segment returned no rows");
+      NIMBLE_CHECK_EQ(
+          result.nonNullOutputRows,
+          result.numOutputRows,
+          "FlatMap in-map stream must not contain nulls");
+      rowsRead += result.numOutputRows;
+      nonNullCount += result.numOutputRows;
+      if (FOLLY_LIKELY(result.segmentExhausted)) {
         advanceSegment();
-      } else {
-        rowsRead += numRowsRead;
-        currentFlatMapRow_ += numRowsRead;
-        if (numRowsRead < rowsToRead) {
-          advanceSegment();
-        }
       }
     }
-    return count;
+
+    NIMBLE_CHECK_EQ(
+        rowsRead,
+        count,
+        "Incomplete in-map read: segments={} streamSegmentIndex={}",
+        streamSegments_.size(),
+        streamSegmentIndex_);
+    return nonNullCount;
   }
 
-  // Ensure scatterBuffer_ has at least the requested capacity.
-  // Only grows the buffer, never shrinks, to avoid repeated allocations.
-  char* ensureScatterBuffer(size_t bytes) {
-    if (scatterBuffer_ == nullptr || scatterBuffer_->capacity() < bytes) {
-      scatterBuffer_ = velox::AlignedBuffer::allocate<char>(bytes, pool_);
-    }
-    return scatterBuffer_->asMutable<char>();
-  }
-
-  // Read values contiguously then scatter to positions where scatterBitmap
-  // bits are set. Used for FlatMap value columns where some rows don't have
-  // certain keys (inMap=false).
+  // Decode directly to positions where scatterOutputBitmap bits are set. Used
+  // for FlatMap value columns where some rows don't have certain keys
+  // (inMap=false).
   uint32_t scatteredRead(
       uint32_t count,
       void* output,
-      uint32_t width,
-      const velox::bits::Bitmap* scatterBitmap,
+      const std::function<void*()>& getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap,
       std::vector<velox::BufferPtr>& stringBuffers) {
-    const auto outputSize = scatterBitmap->size();
+    NIMBLE_CHECK(
+        !type_->isFlatMap(),
+        "scatterOutputBitmap not used for FlatMap null streams");
+
+    const auto outputSize = scatterOutputBitmap->size();
     // Fast path: if bitmap is dense (all bits set), read directly to output.
     // This avoids temp buffer allocation and scatter overhead.
     if (count == outputSize) {
-      return contiguousRead(count, output, width, stringBuffers);
+      return denseRead(count, output, getOutputNulls, stringBuffers);
     }
 
-    if (width > 0) {
-      // Fixed-width types: read to temp buffer, then scatter.
-      auto* buffer = ensureScatterBuffer((size_t)count * width);
-      uint32_t valuesRead = 0;
-      while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        const auto toRead = count - valuesRead;
-        const auto read = readFromBatchSegment(
-            buffer, valuesRead, toRead, width, stringBuffers);
-        if (read == 0) {
-          advanceSegment();
-        } else {
-          valuesRead += read;
-          if (read < toRead) {
-            advanceSegment();
-          }
-        }
-      }
-      NIMBLE_CHECK_EQ(valuesRead, count, "Incomplete read");
+    uint32_t rowsRead = 0;
+    uint32_t nonNullCount = 0;
 
-      // Scatter to output positions where bitmap is set.
-      const char* src = buffer;
-      auto* dst = static_cast<char*>(output);
-      for (uint32_t pos = 0; pos < outputSize; ++pos) {
-        if (scatterBitmap->test(pos)) {
-          std::memcpy(dst + pos * width, src, width);
-          src += width;
-        }
-      }
-    } else {
-      // String types: read to temp buffer, then scatter.
-      auto* stringBuffer = reinterpret_cast<std::string_view*>(
-          ensureScatterBuffer(count * sizeof(std::string_view)));
-      uint32_t valuesRead = 0;
-      while (valuesRead < count && currentSegment_ < batchSegments_.size()) {
-        const auto toRead = count - valuesRead;
-        const auto read = readFromBatchSegment(
-            stringBuffer, valuesRead, toRead, width, stringBuffers);
-        if (read == 0) {
-          advanceSegment();
-        } else {
-          valuesRead += read;
-          if (read < toRead) {
-            advanceSegment();
-          }
-        }
-      }
-      NIMBLE_CHECK_EQ(valuesRead, count, "Incomplete read");
+    NIMBLE_CHECK_NOT_NULL(
+        getOutputNulls,
+        "Output nulls callback is required for scattered reads");
+    uint32_t offset = 0;
+    bool hasNulls = false;
 
-      // Scatter to output positions where bitmap is set.
-      const std::string_view* src = stringBuffer;
-      auto* dst = static_cast<std::string_view*>(output);
-      for (uint32_t pos = 0; pos < outputSize; ++pos) {
-        if (scatterBitmap->test(pos)) {
-          dst[pos] = *src++;
-        }
-      }
-    }
+    while (rowsRead < count && streamSegmentIndex_ < streamSegments_.size()) {
+      auto& streamData = ensureStreamData(stringBuffers);
+      NIMBLE_CHECK(
+          streamData.hasEncoding(),
+          "Scattered reads require encoded stream data");
+      const auto requestRows = count - rowsRead;
+      const auto rowsToRead = std::min(requestRows, streamData.remainingRows());
+      NIMBLE_CHECK_GT(rowsToRead, 0, "Current scattered segment has no rows");
 
-    return count;
-  }
-
-  // Fill missing rows for FlatMap streams (nulls or in-map).
-  // For nulls streams, delegates to fillMissingRows (fills with true).
-  // For in-map streams, a gap can span multiple segments — some with key
-  // present in every row (serializer skipped), some absent (key missing).
-  // Default fills with false, then overlays present segments.
-  void fillMissingFlatMapRows(
-      void* output,
-      uint32_t offset,
-      uint32_t count,
-      uint32_t width) {
-    NIMBLE_CHECK(
-        type_->isFlatMap(), "fillMissingFlatMapRows requires FlatMap type");
-
-    if (!inMapStream_ || presentInMapSegments_.empty()) {
-      fillMissingRows(output, offset, count, width);
-      return;
-    }
-
-    auto* bools = static_cast<bool*>(output) + offset;
-    const uint32_t startRow = currentFlatMapRow_;
-    const uint32_t endRow = startRow + count;
-
-    // Fast path: single present segment covers the entire gap.
-    if (currentInMapSegment_ < presentInMapSegments_.size()) {
-      const auto& segment = presentInMapSegments_[currentInMapSegment_];
-      if (segment.startRow <= startRow && segment.endRow >= endRow) {
-        std::memset(bools, 1, count);
-        return;
-      }
-    }
-
-    // General path: default fill with false, then overlay present segments.
-    // Segments are sorted by startRow, so advance currentInMapSegment_ past
-    // consumed segments to avoid re-scanning.
-    std::memset(bools, 0, count);
-    while (currentInMapSegment_ < presentInMapSegments_.size()) {
-      const auto& segment = presentInMapSegments_[currentInMapSegment_];
-      if (segment.startRow >= endRow) {
-        break;
-      }
-      if (segment.endRow > startRow) {
-        const uint32_t overlapStart = std::max(segment.startRow, startRow);
-        const uint32_t overlapEnd = std::min(segment.endRow, endRow);
-        std::memset(
-            bools + (overlapStart - startRow), 1, overlapEnd - overlapStart);
-      }
-      // Advance past segments fully consumed by this gap.
-      if (segment.endRow <= endRow) {
-        ++currentInMapSegment_;
-      } else {
-        break;
-      }
-    }
-  }
-
-  void fillMissingRows(
-      void* output,
-      uint32_t offset,
-      uint32_t count,
-      uint32_t width) {
-    if (type_->isRow() || type_->isFlatMap()) {
-      // For Row/FlatMap nulls stream, fill with true (all non-null).
-      // For FlatMap inMap streams, fill with false (key not present).
-      NIMBLE_CHECK_EQ(width, sizeof(bool), "Unexpected width for Row/FlatMap");
-      auto* bools = static_cast<bool*>(output) + offset;
-      std::memset(bools, inMapStream_ ? 0 : 1, count);
-    } else if (type_->isScalar()) {
-      // For Scalar types, fill with zeros.
-      if (width > 0) {
-        std::memset(
-            static_cast<char*>(output) + offset * width, 0, count * width);
-      }
-      // For strings (width == 0), leave as empty string_views.
-    } else {
-      // For other types (Array, Map, etc.), fill lengths with zeros.
+      const auto endOffset = velox::bits::findSetBit(
+          static_cast<const char*>(scatterOutputBitmap->bits()),
+          offset,
+          outputSize,
+          rowsToRead + 1);
+      velox::bits::Bitmap segmentScatterBitmap{
+          scatterOutputBitmap->bits(), endOffset};
+      const auto result = readSegment(
+          output,
+          offset,
+          rowsToRead,
+          getOutputNulls,
+          &segmentScatterBitmap,
+          stringBuffers);
       NIMBLE_CHECK_EQ(
-          width, sizeof(uint32_t), "Unexpected width for Array/Map");
-      std::memset(
-          static_cast<char*>(output) + offset * width, 0, count * width);
+          result.numOutputRows,
+          rowsToRead,
+          "Incomplete scattered segment read");
+
+      const auto segmentRows = endOffset - offset;
+      const bool segmentHasNulls = result.nonNullOutputRows != segmentRows;
+      if (segmentHasNulls && !hasNulls) {
+        velox::bits::BitmapBuilder nullBits{getOutputNulls(), offset};
+        nullBits.set(0, offset);
+      }
+      if (hasNulls && !segmentHasNulls) {
+        velox::bits::BitmapBuilder nullBits{getOutputNulls(), endOffset};
+        nullBits.set(offset, endOffset);
+      }
+      hasNulls |= segmentHasNulls;
+
+      rowsRead += result.numOutputRows;
+      nonNullCount += result.nonNullOutputRows;
+      offset = endOffset;
+      if (FOLLY_LIKELY(result.segmentExhausted)) {
+        advanceSegment();
+      }
     }
+
+    NIMBLE_CHECK_EQ(
+        rowsRead,
+        count,
+        "Incomplete scattered read: typeKind={} segments={} streamSegmentIndex={}",
+        toString(type_->kind()),
+        streamSegments_.size(),
+        streamSegmentIndex_);
+    return nonNullCount;
   }
-
-  // Batch segment storing raw data for lazy StreamData creation.
-  // Encoding objects are created on-demand when the segment is first read,
-  // ensuring only one encoding tree exists at a time for better cache locality.
-  struct BatchSegment {
-    uint32_t startRow; // Row offset where this segment starts.
-    std::string_view data; // Raw stream data (valid for lifetime of input).
-    SerializationVersion version;
-  };
-
-  // Row range [startRow, endRow) for segments where this key is present in
-  // every row. The serializer skips the in-map stream for these segments, and
-  // fillMissingFlatMapRows fills with true (present) instead of false (absent).
-  struct InMapSegment {
-    uint32_t startRow;
-    uint32_t endRow;
-  };
 
   // --- Const members (set at construction, never modified) ---
   const Type* const type_;
   velox::memory::MemoryPool* const pool_;
-  // True for inMap streams (fills with 'false' when missing), false for nulls
-  // streams (fills with 'true' when missing).
-  const bool inMapStream_;
+  // True when this decoder reads a FlatMap child in-map presence stream rather
+  // than the FlatMap value/null stream.
+  const bool isInMapStream_;
   // Cached from type at construction to avoid per-call dispatch.
   const ScalarKind scalarKind_;
   const uint32_t typeStorageWidth_;
   // Pool for encoding scratch buffers (e.g. MainlyConstant's isCommon and
-  // otherValues buffers). Persists across clear()/addBatch() cycles so buffers
+  // otherValues buffers). Persists across reset()/addBatch() cycles so buffers
   // are reused instead of being allocated/freed through MemoryPool each time.
   // Null when buffer pooling is disabled via DeserializerOptions.
   const std::unique_ptr<velox::BufferPool> bufferPool_;
   // Decompression buffer reused across StreamData lifetimes. Persists across
-  // clear()/addBatch() cycles so the buffer capacity is reused instead of
+  // reset()/addBatch() cycles so the buffer capacity is reused instead of
   // freed and re-allocated on each segment transition.
   velox::BufferPtr decompressionBuffer_;
 
-  // --- Batch decode state (reset in clear()) ---
-  // Total top-level rows across all batches. Used for FlatMap gap detection to
-  // fill missing rows at the end.
-  uint32_t topLevelRows_{0};
-  std::vector<BatchSegment> batchSegments_;
-  size_t currentSegment_{0}; // Current index into batchSegments_
+  // --- Stream decode state (cleared by reset()) ---
+  size_t streamSegmentIndex_{0};
+  std::vector<StreamSegment> streamSegments_;
 
-  // Lazily-created StreamData. Only one exists at a time — destroyed before
-  // creating the next so the allocator reuses cache-hot memory.
-  std::optional<serde::StreamData> streamData_;
-
-  // --- FlatMap state (reset in clear()) ---
-  // FlatMap is only supported at depth 1 (top-level columns). Gap detection is
-  // enabled whenever type_->isFlatMap(). These fields are unused for
-  // non-FlatMap types.
-
-  // Current read position for FlatMap gap detection.
-  uint32_t currentFlatMapRow_{0};
-  // Segments where this key is present in every row (in-map stream skipped).
-  // Used by fillMissingFlatMapRows to fill with true (present).
+  // --- FlatMap in-map state (cleared by reset()) ---
+  size_t presentSegmentIndex_{0};
   std::vector<InMapSegment> presentInMapSegments_;
-  size_t currentInMapSegment_{0}; // Current index into presentInMapSegments_
 
-  // Temp buffer for scattered reads (reused to avoid repeated allocations).
-  // Used for both fixed-width types (as char*) and strings (as string_view*).
-  velox::BufferPtr scatterBuffer_;
+  // Lazily-created StreamData wrapper reused across physical segments for this
+  // stream decoder.
+  std::optional<serde::StreamData> streamData_;
 };
 
 const StreamDescriptor& getMainDescriptor(const Type& type) {
@@ -685,6 +709,7 @@ Deserializer::Deserializer(
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
   const auto params = createFieldReaderParams();
+  parser_ = std::make_unique<serde::StreamDataParser>(pool_, options_);
 
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
       velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
@@ -695,8 +720,7 @@ Deserializer::Deserializer(
     createDeserializersForType(type, depth);
   });
 
-  rootReader_ = rootFactory_->createReader(deserializerMap_);
-  inputBuffer_.resize(1);
+  reader_ = rootFactory_->createReader(deserializerMap_);
 
   // Build flat vector for O(1) stream offset lookup during deserialize().
   uint32_t maxOffset = 0;
@@ -707,13 +731,13 @@ Deserializer::Deserializer(
   for (auto& [offset, decoder] : deserializerMap_) {
     deserializers_[offset] = decoder.get();
   }
-  // Pre-size FlatMap present-tracking state once. Both vectors are bounded
+  // Pre-size stream presence-tracking state once. Both vectors are bounded
   // by maxOffset because every value-stream anchor offset is a Type main
   // descriptor offset already in deserializerMap_. Sizing here (rather than
   // grow-on-demand inside createDeserializersForType) avoids repeated
   // reallocations and lets the per-batch hot path skip a bounds check.
   if (!inMapChildTypes_.empty()) {
-    inMapPresentOffsets_.resize(maxOffset + 1, false);
+    streamPresentFlags_.resize(maxOffset + 1, false);
     valueOffsetToInMap_.resize(maxOffset + 1, kInvalidInMapOffset);
     // Populate the reverse-lookup table: for each top-level FlatMap child,
     // record its inMap stream offset at every one of its value-stream
@@ -739,27 +763,28 @@ Deserializer::Deserializer(
   }
 }
 
+Deserializer::~Deserializer() = default;
+
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
   deserializerMap_[getMainDescriptor(type).offset()] =
-      std::make_unique<DeserializerImpl>(
+      std::make_unique<SegmentedStreamDecoder>(
           &type,
-          /*inMapStream=*/false,
+          /*isInMapStream=*/false,
           options_.bufferPoolCapacity,
           pool_);
-  // FlatMap is only supported at depth 1 (top-level columns). FlatMap keys can
-  // vary across batches, causing gaps in nulls/inMap streams. Gap detection is
-  // enabled in DeserializerImpl whenever type->isFlatMap().
+  // FlatMap is only supported at depth 1 (top-level columns). Register each
+  // child in-map stream so it is decoded like other physical streams.
   if (type.isFlatMap()) {
     NIMBLE_CHECK_EQ(
         depth, 1, "FlatMap is only supported as a top-level column (depth 1)");
     auto& flatMap = type.asFlatMap();
     for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
       const auto inMapOffset = flatMap.inMapDescriptorAt(i).offset();
-      deserializerMap_[inMapOffset] = std::make_unique<DeserializerImpl>(
+      deserializerMap_[inMapOffset] = std::make_unique<SegmentedStreamDecoder>(
           &type,
-          /*inMapStream=*/true,
+          /*isInMapStream=*/true,
           options_.bufferPoolCapacity,
           pool_);
       inMapChildTypes_[inMapOffset] = flatMap.childAt(i).get();
@@ -767,111 +792,120 @@ void Deserializer::createDeserializersForType(
   }
 }
 
-void Deserializer::deserialize(std::string_view data, velox::VectorPtr& vector)
+void Deserializer::deserialize(std::string_view data, velox::VectorPtr& output)
     const {
-  inputBuffer_[0] = data;
-  deserialize(inputBuffer_, vector);
+  deserialize(folly::Range<const std::string_view*>(&data, 1), output);
 }
 
 void Deserializer::deserialize(
     const std::vector<std::string_view>& data,
-    velox::VectorPtr& vector) const {
-  // Clear deserializer state from previous calls.
-  for (auto& [_, decoder] : deserializerMap_) {
-    DeserializerImpl::toDecoderImpl(decoder.get())->clear();
+    velox::VectorPtr& output) const {
+  deserialize(
+      folly::Range<const std::string_view*>(data.data(), data.size()), output);
+}
+
+void Deserializer::appendToOutput(
+    velox::VectorPtr&& decoded,
+    velox::VectorPtr& output) const {
+  if (FOLLY_LIKELY(output == nullptr)) {
+    output = std::move(decoded);
+    return;
   }
-  const bool hasInMapChildren = !inMapChildTypes_.empty();
+  output->append(decoded.get());
+}
+
+void Deserializer::decodeRun(DecodeRun& run, velox::VectorPtr& output) const {
+  if (FOLLY_UNLIKELY(run.batches == 0)) {
+    return;
+  }
+
+  velox::VectorPtr decoded;
+  reader_->next(run.rows, decoded, nullptr);
+  run = {};
+  appendToOutput(std::move(decoded), output);
+  reader_->reset();
+}
+
+void Deserializer::appendStreamSegments(
+    uint32_t rowCount,
+    uint32_t startRow,
+    bool requiresBarrier) const {
   const auto maxStreamOffset = deserializers_.size() - 1;
-
-  // Iterate batches and add stream data with row offsets. Streams missing
-  // from a batch will have gaps that are filled later during reading.
-  //
-  // We decode the full cumulative stream below — over-fetching rows outside
-  // any per-batch row range. For kTablet inputs from NimbleIndexProjector
-  // (the producer of row-range-bearing slices), this over-fetch is bounded
-  // by stripe boundaries and never crosses users: each chunk slice covers
-  // exactly one (request × stripe) intersection. For non-kTablet inputs
-  // (kLegacyCompact/kLegacy) there's no embedded row range, so
-  // "over-fetch" doesn't apply — the full batch is decoded as intended.
-  //
-  // Callers that want only the in-range rows of a kTablet slice can read
-  // the range via rocks::readResultRowRange and slice the output themselves.
-  //
-  // TODO: optimize by pushing the row range into the FieldReader::skip
-  // cascade so the decode pass produces only the in-range rows. Correct for
-  // nested-nullable types because the cascade goes through FieldReader
-  // (parent nulls/lengths are read and translated to child counts). Avoids
-  // the over-fetch CPU entirely.
-  uint32_t rowOffset{0};
-  serde::StreamDataReader reader{pool_, options_};
-  for (auto sv : data) {
-    const auto numRows = reader.initialize(sv);
-    const auto version = reader.version();
-    // Reset present tracking from previous batch.
-    if (hasInMapChildren && !inMapPresentOffsetsList_.empty()) {
-      for (auto off : inMapPresentOffsetsList_) {
-        inMapPresentOffsets_[off] = false;
-      }
-      inMapPresentOffsetsList_.clear();
+  const auto version = parser_->version();
+  const bool hasInMapChildren = !inMapChildTypes_.empty();
+  if (hasInMapChildren) {
+    std::fill(streamPresentFlags_.begin(), streamPresentFlags_.end(), false);
+    presentStreamOffsets_.clear();
+  }
+  parser_->iterateStreams([&](uint32_t offset, std::string_view streamData) {
+    if (FOLLY_UNLIKELY(offset > maxStreamOffset)) {
+      return;
     }
-    // iterateStreams() is a templated callback walker; the lambda body
-    // inlines into the loop, eliminating std::function dispatch on the
-    // per-batch flatmap deserialization hot path.
-    reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
-      if (offset <= maxStreamOffset) {
-        if (hasInMapChildren) {
-          inMapPresentOffsets_[offset] = true;
-          inMapPresentOffsetsList_.emplace_back(offset);
-        }
-        // Null is possible: deserializers_ is sized to maxOffset+1 but only
-        // populated for offsets in deserializerMap_. Some serialized stream
-        // offsets (e.g., TimestampMicroNano's nanosDescriptor) are not in
-        // the map, so their slot stays null; skip them here.
-        auto* decoder = deserializers_[offset];
-        if (decoder != nullptr) {
-          DeserializerImpl::toDecoderImpl(decoder)->addBatch(
-              rowOffset, streamData, version);
-        }
+    if (hasInMapChildren) {
+      if (!streamPresentFlags_[offset]) {
+        streamPresentFlags_[offset] = true;
+        presentStreamOffsets_.emplace_back(offset);
       }
-    });
-
-    // Detect present in-map streams by driving the scan off the small set
-    // of streams actually present in this blob (inMapPresentOffsetsList_,
-    // typically dozens of entries), rather than the schema's full FlatMap
-    // child cardinality (hundreds). For each present stream offset, the
-    // reverse-lookup table maps it back to its owning FlatMap child's
-    // inMap stream offset; if that child's inMap stream itself was NOT
-    // present, the child's values are implicitly all-present in this blob
-    // and we emit an in-map segment.
-    //
-    // Caveat: if a single child has multiple value-stream anchors (e.g.,
-    // Row<A,B> as a value type) and more than one fires in the same blob,
-    // addPresentInMapSegment will be called once per present anchor — the
-    // resulting segment list may contain duplicate {startRow, endRow}
-    // entries. Downstream fillMissingFlatMapRows overlays 1s onto the
-    // default-0 inMap bitmap and is idempotent over duplicates, so output
-    // correctness is preserved. EBF (Array<Scalar> values, one anchor per
-    // child) never hits this case.
-    for (const auto offset : inMapPresentOffsetsList_) {
-      const auto inMapOffset = valueOffsetToInMap_[offset];
-      if (inMapOffset == kInvalidInMapOffset ||
-          inMapPresentOffsets_[inMapOffset]) {
-        continue;
-      }
-      DeserializerImpl::toDecoderImpl(deserializers_[inMapOffset])
-          ->addPresentInMapSegment(rowOffset, numRows);
     }
+    auto* decoder = deserializers_[offset];
+    NIMBLE_CHECK_NOT_NULL(decoder, "Missing decoder for stream");
+    SegmentedStreamDecoder::as(decoder)->addBatch(
+        startRow, streamData, version);
+  });
 
-    rowOffset += numRows;
+  if (!hasInMapChildren) {
+    return;
+  }
+  const auto presentStreamCount = presentStreamOffsets_.size();
+  for (size_t i = 0; i < presentStreamCount; ++i) {
+    const auto inMapOffset = valueOffsetToInMap_[presentStreamOffsets_[i]];
+    if (inMapOffset == kInvalidInMapOffset ||
+        streamPresentFlags_[inMapOffset]) {
+      continue;
+    }
+    auto* decoder = deserializers_[inMapOffset];
+    NIMBLE_CHECK_NOT_NULL(decoder, "Missing FlatMap in-map decoder");
+    auto* segmentedDecoder = SegmentedStreamDecoder::as(decoder);
+    if (requiresBarrier) {
+      segmentedDecoder->addPresentInMapBatch();
+    } else {
+      segmentedDecoder->addPresentInMapBatch(startRow, rowCount);
+    }
+    streamPresentFlags_[inMapOffset] = true;
+  }
+}
+
+void Deserializer::appendBatch(
+    std::string_view batch,
+    DecodeRun& run,
+    velox::VectorPtr& output) const {
+  const auto rowCount = parser_->initialize(batch);
+  const auto requiresBarrier = parser_->requiresNullBarrier();
+  if (FOLLY_UNLIKELY(requiresBarrier)) {
+    decodeRun(run, output);
   }
 
-  // Set total top-level rows so deserializers can fill missing FlatMap data.
-  for (auto& [_, decoder] : deserializerMap_) {
-    DeserializerImpl::toDecoderImpl(decoder.get())->setTopLevelRows(rowOffset);
+  appendStreamSegments(rowCount, /*startRow=*/run.rows, requiresBarrier);
+  run.rows += rowCount;
+  ++run.batches;
+  if (FOLLY_UNLIKELY(requiresBarrier)) {
+    decodeRun(run, output);
+    parser_->reset();
   }
+}
 
-  // Single-pass decode of all batches concatenated.
-  rootReader_->next(rowOffset, vector, /*scatterBitmap=*/nullptr);
+void Deserializer::deserialize(
+    folly::Range<const std::string_view*> data,
+    velox::VectorPtr& output) const {
+  NIMBLE_CHECK(!data.empty(), "Expected at least one serialized batch");
+
+  output = nullptr;
+  DecodeRun run;
+  for (const auto batch : data) {
+    appendBatch(batch, run, output);
+  }
+  decodeRun(run, output);
+  parser_->reset();
 }
 
 } // namespace facebook::nimble

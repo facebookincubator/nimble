@@ -16,6 +16,8 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+#include <array>
 #include <vector>
 
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
@@ -48,16 +50,102 @@ uint64_t getAlignedBufferCapacity(
 }
 
 template <typename T>
-class nullStreamDataTest : public ::testing::Test {};
+class nullStreamDataTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addLeafPool("test");
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+};
 using NullTestTypes =
     ::testing::Types<NullsStreamData, NullableContentStreamData<int32_t>>;
 TYPED_TEST_SUITE(nullStreamDataTest, NullTestTypes);
 
+TEST(StreamDataTest, hasNullValuesFromSpan) {
+  constexpr std::array<bool, 3> allNonNull = {true, true, true};
+  constexpr std::array<bool, 3> hasNull = {true, false, true};
+
+  struct TestCase {
+    std::span<const bool> nonNulls;
+    bool expected;
+  };
+  const std::array<TestCase, 3> testCases = {{
+      {std::span<const bool>{}, false},
+      {allNonNull, false},
+      {hasNull, true},
+  }};
+
+  for (const auto& testCase : testCases) {
+    EXPECT_EQ(StreamData::hasNullValues(testCase.nonNulls), testCase.expected);
+  }
+}
+
+TYPED_TEST(nullStreamDataTest, hasNullValues) {
+  using T = TypeParam;
+
+  SchemaBuilder schemaBuilder;
+  const auto scalarBuilder =
+      schemaBuilder.createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  auto growthPolicy = DefaultInputBufferGrowthPolicy::withDefaultRanges();
+
+  struct TestCase {
+    const char* name{};
+    bool mayHaveNulls{};
+    uint64_t additionalSize{};
+    std::vector<bool> nonNullValues;
+    bool expectedHasNulls{};
+    bool expectedHasNullValues{};
+  };
+  const std::vector<TestCase> testCases = {
+      {
+          "no validity bitmap",
+          false,
+          3,
+          {},
+          false,
+          false,
+      },
+      {
+          "all non-null validity bitmap",
+          true,
+          3,
+          {true, true, true},
+          true,
+          false,
+      },
+      {
+          "contains null value",
+          true,
+          3,
+          {true, false, true},
+          true,
+          true,
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    T streamData(*this->pool_, descriptor, *growthPolicy);
+    streamData.ensureAdditionalNullsCapacity(
+        testCase.mayHaveNulls, testCase.additionalSize);
+    for (const bool notNull : testCase.nonNullValues) {
+      streamData.mutableNonNulls().push_back(notNull);
+    }
+
+    EXPECT_EQ(streamData.hasNulls(), testCase.expectedHasNulls);
+    EXPECT_EQ(streamData.hasNullValues(), testCase.expectedHasNullValues);
+  }
+}
+
 TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
   using T = TypeParam;
-  velox::memory::MemoryManager::testingSetInstance(
-      velox::memory::MemoryManager::Options{});
-  auto memoryPool = velox::memory::memoryManager()->addLeafPool("test");
   auto helperPool = velox::memory::memoryManager()->addLeafPool("helper");
 
   SchemaBuilder schemaBuilder;
@@ -76,11 +164,11 @@ TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
             1030, getAlignedBufferCapacity<bool>(20, helperPool)))
         .WillOnce(Return(1030));
   }
-  T streamData(*memoryPool, descriptor, growthPolicy);
+  T streamData(*this->pool_, descriptor, growthPolicy);
 
   // First ensure some capacity with nulls
   streamData.ensureAdditionalNullsCapacity(true, 20);
-  EXPECT_EQ(memoryPool->stats().numAllocs, 1);
+  EXPECT_EQ(this->pool_->stats().numAllocs, 1);
 
   // Check initial state
   EXPECT_TRUE(streamData.hasNulls());
@@ -103,12 +191,12 @@ TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
   streamData.ensureAdditionalNullsCapacity(true, 10);
   EXPECT_EQ(nonNulls.capacity(), actualCapacity1);
   EXPECT_EQ(nonNulls.size(), 20);
-  EXPECT_EQ(memoryPool->stats().numAllocs, 1);
+  EXPECT_EQ(this->pool_->stats().numAllocs, 1);
 
   // Grow the capacity
   streamData.ensureAdditionalNullsCapacity(true, 1000);
   const auto actualCapacity2 = nonNulls.capacity();
-  EXPECT_EQ(memoryPool->stats().numAllocs, 2);
+  EXPECT_EQ(this->pool_->stats().numAllocs, 2);
 
   // Check the capacity increased and size stayed the same
   EXPECT_GT(actualCapacity2, actualCapacity1);
@@ -135,7 +223,7 @@ TYPED_TEST(nullStreamDataTest, ensureAdditionalNullsCapacity) {
     EXPECT_EQ(nonNulls[i], (i % 2 == 0))
         << "Null value at index " << i << " was corrupted";
   }
-  EXPECT_EQ(memoryPool->stats().numAllocs, 2);
+  EXPECT_EQ(this->pool_->stats().numAllocs, 2);
 }
 
 template <typename T>
@@ -227,11 +315,11 @@ class rowCountTest : public ::testing::Test {
   void SetUp() override {
     velox::memory::MemoryManager::testingSetInstance(
         velox::memory::MemoryManager::Options{});
-    memoryPool_ = velox::memory::memoryManager()->addLeafPool("test");
+    pool_ = velox::memory::memoryManager()->addLeafPool("test");
     schemaBuilder_ = std::make_unique<SchemaBuilder>();
   }
 
-  std::shared_ptr<velox::memory::MemoryPool> memoryPool_;
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<SchemaBuilder> schemaBuilder_;
 };
 
@@ -240,7 +328,7 @@ TEST_F(rowCountTest, contentStreamDataRowCount) {
   const auto scalarBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
-  ContentStreamData<int32_t> streamData(*memoryPool_, descriptor, growthPolicy);
+  ContentStreamData<int32_t> streamData(*pool_, descriptor, growthPolicy);
 
   // Initially empty.
   EXPECT_EQ(streamData.rowCount(), 0);
@@ -273,7 +361,7 @@ TEST_F(rowCountTest, contentStreamDataStringRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   ContentStreamData<std::string_view> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *pool_, descriptor, growthPolicy);
 
   EXPECT_EQ(streamData.rowCount(), 0);
 
@@ -294,7 +382,7 @@ TEST_F(rowCountTest, nullsStreamDataRowCount) {
   const auto scalarBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
-  NullsStreamData streamData(*memoryPool_, descriptor, growthPolicy);
+  NullsStreamData streamData(*pool_, descriptor, growthPolicy);
 
   // Initially empty.
   EXPECT_EQ(streamData.rowCount(), 0);
@@ -321,7 +409,7 @@ TEST_F(rowCountTest, nullsStreamDataRowCountWithNulls) {
   const auto scalarBuilder =
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
-  NullsStreamData streamData(*memoryPool_, descriptor, growthPolicy);
+  NullsStreamData streamData(*pool_, descriptor, growthPolicy);
 
   // Add data with nulls.
   streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 4);
@@ -354,7 +442,7 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCount) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *pool_, descriptor, growthPolicy);
 
   // Initially empty.
   EXPECT_EQ(streamData.rowCount(), 0);
@@ -392,7 +480,7 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCountWithoutNulls) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *pool_, descriptor, growthPolicy);
 
   // Add data without nulls.
   streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
@@ -414,7 +502,7 @@ TEST_F(rowCountTest, nullableContentStreamDataRowCountWithAllNulls) {
       schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
   const auto& descriptor = scalarBuilder->scalarDescriptor();
   NullableContentStreamData<int32_t> streamData(
-      *memoryPool_, descriptor, growthPolicy);
+      *pool_, descriptor, growthPolicy);
 
   // Add data with all nulls.
   streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 5);
@@ -490,13 +578,39 @@ TEST_F(rowCountTest, streamDataViewRowCountWithNulls) {
   EXPECT_EQ(view.nonNulls().size(), 5);
 }
 
+TEST_F(rowCountTest, isNullStreamClassification) {
+  ExactGrowthPolicy growthPolicy;
+  const auto intBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto boolBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
+  const auto stringBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+
+  ContentStreamData<int32_t> contentData(
+      *pool_, intBuilder->scalarDescriptor(), growthPolicy);
+  NullsStreamData nullData(
+      *pool_, boolBuilder->scalarDescriptor(), growthPolicy);
+  NullableContentStreamData<int32_t> nullableContentData(
+      *pool_, intBuilder->scalarDescriptor(), growthPolicy);
+  NullableContentStringStreamData nullableStringData(
+      *pool_, stringBuilder->scalarDescriptor(), growthPolicy, growthPolicy);
+  StreamDataView view(
+      intBuilder->scalarDescriptor(), std::string_view{}, /*rowCount=*/0);
+
+  EXPECT_FALSE(contentData.isNullStream());
+  EXPECT_TRUE(nullData.isNullStream());
+  EXPECT_FALSE(nullableContentData.isNullStream());
+  EXPECT_FALSE(nullableStringData.isNullStream());
+  EXPECT_FALSE(view.isNullStream());
+}
+
 class NullableContentStringStreamDataTest : public ::testing::Test {
  protected:
   void SetUp() override {
     velox::memory::MemoryManager::testingSetInstance(
         velox::memory::MemoryManager::Options{});
-    memoryPool_ = velox::memory::memoryManager()->addLeafPool("test");
-    helperPool_ = velox::memory::memoryManager()->addLeafPool("helper");
+    pool_ = velox::memory::memoryManager()->addLeafPool("test");
     schemaBuilder_ = std::make_unique<SchemaBuilder>();
     scalarBuilder_ =
         schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
@@ -506,14 +620,10 @@ class NullableContentStringStreamDataTest : public ::testing::Test {
       const InputBufferGrowthPolicy& dataPolicy,
       const InputBufferGrowthPolicy& bufferPolicy) {
     return NullableContentStringStreamData(
-        *memoryPool_,
-        scalarBuilder_->scalarDescriptor(),
-        dataPolicy,
-        bufferPolicy);
+        *pool_, scalarBuilder_->scalarDescriptor(), dataPolicy, bufferPolicy);
   }
 
-  std::shared_ptr<velox::memory::MemoryPool> memoryPool_;
-  std::shared_ptr<velox::memory::MemoryPool> helperPool_;
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<SchemaBuilder> schemaBuilder_;
   std::shared_ptr<ScalarTypeBuilder> scalarBuilder_;
 };
@@ -571,7 +681,7 @@ TEST_F(NullableContentStringStreamDataTest, ensureStringBufferCapacity) {
 
   auto streamData = createStreamData(dataPolicy, bufferPolicy);
   streamData.ensureStringBufferCapacity(10, 100);
-  EXPECT_EQ(memoryPool_->stats().numAllocs, 2);
+  EXPECT_EQ(pool_->stats().numAllocs, 2);
 
   auto [buffer, lengths] = streamData.mutableData();
   EXPECT_GE(lengths.capacity(), 10);
@@ -579,7 +689,7 @@ TEST_F(NullableContentStringStreamDataTest, ensureStringBufferCapacity) {
 
   // Zero strings is a no-op.
   streamData.ensureStringBufferCapacity(0, 100);
-  EXPECT_EQ(memoryPool_->stats().numAllocs, 2);
+  EXPECT_EQ(pool_->stats().numAllocs, 2);
 }
 TEST(StreamDataUtilTest, isConstantBoolStream) {
   // Empty → constant.

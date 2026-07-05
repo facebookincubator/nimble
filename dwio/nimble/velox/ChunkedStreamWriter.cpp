@@ -27,9 +27,8 @@ ChunkedStreamWriter::ChunkedStreamWriter(
   NIMBLE_CHECK(
       compressionParams_.type == CompressionType::Uncompressed ||
           compressionParams_.type == CompressionType::Zstd,
-      fmt::format(
-          "Unsupported chunked stream compression type: {}",
-          toString(compressionParams_.type)));
+      "Unsupported chunked stream compression type: {}",
+      compressionParams_.type);
 }
 
 std::vector<std::string_view> ChunkedStreamWriter::encode(

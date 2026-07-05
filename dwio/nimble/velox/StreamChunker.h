@@ -36,8 +36,11 @@ inline bool shouldOmitNullStream(
     const NullsStreamData& streamData,
     uint64_t minChunkSize,
     bool isFirstChunk) {
-  // When all values are non-nulls, we omit the entire null stream.
-  if (streamData.hasNulls() && streamData.nonNulls().size() > minChunkSize) {
+  // All-non-null rows can be omitted only if the whole stream is omitted.
+  if (!streamData.hasNullValues()) {
+    return isFirstChunk;
+  }
+  if (streamData.nonNulls().size() > minChunkSize) {
     return false;
   }
   return isFirstChunk || streamData.empty();
@@ -48,10 +51,10 @@ inline bool shouldOmitNullStream(
  * Options for configuring StreamChunker behavior.
  */
 struct StreamChunkerOptions {
-  uint64_t minChunkSize;
-  uint64_t maxChunkSize;
-  bool ensureFullChunks;
-  bool isFirstChunk;
+  uint64_t minChunkSize{};
+  uint64_t maxChunkSize{};
+  bool ensureFullChunks{};
+  bool isFirstChunk{};
 };
 
 /**
@@ -268,11 +271,6 @@ class NullsStreamChunker final : public StreamChunker {
         maxChunkSize_,
         1,
         "MaxChunkSize must be at least the size of a single element.");
-
-    // No need to materialize nulls stream if it's omitted.
-    if (!omitStream_) {
-      streamData.materialize();
-    }
   }
 
   std::optional<StreamDataView> next() override {
@@ -280,8 +278,7 @@ class NullsStreamChunker final : public StreamChunker {
       return std::nullopt;
     }
 
-    auto& nonNulls = streamData_->mutableNonNulls();
-    const size_t remainingNonNulls = nonNulls.size() - nonNullsOffset_;
+    const size_t remainingNonNulls = streamData_->rowCount() - nonNullsOffset_;
     const size_t nonNullsInChunk = std::min(maxChunkSize_, remainingNonNulls);
     if (nonNullsInChunk == 0 || nonNullsInChunk < minChunkSize_ ||
         (ensureFullChunks_ && nonNullsInChunk < maxChunkSize_)) {
@@ -289,6 +286,8 @@ class NullsStreamChunker final : public StreamChunker {
     }
 
     // Null stream values are converted to boolean data for encoding.
+    streamData_->materialize();
+    auto& nonNulls = streamData_->mutableNonNulls();
     std::string_view dataChunk = {
         reinterpret_cast<const char*>(nonNulls.data() + nonNullsOffset_),
         nonNullsInChunk};

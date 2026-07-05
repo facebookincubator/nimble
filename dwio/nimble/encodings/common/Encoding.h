@@ -209,26 +209,28 @@ class Encoding {
   /// ith row was null or not. 0 means null, 1 means not null. Null rows are
   /// left untouched instead of being filled with default values.
   ///
-  /// If |scatterBitmap| is provided, |rowCount| still indicates how many items
-  /// to be read from the encoding. However, instead of placing them
+  /// If |scatterOutputBitmap| is provided, |rowCount| still indicates how many
+  /// items to be read from the encoding. However, instead of placing them
   /// sequentially in the output |buffer|, the items are scattered. This means
   /// that item will be place into the slot where the corresponding positional
-  /// bit is set to 1 in |scatterBitmap|, (note that the value being read may be
-  /// null). For every positional scatter bit set to 0, it will fill a null in
-  /// the poisition in the output |buffer|. |rowCount| should match the number
-  /// of bits set to 1 in |scatterBitmap|. For scattered reads, |buffer| and
-  /// |nulls| should have enough space to accommodate |scatterBitmap.size()|
-  /// items. When |offset| is specified, use the |scatterBitmap| starting from
-  /// |offset| and scatter to |buffer| and |nulls| starting from |offset|.
+  /// bit is set to 1 in |scatterOutputBitmap|, (note that the value being read
+  /// may be null). For every positional scatter bit set to 0, it will fill a
+  /// null in the poisition in the output |buffer|. |rowCount| should match the
+  /// number of bits set to 1 in |scatterOutputBitmap|. For scattered reads,
+  /// |buffer| and
+  /// |getOutputNulls()| should have enough space to accommodate
+  /// |scatterOutputBitmap.size()| items. When |offset| is specified, use the
+  /// |scatterOutputBitmap| starting from |offset| and scatter to |buffer| and
+  /// |getOutputNulls()| starting from |offset|.
   ///
   /// Returns number of items that are not null. In the case when all values are
-  /// non null, |nulls| will not be filled with all 1s. It's expected that
-  /// caller explicitly checks for that condition.
+  /// non null, |getOutputNulls()| will not be filled with all 1s. It's
+  /// expected that caller explicitly checks for that condition.
   virtual uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      std::function<void*()> nulls,
-      const velox::bits::Bitmap* scatterBitmap = nullptr,
+      std::function<void*()> getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr,
       uint32_t offset = 0) = 0;
 
   /// Read bool values to output buffer as bits.
@@ -376,28 +378,30 @@ class TypedEncoding : public Encoding {
       const Options& options = {})
       : Encoding{pool, data, options} {}
 
-  // Similar to materialize(), but scatters values to output buffer according to
-  // scatterBitmap. When scatterBitmap is nullptr or all 1's, the output
-  // nullBitmap will not be set. It's expected that caller explicitly checks
-  // against the return value and handle such all 1's cases properly.
+  /// Similar to materialize(), but scatters values to output buffer according
+  /// to scatterOutputBitmap. When scatterOutputBitmap is nullptr or all 1's,
+  /// the output nullBitmap will not be set. It's expected that caller
+  /// explicitly checks against the return value and handle such all 1's cases
+  /// properly.
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      std::function<void*()> nulls,
-      const velox::bits::Bitmap* scatterBitmap,
+      std::function<void*()> getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap,
       uint32_t offset) override {
     // 1. Read X items from the encoding.
     // 2. Spread the items read in #1 into positions in |buffer| where
-    // |scatterBitmap| has a matching positional bit set to 1.
+    // |scatterOutputBitmap| has a matching positional bit set to 1.
     if (offset > 0) {
       buffer = static_cast<physicalType*>(buffer) + offset;
     }
 
     materialize(rowCount, buffer);
 
-    // TODO: check rowCount matches the number of set bits in scatterBitmap.
+    // TODO: check rowCount matches the number of set bits in
+    // scatterOutputBitmap.
     auto scatterCount =
-        scatterBitmap ? scatterBitmap->size() - offset : rowCount;
+        scatterOutputBitmap ? scatterOutputBitmap->size() - offset : rowCount;
     if (scatterCount == rowCount) {
       // No need to scatter. Avoid setting nullBitmap since caller is expected
       // to explicitly handle such non-null cases.
@@ -406,10 +410,10 @@ class TypedEncoding : public Encoding {
 
     NIMBLE_CHECK_LT(rowCount, scatterCount, "Unexpected count");
 
-    void* nullBitmap = nulls();
+    void* nullBitmap = getOutputNulls();
 
     velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
-    nullBits.copy(*scatterBitmap, offset, offset + scatterCount);
+    nullBits.copy(*scatterOutputBitmap, offset, offset + scatterCount);
 
     // Scatter backward
     uint32_t pos = offset + scatterCount - 1;
@@ -418,7 +422,7 @@ class TypedEncoding : public Encoding {
     const physicalType* source =
         static_cast<physicalType*>(buffer) + rowCount - 1;
     while (output != source) {
-      if (scatterBitmap->test(pos)) {
+      if (scatterOutputBitmap->test(pos)) {
         *output = *source;
         --source;
       }

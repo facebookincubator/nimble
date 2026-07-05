@@ -98,9 +98,8 @@ struct VeloxWriterOptions {
   // The reader infers the in-map state from value stream presence: all-true
   // keys have value streams, all-false keys do not.
   //
-  // NOTE: old readers that don't understand missing in-map streams will
-  // misinterpret data. Keep this false until the new reader is fully rolled
-  // out, then default to true and eventually remove the option.
+  // NOTE: readers that do not infer omitted in-map streams require this to
+  // remain false so constant in-map streams are physically present.
   bool skipConstantFlatMapInMapStreams{false};
 
   // Columns that should be encoded as dictionary arrays
@@ -255,7 +254,7 @@ struct VeloxWriterOptions {
   // writer. Default function is no-op since its used for tests only.
   std::function<void(void)> vectorDecoderVisitor{[]() {}};
 
-  // Whether writer should ignore the top level nulls in the input.
+  /// Whether writer should ignore the top level nulls in the input.
   bool ignoreTopLevelNulls{false};
 
   bool enableStreamDeduplication{true};

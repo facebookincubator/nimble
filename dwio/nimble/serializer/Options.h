@@ -47,104 +47,60 @@ namespace facebook::nimble {
 ///   Wire: [version:1B][rowCount:varint][stream_data_0]...[stream_data_N]
 ///         [encodingByte:1B][denseSizes:u32[]|sparsePair]
 ///         [trailer_size:u32]
-///   New writers must NOT emit kLegacyCompact — Serializer rejects it; use
-///   kSerialization (Serializer default) or kProjection (Projector default).
+///   Serializer upgrades new kLegacyCompact writes to kSerialization.
 ///
-/// - kTablet: Tablet stream passthrough format. Like kSerialization but:
-///   (1) Each stream's data includes tablet chunk headers:
-///       [chunkSize:u32][compressionType:1B][encoded_data...]
-///       which the Deserializer strips before decoding.
-///   (2) Encoding headers within streams use fixed u32 row counts
-///       (useVarintRowCount=false), matching the tablet's default format.
-///   Wire: same two-array sparse trailer layout as kSerialization.
+/// - kLegacySerialization: READ-ONLY old encoded Serializer format. Uses the
+///   two-array sparse trailer and [version:1B][rowCount:varint], without a
+///   header flags byte. Serializer upgrades new writes to kSerialization.
 ///
-/// - kSerialization / kProjection: New writer versions using the two-array
-///   sparse trailer. Wire body identical to kLegacyCompact; trailer is:
+/// - kSerialization / kProjection: Writer versions using the two-array sparse
+///   trailer. Wire body identical to kLegacySerialization; trailer is:
+///   [version:1B][rowCount:varint][flags:1B][stream_data...]
 ///   [indicesEncType:1B][indicesPayload]
 ///   [sizesEncType:1B][sizesPayload]
 ///   [trailer_size:u32]
 ///   trailer_size = 2 + len(indicesPayload) + len(sizesPayload).
 ///   Indices and sizes axes independently choose from EncodingTypes
 ///   {Trivial, Varint, Delta, FixedBitWidth}. See getTrailerEncodingType()
-///   for validation. kSerialization is the Serializer's default writer
-///   version; kProjection is the Projector's. Same wire format today; the
-///   distinct version bytes let the two writers evolve independently.
+///   for validation. kSerialization is the Serializer writer version and
+///   kProjection is the Projector writer version. Both carry a compact-header
+///   flags byte after the row count.
+///
+/// - kTablet: Tablet stream passthrough format. Like kSerialization but:
+///   (1) Chunk slice headers are:
+///       [version:1B][rowCount:varint][flags:1B][rowRange/resumeKey...]
+///   (2) Each stream's data includes tablet chunk headers:
+///       [chunkSize:u32][compressionType:1B][encoded_data...]
+///       which the Deserializer strips before decoding.
+///   (3) Encoding headers within streams use fixed u32 row counts
+///       (useVarintRowCount=false), matching the tablet's default format.
+///   Wire: same two-array sparse trailer layout as kSerialization.
 enum class SerializationVersion : uint8_t {
   kLegacy = 0,
   // READ-ONLY post the two-array trailer change: production blobs with this
-  // version byte are still decoded via `nimble::serde::legacy::`, but writers
-  // must not emit it. New Serializer writers emit kSerialization;
-  // new Projector writers emit kProjection.
+  // version byte are still decoded via `nimble::serde::legacy::`. New
+  // Serializer writes are upgraded to kSerialization; Projector writers emit
+  // kProjection.
   kLegacyCompact = 2,
-  // Deprecated alias for kLegacyCompact; kept so call sites that still spell
-  // the old name keep compiling while they migrate. Same numeric value as
-  // kLegacyCompact, so existing wire-format checks and read paths are
-  // unaffected. New code should use kLegacyCompact (read) or kSerialization /
-  // kProjection (write).
-  kCompactRaw = 2,
-  // Default writer version for the Serializer: two-array sparse trailer.
-  kSerialization = 3,
+  // Source-level migration spelling for the old non-nullable encoded
+  // serializer wire format. Serializer upgrades new writes to kSerialization.
+  kLegacySerialization = 3,
+  // Default writer version for the Serializer: null-capable two-array sparse
+  // trailer with a compact-header flags byte.
+  kSerialization = 4,
   // Default writer version for the Projector: two-array sparse trailer.
   // Same wire format as kSerialization today; the distinct version byte lets
   // the two writers' formats evolve independently in the future.
-  kProjection = 4,
-  // Renumbered from 3 to 5: no production kTablet blobs existed at value 3,
-  // so the lower-numbered slots are reclaimed for the more common new writer
-  // versions (kSerialization / kProjection).
-  kTablet = 5,
+  kProjection = 5,
+  kTablet = 6,
 };
 
 std::string toString(SerializationVersion version);
 
-/// Returns true if the version is any non-legacy format (kLegacyCompact or
-/// kTablet). All non-legacy formats have a version header, encoded streams,
-/// and a stream sizes trailer.
+/// Returns true if the version is any non-legacy format. All non-legacy
+/// formats have a version header, encoded streams, and a stream sizes trailer.
 inline bool nonLegacyFormat(SerializationVersion version) {
   return version != SerializationVersion::kLegacy;
-}
-
-/// Returns true if the version uses compact encoding (kLegacyCompact,
-/// kSerialization, or kProjection). Note: kTablet is NOT a compact format
-/// (has chunk headers in streams).
-inline bool isCompactFormat(SerializationVersion version) {
-  return version == SerializationVersion::kLegacyCompact ||
-      version == SerializationVersion::kSerialization ||
-      version == SerializationVersion::kProjection;
-}
-
-/// Returns true if the version uses raw stream sizes (kLegacyCompact, kTablet,
-/// kSerialization, or kProjection) instead of nimble-encoded stream sizes.
-inline bool isRawFormat(SerializationVersion version) {
-  return version == SerializationVersion::kLegacyCompact ||
-      version == SerializationVersion::kTablet ||
-      version == SerializationVersion::kSerialization ||
-      version == SerializationVersion::kProjection;
-}
-
-/// Returns true if the version was written using the legacy kLegacyCompact
-/// trailer format (decoded via `nimble::serde::legacy::`). All other
-/// non-legacy formats (kTablet, kSerialization, kProjection) use the new
-/// two-array sparse trailer.
-///
-/// kTablet is included here today because in master kTablet and kLegacyCompact
-/// produce byte-identical trailer layouts (single encoding-type byte +
-/// payload + trailer-size u32) and the same reader code path handles both.
-/// Treating kTablet as legacy in this diff keeps the refactor purely
-/// behavior-preserving.
-///
-/// The next diff (the two-array sparse trailer change) migrates kTablet
-/// onto the new trailer wire format alongside the new kSerialization /
-/// kProjection versions, and this helper will be narrowed to return true
-/// only for kLegacyCompact. kLegacyCompact is the only version frozen forever
-/// here because it is the only one with existing production blobs that
-/// must remain readable.
-inline bool usesLegacyTrailer(SerializationVersion version) {
-  return version == SerializationVersion::kLegacyCompact;
-}
-
-/// Returns true if the optional version uses raw stream sizes.
-inline bool isRawFormat(std::optional<SerializationVersion> version) {
-  return version.has_value() && isRawFormat(version.value());
 }
 
 /// Returns true if the version is the tablet passthrough format.
@@ -152,14 +108,49 @@ inline bool isTabletVersion(SerializationVersion version) {
   return version == SerializationVersion::kTablet;
 }
 
+/// Returns true if the version was written using the legacy kLegacyCompact
+/// trailer format (decoded via `nimble::serde::legacy::`). All other
+/// non-legacy formats (kLegacySerialization, kTablet, kSerialization,
+/// kProjection) use the new two-array sparse trailer.
+///
+/// kLegacyCompact is the only frozen version here because it is the only one
+/// with existing production blobs that must keep using the legacy trailer
+/// reader.
+inline bool usesLegacyTrailer(SerializationVersion version) {
+  return version == SerializationVersion::kLegacyCompact;
+}
+
+/// Returns true if the version is a null-capable format that carries a
+/// per-batch null-barrier flag and is therefore eligible for the dense-batch
+/// concat / null barrier read path.
+inline bool isNullableFormat(SerializationVersion version) {
+  return version == SerializationVersion::kSerialization ||
+      version == SerializationVersion::kProjection ||
+      version == SerializationVersion::kTablet;
+}
+
+/// Returns true if the optional version is a null-capable format.
+inline bool isNullableFormat(std::optional<SerializationVersion> version) {
+  return version.has_value() && isNullableFormat(version.value());
+}
+
+/// Returns true if the version's compact header carries a flags byte after the
+/// row count. kTablet carries its flag in the tablet chunk header instead;
+/// kLegacy, the frozen kLegacyCompact, and kLegacySerialization have no flags
+/// byte.
+inline bool usesHeaderFlags(SerializationVersion version) {
+  return version == SerializationVersion::kSerialization ||
+      version == SerializationVersion::kProjection;
+}
+
+/// Returns true if the optional version's compact header carries a flags byte.
+inline bool usesHeaderFlags(std::optional<SerializationVersion> version) {
+  return version.has_value() && usesHeaderFlags(version.value());
+}
+
 /// Returns true if the version is the tablet passthrough format.
 inline bool isTabletVersion(std::optional<SerializationVersion> version) {
   return version.has_value() && isTabletVersion(version.value());
-}
-
-/// Returns true if the optional version uses compact encoding.
-inline bool isCompactFormat(std::optional<SerializationVersion> version) {
-  return version.has_value() && isCompactFormat(version.value());
 }
 
 /// Returns true if the version uses varint for the header row count.
@@ -192,21 +183,20 @@ inline std::ostream& operator<<(
 EncodingSelectionPolicyCreator defaultEncodingSelectionPolicyCreator();
 
 struct SerializerOptions {
-  /// Legacy (kLegacy) compression settings. These only apply when version is
-  /// kLegacy or nullopt. For kLegacyCompact, compression is controlled by
-  /// 'compressionOptions' below.
+  /// Legacy compression settings. These only apply when version is kLegacy or
+  /// nullopt. Encoded formats handle compression through the encoding selection
+  /// policy.
   CompressionType compressionType{CompressionType::Uncompressed};
   uint32_t compressionThreshold{0};
   int32_t compressionLevel{0};
 
   /// Serialization format version.
-  /// - nullopt (default): Legacy format with no version header (kLegacy).
-  /// - kLegacy: Legacy compression format.
-  /// - kSerialization: Default Serializer writer; two-array sparse trailer.
-  /// - kLegacyCompact: READ-ONLY post the two-array trailer change. Existing
-  ///   production blobs at this version are decoded via
-  ///   `nimble::serde::legacy::` but the Serializer constructor REJECTS this
-  ///   value for new writes — use kSerialization instead.
+  /// - nullopt: Legacy format with no version header.
+  /// - kSerialization: Encoded Serializer format.
+  /// - kLegacy / kLegacyCompact / kLegacySerialization: Legacy spellings for
+  ///   migration. Existing kLegacyCompact production blobs are decoded via
+  ///   `nimble::serde::legacy::`; new Serializer writes are upgraded to
+  ///   kSerialization while callers migrate.
   /// - kProjection / kTablet are not valid Serializer writer versions
   ///   (Projector + tablet pipelines write them, respectively).
   std::optional<SerializationVersion> version{};
@@ -220,7 +210,7 @@ struct SerializerOptions {
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns{};
 
   /// Factory for creating encoding selection policies.
-  /// Only used when version is kLegacyCompact.
+  /// Used by encoded serializer writes.
   /// When encodingLayoutTree is specified, used as fallback for streams or
   /// nested encodings not captured in the layout tree. When encodingLayoutTree
   /// is not specified, used directly for all streams.
@@ -263,7 +253,7 @@ struct SerializerOptions {
   /// Returns the effective serialization version.
   SerializationVersion serializationVersion() const;
 
-  /// Returns true if nimble encoding is enabled (version is kLegacyCompact).
+  /// Returns true if nimble encoding is enabled.
   bool enableEncoding() const;
 };
 

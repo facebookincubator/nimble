@@ -15,14 +15,27 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <limits>
 
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/FieldReader.h"
+#include "folly/Range.h"
 #include "folly/container/F14Map.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::nimble {
+
+namespace serde {
+class StreamDataParser;
+} // namespace serde
+
+/// Deserializer converts serialized nimble streams into Velox vectors.
+///
+/// This class provides a lightweight deserialization interface for
+/// materializing one or more serialized batches into a vector matching the
+/// configured schema. It supports FlatMap reconstruction and omitted
+/// null/in-map streams according to Deserializer::Options.
 class Deserializer {
  public:
   using Options = DeserializerOptions;
@@ -36,11 +49,18 @@ class Deserializer {
       velox::memory::MemoryPool* pool,
       DeserializerOptions options);
 
-  void deserialize(std::string_view data, velox::VectorPtr& vector) const;
+  ~Deserializer();
+
+  Deserializer(Deserializer&&) = delete;
+  Deserializer& operator=(Deserializer&&) = delete;
+  Deserializer(const Deserializer&) = delete;
+  Deserializer& operator=(const Deserializer&) = delete;
+
+  void deserialize(std::string_view data, velox::VectorPtr& output) const;
 
   void deserialize(
       const std::vector<std::string_view>& data,
-      velox::VectorPtr& vector) const;
+      velox::VectorPtr& output) const;
 
  private:
   // Creates deserializers for a type and its FlatMap inMap streams.
@@ -50,6 +70,38 @@ class Deserializer {
   // executor, parallel decode threshold, and flatmap-as-struct settings.
   FieldReaderParams createFieldReaderParams() const;
 
+  void deserialize(
+      folly::Range<const std::string_view*> data,
+      velox::VectorPtr& output) const;
+
+  // Open run of non-barrier batches that can be decoded together.
+  struct DecodeRun {
+    uint32_t rows{0};
+    uint32_t batches{0};
+  };
+
+  // Adds one serialized batch to the current decode run, decoding before and
+  // after batches that require a null barrier.
+  void appendBatch(
+      std::string_view batch,
+      DecodeRun& run,
+      velox::VectorPtr& output) const;
+
+  // Registers this batch's physical stream segments and synthesizes omitted
+  // FlatMap in-map segments when older serializers leave them implicit.
+  void appendStreamSegments(
+      uint32_t rowCount,
+      uint32_t startRow,
+      bool requiresBarrier) const;
+
+  // Appends a decoded run to the accumulated output vector.
+  void appendToOutput(velox::VectorPtr&& decoded, velox::VectorPtr& output)
+      const;
+
+  // Decodes the pending non-barrier batch run and resets reader state for the
+  // next run.
+  void decodeRun(DecodeRun& run, velox::VectorPtr& output) const;
+
   // --- Const members (set at construction, never modified) ---
   const std::shared_ptr<const Type> schema_;
   velox::memory::MemoryPool* const pool_;
@@ -57,50 +109,34 @@ class Deserializer {
 
   // --- Non-const members (assigned in constructor body) ---
   std::unique_ptr<FieldReaderFactory> rootFactory_;
-  std::unique_ptr<FieldReader> rootReader_;
+  std::unique_ptr<FieldReader> reader_;
+  mutable std::unique_ptr<serde::StreamDataParser> parser_;
 
   // --- Mutable members (modified during deserialization) ---
   mutable folly::F14FastMap<uint32_t, std::unique_ptr<Decoder>>
       deserializerMap_;
-  mutable std::vector<std::string_view> inputBuffer_;
 
   // Flat vector indexed by stream offset for O(1) lookup in deserialize().
   // Non-owning pointers; ownership stays in deserializerMap_.
   mutable std::vector<Decoder*> deserializers_;
 
-  // Map from in-map stream offset to the child value type for detecting
-  // present in-map streams. When an in-map stream is missing from a batch but
-  // its value streams are present, the key is present in every row (skipped by
-  // the serializer). Only populated for top-level FlatMap types (depth 1).
+  // Maps FlatMap in-map stream offsets to their child value types. Used to
+  // reconstruct in-map streams omitted by older serializers.
   folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
 
-  // Sentinel for `valueOffsetToInMap_` entries that are NOT a FlatMap-child
-  // value-stream anchor.
   static constexpr uint32_t kInvalidInMapOffset =
       std::numeric_limits<uint32_t>::max();
 
-  // Reverse-lookup table used by the per-batch in-map detection in
-  // deserialize(). `valueOffsetToInMap_[off]` is the inMap stream offset of
-  // the FlatMap child whose value-stream lives at `off`, or
-  // `kInvalidInMapOffset` for any offset that isn't a FlatMap-child
-  // value-stream anchor. Populated at construction via
-  // visitValueStreamLeaves() and indexed directly by stream offset. Sized
-  // once to `maxStreamOffset + 1` so the hot path needs no bounds check.
-  //
-  // The hot path iterates `inMapPresentOffsetsList_` (the small set of
-  // present streams in the current blob, typically dozens) and consults
-  // this table to map each present value anchor back to its owning child's
-  // inMap stream — replacing the prior 357-entry forward scan with one
-  // proportional to the number of present streams in the blob.
+  // Reverse lookup from a FlatMap child value-stream offset to its in-map
+  // stream offset. Entries that are not FlatMap child value streams use
+  // kInvalidInMapOffset.
   std::vector<uint32_t> valueOffsetToInMap_;
 
-  // Flat boolean vector indexed by stream offset for tracking which streams
-  // are present in the current batch. Replaces F14FastSet for O(1) access.
-  // Only used when inMapChildTypes_ is non-empty.
-  mutable std::vector<bool> inMapPresentOffsets_;
-  // Offsets that were set in inMapPresentOffsets_ this batch (for efficient
-  // reset).
-  mutable std::vector<uint32_t> inMapPresentOffsetsList_;
+  // Per-batch stream presence, indexed by stream offset.
+  mutable std::vector<bool> streamPresentFlags_;
+  // Stream offsets present in the current batch. Used to find omitted FlatMap
+  // in-map streams.
+  mutable std::vector<uint32_t> presentStreamOffsets_;
 };
 
 } // namespace facebook::nimble

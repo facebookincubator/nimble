@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 
 #include <zstd.h>
@@ -48,27 +49,11 @@ class StreamData {
     velox::BufferPtr* decompressionBuffer{nullptr};
   };
 
-  /// Constructor for thrift decoder: creates an empty stream that will be
-  /// populated later via reset().
-  /// @param kind Scalar kind for the stream data.
-  /// @param pool Memory pool for encoding buffer allocation. Required when
-  ///             reset() will be called with encodingEnabled=true.
-  /// @param stringBuffers External vector where string buffers from encoding
-  ///        are stored. The caller must keep the vector alive while
-  ///        string_views from this StreamData are in use.
   StreamData(
       ScalarKind kind,
       std::vector<velox::BufferPtr>& stringBuffers,
       velox::memory::MemoryPool* pool,
-      velox::BufferPtr* decompressionBuffer)
-      : kind_{kind},
-        pool_{pool},
-        encodingEnabled_{false},
-        decompressionBuffer_{decompressionBuffer},
-        stringBuffers_{&stringBuffers} {
-    NIMBLE_CHECK_NOT_NULL(
-        decompressionBuffer_, "Decompression buffer required");
-  }
+      velox::BufferPtr* decompressionBuffer);
 
   /// @param kind Scalar kind for the stream data.
   /// @param data Stream data to initialize with.
@@ -84,16 +69,44 @@ class StreamData {
       velox::memory::MemoryPool* pool,
       const Options& options);
 
+  struct DecodeResult {
+    // Decoded output rows produced from the stream segment. For scattered
+    // decode, this is the number of selected output rows, not the wider output
+    // span including absent positions.
+    uint32_t numOutputRows{0};
+    // Non-null rows in the output range covered by this decode. For scattered
+    // decode, this is in the output row domain, not the encoded row domain.
+    uint32_t nonNullOutputRows{0};
+    // True when this decode consumed the current physical stream segment.
+    bool segmentExhausted{false};
+  };
+
   uint32_t copyTo(char* output, uint32_t bufferSize);
 
-  uint32_t decodeStrings(uint32_t count, std::string_view* output);
+  DecodeResult decodeStrings(uint32_t count, std::string_view* output);
+
+  // Decode legacy raw fixed-width data. Legacy string streams use
+  // decodeStrings().
+  DecodeResult
+  decodeLegacy(void* output, uint32_t offset, uint32_t count, uint32_t width);
 
   /// Decode nimble-encoded data to output. Dispatches to typed materialize
   /// based on width. Only valid when hasEncoding() is true.
-  /// Returns the number of values actually decoded (may be less than count
-  /// if encoding has fewer remaining rows).
-  uint32_t
-  decode(void* output, uint32_t offset, uint32_t count, uint32_t width);
+  /// Returns decoded output rows and non-null rows in the output range.
+  /// numOutputRows may be less than count if the encoding has fewer remaining
+  /// rows.
+  ///
+  /// For nullable encodings or scattered output, getOutputNulls must return the
+  /// mutable output null bitmap. If scatterOutputBitmap is provided, decoded
+  /// rows and null bits are written using that scattered output layout;
+  /// otherwise output is dense starting at offset.
+  DecodeResult decode(
+      void* output,
+      uint32_t offset,
+      uint32_t count,
+      uint32_t width,
+      const std::function<void*()>& getOutputNulls = nullptr,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr);
 
   /// Simplified decode for thrift decoder: decodes 'count' values to output.
   /// Uses sizeof(T) as width and offset 0.
@@ -102,10 +115,6 @@ class StreamData {
     decode(output, /*offset=*/0, count, sizeof(T));
   }
 
-  /// Reset the stream with new data. Used by thrift decoder between rows.
-  /// @param data New stream data to initialize with.
-  /// @param version Serialization version determining encoding and row count
-  ///        format.
   void reset(std::string_view data, SerializationVersion version);
 
   ScalarKind kind() const {
@@ -114,6 +123,12 @@ class StreamData {
 
   bool hasEncoding() const {
     return encoding_ != nullptr;
+  }
+
+  /// Remaining encoded rows in the current stream segment.
+  uint32_t remainingRows() const {
+    NIMBLE_DCHECK_NOT_NULL(encoding_);
+    return encoding_->rowCount() - readRows_;
   }
 
  private:
@@ -129,11 +144,22 @@ class StreamData {
   // can materialize values on demand.
   void prepareForDecoding(std::string_view data);
 
-  // Returns the number of rows remaining in the encoding.
-  uint32_t remainingRows() const {
-    NIMBLE_CHECK_NOT_NULL(encoding_);
-    return encoding_->rowCount() - readRows_;
-  }
+  // Decode nullable encoded data, optionally using scatterOutputBitmap to map
+  // encoded rows into sparse output positions.
+  uint32_t decodeNullable(
+      void* output,
+      uint32_t offset,
+      uint32_t readCount,
+      uint32_t width,
+      const std::function<void*()>& getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap);
+
+  // Decode non-null encoded data into dense output positions.
+  void decodeNonNull(
+      void* output,
+      uint32_t offset,
+      uint32_t readCount,
+      uint32_t width);
 
   // Materialize values from nimble encoding to typed output.
   template <typename T>
@@ -156,9 +182,8 @@ class StreamData {
   // Optional pool for encoding scratch buffers. Owned externally
   // (typically by DeserializerImpl) to persist across StreamData lifetimes.
   velox::BufferPool* const bufferPool_{nullptr};
-  // Externally-owned decompression buffer. Always non-null — checked in both
-  // constructors. Owned by DeserializerImpl or thrift Decoder to persist
-  // across StreamData lifetimes.
+  // Externally-owned decompression buffer. Always non-null; owned by
+  // DeserializerImpl or thrift Decoder to persist across StreamData lifetimes.
   velox::BufferPtr* const decompressionBuffer_{nullptr};
 
   const char* pos_{nullptr};
@@ -169,7 +194,7 @@ class StreamData {
   // External storage for string buffers from encoding. Owned by the caller
   // (DeserializerImpl or thrift Decoder). Each buffer is allocated separately
   // to avoid pointer invalidation when the vector grows.
-  std::vector<velox::BufferPtr>* const stringBuffers_;
+  std::vector<velox::BufferPtr>* stringBuffers_;
 };
 
 template <typename T>
@@ -182,9 +207,9 @@ void StreamData::materialize(uint32_t count, T* output) {
   readRows_ += count;
 }
 
-class StreamDataReader {
+class StreamDataParser {
  public:
-  StreamDataReader(
+  StreamDataParser(
       velox::memory::MemoryPool* pool,
       const DeserializerOptions& options);
 
@@ -242,7 +267,8 @@ class StreamDataReader {
       }
       pos_ = end_; // Skip past trailer.
     } else if (nonLegacyFormat(version_)) {
-      // kLegacyCompact/kSerialization/kProjection: sizes-only sparse trailer.
+      // kLegacyCompact/kLegacySerialization/kSerialization/kProjection:
+      // sizes-only sparse trailer.
       // Each stream's body offset is the prefix sum of preceding sizes, so
       // streams are walked sequentially. Production blobs at kLegacyCompact are
       // decoded via the legacy reader (frozen snapshot of the pre-two-array
@@ -281,7 +307,11 @@ class StreamDataReader {
       }
     }
 
-    NIMBLE_CHECK_EQ(pos_, end_, "Unexpected trailing data");
+    NIMBLE_CHECK(
+        pos_ == end_,
+        "Unexpected trailing data: pos={} end={}",
+        reinterpret_cast<uintptr_t>(pos_),
+        reinterpret_cast<uintptr_t>(end_));
   }
 
   /// Returns the auto-detected serialization version.
@@ -290,10 +320,25 @@ class StreamDataReader {
     return version_;
   }
 
+  /// Returns true when Row/FlatMap null streams contain real nulls, forcing
+  /// this batch to be deserialized via the per-batch barrier path. Always
+  /// false for versions without a flags byte. Only valid after initialize().
+  bool requiresNullBarrier() const {
+    return requiresNullBarrier_;
+  }
+
   /// Returns true if nimble encoding is enabled based on the auto-detected
   /// version. Only valid after initialize() has been called.
   bool encodingEnabled() const {
     return nonLegacyFormat(version_);
+  }
+
+  /// Releases owned kTablet stream payload buffers after a decode run consumes
+  /// the string_views returned by iterateStreams(). This does not reset the
+  /// current initialized blob cursor/header because callers may initialize the
+  /// next batch before flushing the previous run.
+  void reset() {
+    strippedStreamBuffers_.clear();
   }
 
   /// Returns the row range embedded in the per-slice header for kTablet
@@ -308,11 +353,13 @@ class StreamDataReader {
   // Strips tablet chunk headers from stream data for kTablet format.
   // Each chunk is: [chunkSize:u32][compressionType:1B][encoded_data...]
   // Returns a view into the original data for single uncompressed chunks
-  // (zero-copy), or a view into chunkStrippingBuffer_ for compressed/
-  // multi-chunk streams.
+  // (zero-copy), or a view into strippedStreamBuffers_ for compressed/
+  // multi-chunk streams. Retained buffers are not cleared by initialize()
+  // because callers may append streams from multiple initialized batches
+  // before decoding the stored views.
   std::string_view stripChunkHeaders(std::string_view streamData);
 
-  // Slow path: decompress/concatenate all chunks into chunkStrippingBuffer_.
+  // Slow path: decompress/concatenate all chunks into an owned buffer.
   std::string_view slowChunkHeaderStrip(const char* pos, const char* end);
 
   // Returns a zero-copy view if the stream is a single uncompressed chunk.
@@ -321,11 +368,23 @@ class StreamDataReader {
       const char* pos,
       const char* end);
 
-  // Appends chunk data to chunkStrippingBuffer_, decompressing if needed.
-  void appendChunkData(
+  // Returns the payload bytes needed after removing per-chunk headers and
+  // expanding compressed chunks.
+  size_t strippedStreamSize(const char* pos, const char* end);
+
+  // Returns the uncompressed byte size for a single chunk payload.
+  size_t decodedChunkSize(
       CompressionType compression,
       const char* data,
       uint32_t length);
+
+  // Copies or decompresses one chunk into output and advances output past the
+  // appended bytes.
+  void appendChunkData(
+      CompressionType compression,
+      const char* data,
+      uint32_t length,
+      char*& output);
 
   const DeserializerOptions& options_;
   velox::memory::MemoryPool* const pool_;
@@ -334,14 +393,19 @@ class StreamDataReader {
   // header, this is read from the first byte; otherwise defaults to kLegacy.
   // When options specify a version, the data version is validated against it.
   SerializationVersion version_{SerializationVersion::kLegacy};
+  // True when Row/FlatMap null streams contain real nulls (read from the header
+  // flags byte). Defaults false for versions without a flags byte.
+  bool requiresNullBarrier_{false};
   // Per-request row range embedded in the kTablet header (post-rowCount,
   // before stream data). nullopt for non-kTablet formats or when the
   // producer did not embed a row range.
   std::optional<RowRange> rowRange_;
   const char* pos_{nullptr};
   const char* end_{nullptr};
-  // Reusable buffer for chunk header stripping (compressed/multi-chunk case).
-  Vector<char> chunkStrippingBuffer_;
+  // Owns slow-stripped kTablet stream payloads returned as string_views.
+  // A deserializer can append several batches before materializing the run,
+  // so each slow-stripped stream gets a stable backing allocation.
+  std::vector<velox::BufferPtr> strippedStreamBuffers_;
   // Reusable parallel buffers for the per-blob trailer. Refilled by
   // iterateStreams(): streamIds_ holds the ids of non-zero stream slots (sorted
   // ascending) and streamSizes_ their byte sizes. For kTablet,
