@@ -33,7 +33,10 @@ CompressionResult Lz4Compressor::compress(
   encoding::writeUint32(data.size(), pos);
   auto ret = LZ4_compress_fast(
       data.data(), pos, data.size(), data.size(), parameters.accelerationLevel);
-  if (ret == 0 || static_cast<size_t>(ret) + sizeof(uint32_t) >= data.size()) {
+  const auto compressedSize = static_cast<size_t>(ret) + sizeof(uint32_t);
+  if (ret == 0 ||
+      !compressionPolicy.shouldAccept(
+          CompressionType::Lz4, data.size(), compressedSize)) {
     return {
         .compressionType = CompressionType::Uncompressed,
         .buffer = std::nullopt,

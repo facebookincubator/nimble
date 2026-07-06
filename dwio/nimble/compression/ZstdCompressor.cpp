@@ -45,8 +45,17 @@ CompressionResult ZstdCompressor::compress(
         .buffer = std::nullopt,
     };
   }
+  const auto compressedSize = ret + sizeof(uint32_t);
+  const bool shouldAccept = compressionPolicy.shouldAccept(
+      CompressionType::Zstd, data.size(), compressedSize);
+  if (!shouldAccept) {
+    return {
+        .compressionType = CompressionType::Uncompressed,
+        .buffer = std::nullopt,
+    };
+  }
 
-  buffer.resize(ret + sizeof(uint32_t));
+  buffer.resize(compressedSize);
   return {
       .compressionType = CompressionType::Zstd,
       .buffer = std::move(buffer),

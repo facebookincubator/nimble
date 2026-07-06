@@ -114,9 +114,8 @@ struct CompressionConfig {
 
 struct CompressionOptions {
   /// Rejects compression when compressedSize exceeds uncompressedSize
-  /// multiplied by this ratio. Currently only Zstrong/MetaInternal enforces
-  /// this through CompressionPolicy::shouldAccept().
-  /// TODO: Apply this consistently for Zstd and other compression types.
+  /// multiplied by this ratio. Enforced by every compressor through
+  /// CompressionPolicy::shouldAccept().
   float compressionAcceptRatio = 0.98f;
 #ifndef DISABLE_META_INTERNAL_COMPRESSOR
   CompressionType compressionType = CompressionType::MetaInternal;

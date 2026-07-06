@@ -47,6 +47,23 @@ class TestLz4CompressionPolicy : public CompressionPolicy {
   CompressionConfig compressionInfo_;
 };
 
+// Always declines, to verify the compressor honors shouldAccept().
+class RejectingLz4CompressionPolicy : public CompressionPolicy {
+ public:
+  CompressionConfig config() const override {
+    CompressionConfig config{.compressionType = CompressionType::Lz4};
+    config.parameters.lz4.accelerationLevel = 1;
+    return config;
+  }
+
+  bool shouldAccept(
+      CompressionType /* compressionType */,
+      uint64_t /* uncompressedSize */,
+      uint64_t /* compressedSize */) const override {
+    return false;
+  }
+};
+
 } // namespace
 
 TEST(Lz4CompressorTest, CompressionType) {
@@ -114,6 +131,24 @@ TEST(Lz4CompressorTest, IncompressibleData) {
   std::string_view input(randomData.data(), randomData.size());
 
   auto result = compressor.compress(*pool, input, DataType::Int8, 0, policy);
+  EXPECT_EQ(CompressionType::Uncompressed, result.compressionType);
+  EXPECT_FALSE(result.buffer.has_value());
+}
+
+TEST(Lz4CompressorTest, DeclinedByPolicy) {
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Lz4Compressor compressor;
+  RejectingLz4CompressionPolicy policy;
+
+  // Highly compressible data that would otherwise be kept.
+  std::vector<char> original(1024);
+  for (size_t i = 0; i < original.size(); ++i) {
+    original[i] = static_cast<char>(i % 10);
+  }
+  std::string_view input(original.data(), original.size());
+
+  auto result = compressor.compress(*pool, input, DataType::Int8, 0, policy);
+  // The compressor honors shouldAccept() and declines despite compressibility.
   EXPECT_EQ(CompressionType::Uncompressed, result.compressionType);
   EXPECT_FALSE(result.buffer.has_value());
 }
