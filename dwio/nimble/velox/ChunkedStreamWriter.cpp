@@ -80,9 +80,7 @@ std::vector<std::string_view> ChunkedStreamWriter::encode(
         /*bitWidth=*/0,
         policy);
     if (result.buffer.has_value() &&
-        result.compressionType == compressionParams_.type &&
-        policy.shouldAccept(
-            result.compressionType, chunk.size(), result.buffer->size())) {
+        result.compressionType == compressionParams_.type) {
       auto view =
           buffer_.writeString({result.buffer->data(), result.buffer->size()});
       writeChunkHeader(
