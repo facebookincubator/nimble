@@ -18,6 +18,7 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "velox/common/testutil/TestValue.h"
@@ -40,10 +41,22 @@ bool ChunkedDecoder::loadNextChunk(
   NIMBLE_CHECK(ret);
   const char* chunkData;
   int64_t chunkSize;
+  velox::BufferPtr uncompressedBuffer;
   switch (compressionType) {
     case CompressionType::Uncompressed:
       chunkData = inputData_;
       chunkSize = length;
+      break;
+    case CompressionType::Zstd:
+    case CompressionType::Lz4:
+      uncompressedBuffer = Compression::uncompress(
+          *pool_,
+          compressionType,
+          DataType::String,
+          std::string_view(inputData_, length),
+          /*decompressCounter=*/nullptr);
+      chunkData = uncompressedBuffer->as<char>();
+      chunkSize = uncompressedBuffer->size();
       break;
     default:
       NIMBLE_UNSUPPORTED("Unsupported compression type: {}", compressionType);
@@ -51,6 +64,11 @@ bool ChunkedDecoder::loadNextChunk(
   inputData_ += length;
   inputSize_ -= length;
   currentStringBuffers_.clear();
+  // Keep the decompressed buffer alive for the lifetime of the encoding, which
+  // may reference it without copying.
+  if (FOLLY_UNLIKELY(uncompressedBuffer != nullptr)) {
+    currentStringBuffers_.push_back(std::move(uncompressedBuffer));
+  }
   auto stringBufferFactory = [&](uint32_t totalLength) {
     auto& buffer = currentStringBuffers_.emplace_back(
         velox::AlignedBuffer::allocate<char>(totalLength, pool_));

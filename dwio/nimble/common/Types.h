@@ -183,12 +183,16 @@ enum class ChecksumType : uint8_t { XXH3_64 = 0 };
 
 std::string toString(ChecksumType type);
 
-// A CompressionType and any type-specific configuration params.
+/// A CompressionType and any type-specific configuration params.
 struct CompressionParams {
   CompressionType type;
 
-  // For zstd.
+  /// For zstd.
   int zstdLevel = 1;
+
+  /// Keep the compressed result only when compressedSize <= rawSize *
+  /// acceptRatio; otherwise fall back to Uncompressed.
+  float acceptRatio = 0.8f;
 };
 
 // Parameters controlling the search for the optimal encoding on a data set.

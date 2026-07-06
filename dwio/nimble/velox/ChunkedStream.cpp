@@ -16,7 +16,7 @@
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/tablet/Compression.h"
+#include "dwio/nimble/compression/Compression.h"
 #include "folly/io/Cursor.h"
 
 namespace facebook::nimble {
@@ -51,8 +51,14 @@ std::string_view InMemoryChunkedStream::nextChunk() {
       chunk = {pos_, length};
       break;
     }
-    case CompressionType::Zstd: {
-      uncompressed_ = ZstdCompression::uncompress({pos_, length}, &memoryPool_);
+    case CompressionType::Zstd:
+    case CompressionType::Lz4: {
+      uncompressed_ = Compression::uncompress(
+          memoryPool_,
+          compressionType,
+          DataType::String,
+          {pos_, length},
+          /*decompressCounter=*/nullptr);
       chunk = {uncompressed_->as<char>(), uncompressed_->size()};
       break;
     }

@@ -41,6 +41,13 @@ std::unordered_map<std::string, std::string> defaultMetadata();
 // supplied. It's strongly advised to move instead of copying
 // it.
 struct VeloxWriterOptions {
+  /// Builds Encoding::Options from VeloxWriterOptions fields.
+  Encoding::Options buildEncodingOptions() const {
+    return {
+        .blockBitPackingBlockSize = blockBitPackingBlockSize,
+        .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
+  }
+
   // Property bag for storing user metadata in the file.
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
@@ -93,94 +100,96 @@ struct VeloxWriterOptions {
   /// the set will cause an error during writing.
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
 
-  // When true, the writer skips encoding flat map in-map boolean streams that
-  // are all-true (every row has the key) or all-false (no row has the key).
-  // The reader infers the in-map state from value stream presence: all-true
-  // keys have value streams, all-false keys do not.
-  //
-  // NOTE: readers that do not infer omitted in-map streams require this to
-  // remain false so constant in-map streams are physically present.
+  /// When true, the writer skips encoding flat map in-map boolean streams that
+  /// are all-true (every row has the key) or all-false (no row has the key).
+  /// The reader infers the in-map state from value stream presence: all-true
+  /// keys have value streams, all-false keys do not.
+  ///
+  /// NOTE: readers that do not infer omitted in-map streams require this to
+  /// remain false so constant in-map streams are physically present.
   bool skipConstantFlatMapInMapStreams{false};
 
-  // Columns that should be encoded as dictionary arrays
-  // NOTE: For each column, ALL the arrays inside this column will be encoded
-  // using dictionary arrays. In the future we'll have finer control on
-  // individual arrays within a column.
+  /// Columns that should be encoded as dictionary arrays
+  /// NOTE: For each column, ALL the arrays inside this column will be encoded
+  /// using dictionary arrays. In the future we'll have finer control on
+  /// individual arrays within a column.
   folly::F14FastSet<std::string> dictionaryArrayColumns;
 
-  // Columns that should be encoded as dictionary map
-  // NOTE: For each column, ALL the maps inside this column will be encoded
-  // using dictionary maps.
+  /// Columns that should be encoded as dictionary map
+  /// NOTE: For each column, ALL the maps inside this column will be encoded
+  /// using dictionary maps.
   folly::F14FastSet<std::string> deduplicatedMapColumns;
 
-  // The metric logger would come populated with access descriptor information,
-  // application generated query id or specific sampling configs.
+  /// The metric logger would come populated with access descriptor information,
+  /// application generated query id or specific sampling configs.
   std::shared_ptr<MetricsLogger> metricsLogger;
 
-  // Optional feature reordering config.
-  // The key for this config is a (top-level) flat map column ordinal and
-  // the value is an ordered collection of feature ids. When provided, the
-  // writer will make sure that flat map features are grouped together and
-  // ordered based on this config.
+  /// Optional feature reordering config.
+  /// The key for this config is a (top-level) flat map column ordinal and
+  /// the value is an ordered collection of feature ids. When provided, the
+  /// writer will make sure that flat map features are grouped together and
+  /// ordered based on this config.
   std::optional<std::vector<std::tuple<size_t, std::vector<int64_t>>>>
       featureReordering;
 
-  // Optional captured encoding layout tree.
-  // Encoding layout tree is overlayed on the writer tree and the captured
-  // encodings are attempted to be used first, before resolving to perform an
-  // encoding selection.
-  // Captured encodings can be used to speed up writes (as no encoding selection
-  // is needed at runtime) and cal also provide better selected encodings, based
-  // on history data.
+  /// Optional captured encoding layout tree.
+  /// Encoding layout tree is overlayed on the writer tree and the captured
+  /// encodings are attempted to be used first, before resolving to perform an
+  /// encoding selection.
+  /// Captured encodings can be used to speed up writes (as no encoding
+  /// selection is needed at runtime) and cal also provide better selected
+  /// encodings, based on history data.
   std::optional<EncodingLayoutTree> encodingLayoutTree;
 
-  // Compression settings to be used when encoding and compressing data streams
+  /// Compression settings to be used when encoding and compressing data streams
   CompressionOptions compressionOptions;
 
-  // Block size for BlockBitPacking encoding.
-  // EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
-  // enable for production tables without consulting the Nimble team
-  // (oncall: dwios).
+  /// Per-chunk compression of encoded data streams (layered on top of
+  /// compressionOptions).
+  /// EXPERIMENTAL / benchmark-only; only Uncompressed, Zstd and Lz4 are
+  /// supported.
+  /// NOTE: !!! Do NOT enable in production !!!
+  CompressionParams chunkCompression{.type = CompressionType::Uncompressed};
+
+  /// Block size for BlockBitPacking encoding.
+  /// EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
+  /// enable for production tables without consulting the Nimble team
+  ///(oncall: dwios).
   uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 
   /// FSST is kept only when its final encoded size is at most this fraction of
   /// the original string bytes.
   double fsstCompressionTargetRatio{0.6};
 
-  /// Builds Encoding::Options from VeloxWriterOptions fields.
-  Encoding::Options buildEncodingOptions() const {
-    return {
-        .blockBitPackingBlockSize = blockBitPackingBlockSize,
-        .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
-  }
-
-  // In low-memory mode, the writer is trying to perform smaller (and more
-  // precise) buffer allocations. This means that overall, the writer will
-  // consume less memory, but will come with an additional cost, of more
-  // reallocations and extra data copy.
-  // TODO: This options should be removed and integrated into the
-  // inputGrowthPolicyFactory option (e.g. allow the caller to set an
-  // ExactGrowthPolicy, as defined here: dwio/nimble/velox/BufferGrowthPolicy.h)
+  /// In low-memory mode, the writer is trying to perform smaller (and more
+  /// precise) buffer allocations. This means that overall, the writer will
+  /// consume less memory, but will come with an additional cost, of more
+  /// reallocations and extra data copy.
+  /// TODO: This options should be removed and integrated into the
+  /// inputGrowthPolicyFactory option (e.g. allow the caller to set an
+  /// ExactGrowthPolicy, as defined here:
+  /// dwio/nimble/velox/BufferGrowthPolicy.h)
   bool lowMemoryMode{false};
 
-  // If present, metadata sections above this threshold size will be compressed.
+  /// If present, metadata sections above this threshold size will be
+  /// compressed.
   std::optional<uint32_t> metadataCompressionThreshold;
 
-  // When flushing data streams into chunks, streams with raw data size smaller
-  // than this threshold will not be flushed.
-  // Note: this threshold is ignored when it is time to flush a stripe.
+  /// When flushing data streams into chunks, streams with raw data size smaller
+  /// than this threshold will not be flushed.
+  /// Note: this threshold is ignored when it is time to flush a stripe.
   uint64_t minStreamChunkRawSize{512 << 10};
 
-  // When flushing data streams into chunks, streams with raw data size larger
-  // than this threshold will be broken down into multiple smaller chunks. Each
-  // chunk will be at most this size.
+  /// When flushing data streams into chunks, streams with raw data size larger
+  /// than this threshold will be broken down into multiple smaller chunks. Each
+  /// chunk will be at most this size.
   uint64_t maxStreamChunkRawSize{20 << 20};
 
-  // Used in place of maxStreamChunkRawSize for tables with large schemas.
+  /// Used in place of maxStreamChunkRawSize for tables with large schemas.
   uint64_t wideSchemaMaxStreamChunkRawSize{2 << 20};
 
-  // When the number of schema nodes exceeds this threshold we use
-  // wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
+  /// When the number of schema nodes exceeds this threshold we use
+  /// wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
   size_t largeSchemaThreshold{500};
 
   // Number of streams to try chunking between memory pressure evaluations.
