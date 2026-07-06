@@ -93,20 +93,19 @@ class FixedBitWidthEncoding final
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<physicalType>& statistics,
-      bool fixedByteWidth) {
-    return estimateSize(
-        rowCount, statistics.min(), statistics.max(), fixedByteWidth);
+      const Encoding::Options& options) {
+    return estimateSize(rowCount, statistics.min(), statistics.max(), options);
   }
 
   static uint64_t estimateSize(
       uint64_t rowCount,
       uint64_t minValue,
       uint64_t maxValue,
-      bool fixedByteWidth) {
+      const Encoding::Options& options) {
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + kPrefixSize;
-    const uint64_t payloadSize =
-        bitPackedBytes(minValue, maxValue, rowCount, fixedByteWidth);
+    const uint64_t payloadSize = bitPackedBytes(
+        minValue, maxValue, rowCount, options.fixedBitWidthUseExactBits);
     return outerEncodingSize + payloadSize;
   }
 
@@ -119,12 +118,10 @@ class FixedBitWidthEncoding final
       uint64_t minValue,
       uint64_t maxValue,
       uint64_t count,
-      bool fixedByteWidth) {
-    const auto bitWidth = velox::bits::bitsRequired(maxValue - minValue);
-    if (fixedByteWidth) {
-      // Match FixedByteWidth encoding mode, which rounds bit width to the next
-      // byte boundary to mitigate compression issues on non-rounded bit widths.
-      return velox::bits::nbytes(((bitWidth + 7) & ~7) * count);
+      bool useExactBitWidth) {
+    auto bitWidth = velox::bits::bitsRequired(maxValue - minValue);
+    if (!useExactBitWidth) {
+      bitWidth = velox::bits::roundUp(bitWidth, 8);
     }
     return velox::bits::nbytes(bitWidth * count);
   }
@@ -355,22 +352,11 @@ std::string_view FixedBitWidthEncoding<T>::encode(
           physicalType>,
       "Physical type must be unsigned.");
   const uint32_t rowCount = values.size();
-  // NOTE: If we end up with bitsRequired not being a multiple of 8, it degrades
-  // compression efficiency a lot. To (temporarily) mitigate this, we revert to
-  // using "FixedByteWidth", meaning that we round the required bitness to the
-  // closest byte. This is a temporary solution. Going forward we should
-  // evaluate other options. For example:
-  // 1. Asymetric bit width, where we don't encode the data during write
-  // (instead we use Trivial + Compression), but we encode it when we read (for
-  // better in-memory representation).
-  // 2. Apply compression only if bit width is a multiple of 8
-  // 3. Try both bit width and byte width and pick one.
-  // 4. etc...
-  const int bitsRequired =
-      (velox::bits::bitsRequired(
-           selection.statistics().max() - selection.statistics().min()) +
-       7) &
-      ~7;
+  const int exactBitsRequired = velox::bits::bitsRequired(
+      selection.statistics().max() - selection.statistics().min());
+  const int bitsRequired = options.fixedBitWidthUseExactBits
+      ? exactBitsRequired
+      : velox::bits::roundUp(exactBitsRequired, 8);
 
   const uint32_t fixedBitArraySize =
       FixedBitArray::bufferSize(values.size(), bitsRequired);

@@ -98,7 +98,7 @@ using EncodingSelectionPolicyCreator =
 /// Manual encoding selection implementation.
 /// Uses a manually crafted model to choose the most appropriate encoding based
 /// on the provided statistics.
-template <typename T, bool FixedByteWidth = true>
+template <typename T>
 class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
  public:
   using physicalType = typename TypeTraits<T>::physicalType;
@@ -135,7 +135,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     for (const auto& entry : candidateEncodingReadFactors_) {
       const auto encodingType = entry.first;
       const auto estimatedSize =
-          detail::EncodingSizeEstimation<T, FixedByteWidth>::estimateSize(
+          detail::EncodingSizeEstimation<T>::estimateSize(
               encodingType, values.size(), statistics, options);
       if (!estimatedSize.has_value()) {
         NIMBLE_SELECTION_LOG(encodingType << " encoding is incompatible.");
@@ -225,10 +225,9 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         nestedEncodingReadFactors.emplace_back(entry);
       }
     }
-    UNIQUE_PTR_FACTORY_EXTRA(
+    UNIQUE_PTR_FACTORY(
         nestedDataType,
         ManualEncodingSelectionPolicy,
-        COMMA FixedByteWidth,
         std::move(nestedEncodingReadFactors),
         compressionOptions_,
         nestedEncodingIdentifier);

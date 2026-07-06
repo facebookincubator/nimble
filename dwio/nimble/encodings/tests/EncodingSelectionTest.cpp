@@ -28,11 +28,20 @@ using namespace facebook;
 namespace {
 constexpr uint32_t commonPrefixSize = 6;
 
-template <typename T, bool FixedByteWidth = false>
-std::unique_ptr<nimble::ManualEncodingSelectionPolicy<T, FixedByteWidth>>
+nimble::Encoding::Options bitWidthOptions(bool fixedBitWidthUseExactBits) {
+  nimble::Encoding::Options options;
+  options.fixedBitWidthUseExactBits = fixedBitWidthUseExactBits;
+  return options;
+}
+
+nimble::Encoding::Options exactBitWidthOptions() {
+  return bitWidthOptions(true);
+}
+
+template <typename T>
+std::unique_ptr<nimble::ManualEncodingSelectionPolicy<T>>
 getRootManualSelectionPolicy() {
-  return std::make_unique<
-      nimble::ManualEncodingSelectionPolicy<T, FixedByteWidth>>(
+  return std::make_unique<nimble::ManualEncodingSelectionPolicy<T>>(
       std::vector<std::pair<nimble::EncodingType, float>>{
           {nimble::EncodingType::Constant, 1.0},
           {nimble::EncodingType::Trivial, 0.7},
@@ -105,7 +114,7 @@ typename nimble::TypeTraits<T>::physicalType asPhysicalType(T value) {
       &value);
 }
 
-template <typename T, bool FixedByteWidth>
+template <typename T>
 void verifySizeEstimate(
     std::span<const T> values,
     nimble::Buffer& buffer,
@@ -114,8 +123,7 @@ void verifySizeEstimate(
     nimble::EncodingType encodingTypeForEstimation,
     const std::vector<std::pair<nimble::EncodingType, float>>& readFactors) {
   // Create a policy that uses no compression
-  auto policy = std::make_unique<
-      nimble::ManualEncodingSelectionPolicy<T, FixedByteWidth>>(
+  auto policy = std::make_unique<nimble::ManualEncodingSelectionPolicy<T>>(
       readFactors,
       nimble::CompressionOptions{
           .compressionAcceptRatio = 0.0,
@@ -129,11 +137,10 @@ void verifySizeEstimate(
   EXPECT_EQ(actualSize, expectedActualSize);
 
   // Check the estimated size
-  auto estimatedSize =
-      nimble::detail::EncodingSizeEstimation<T, FixedByteWidth>::estimateSize(
-          encodingTypeForEstimation,
-          values.size(),
-          nimble::Statistics<T>::create(values));
+  auto estimatedSize = nimble::detail::EncodingSizeEstimation<T>::estimateSize(
+      encodingTypeForEstimation,
+      values.size(),
+      nimble::Statistics<T>::create(values));
   EXPECT_EQ(estimatedSize, expectedEstimatedSize);
 }
 
@@ -142,9 +149,10 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   auto policy = getRootManualSelectionPolicy<T>();
   nimble::Buffer buffer{*pool};
+  const auto options = exactBitWidthOptions();
 
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, options);
 
   // test getRawDataSize
   auto size =
@@ -196,8 +204,8 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
         velox::AlignedBuffer::allocate<char>(totalLength, pool.get()));
     return stringBuffer->asMutable<void>();
   };
-  auto encoding =
-      nimble::EncodingFactory().create(*pool, serialized, stringBufferFactory);
+  auto encoding = nimble::EncodingFactory(options).create(
+      *pool, serialized, stringBufferFactory);
   nimble::Vector<T> result{pool.get()};
   result.resize(values.size());
   encoding->materialize(values.size(), result.data());
@@ -206,6 +214,56 @@ void test(std::span<const T> values, std::vector<EncodingDetails> expected) {
     ASSERT_EQ(asPhysicalType(values[i]), asPhysicalType(result[i])) << i;
   }
 }
+
+struct FixedBitWidthSelectionParam {
+  bool fixedBitWidthUseExactBits;
+  nimble::EncodingType expectedEncodingType;
+};
+
+class FixedBitWidthSelectionTest
+    : public ::testing::TestWithParam<FixedBitWidthSelectionParam> {};
+
+TEST_P(FixedBitWidthSelectionTest, selectsExpectedEncodingForNarrowValues) {
+  using T = uint8_t;
+
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  auto policy = getRootManualSelectionPolicy<T>();
+  nimble::Buffer buffer{*pool};
+  std::vector<T> values;
+  values.reserve(10000);
+  for (uint32_t i = 0; i < 10000; ++i) {
+    values.push_back(i % 32);
+  }
+
+  const auto options = bitWidthOptions(GetParam().fixedBitWidthUseExactBits);
+  const auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, options);
+
+  verifyEncodingTree(
+      serialized,
+      {
+          {.encodingType = GetParam().expectedEncodingType,
+           .dataType = nimble::TypeTraits<T>::dataType,
+           .level = 0,
+           .nestedEncodingName = ""},
+      });
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FixedBitWidthUseExactBits,
+    FixedBitWidthSelectionTest,
+    ::testing::Values(
+        FixedBitWidthSelectionParam{
+            .fixedBitWidthUseExactBits = false,
+            .expectedEncodingType = nimble::EncodingType::Trivial,
+        },
+        FixedBitWidthSelectionParam{
+            .fixedBitWidthUseExactBits = true,
+            .expectedEncodingType = nimble::EncodingType::FixedBitWidth,
+        }),
+    [](const ::testing::TestParamInfo<FixedBitWidthSelectionParam>& info) {
+      return info.param.fixedBitWidthUseExactBits ? "Exact" : "ByteRounded";
+    });
 
 using NumericTypes = ::testing::Types<
     int8_t,
@@ -605,7 +663,7 @@ TEST(EncodingSelectionBoolTests, SelectTrivial) {
     }
 
     const uint32_t expectedEncodedDataSize = std::ceil(values.size() / 8.0);
-    verifySizeEstimate<T, false>(
+    verifySizeEstimate<T>(
         values,
         buffer,
         expectedEncodedDataSize + encodingOverhead,
@@ -664,8 +722,8 @@ TEST(EncodingSelectionBoolTests, SelectRunLength) {
   }
 
   auto policy = getRootManualSelectionPolicy<T>();
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, exactBitWidthOptions());
 
   // test getRawDataSize
   auto size =
@@ -706,8 +764,8 @@ TEST(EncodingSelectionStringTests, SelectConst) {
       values[i] = value;
     }
 
-    auto serialized =
-        nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+    auto serialized = nimble::EncodingFactory::encode<T>(
+        std::move(policy), values, buffer, exactBitWidthOptions());
 
     // test getRawDataSize
     auto size =
@@ -760,8 +818,8 @@ TEST(EncodingSelectionStringTests, SelectMainlyConst) {
     }
 
     auto policy = getRootManualSelectionPolicy<T>();
-    auto serialized =
-        nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+    auto serialized = nimble::EncodingFactory::encode<T>(
+        std::move(policy), values, buffer, exactBitWidthOptions());
 
     // test getRawDataSize
     auto size =
@@ -828,8 +886,8 @@ TEST(EncodingSelectionStringTests, SelectTrivial) {
     expectedSize += cache[i].size();
   }
 
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, exactBitWidthOptions());
 
   // test getRawDataSize
   auto size =
@@ -875,8 +933,8 @@ TEST(EncodingSelectionStringTests, SelectDictionary) {
     expectedSize += val.size();
   }
 
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, exactBitWidthOptions());
 
   // test getRawDataSize
   auto size =
@@ -941,8 +999,8 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
   }
 
   auto policy = getRootManualSelectionPolicy<T>();
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, exactBitWidthOptions());
 
   // test getRawDataSize
   auto size =

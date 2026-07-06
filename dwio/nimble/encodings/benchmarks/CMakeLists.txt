@@ -22,6 +22,19 @@ target_link_libraries(
   velox_memory
 )
 
+add_executable(
+  nimble_exact_bit_width_storage_benchmark
+  ExactBitWidthStorageBenchmark.cpp
+)
+
+target_link_libraries(
+  nimble_exact_bit_width_storage_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  velox_memory
+)
+
 add_executable(nimble_fsst_benchmark FsstBenchmark.cpp)
 
 target_link_libraries(

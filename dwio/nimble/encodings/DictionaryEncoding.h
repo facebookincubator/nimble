@@ -89,7 +89,7 @@ class DictionaryEncoding
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<physicalType>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Assumptions:
     // Alphabet stored trivially.
     // Indices are stored bit-packed, with bit width needed to store max
@@ -101,7 +101,7 @@ class DictionaryEncoding
             rowCount,
             /*minValue=*/0,
             uniqueCount == 0 ? 0 : uniqueCount - 1,
-            fixedByteWidth);
+            options);
 
     uint64_t alphabetEncodingSize{};
     if constexpr (isStringType<physicalType>()) {
@@ -111,7 +111,7 @@ class DictionaryEncoding
           uniqueCounts.uniqueStringBytes(),
           statistics.min().size(),
           statistics.max().size(),
-          fixedByteWidth);
+          options);
     } else {
       alphabetEncodingSize =
           TrivialEncoding<physicalType>::estimateSize(uniqueCount);

@@ -88,7 +88,7 @@ class MainlyConstantEncodingBase
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<physicalType>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Assumptions:
     // We store one entry for the common value.
     // Number of uncommon values is total item count minus the max unique
@@ -112,8 +112,8 @@ class MainlyConstantEncodingBase
     const uint64_t uncommonCount = rowCount - maxUniqueCount->second;
     // Uncommon values (sparse bool) bitmap will have index per value,
     // stored bit packed.
-    const uint64_t isCommonEncodingSize = SparseBoolEncoding::estimateSize(
-        rowCount, uncommonCount, fixedByteWidth);
+    const uint64_t isCommonEncodingSize =
+        SparseBoolEncoding::estimateSize(rowCount, uncommonCount, options);
 
     if constexpr (isStringType<physicalType>()) {
       const uint64_t commonValueSize = maxUniqueCount->first.size();
@@ -144,7 +144,7 @@ class MainlyConstantEncodingBase
               uniqueCounts.uniqueStringBytes() - commonValueSize,
               uncommonMinLength,
               uncommonMaxLength,
-              fixedByteWidth);
+              options);
       const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
           2 * sizeof(uint32_t) + commonValueSize + sizeof(uint32_t);
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
@@ -153,10 +153,7 @@ class MainlyConstantEncodingBase
       // Other values are encoded as a FixedBitWidth child.
       const uint64_t otherValuesSize =
           FixedBitWidthEncoding<physicalType>::estimateSize(
-              uncommonCount,
-              statistics.min(),
-              statistics.max(),
-              fixedByteWidth);
+              uncommonCount, statistics.min(), statistics.max(), options);
       const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
           2 * sizeof(uint32_t) + commonValueSize;
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;

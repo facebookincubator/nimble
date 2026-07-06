@@ -414,15 +414,14 @@ std::string_view FsstEncoding::encode(
 uint64_t FsstEncoding::estimateSize(
     uint64_t rowCount,
     const Statistics<std::string_view>& statistics,
-    bool fixedByteWidth,
-    double compressionTargetRatio) {
+    const Encoding::Options& options) {
   const uint64_t estimatedBlobSize = static_cast<uint64_t>(
-      statistics.totalStringsLength() * compressionTargetRatio);
+      statistics.totalStringsLength() * options.fsstCompressionTargetRatio);
   const uint64_t estimatedMaxCompressedLength = static_cast<uint64_t>(
-      std::ceil(statistics.max().size() * compressionTargetRatio));
+      std::ceil(statistics.max().size() * options.fsstCompressionTargetRatio));
   const uint64_t estimatedLengthsSize =
       FixedBitWidthEncoding<uint32_t>::estimateSize(
-          rowCount, 0, estimatedMaxCompressedLength, fixedByteWidth);
+          rowCount, 0, estimatedMaxCompressedLength, options);
   return kSymbolTableOverhead + estimatedBlobSize + estimatedLengthsSize +
       EncodingPrefix::kFixedPrefixSize;
 }

@@ -117,6 +117,24 @@ std::string encodeFixedBitWidth(
   return std::string{encoded.data(), encoded.size()};
 }
 
+Encoding::Options exactBitWidthOptions() {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = true;
+  return options;
+}
+
+Encoding::Options byteRoundedBitWidthOptions() {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = false;
+  return options;
+}
+
+std::string encodeByteRoundedUint32(
+    Buffer& buffer,
+    const Vector<uint32_t>& data) {
+  return encodeFixedBitWidth(buffer, data, byteRoundedBitWidthOptions());
+}
+
 } // namespace
 
 // ============================================================================
@@ -269,6 +287,48 @@ PFOR_PACK64_BENCHMARKS(40)
 PFOR_PACK64_BENCHMARKS(48)
 PFOR_PACK64_BENCHMARKS(56)
 PFOR_PACK64_BENCHMARKS(64)
+
+BENCHMARK_DRAW_LINE();
+
+// ============================================================================
+// FixedBitWidthEncoding materialize() — exact bit width vs byte-rounded
+// payloads. This isolates the storage-size change: exact streams read fewer
+// bytes, while byte-rounded streams may use byte-aligned bit widths.
+// ============================================================================
+
+#define FBW_MATERIALIZE_EXACT_VS_BYTE_ROUNDED(exactBitWidth, roundedBitWidth) \
+  BENCHMARK(FBW_Materialize_uint32_exact_##exactBitWidth##bit, iters) {       \
+    std::string encoded;                                                      \
+    std::vector<uint32_t> output(kNumElements);                               \
+    BENCHMARK_SUSPEND {                                                       \
+      Buffer buffer{*pool};                                                   \
+      auto data = makeData<uint32_t>(exactBitWidth);                          \
+      encoded = encodeFixedBitWidth(buffer, data, exactBitWidthOptions());    \
+    }                                                                         \
+    while (iters--) {                                                         \
+      auto encoding = EncodingFactory{}.create(                               \
+          *pool, encoded, [](uint32_t) -> void* { return nullptr; });         \
+      encoding->materialize(kNumElements, output.data());                     \
+    }                                                                         \
+  }                                                                           \
+  BENCHMARK_RELATIVE(                                                         \
+      FBW_Materialize_uint32_byteRounded_##roundedBitWidth##bit, iters) {     \
+    std::string encoded;                                                      \
+    std::vector<uint32_t> output(kNumElements);                               \
+    BENCHMARK_SUSPEND {                                                       \
+      Buffer buffer{*pool};                                                   \
+      auto data = makeData<uint32_t>(exactBitWidth);                          \
+      encoded = encodeByteRoundedUint32(buffer, data);                        \
+    }                                                                         \
+    while (iters--) {                                                         \
+      auto encoding = EncodingFactory{}.create(                               \
+          *pool, encoded, [](uint32_t) -> void* { return nullptr; });         \
+      encoding->materialize(kNumElements, output.data());                     \
+    }                                                                         \
+  }
+
+FBW_MATERIALIZE_EXACT_VS_BYTE_ROUNDED(6, 8)
+FBW_MATERIALIZE_EXACT_VS_BYTE_ROUNDED(9, 16)
 
 BENCHMARK_DRAW_LINE();
 

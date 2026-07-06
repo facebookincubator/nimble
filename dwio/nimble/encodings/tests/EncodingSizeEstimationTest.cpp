@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <limits>
+#include <string>
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
@@ -23,6 +24,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -30,10 +32,41 @@
 #include "dwio/nimble/encodings/VarintEncoding.h"
 
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "velox/common/base/BitUtil.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace facebook;
 using namespace facebook::nimble;
+
+namespace {
+
+Encoding::Options exactBitWidthOptions() {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = true;
+  return options;
+}
+
+Encoding::Options byteRoundedBitWidthOptions() {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = false;
+  return options;
+}
+
+template <typename T>
+uint64_t fixedBitWidthEstimate(
+    uint64_t rowCount,
+    uint64_t minValue,
+    uint64_t maxValue,
+    bool roundBitWidthToByte) {
+  auto bitWidth = velox::bits::bitsRequired(maxValue - minValue);
+  if (roundBitWidthToByte) {
+    bitWidth = velox::bits::roundUp(bitWidth, 8);
+  }
+  return EncodingPrefix::kFixedPrefixSize + 2 + sizeof(T) +
+      velox::bits::nbytes(bitWidth * rowCount);
+}
+
+} // namespace
 
 class EncodingSizeEstimationTest : public ::testing::Test {
  protected:
@@ -43,7 +76,7 @@ class EncodingSizeEstimationTest : public ::testing::Test {
 
   template <typename T>
   void verifySimdForBitpackEstimateVsActualSize() {
-    using Est = detail::EncodingSizeEstimation<T, false>;
+    using Est = detail::EncodingSizeEstimation<T>;
 
     const T min = std::numeric_limits<T>::min();
     const T max = std::numeric_limits<T>::max();
@@ -124,7 +157,7 @@ class EncodingSizeEstimationTest : public ::testing::Test {
 };
 
 TEST_F(EncodingSizeEstimationTest, numericConstant) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data(100, 42);
   auto stats = Statistics<uint32_t>::create(data);
@@ -136,7 +169,7 @@ TEST_F(EncodingSizeEstimationTest, numericConstant) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericConstantNonConstantData) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {1, 2, 3};
   auto stats = Statistics<uint32_t>::create(data);
@@ -146,7 +179,7 @@ TEST_F(EncodingSizeEstimationTest, numericConstantNonConstantData) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericTrivial) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {1, 2, 3, 4, 5};
   auto stats = Statistics<uint32_t>::create(data);
@@ -157,7 +190,7 @@ TEST_F(EncodingSizeEstimationTest, numericTrivial) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericFixedBitWidth) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {100, 101, 102, 103, 104};
   auto stats = Statistics<uint32_t>::create(data);
@@ -167,8 +200,30 @@ TEST_F(EncodingSizeEstimationTest, numericFixedBitWidth) {
   EXPECT_LT(size.value(), 5 * sizeof(uint32_t));
 }
 
+TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateUsesExactBits) {
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
+
+  const std::vector<uint32_t> data = {100, 101, 102, 103, 104};
+  auto stats = Statistics<uint32_t>::create(data);
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = true;
+
+  const auto size = Est::estimateNumericSize(
+      EncodingType::FixedBitWidth, data.size(), stats, options);
+
+  ASSERT_TRUE(size.has_value());
+  EXPECT_EQ(
+      size.value(),
+      fixedBitWidthEstimate<uint32_t>(
+          data.size(), stats.min(), stats.max(), false));
+  EXPECT_LT(
+      size.value(),
+      fixedBitWidthEstimate<uint32_t>(
+          data.size(), stats.min(), stats.max(), true));
+}
+
 TEST_F(EncodingSizeEstimationTest, numericDictionary) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {1, 2, 1, 2, 1, 2, 1, 2, 1, 2};
   auto stats = Statistics<uint32_t>::create(data);
@@ -179,7 +234,7 @@ TEST_F(EncodingSizeEstimationTest, numericDictionary) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericMainlyConstant) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data(100, 42);
   data[50] = 99;
@@ -192,7 +247,7 @@ TEST_F(EncodingSizeEstimationTest, numericMainlyConstant) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericRle) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   for (int i = 0; i < 50; ++i) {
@@ -209,7 +264,7 @@ TEST_F(EncodingSizeEstimationTest, numericRle) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericVarint32) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {0, 1, 127, 128, 255, 256, 1000};
   auto stats = Statistics<uint32_t>::create(data);
@@ -220,7 +275,7 @@ TEST_F(EncodingSizeEstimationTest, numericVarint32) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericVarint64) {
-  using Est = detail::EncodingSizeEstimation<uint64_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint64_t>;
 
   std::vector<uint64_t> data = {0, 1, 127, 128, 16384, 1000000};
   auto stats = Statistics<uint64_t>::create(data);
@@ -231,7 +286,7 @@ TEST_F(EncodingSizeEstimationTest, numericVarint64) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericUnsupportedEncoding) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {1, 2, 3};
   auto stats = Statistics<uint32_t>::create(data);
@@ -241,7 +296,7 @@ TEST_F(EncodingSizeEstimationTest, numericUnsupportedEncoding) {
 }
 
 TEST_F(EncodingSizeEstimationTest, numericEstimateSizeDispatches) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data = {1, 2, 3, 4, 5};
   auto stats = Statistics<uint32_t>::create(data);
@@ -254,29 +309,169 @@ TEST_F(EncodingSizeEstimationTest, numericEstimateSizeDispatches) {
 }
 
 TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateUsesValueRange) {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = true;
   const auto sizeFromZero = FixedBitWidthEncoding<uint32_t>::estimateSize(
       /*rowCount=*/100,
       /*minValue=*/0,
       /*maxValue=*/4,
-      /*fixedByteWidth=*/true);
+      options);
   const auto sizeWithBaseline = FixedBitWidthEncoding<uint32_t>::estimateSize(
       /*rowCount=*/100,
       /*minValue=*/100,
       /*maxValue=*/104,
-      /*fixedByteWidth=*/true);
+      options);
   EXPECT_EQ(sizeFromZero, sizeWithBaseline);
 
-  const auto fixedByteWidthSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
+  const auto exactBitWidthSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
       /*rowCount=*/100,
       /*minValue=*/0,
       /*maxValue=*/5,
-      /*fixedByteWidth=*/true);
-  const auto bitWidthSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
-      /*rowCount=*/100,
-      /*minValue=*/0,
-      /*maxValue=*/5,
-      /*fixedByteWidth=*/false);
-  EXPECT_GE(fixedByteWidthSize, bitWidthSize);
+      options);
+  EXPECT_EQ(
+      exactBitWidthSize,
+      fixedBitWidthEstimate<uint32_t>(
+          /*rowCount=*/100, /*minValue=*/0, /*maxValue=*/5, false));
+  EXPECT_LT(
+      exactBitWidthSize,
+      fixedBitWidthEstimate<uint32_t>(
+          /*rowCount=*/100, /*minValue=*/0, /*maxValue=*/5, true));
+}
+
+TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateOptionCanRoundToByte) {
+  std::vector<uint32_t> data(100);
+  for (uint32_t i = 0; i < data.size(); ++i) {
+    data[i] = i % 8;
+  }
+  const auto stats = Statistics<uint32_t>::create(data);
+  Encoding::Options exactOptions;
+  exactOptions.fixedBitWidthUseExactBits = true;
+  Encoding::Options roundedOptions;
+  roundedOptions.fixedBitWidthUseExactBits = false;
+
+  const auto exactSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
+      data.size(), stats, exactOptions);
+  const auto roundedSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
+      data.size(), stats, roundedOptions);
+
+  EXPECT_EQ(
+      exactSize,
+      fixedBitWidthEstimate<uint32_t>(
+          data.size(), stats.min(), stats.max(), false));
+  EXPECT_EQ(
+      roundedSize,
+      fixedBitWidthEstimate<uint32_t>(
+          data.size(), stats.min(), stats.max(), true));
+  EXPECT_LT(exactSize, roundedSize);
+}
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    fixedBitWidthEstimateOptionPropagatesToNestedChildren) {
+  const auto exactOptions = exactBitWidthOptions();
+  const auto roundedOptions = byteRoundedBitWidthOptions();
+
+  std::vector<uint32_t> dictionaryData(100);
+  for (uint32_t i = 0; i < dictionaryData.size(); ++i) {
+    dictionaryData[i] = i % 8;
+  }
+  const auto dictionaryStats = Statistics<uint32_t>::create(dictionaryData);
+
+  std::vector<uint32_t> rleData;
+  for (uint32_t run = 0; run < 100; ++run) {
+    rleData.insert(rleData.end(), run % 8 + 1, run % 2);
+  }
+  const auto rleStats = Statistics<uint32_t>::create(rleData);
+
+  std::vector<uint32_t> mainlyConstantData(80, 42);
+  for (uint32_t i = 0; i < 50; ++i) {
+    mainlyConstantData.push_back(i % 8);
+  }
+  const auto mainlyConstantStats =
+      Statistics<uint32_t>::create(mainlyConstantData);
+
+  std::array<bool, 100> sparseBoolData;
+  sparseBoolData.fill(true);
+  for (size_t i = 0; i < sparseBoolData.size(); i += 10) {
+    sparseBoolData[i] = false;
+  }
+  const auto sparseBoolStats = Statistics<bool>::create(sparseBoolData);
+
+  std::vector<std::string> strings;
+  std::vector<std::string_view> stringViews;
+  strings.reserve(100);
+  stringViews.reserve(100);
+  for (uint32_t i = 0; i < 100; ++i) {
+    strings.emplace_back(i % 8 + 1, static_cast<char>('a' + (i % 8)));
+    stringViews.push_back(strings.back());
+  }
+  const auto stringStats = Statistics<std::string_view>::create(stringViews);
+
+  struct TestCase {
+    std::string name;
+    uint64_t exactSize;
+    uint64_t roundedSize;
+  };
+
+  for (const auto& testCase : std::vector<TestCase>{
+           {
+               .name = "Dictionary indices",
+               .exactSize = DictionaryEncoding<uint32_t>::estimateSize(
+                   dictionaryData.size(), dictionaryStats, exactOptions),
+               .roundedSize = DictionaryEncoding<uint32_t>::estimateSize(
+                   dictionaryData.size(), dictionaryStats, roundedOptions),
+           },
+           {
+               .name = "RLE run lengths and values",
+               .exactSize = RLEEncoding<uint32_t>::estimateSize(
+                   rleData.size(), rleStats, exactOptions),
+               .roundedSize = RLEEncoding<uint32_t>::estimateSize(
+                   rleData.size(), rleStats, roundedOptions),
+           },
+           {
+               .name = "MainlyConstant uncommon values and sparse bitmap",
+               .exactSize = MainlyConstantEncoding<uint32_t>::estimateSize(
+                   mainlyConstantData.size(),
+                   mainlyConstantStats,
+                   exactOptions),
+               .roundedSize = MainlyConstantEncoding<uint32_t>::estimateSize(
+                   mainlyConstantData.size(),
+                   mainlyConstantStats,
+                   roundedOptions),
+           },
+           {
+               .name = "SparseBool indices",
+               .exactSize = SparseBoolEncoding::estimateSize(
+                   sparseBoolData.size(), sparseBoolStats, exactOptions),
+               .roundedSize = SparseBoolEncoding::estimateSize(
+                   sparseBoolData.size(), sparseBoolStats, roundedOptions),
+           },
+           {
+               .name = "Trivial string lengths",
+               .exactSize = TrivialEncoding<std::string_view>::estimateSize(
+                   stringViews.size(), stringStats, exactOptions),
+               .roundedSize = TrivialEncoding<std::string_view>::estimateSize(
+                   stringViews.size(), stringStats, roundedOptions),
+           },
+           {
+               .name = "Dictionary string indices and alphabet lengths",
+               .exactSize = DictionaryEncoding<std::string_view>::estimateSize(
+                   stringViews.size(), stringStats, exactOptions),
+               .roundedSize =
+                   DictionaryEncoding<std::string_view>::estimateSize(
+                       stringViews.size(), stringStats, roundedOptions),
+           },
+           {
+               .name = "FSST compressed lengths",
+               .exactSize = FsstEncoding::estimateSize(
+                   stringViews.size(), stringStats, exactOptions),
+               .roundedSize = FsstEncoding::estimateSize(
+                   stringViews.size(), stringStats, roundedOptions),
+           },
+       }) {
+    SCOPED_TRACE(testCase.name);
+    EXPECT_LT(testCase.exactSize, testCase.roundedSize);
+  }
 }
 
 TEST_F(EncodingSizeEstimationTest, encodingEstimateHelpersReturnSizes) {
@@ -293,15 +488,14 @@ TEST_F(EncodingSizeEstimationTest, encodingEstimateHelpersReturnSizes) {
       0u);
   EXPECT_GT(
       FixedBitWidthEncoding<uint32_t>::estimateSize(
-          numericData.size(), numericStats, true),
+          numericData.size(), numericStats, Encoding::Options{}),
       0u);
   EXPECT_GT(
       DictionaryEncoding<uint32_t>::estimateSize(
-          numericData.size(), numericStats, true),
+          numericData.size(), numericStats),
       0u);
   EXPECT_GT(
-      RLEEncoding<uint32_t>::estimateSize(
-          numericData.size(), numericStats, true),
+      RLEEncoding<uint32_t>::estimateSize(numericData.size(), numericStats),
       0u);
   EXPECT_GT(VarintEncoding<uint32_t>::estimateSize(numericStats), 0u);
   EXPECT_GT(
@@ -310,10 +504,9 @@ TEST_F(EncodingSizeEstimationTest, encodingEstimateHelpersReturnSizes) {
       0u);
   EXPECT_GT(
       MainlyConstantEncoding<uint32_t>::estimateSize(
-          numericData.size(), numericStats, true),
+          numericData.size(), numericStats),
       0u);
-  EXPECT_GT(
-      SparseBoolEncoding::estimateSize(boolData.size(), boolStats, true), 0u);
+  EXPECT_GT(SparseBoolEncoding::estimateSize(boolData.size(), boolStats), 0u);
 }
 
 TEST_F(
@@ -331,43 +524,40 @@ TEST_F(
   };
   auto stats = Statistics<std::string_view>::create(data);
 
-  const uint64_t expectedSize =
-      EncodingPrefix::kFixedPrefixSize + 2 * sizeof(uint32_t) + common.size() +
-      sizeof(uint32_t) +
+  const uint64_t expectedSize = EncodingPrefix::kFixedPrefixSize +
+      2 * sizeof(uint32_t) + common.size() + sizeof(uint32_t) +
       TrivialEncoding<std::string_view>::estimateSize(
-          /*rowCount=*/2,
-          /*totalStringsLength=*/5,
-          /*minLength=*/2,
-          /*maxLength=*/3,
-          /*fixedByteWidth=*/false) +
-      SparseBoolEncoding::estimateSize(
-          data.size(), /*exceptionCount=*/2, /*fixedByteWidth=*/false);
+                                    /*rowCount=*/2,
+                                    /*totalStringsLength=*/5,
+                                    /*minLength=*/2,
+                                    /*maxLength=*/3) +
+      SparseBoolEncoding::estimateSize(data.size(), /*exceptionCount=*/2);
 
   EXPECT_EQ(
       MainlyConstantEncoding<std::string_view>::estimateSize(
-          data.size(), stats, /*fixedByteWidth=*/false),
+          data.size(), stats),
       expectedSize);
 }
 
 TEST_F(EncodingSizeEstimationTest, sparseBoolEstimateIncludesSentinelIndex) {
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = false;
   const uint64_t indicesSize = FixedBitWidthEncoding<uint32_t>::estimateSize(
       /*rowCount=*/3,
       /*minValue=*/0,
       /*maxValue=*/10,
-      /*fixedByteWidth=*/false);
+      options);
   const uint64_t expectedSize =
       EncodingPrefix::kFixedPrefixSize + sizeof(uint8_t) + indicesSize;
 
   EXPECT_EQ(
       SparseBoolEncoding::estimateSize(
-          /*rowCount=*/10,
-          /*exceptionCount=*/2,
-          /*fixedByteWidth=*/false),
+          /*rowCount=*/10, /*exceptionCount=*/2),
       expectedSize);
 }
 
 TEST_F(EncodingSizeEstimationTest, trivialSmallerThanDictionaryForUnique) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   for (uint32_t i = 0; i < 100; ++i) {
@@ -386,7 +576,7 @@ TEST_F(EncodingSizeEstimationTest, trivialSmallerThanDictionaryForUnique) {
 }
 
 TEST_F(EncodingSizeEstimationTest, dictionarySmallerForHighRepetition) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   for (int i = 0; i < 1000; ++i) {
@@ -405,7 +595,7 @@ TEST_F(EncodingSizeEstimationTest, dictionarySmallerForHighRepetition) {
 }
 
 TEST_F(EncodingSizeEstimationTest, constantSmallestForConstantData) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data(1000, 42);
   auto stats = Statistics<uint32_t>::create(data);
@@ -421,7 +611,7 @@ TEST_F(EncodingSizeEstimationTest, constantSmallestForConstantData) {
 }
 
 TEST_F(EncodingSizeEstimationTest, rleSmallForLongRuns) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   for (int i = 0; i < 500; ++i) {
@@ -442,7 +632,7 @@ TEST_F(EncodingSizeEstimationTest, rleSmallForLongRuns) {
 }
 
 TEST_F(EncodingSizeEstimationTest, fbwSmallForNarrowRange) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   for (uint32_t i = 0; i < 1000; ++i) {
@@ -461,7 +651,7 @@ TEST_F(EncodingSizeEstimationTest, fbwSmallForNarrowRange) {
 }
 
 TEST_F(EncodingSizeEstimationTest, uint64AllEncodings) {
-  using Est = detail::EncodingSizeEstimation<uint64_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint64_t>;
 
   std::vector<uint64_t> data;
   for (uint64_t i = 0; i < 100; ++i) {
@@ -484,7 +674,7 @@ TEST_F(EncodingSizeEstimationTest, uint64AllEncodings) {
 }
 
 TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
-  using Est = detail::EncodingSizeEstimation<uint32_t, false>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   // ~90% values in [0, 100], ~10% outliers near max — Pfor's sweet spot.
   std::vector<uint32_t> data;
@@ -691,7 +881,7 @@ TEST_F(
     EncodingSizeEstimationTest,
     blockBitPackingEstimateViaEncodingSizeEstimation) {
   // Verify BlockBitPacking is wired up in EncodingSizeEstimation dispatcher.
-  using Est = detail::EncodingSizeEstimation<uint32_t, true>;
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
 
   std::vector<uint32_t> data;
   data.reserve(2048);
