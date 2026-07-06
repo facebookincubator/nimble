@@ -1233,7 +1233,8 @@ uint32_t VeloxWriter::encodeChunk(const StreamData& chunkView, Chunk& chunk) {
   }
   uint32_t chunkBytes{0};
   chunk.rowCount = chunkView.rowCount();
-  ChunkedStreamWriter chunkWriter{*encodingBuffer_};
+  ChunkedStreamWriter chunkWriter{
+      *encodingBuffer_, context_->options().chunkCompression};
   for (auto& buffer : chunkWriter.encode(encoded)) {
     chunkBytes += buffer.size();
     chunk.content.push_back(std::move(buffer));

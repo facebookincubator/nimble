@@ -17,6 +17,7 @@
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -344,7 +345,8 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
 
   template <typename T>
   std::pair<std::string, std::vector<ChunkInfo>> encodeChunkedStream(
-      const std::vector<std::vector<T>>& chunks) {
+      const std::vector<std::vector<T>>& chunks,
+      CompressionType compressionType = CompressionType::Uncompressed) {
     Buffer buffer{*pool_};
     std::string streamData;
     std::vector<ChunkInfo> chunkInfos;
@@ -355,8 +357,11 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
       auto encodedChunk = encodeValues<T>(chunk, buffer);
 
       // Write chunk using ChunkedStreamWriter
-      ChunkedStreamWriter writer{
-          buffer, {.type = CompressionType::Uncompressed}};
+      CompressionParams compressionParams{.type = compressionType};
+      if (compressionType == CompressionType::Zstd) {
+        compressionParams.zstdLevel = 3;
+      }
+      ChunkedStreamWriter writer{buffer, compressionParams};
       auto segments = writer.encode(encodedChunk);
 
       for (const auto& segment : segments) {
@@ -371,6 +376,21 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
     }
 
     return {streamData, chunkInfos};
+  }
+
+  static void verifyChunkCompressionTypes(
+      std::string_view streamData,
+      size_t chunkCount,
+      CompressionType compressionType) {
+    const char* position = streamData.data();
+    const char* const end = streamData.data() + streamData.size();
+    for (size_t index = 0; index < chunkCount; ++index) {
+      const auto [length, actualCompressionType] = readChunkHeader(position);
+      EXPECT_EQ(actualCompressionType, compressionType);
+      position += length;
+      ASSERT_LE(position, end);
+    }
+    EXPECT_EQ(position, end);
   }
 
   template <typename T>
@@ -763,6 +783,38 @@ TEST_P(ChunkedDecoderDataTest, skipTwoChunks) {
             << "Value mismatch at position " << i;
       }
     }
+  }
+}
+
+TEST_P(ChunkedDecoderDataTest, readsCompressedChunks) {
+  constexpr uint32_t kFirstChunkValue = 42;
+  constexpr uint32_t kSecondChunkValue = 7;
+  const std::vector<std::vector<uint32_t>> chunks{
+      std::vector<uint32_t>(512, kFirstChunkValue),
+      std::vector<uint32_t>(384, kSecondChunkValue),
+  };
+
+  for (auto compressionType : {CompressionType::Zstd, CompressionType::Lz4}) {
+    SCOPED_TRACE(toString(compressionType));
+    auto [streamData, chunkInfos] =
+        encodeChunkedStream<uint32_t>(chunks, compressionType);
+    verifyChunkCompressionTypes(streamData, chunkInfos.size(), compressionType);
+
+    ChunkedDecoder decoder(
+        std::make_unique<dwio::common::SeekableArrayInputStream>(
+            streamData.data(), streamData.size()),
+        createTestStreamIndex(chunkInfos),
+        false,
+        &encodingFactory(),
+        pool_.get());
+
+    std::vector<int32_t> result(chunks[0].size() + chunks[1].size());
+    decoder.nextIndices(result.data(), result.size(), nullptr);
+
+    std::vector<int32_t> expected;
+    expected.insert(expected.end(), chunks[0].size(), kFirstChunkValue);
+    expected.insert(expected.end(), chunks[1].size(), kSecondChunkValue);
+    EXPECT_EQ(result, expected);
   }
 }
 

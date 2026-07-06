@@ -49,12 +49,17 @@ createChunkedStream(
     RNG rng,
     nimble::Buffer& buffer,
     size_t chunkCount,
-    bool compress = false) {
+    nimble::CompressionType compressionType =
+        nimble::CompressionType::Uncompressed) {
+  const bool compress =
+      compressionType != nimble::CompressionType::Uncompressed;
   std::vector<std::string> data;
   data.resize(chunkCount);
   for (auto i = 0; i < data.size(); ++i) {
     data[i] = randomString(rng, 100);
     if (compress) {
+      // Append a highly compressible run so the codec actually shrinks the
+      // chunk (otherwise it would fall back to storing it uncompressed).
       data[i] += std::string(200, 'a');
     }
   }
@@ -62,10 +67,8 @@ createChunkedStream(
   for (auto i = 0; i < data.size(); ++i) {
     std::vector<std::string_view> segments;
     {
-      nimble::CompressionParams compressionParams{
-          .type = nimble::CompressionType::Uncompressed};
-      if (compress) {
-        compressionParams.type = nimble::CompressionType::Zstd;
+      nimble::CompressionParams compressionParams{.type = compressionType};
+      if (compressionType == nimble::CompressionType::Zstd) {
         compressionParams.zstdLevel = 3;
       }
       nimble::ChunkedStreamWriter writer{buffer, std::move(compressionParams)};
@@ -141,8 +144,8 @@ TEST(ChunkedStreamTests, SingleChunkWithCompression) {
 
   auto memoryPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*memoryPool};
-  auto [data, result] =
-      createChunkedStream(rng, buffer, /* chunkCount */ 1, /* compress */ true);
+  auto [data, result] = createChunkedStream(
+      rng, buffer, /* chunkCount */ 1, nimble::CompressionType::Zstd);
   ASSERT_GT(result->getStream().size(), 0);
   EXPECT_EQ(data.size(), 1);
 
@@ -169,7 +172,7 @@ TEST(ChunkedStreamTests, MultiChunkWithCompression) {
       rng,
       buffer,
       /* chunkCount */ std::max(2U, folly::Random::rand32(20, rng)),
-      /* compress */ true);
+      nimble::CompressionType::Zstd);
   ASSERT_GT(result->getStream().size(), 0);
   EXPECT_GE(data.size(), 2);
 
@@ -186,3 +189,81 @@ TEST(ChunkedStreamTests, MultiChunkWithCompression) {
     reader.reset();
   }
 }
+
+// Exercises the full write -> read round trip for every supported chunk
+// compression codec, including lz4 which routes through the encoding-level
+// compression facade rather than the tablet zstd compressor.
+class ChunkedStreamCompressionTest
+    : public ::testing::TestWithParam<nimble::CompressionType> {};
+
+TEST_P(ChunkedStreamCompressionTest, roundTripSingleChunk) {
+  const auto compressionType = GetParam();
+  uint32_t seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+
+  auto memoryPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*memoryPool};
+  auto [data, result] =
+      createChunkedStream(rng, buffer, /*chunkCount=*/1, compressionType);
+  ASSERT_GT(result->getStream().size(), 0);
+  EXPECT_EQ(data.size(), 1);
+
+  nimble::InMemoryChunkedStream reader{*memoryPool, std::move(result)};
+  // Run multiple times to verify that reset() is working.
+  for (auto i = 0; i < 3; ++i) {
+    ASSERT_TRUE(reader.hasNext());
+    EXPECT_EQ(compressionType, reader.peekCompressionType());
+    auto chunk = reader.nextChunk();
+    EXPECT_EQ(data[0], chunk);
+    EXPECT_FALSE(reader.hasNext());
+    reader.reset();
+  }
+}
+
+TEST_P(ChunkedStreamCompressionTest, roundTripMultiChunk) {
+  const auto compressionType = GetParam();
+  uint32_t seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+
+  auto memoryPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*memoryPool};
+  auto [data, result] = createChunkedStream(
+      rng,
+      buffer,
+      /* chunkCount */ std::max(2U, folly::Random::rand32(20, rng)),
+      compressionType);
+  ASSERT_GT(result->getStream().size(), 0);
+  EXPECT_GE(data.size(), 2);
+
+  nimble::InMemoryChunkedStream reader{*memoryPool, std::move(result)};
+  // Run multiple times to verify that reset() is working.
+  for (auto i = 0; i < 3; ++i) {
+    for (auto j = 0; j < data.size(); ++j) {
+      ASSERT_TRUE(reader.hasNext());
+      EXPECT_EQ(compressionType, reader.peekCompressionType());
+      auto chunk = reader.nextChunk();
+      EXPECT_EQ(data[j], chunk);
+    }
+    EXPECT_FALSE(reader.hasNext());
+    reader.reset();
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ChunkedStreamTests,
+    ChunkedStreamCompressionTest,
+    ::testing::Values(
+        nimble::CompressionType::Zstd,
+        nimble::CompressionType::Lz4),
+    [](const ::testing::TestParamInfo<nimble::CompressionType>& info) {
+      switch (info.param) {
+        case nimble::CompressionType::Zstd:
+          return "Zstd";
+        case nimble::CompressionType::Lz4:
+          return "Lz4";
+        default:
+          return "Unknown";
+      }
+    });

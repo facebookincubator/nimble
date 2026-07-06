@@ -119,9 +119,122 @@ TEST(ChunkedStreamWriterTest, zstdFallbackToUncompressed) {
   EXPECT_EQ(compressionType, nimble::CompressionType::Uncompressed);
 }
 
+TEST(ChunkedStreamWriterTest, lowAcceptRatioRejectsCompression) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+  // A tiny accept ratio demands near-total savings, so even highly compressible
+  // data is rejected and stored uncompressed.
+  nimble::CompressionParams params{
+      .type = nimble::CompressionType::Zstd,
+      .zstdLevel = 3,
+      .acceptRatio = 0.01f};
+  nimble::ChunkedStreamWriter writer{buffer, params};
+
+  std::string data(1000, 'a');
+  auto segments = writer.encode(data);
+
+  ASSERT_EQ(segments.size(), 2);
+
+  const char* pos = segments[0].data();
+  nimble::encoding::read<uint32_t>(pos); // skip size
+  auto compressionType = nimble::encoding::read<nimble::CompressionType>(pos);
+
+  EXPECT_EQ(compressionType, nimble::CompressionType::Uncompressed);
+}
+
+TEST(ChunkedStreamWriterTest, highAcceptRatioKeepsCompression) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+  // A permissive accept ratio keeps any size reduction.
+  nimble::CompressionParams params{
+      .type = nimble::CompressionType::Zstd,
+      .zstdLevel = 3,
+      .acceptRatio = 1.0f};
+  nimble::ChunkedStreamWriter writer{buffer, params};
+
+  std::string data(1000, 'a');
+  auto segments = writer.encode(data);
+
+  ASSERT_EQ(segments.size(), 2);
+
+  const char* pos = segments[0].data();
+  auto compressedSize = nimble::encoding::read<uint32_t>(pos);
+  auto compressionType = nimble::encoding::read<nimble::CompressionType>(pos);
+
+  EXPECT_EQ(compressionType, nimble::CompressionType::Zstd);
+  EXPECT_LT(compressedSize, data.size());
+}
+
+TEST(ChunkedStreamWriterTest, lz4CompressionWithCompressibleData) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+  nimble::CompressionParams params{.type = nimble::CompressionType::Lz4};
+  nimble::ChunkedStreamWriter writer{buffer, params};
+
+  // Highly compressible data: long string of repeated characters.
+  std::string data(1000, 'a');
+  auto segments = writer.encode(data);
+
+  ASSERT_EQ(segments.size(), 2);
+
+  const char* pos = segments[0].data();
+  auto compressedSize = nimble::encoding::read<uint32_t>(pos);
+  auto compressionType = nimble::encoding::read<nimble::CompressionType>(pos);
+
+  EXPECT_EQ(compressionType, nimble::CompressionType::Lz4);
+  EXPECT_LT(compressedSize, data.size());
+}
+
+TEST(ChunkedStreamWriterTest, lz4FallbackToUncompressed) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+  nimble::CompressionParams params{.type = nimble::CompressionType::Lz4};
+  nimble::ChunkedStreamWriter writer{buffer, params};
+
+  // Small random data that won't compress well.
+  std::string data;
+  data.resize(16);
+  for (int i = 0; i < 16; ++i) {
+    data[i] = static_cast<char>(i * 17 + 31);
+  }
+  auto segments = writer.encode(data);
+
+  ASSERT_EQ(segments.size(), 2);
+
+  const char* pos = segments[0].data();
+  nimble::encoding::read<uint32_t>(pos); // skip size
+  auto compressionType = nimble::encoding::read<nimble::CompressionType>(pos);
+
+  // With small incompressible data, lz4 should fall back to uncompressed.
+  EXPECT_EQ(compressionType, nimble::CompressionType::Uncompressed);
+}
+
+TEST(ChunkedStreamWriterTest, lowAcceptRatioRejectsCompressionLz4) {
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*pool};
+  // The accept ratio applies to lz4 too: a tiny ratio rejects even highly
+  // compressible data.
+  nimble::CompressionParams params{
+      .type = nimble::CompressionType::Lz4, .acceptRatio = 0.01f};
+  nimble::ChunkedStreamWriter writer{buffer, params};
+
+  std::string data(1000, 'a');
+  auto segments = writer.encode(data);
+
+  ASSERT_EQ(segments.size(), 2);
+
+  const char* pos = segments[0].data();
+  nimble::encoding::read<uint32_t>(pos); // skip size
+  auto compressionType = nimble::encoding::read<nimble::CompressionType>(pos);
+
+  EXPECT_EQ(compressionType, nimble::CompressionType::Uncompressed);
+}
+
 TEST(ChunkedStreamWriterTest, unsupportedCompressionTypeThrows) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*pool};
+  // Only Uncompressed, Zstd and Lz4 are supported; zstrong (MetaInternal) is
+  // intentionally excluded (dominated by Zstd) and must be rejected.
   nimble::CompressionParams params{
       .type = nimble::CompressionType::MetaInternal};
   NIMBLE_ASSERT_THROW(
