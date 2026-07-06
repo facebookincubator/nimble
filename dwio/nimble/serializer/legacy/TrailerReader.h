@@ -38,7 +38,7 @@ namespace facebook::nimble::serde::legacy {
 /// Fills `streamIndices` (offsets of non-zero stream slots, sorted ascending)
 /// and `streamSizes` (their byte sizes), parallel arrays of identical length.
 /// Both vectors are reusable buffers owned by the caller (e.g. members on
-/// `StreamDataReader`) to keep the per-blob hot path alloc-free across
+/// `StreamDataParser`) to keep the per-blob hot path alloc-free across
 /// invocations.
 void readLegacyTrailerStreamMetadata(
     const char* end,

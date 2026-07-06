@@ -16,6 +16,11 @@
 #include <folly/Random.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
+#include <numeric>
+#include <optional>
+#include <string_view>
 #include <thread>
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
@@ -24,7 +29,6 @@
 #include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/Serializer.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
-#include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -46,7 +50,7 @@ using namespace facebook::nimble;
 using facebook::nimble::test::makeTestTabletOptions;
 
 // Test parameters for parameterized tests.
-// For kLegacyCompact mode, we test both with and without compression to
+// For kSerialization mode, we test both with and without compression to
 // exercise the compressionOptions path in ReplayedEncodingSelectionPolicy.
 struct TestParams {
   std::optional<SerializationVersion> version;
@@ -134,7 +138,8 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
       bool enableChunking,
       EncodingType streamIdsEncodingType,
       EncodingType sizeIndicesEncodingType,
-      EncodingType uniqueSizesEncodingType);
+      EncodingType uniqueSizesEncodingType,
+      bool forceDuplicateFirstTwoStreams = false);
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -281,20 +286,19 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
           const velox::VectorPtr&,
           const velox::VectorPtr&,
           velox::vector_size_t)> validator,
+      const folly::F14FastMap<std::string, std::set<std::string>>&
+          flatMapColumns,
       size_t count) {
     SerializerOptions options{
         .compressionType = CompressionType::Zstd,
         .compressionThreshold = 32,
         .compressionLevel = 3,
         .version = version(),
+        .flatMapColumns = flatMapColumns,
         .streamIndicesEncodingType = streamSizesEncodingType(),
         .streamSizesEncodingType = streamSizesEncodingType(),
     };
     Serializer serializer{options, type, pool};
-    Deserializer deserializer{
-        SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
-        pool,
-        deserializerOptions()};
 
     velox::VectorPtr output;
     velox::VectorPtr expected;
@@ -310,7 +314,10 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
         expected->resize(oldSize + input->size());
         expected->copy(input.get(), oldSize, 0, input->size());
       }
-      if (i < count - 1 && folly::Random::oneIn(3, rng)) {
+      // FlatMap output type construction needs the final schema after key
+      // discovery across all serialized batches.
+      if (flatMapColumns.empty() && i < count - 1 &&
+          folly::Random::oneIn(3, rng)) {
         velox::BaseVector::ensureWritable(
             velox::SelectivityVector::empty(),
             expected->type(),
@@ -323,6 +330,10 @@ class SerializationTest : public ::testing::TestWithParam<TestParams> {
       for (auto& s : serialized) {
         serializedSVs.push_back(s);
       }
+      Deserializer deserializer{
+          SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+          pool,
+          deserializerOptions()};
       deserializer.deserialize(serializedSVs, output);
 
       ASSERT_EQ(output->size(), expected->size());
@@ -379,7 +390,460 @@ TEST_P(SerializationTest, fuzzSimple) {
               std::dynamic_pointer_cast<const velox::RowType>(type));
         },
         vectorEquals,
+        {},
         batches);
+  }
+}
+
+TEST_P(SerializationTest, fuzzNullableStreams) {
+  if (!isNullableFormat(version())) {
+    GTEST_SKIP()
+        << "Non-null-capable formats do not support Row/FlatMap null streams";
+  }
+
+  const char* seedEnv = std::getenv("FUZZ_SEED");
+  auto seed = seedEnv != nullptr ? static_cast<uint32_t>(std::stoul(seedEnv))
+                                 : folly::Random::rand32();
+  LOG(INFO) << "fuzzNullableStreams seed: " << seed;
+
+  const std::vector<velox::TypePtr> supportedScalarTypes = {
+      velox::BOOLEAN(),
+      velox::TINYINT(),
+      velox::SMALLINT(),
+      velox::INTEGER(),
+      velox::BIGINT(),
+      velox::REAL(),
+      velox::DOUBLE(),
+      velox::VARCHAR(),
+      velox::VARBINARY(),
+  };
+
+  folly::detail::DefaultGenerator rng{seed};
+  {
+    constexpr velox::vector_size_t kRows = 30;
+    const auto regularMapType = velox::MAP(velox::INTEGER(), velox::DOUBLE());
+    const auto intFeaturesType = velox::MAP(velox::INTEGER(), velox::DOUBLE());
+    const auto stringFeaturesType =
+        velox::MAP(velox::VARCHAR(), velox::VARCHAR());
+    const auto nestedRowType = velox::ROW({
+        {"child",
+         velox::ROW({
+             {"grandchild",
+              velox::ROW({
+                  {"flag", velox::BOOLEAN()},
+                  {"score", velox::DOUBLE()},
+              })},
+             {"labels", velox::ARRAY(velox::VARCHAR())},
+         })},
+    });
+    auto type = velox::ROW({
+        {"id", velox::BIGINT()},
+        {"regular_map", regularMapType},
+        {"int_features", intFeaturesType},
+        {"string_features", stringFeaturesType},
+        {"nested_row", nestedRowType},
+    });
+    velox::VectorFuzzer hasNulls(
+        {
+            .vectorSize = kRows,
+            .nullRatio = 0.25,
+            .useRandomNullPattern = true,
+            .stringLength = 8,
+            .stringVariableLength = false,
+            .containerLength = 5,
+            .containerVariableLength = true,
+            .normalizeMapKeys = true,
+        },
+        pool_.get(),
+        folly::Random::rand32(rng));
+    auto makeIntFeatures = [&]() -> velox::VectorPtr {
+      constexpr std::array<int32_t, 2> kKeys = {1, 2};
+      constexpr velox::vector_size_t kKeysPerRow = kKeys.size();
+      auto keys = velox::BaseVector::create(
+          velox::INTEGER(), kRows * kKeysPerRow, pool_.get());
+      auto values = velox::BaseVector::create(
+          velox::DOUBLE(), kRows * kKeysPerRow, pool_.get());
+      for (velox::vector_size_t row = 0; row < kRows; ++row) {
+        for (velox::vector_size_t keyIndex = 0; keyIndex < kKeysPerRow;
+             ++keyIndex) {
+          const auto entry = row * kKeysPerRow + keyIndex;
+          keys->asFlatVector<int32_t>()->set(entry, kKeys[keyIndex]);
+          values->asFlatVector<double>()->set(entry, row * 10 + keyIndex);
+          if ((row + keyIndex) % 7 == 0) {
+            values->setNull(entry, true);
+          }
+        }
+      }
+
+      auto offsets = velox::allocateOffsets(kRows, pool_.get());
+      auto sizes = velox::allocateSizes(kRows, pool_.get());
+      auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+      auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+      for (velox::vector_size_t row = 0; row < kRows; ++row) {
+        rawOffsets[row] = row * kKeysPerRow;
+        rawSizes[row] = kKeysPerRow;
+      }
+      auto map = std::make_shared<velox::MapVector>(
+          pool_.get(),
+          intFeaturesType,
+          nullptr,
+          kRows,
+          offsets,
+          sizes,
+          keys,
+          values);
+      map->setNull(2, true);
+      map->setNull(11, true);
+      return map;
+    };
+    auto makeStringFeatures = [&]() -> velox::VectorPtr {
+      constexpr std::array<const char*, 2> kKeys = {"a", "b"};
+      constexpr std::array<const char*, 2> kValues = {"red", "blue"};
+      constexpr velox::vector_size_t kKeysPerRow = kKeys.size();
+      auto keys = velox::BaseVector::create(
+          velox::VARCHAR(), kRows * kKeysPerRow, pool_.get());
+      auto values = velox::BaseVector::create(
+          velox::VARCHAR(), kRows * kKeysPerRow, pool_.get());
+      for (velox::vector_size_t row = 0; row < kRows; ++row) {
+        for (velox::vector_size_t keyIndex = 0; keyIndex < kKeysPerRow;
+             ++keyIndex) {
+          const auto entry = row * kKeysPerRow + keyIndex;
+          keys->asFlatVector<velox::StringView>()->set(
+              entry, velox::StringView(kKeys[keyIndex]));
+          values->asFlatVector<velox::StringView>()->set(
+              entry, velox::StringView(kValues[(row + keyIndex) % 2]));
+          if ((row + keyIndex) % 11 == 0) {
+            values->setNull(entry, true);
+          }
+        }
+      }
+
+      auto offsets = velox::allocateOffsets(kRows, pool_.get());
+      auto sizes = velox::allocateSizes(kRows, pool_.get());
+      auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+      auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+      for (velox::vector_size_t row = 0; row < kRows; ++row) {
+        rawOffsets[row] = row * kKeysPerRow;
+        rawSizes[row] = kKeysPerRow;
+      }
+      auto map = std::make_shared<velox::MapVector>(
+          pool_.get(),
+          stringFeaturesType,
+          nullptr,
+          kRows,
+          offsets,
+          sizes,
+          keys,
+          values);
+      map->setNull(5, true);
+      map->setNull(17, true);
+      return map;
+    };
+    auto generateDeterministicInput = [&]() -> velox::VectorPtr {
+      auto ids = velox::BaseVector::create(velox::BIGINT(), kRows, pool_.get());
+      for (velox::vector_size_t row = 0; row < kRows; ++row) {
+        ids->asFlatVector<int64_t>()->set(row, row);
+      }
+      ids->setNull(3, true);
+
+      auto input = std::make_shared<velox::RowVector>(
+          pool_.get(),
+          type,
+          nullptr,
+          kRows,
+          std::vector<velox::VectorPtr>{
+              ids,
+              hasNulls.fuzz(regularMapType),
+              makeIntFeatures(),
+              makeStringFeatures(),
+              hasNulls.fuzz(nestedRowType),
+          });
+      return input;
+    };
+    SCOPED_TRACE("deterministic regular map, FlatMap, and nested row");
+
+    writeAndVerify(
+        rng,
+        pool_.get(),
+        type,
+        [&](const auto&) { return generateDeterministicInput(); },
+        vectorEquals,
+        {{"int_features", {}}, {"string_features", {}}},
+        /*count=*/10);
+  }
+
+  {
+    auto nestedType = velox::ROW({
+        {"score", velox::BIGINT()},
+        {"label", velox::VARCHAR()},
+    });
+    auto type = velox::ROW({
+        {"id", velox::INTEGER()},
+        {"nested", nestedType},
+        {"events", velox::ARRAY(nestedType)},
+    });
+
+    SerializerOptions options{
+        .compressionType = CompressionType::Zstd,
+        .compressionThreshold = 32,
+        .compressionLevel = 3,
+        .version = version(),
+        .streamIndicesEncodingType = streamSizesEncodingType(),
+        .streamSizesEncodingType = streamSizesEncodingType(),
+    };
+    Serializer serializer{options, type, pool_.get()};
+    Deserializer deserializer{
+        SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+        pool_.get(),
+        deserializerOptions()};
+
+    constexpr int kMultiBatchIterations = 8;
+    constexpr int kBatches = 6;
+    for (int iteration = 0; iteration < kMultiBatchIterations; ++iteration) {
+      SCOPED_TRACE(fmt::format("multi-batch iteration {}", iteration));
+      std::vector<velox::VectorPtr> inputs;
+      std::vector<std::string> serialized;
+      inputs.reserve(kBatches);
+      serialized.reserve(kBatches);
+
+      for (int batch = 0; batch < kBatches; ++batch) {
+        velox::VectorFuzzer fuzzer(
+            {
+                .vectorSize = 5,
+                .nullRatio = batch % 2 == 0 ? 0.0 : 0.35,
+                .useRandomNullPattern = true,
+                .stringLength = 12,
+                .stringVariableLength = true,
+                .containerLength = 3,
+                .containerVariableLength = true,
+            },
+            pool_.get(),
+            folly::Random::rand32(rng));
+        auto input = fuzzer.fuzzInputRow(
+            std::dynamic_pointer_cast<const velox::RowType>(type));
+        serialized.emplace_back(
+            serializer.serialize(input, OrderedRanges::of(0, input->size())));
+        inputs.emplace_back(std::move(input));
+      }
+
+      std::vector<std::string_view> serializedViews;
+      serializedViews.reserve(serialized.size());
+      for (const auto& data : serialized) {
+        serializedViews.push_back(data);
+      }
+
+      auto expected = inputs.front();
+      for (size_t i = 1; i < inputs.size(); ++i) {
+        const auto oldSize = expected->size();
+        expected->resize(oldSize + inputs[i]->size());
+        expected->copy(inputs[i].get(), oldSize, 0, inputs[i]->size());
+      }
+
+      velox::VectorPtr output;
+      deserializer.deserialize(serializedViews, output);
+
+      ASSERT_EQ(output->size(), expected->size());
+      for (velox::vector_size_t row = 0; row < expected->size(); ++row) {
+        EXPECT_TRUE(vectorEquals(expected, output, row))
+            << "Content mismatch at row " << row
+            << "\nExpected: " << expected->toString(row)
+            << "\nActual: " << output->toString(row);
+      }
+    }
+  }
+
+  constexpr int kIterations = 8;
+  for (int i = 0; i < kIterations; ++i) {
+    velox::VectorFuzzer hasNulls(
+        {
+            .vectorSize = 12,
+            .nullRatio = 0.2,
+            .useRandomNullPattern = true,
+            .stringLength = 20,
+            .stringVariableLength = true,
+            .containerLength = 5,
+            .containerVariableLength = true,
+            .normalizeMapKeys = true,
+        },
+        pool_.get(),
+        folly::Random::rand32(rng));
+    auto type = hasNulls.randRowType(
+        supportedScalarTypes,
+        /*maxDepth=*/3);
+    SCOPED_TRACE(fmt::format("iteration {}, type {}", i, type->toString()));
+
+    writeAndVerify(
+        rng,
+        pool_.get(),
+        type,
+        [&](auto& type) {
+          return hasNulls.fuzzInputRow(
+              std::dynamic_pointer_cast<const velox::RowType>(type));
+        },
+        vectorEquals,
+        {},
+        /*count=*/4);
+  }
+}
+
+TEST_P(SerializationTest, flatMapRejectsTopLevelNullRows) {
+  if (!isNullableFormat(version())) {
+    GTEST_SKIP()
+        << "Non-null-capable formats do not support Row/FlatMap null streams";
+  }
+
+  constexpr velox::vector_size_t kRows = 4;
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  auto ids = velox::BaseVector::create(velox::BIGINT(), kRows, pool_.get());
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    ids->asFlatVector<int64_t>()->set(row, row);
+  }
+
+  auto offsets = velox::allocateOffsets(kRows, pool_.get());
+  auto sizes = velox::allocateSizes(kRows, pool_.get());
+  auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+  auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    rawOffsets[row] = row;
+    rawSizes[row] = 1;
+  }
+  auto keys = velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+  auto values = velox::BaseVector::create(velox::DOUBLE(), kRows, pool_.get());
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    keys->asFlatVector<int32_t>()->set(row, 10 + row);
+    values->asFlatVector<double>()->set(row, row * 1.5);
+  }
+  auto features = std::make_shared<velox::MapVector>(
+      pool_.get(),
+      type->childAt(1),
+      nullptr,
+      kRows,
+      offsets,
+      sizes,
+      keys,
+      values);
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      kRows,
+      std::vector<velox::VectorPtr>{ids, features});
+  input->setNull(2, true);
+
+  SerializerOptions options{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+      .streamIndicesEncodingType = streamSizesEncodingType(),
+      .streamSizesEncodingType = streamSizesEncodingType(),
+  };
+  Serializer serializer{options, type, pool_.get()};
+
+  NIMBLE_ASSERT_THROW(
+      serializer.serialize(input, OrderedRanges::of(0, kRows)),
+      "Top-level row nulls are not supported when serializing FlatMap columns.");
+}
+
+TEST_P(SerializationTest, flatMapWithNestedNullsRoundTrips) {
+  if (!isNullableFormat(version())) {
+    GTEST_SKIP()
+        << "Non-null-capable formats do not support Row/FlatMap null streams";
+  }
+
+  constexpr velox::vector_size_t kRows = 4;
+  constexpr velox::vector_size_t kKeysPerRow = 2;
+  auto type = velox::ROW({
+      {"id", velox::BIGINT()},
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+      {"nested", velox::ROW({{"score", velox::DOUBLE()}})},
+  });
+
+  auto ids = velox::BaseVector::create(velox::BIGINT(), kRows, pool_.get());
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    ids->asFlatVector<int64_t>()->set(row, row);
+  }
+
+  auto offsets = velox::allocateOffsets(kRows, pool_.get());
+  auto sizes = velox::allocateSizes(kRows, pool_.get());
+  auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+  auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    rawOffsets[row] = row * kKeysPerRow;
+    rawSizes[row] = kKeysPerRow;
+  }
+
+  auto keys = velox::BaseVector::create(
+      velox::INTEGER(), kRows * kKeysPerRow, pool_.get());
+  auto values = velox::BaseVector::create(
+      velox::DOUBLE(), kRows * kKeysPerRow, pool_.get());
+  for (velox::vector_size_t entry = 0; entry < kRows * kKeysPerRow; ++entry) {
+    keys->asFlatVector<int32_t>()->set(entry, entry % kKeysPerRow);
+    values->asFlatVector<double>()->set(entry, entry * 1.25);
+  }
+  values->setNull(3, true);
+  auto features = std::make_shared<velox::MapVector>(
+      pool_.get(),
+      type->childAt(1),
+      nullptr,
+      kRows,
+      offsets,
+      sizes,
+      keys,
+      values);
+  features->setNull(1, true);
+
+  auto scores = velox::BaseVector::create(velox::DOUBLE(), kRows, pool_.get());
+  for (velox::vector_size_t row = 0; row < kRows; ++row) {
+    scores->asFlatVector<double>()->set(row, row * 2.0);
+  }
+  auto nested = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type->childAt(2),
+      nullptr,
+      kRows,
+      std::vector<velox::VectorPtr>{scores});
+  nested->setNull(2, true);
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      kRows,
+      std::vector<velox::VectorPtr>{ids, features, nested});
+
+  SerializerOptions options{
+      .compressionType = CompressionType::Zstd,
+      .compressionThreshold = 32,
+      .compressionLevel = 3,
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+      .streamIndicesEncodingType = streamSizesEncodingType(),
+      .streamSizesEncodingType = streamSizesEncodingType(),
+  };
+  Serializer serializer{options, type, pool_.get()};
+  auto serialized = std::string(
+      serializer.serialize(input, OrderedRanges::of(0, input->size())));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserializerOptions()};
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t row = 0; row < input->size(); ++row) {
+    ASSERT_TRUE(vectorEquals(output, input, row))
+        << "Content mismatch at row " << row
+        << "\nReference: " << input->toString(row)
+        << "\nResult: " << output->toString(row);
   }
 }
 
@@ -549,6 +1013,9 @@ std::string formatName(const ::testing::TestParamInfo<TestParams>& info) {
       case SerializationVersion::kProjection:
         name = "ProjectionFormat";
         break;
+      case SerializationVersion::kLegacySerialization:
+        name = "LegacySerializationFormat";
+        break;
     }
   }
   // Add compression suffix for encoding modes.
@@ -615,7 +1082,8 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
     bool enableChunking,
     EncodingType streamIdsEncodingType,
     EncodingType sizeIndicesEncodingType,
-    EncodingType uniqueSizesEncodingType) {
+    EncodingType uniqueSizesEncodingType,
+    bool forceDuplicateFirstTwoStreams) {
   // Write all inputs to a single Nimble file.
   std::string fileData;
   {
@@ -665,6 +1133,24 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
         headerIOBuf.length());
 
     auto streams = collectTabletStreams(streamOffsets, streamLoaders);
+    if (forceDuplicateFirstTwoStreams) {
+      std::optional<std::string_view> firstNonEmptyStream;
+      bool duplicated = false;
+      for (auto& stream : streams) {
+        if (stream.data.empty()) {
+          continue;
+        }
+        if (!firstNonEmptyStream.has_value()) {
+          firstNonEmptyStream = stream.data;
+          continue;
+        }
+        stream.data = *firstNonEmptyStream;
+        duplicated = true;
+        break;
+      }
+      EXPECT_TRUE(duplicated) << "Expected at least two non-empty streams";
+    }
+
     std::string assembled;
     assembled.reserve(headerBuf.size());
     assembled.append(headerBuf);
@@ -861,6 +1347,7 @@ TEST_P(SerializationTest, fuzzComplex) {
               std::dynamic_pointer_cast<const velox::RowType>(type));
         },
         vectorEquals,
+        {},
         batches);
   }
 }
@@ -894,6 +1381,7 @@ TEST_P(SerializationTest, rootNotRow) {
         type,
         [&](auto& type) { return noNulls.fuzz(type); },
         vectorEquals,
+        {},
         batches);
   }
 }
@@ -1608,29 +2096,49 @@ TEST_P(SerializationTest, nestedFlatMapWithVaryingInnerKeys) {
   }
 }
 
-TEST_P(SerializationTest, nullsNotSupported) {
-  // Test that the serializer throws when input has nulls.
-  // The serializer currently does not support null values.
-
+TEST_P(SerializationTest, nullableStreamsRoundTrip) {
   auto seed = folly::Random::rand32();
-  LOG(INFO) << "nullsNotSupported seed: " << seed;
+  LOG(INFO) << "nullableStreamsRoundTrip seed: " << seed;
 
-  // Test 1: Top-level row with null.
-  {
-    auto type =
-        velox::ROW({{"id", velox::BIGINT()}, {"value", velox::DOUBLE()}});
-    auto row = velox::BaseVector::create(type, 10, pool_.get());
-    row->setNull(5, true); // Set one row as null
+  const folly::F14FastMap<std::string, std::set<std::string>> noFlatMaps;
+  auto roundTrip =
+      [&](const velox::TypePtr& type,
+          const velox::VectorPtr& row,
+          const folly::F14FastMap<std::string, std::set<std::string>>&
+              flatMapColumns) {
+        SerializerOptions options{
+            .compressionType = CompressionType::Zstd,
+            .compressionThreshold = 32,
+            .compressionLevel = 3,
+            .version = version(),
+            .flatMapColumns = flatMapColumns,
+            .streamIndicesEncodingType = streamSizesEncodingType(),
+            .streamSizesEncodingType = streamSizesEncodingType(),
+        };
+        Serializer serializer{options, type, pool_.get()};
+        auto serialized =
+            serializer.serialize(row, OrderedRanges::of(0, row->size()));
 
-    SerializerOptions options{.version = version()};
-    Serializer serializer{options, type, pool_.get()};
+        Deserializer deserializer{
+            SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+            pool_.get(),
+            deserializerOptions()};
 
-    NIMBLE_ASSERT_THROW(
-        serializer.serialize(row, OrderedRanges::of(0, row->size())),
-        "nulls not supported");
-  }
+        velox::VectorPtr output;
+        deserializer.deserialize(serialized, output);
+        ASSERT_EQ(output->size(), row->size());
+        for (velox::vector_size_t i = 0; i < row->size(); ++i) {
+          ASSERT_TRUE(vectorEquals(output, row, i))
+              << "Content mismatch at row " << i
+              << "\nExpected: " << row->toString(i)
+              << "\nActual: " << output->toString(i);
+        }
+      };
 
-  // Test 2: Nested column with null.
+  const bool encodingEnabled =
+      SerializerOptions{.version = version()}.enableEncoding();
+
+  // Nested scalar content nulls require the encoded serializer format.
   {
     auto type =
         velox::ROW({{"id", velox::BIGINT()}, {"value", velox::DOUBLE()}});
@@ -1649,21 +2157,26 @@ TEST_P(SerializationTest, nullsNotSupported) {
         10,
         std::vector<velox::VectorPtr>{ids, values});
 
-    SerializerOptions options{.version = version()};
-    Serializer serializer{options, type, pool_.get()};
-
-    NIMBLE_ASSERT_THROW(
-        serializer.serialize(row, OrderedRanges::of(0, row->size())),
-        "nulls not supported");
+    if (encodingEnabled) {
+      roundTrip(type, row, noFlatMaps);
+    } else {
+      SerializerOptions options{.version = version()};
+      Serializer serializer{options, type, pool_.get()};
+      NIMBLE_ASSERT_THROW(
+          serializer.serialize(row, OrderedRanges::of(0, row->size())),
+          "nullable content streams require an encoded serializer format");
+    }
   }
 
-  // Test 3: Map with null key/value.
-  {
-    auto type = velox::ROW({
-        {"id", velox::BIGINT()},
-        {"map_col", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
-    });
+  if (!encodingEnabled) {
+    return;
+  }
 
+  // Map value nulls are encoded as nullable content streams.
+  {
+    auto type = velox::ROW(
+        {{"id", velox::BIGINT()},
+         {"map_col", velox::MAP(velox::INTEGER(), velox::DOUBLE())}});
     const velox::vector_size_t numRows = 5;
     const velox::vector_size_t entriesPerRow = 3;
     const velox::vector_size_t totalEntries = numRows * entriesPerRow;
@@ -1709,21 +2222,14 @@ TEST_P(SerializationTest, nullsNotSupported) {
         numRows,
         std::vector<velox::VectorPtr>{ids, mapVector});
 
-    SerializerOptions options{.version = version()};
-    Serializer serializer{options, type, pool_.get()};
-
-    NIMBLE_ASSERT_THROW(
-        serializer.serialize(row, OrderedRanges::of(0, row->size())),
-        "nulls not supported");
+    roundTrip(type, row, noFlatMaps);
   }
 
-  // Test 4: FlatMap with null value (only for kLegacyCompact format).
-  if (SerializerOptions{.version = version()}.enableEncoding()) {
-    auto type = velox::ROW({
-        {"id", velox::BIGINT()},
-        {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
-    });
-
+  // FlatMap value nulls exercise nullable decoding through scatterBitmap.
+  {
+    auto type = velox::ROW(
+        {{"id", velox::BIGINT()},
+         {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())}});
     const velox::vector_size_t numRows = 5;
     const velox::vector_size_t entriesPerRow = 2;
     const velox::vector_size_t totalEntries = numRows * entriesPerRow;
@@ -1741,7 +2247,7 @@ TEST_P(SerializationTest, nullsNotSupported) {
       mapKeys->asFlatVector<int32_t>()->set(i, i % entriesPerRow);
       mapValues->asFlatVector<double>()->set(i, i * 0.5);
     }
-    mapValues->setNull(3, true); // Set one FlatMap value as null
+    mapValues->setNull(3, true);
 
     auto mapVector = std::make_shared<velox::MapVector>(
         pool_.get(),
@@ -1769,15 +2275,671 @@ TEST_P(SerializationTest, nullsNotSupported) {
         numRows,
         std::vector<velox::VectorPtr>{ids, mapVector});
 
+    roundTrip(type, row, {{"features", {}}});
+  }
+}
+
+TEST_F(SerializationTest, rowNullStreamOmissionRoundTrips) {
+  constexpr velox::vector_size_t kRows = 8;
+  auto nestedType = velox::ROW({{"value", velox::INTEGER()}});
+  auto type = velox::ROW({{"nested", nestedType}});
+
+  auto makeRow = [&](bool allNull) -> velox::VectorPtr {
+    auto values =
+        velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      values->asFlatVector<int32_t>()->set(i, i);
+    }
+
+    auto nested = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        nestedType,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{values});
+    if (allNull) {
+      for (velox::vector_size_t i = 0; i < kRows; ++i) {
+        nested->setNull(i, true);
+      }
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{nested});
+  };
+
+  auto serializeAndVerify = [&](bool allNull, bool expectNestedNullStream) {
     SerializerOptions options{
-        .version = version(),
-        .flatMapColumns = {{"features", {}}},
+        .version = SerializationVersion::kSerialization,
+        .streamIndicesEncodingType = EncodingType::Trivial,
+        .streamSizesEncodingType = EncodingType::Trivial,
     };
     Serializer serializer{options, type, pool_.get()};
+    auto row = makeRow(allNull);
+    const std::string serialized{
+        serializer.serialize(row, OrderedRanges::of(0, row->size()))};
+    const auto schema =
+        SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+    const auto rootNullOffset = schema->asRow().nullsDescriptor().offset();
+    const auto nestedNullOffset =
+        schema->asRow().childAt(0)->asRow().nullsDescriptor().offset();
 
-    NIMBLE_ASSERT_THROW(
-        serializer.serialize(row, OrderedRanges::of(0, row->size())),
-        "nulls not supported");
+    DeserializerOptions deserializerOptions{.hasHeader = true};
+    serde::StreamDataParser reader{pool_.get(), deserializerOptions};
+    reader.initialize(serialized);
+
+    bool sawRootNullStream = false;
+    bool sawNestedNullStream = false;
+    reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
+      if (offset == rootNullOffset) {
+        sawRootNullStream = true;
+        EXPECT_FALSE(streamData.empty());
+        return;
+      }
+      if (offset == nestedNullOffset) {
+        sawNestedNullStream = true;
+        EXPECT_FALSE(streamData.empty());
+      }
+    });
+
+    EXPECT_FALSE(sawRootNullStream);
+    EXPECT_EQ(sawNestedNullStream, expectNestedNullStream);
+
+    Deserializer deserializer{schema, pool_.get(), deserializerOptions};
+    velox::VectorPtr output;
+    deserializer.deserialize(serialized, output);
+
+    ASSERT_EQ(output->size(), row->size());
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      EXPECT_TRUE(vectorEquals(row, output, i));
+    }
+  };
+  serializeAndVerify(/*allNull=*/false, /*expectNestedNullStream=*/false);
+  serializeAndVerify(/*allNull=*/true, /*expectNestedNullStream=*/true);
+}
+
+TEST_F(SerializationTest, encodedSerializerRoundTripsTopLevelRowNulls) {
+  constexpr velox::vector_size_t kRows = 6;
+  auto type = velox::ROW({
+      {"id", velox::INTEGER()},
+      {"score", velox::DOUBLE()},
+  });
+
+  auto makeInput = [&]() -> velox::VectorPtr {
+    auto ids = velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+    auto scores =
+        velox::BaseVector::create(velox::DOUBLE(), kRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      ids->asFlatVector<int32_t>()->set(i, 100 + i);
+      scores->asFlatVector<double>()->set(i, i * 1.25);
+    }
+
+    auto input = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{ids, scores});
+    input->setNull(1, true);
+    input->setNull(4, true);
+    return input;
+  };
+
+  SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+  Serializer serializer{options, type, pool_.get()};
+  auto input = makeInput();
+  const auto serialized =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  const auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  const auto rootNullOffset = schema->asRow().nullsDescriptor().offset();
+  DeserializerOptions deserializerOptions{.hasHeader = true};
+  serde::StreamDataParser reader{pool_.get(), deserializerOptions};
+  reader.initialize(serialized);
+  bool sawRootNullStream = false;
+  reader.iterateStreams([&](uint32_t offset, std::string_view streamData) {
+    if (offset == rootNullOffset) {
+      sawRootNullStream = true;
+      EXPECT_FALSE(streamData.empty());
+    }
+  });
+  EXPECT_TRUE(sawRootNullStream);
+
+  Deserializer deserializer{schema, pool_.get(), deserializerOptions};
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    EXPECT_TRUE(vectorEquals(input, output, i));
+  }
+}
+
+TEST_F(SerializationTest, regularDataNullsDoNotRequireNullBarrier) {
+  constexpr velox::vector_size_t kRows = 3;
+  auto type = velox::ROW({
+      {"scalar", velox::INTEGER()},
+      {"items", velox::ARRAY(velox::INTEGER())},
+      {"attrs", velox::MAP(velox::VARCHAR(), velox::INTEGER())},
+  });
+
+  auto scalar = velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    scalar->asFlatVector<int32_t>()->set(i, 10 + i);
+  }
+  scalar->setNull(0, true);
+
+  auto arrayOffsets = velox::allocateOffsets(kRows, pool_.get());
+  auto arraySizes = velox::allocateSizes(kRows, pool_.get());
+  auto* rawArrayOffsets = arrayOffsets->asMutable<velox::vector_size_t>();
+  auto* rawArraySizes = arraySizes->asMutable<velox::vector_size_t>();
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    rawArrayOffsets[i] = i * 2;
+    rawArraySizes[i] = 2;
+  }
+  auto arrayElements =
+      velox::BaseVector::create(velox::INTEGER(), kRows * 2, pool_.get());
+  for (velox::vector_size_t i = 0; i < kRows * 2; ++i) {
+    arrayElements->asFlatVector<int32_t>()->set(i, 100 + i);
+  }
+  auto items = std::make_shared<velox::ArrayVector>(
+      pool_.get(),
+      velox::ARRAY(velox::INTEGER()),
+      nullptr,
+      kRows,
+      arrayOffsets,
+      arraySizes,
+      arrayElements);
+  items->setNull(1, true);
+
+  auto mapOffsets = velox::allocateOffsets(kRows, pool_.get());
+  auto mapSizes = velox::allocateSizes(kRows, pool_.get());
+  auto* rawMapOffsets = mapOffsets->asMutable<velox::vector_size_t>();
+  auto* rawMapSizes = mapSizes->asMutable<velox::vector_size_t>();
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    rawMapOffsets[i] = i;
+    rawMapSizes[i] = 1;
+  }
+  auto mapKeys =
+      velox::BaseVector::create(velox::VARCHAR(), kRows, pool_.get());
+  auto mapValues =
+      velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+  const std::array<const char*, kRows> mapKeyValues = {"a", "b", "c"};
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    mapKeys->asFlatVector<velox::StringView>()->set(
+        i, velox::StringView(mapKeyValues[i]));
+    mapValues->asFlatVector<int32_t>()->set(i, 200 + i);
+  }
+  auto attrs = std::make_shared<velox::MapVector>(
+      pool_.get(),
+      velox::MAP(velox::VARCHAR(), velox::INTEGER()),
+      nullptr,
+      kRows,
+      mapOffsets,
+      mapSizes,
+      mapKeys,
+      mapValues);
+  attrs->setNull(2, true);
+
+  auto input = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      kRows,
+      std::vector<velox::VectorPtr>{scalar, items, attrs});
+
+  SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+  Serializer serializer{options, type, pool_.get()};
+  const std::string serialized{
+      serializer.serialize(input, OrderedRanges::of(0, input->size()))};
+
+  const char* pos = serialized.data();
+  const auto header = serde::readSerializationHeader(
+      pos, serialized.data() + serialized.size(), true);
+  EXPECT_FALSE(header.requiresNullBarrier);
+
+  const auto schema =
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes());
+  Deserializer deserializer{
+      schema, pool_.get(), DeserializerOptions{.hasHeader = true}};
+  velox::VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    EXPECT_TRUE(vectorEquals(input, output, i));
+  }
+}
+
+TEST_F(SerializationTest, deserializerReadsPhysicalRootNullStream) {
+  constexpr size_t kRows = 3;
+  auto type = velox::ROW({{"value", velox::INTEGER()}});
+  auto schema = convertToNimbleType(*type);
+  const auto rootNullOffset = schema->asRow().nullsDescriptor().offset();
+  const auto valueOffset =
+      schema->asRow().childAt(0)->asScalar().scalarDescriptor().offset();
+
+  const std::array<int32_t, kRows> allValues = {11, 22, 33};
+  const std::array<int32_t, 2> nonNullValues = {11, 33};
+  const SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+
+  auto makeSerialized = [&](const std::array<bool, kRows>& rootNonNulls,
+                            std::string_view valueData) -> std::string {
+    Buffer rootBuffer{*pool_};
+    const std::string_view rootData{
+        reinterpret_cast<const char*>(rootNonNulls.data()),
+        rootNonNulls.size() * sizeof(bool)};
+    std::string rootEncoded{serde::detail::encodeScalar<std::string>(
+        options,
+        ScalarKind::Bool,
+        rootData,
+        *pool_,
+        rootBuffer,
+        /*encodingLayout=*/nullptr)};
+
+    Buffer valueBuffer{*pool_};
+    std::string valueEncoded{serde::detail::encodeScalar<std::string>(
+        options,
+        ScalarKind::Int32,
+        valueData,
+        *pool_,
+        valueBuffer,
+        /*encodingLayout=*/nullptr)};
+
+    std::vector<std::pair<uint32_t, std::string>> streams;
+    streams.emplace_back(rootNullOffset, std::move(rootEncoded));
+    streams.emplace_back(valueOffset, std::move(valueEncoded));
+    std::sort(streams.begin(), streams.end());
+
+    std::string serialized;
+    const auto flagsOffset = serde::writeSerializationHeader(
+        serialized, SerializationVersion::kSerialization, kRows);
+    const bool requiresNullBarrier = !std::all_of(
+        rootNonNulls.begin(), rootNonNulls.end(), [](bool nonNull) {
+          return nonNull;
+        });
+    NIMBLE_CHECK_LT(
+        flagsOffset, serialized.size(), "Invalid flags byte offset");
+    serialized[flagsOffset] = static_cast<char>(
+        requiresNullBarrier
+            ? serde::SerializationHeader::kNullBarrierRequiredFlag
+            : 0);
+    std::vector<uint32_t> streamSizes(streams.back().first + 1, 0);
+    for (const auto& [offset, stream] : streams) {
+      streamSizes[offset] = static_cast<uint32_t>(stream.size());
+      serialized.append(stream);
+    }
+    serde::detail::writeTrailer(
+        streamSizes, EncodingType::Trivial, EncodingType::Trivial, serialized);
+    return serialized;
+  };
+
+  DeserializerOptions deserializerOptions{.hasHeader = true};
+  Deserializer deserializer{schema, pool_.get(), deserializerOptions};
+
+  velox::VectorPtr output;
+  const std::string_view allValueData{
+      reinterpret_cast<const char*>(allValues.data()),
+      allValues.size() * sizeof(int32_t)};
+  deserializer.deserialize(
+      makeSerialized({true, true, true}, allValueData), output);
+  ASSERT_NE(output, nullptr);
+  ASSERT_EQ(output->size(), kRows);
+  auto* row = output->as<velox::RowVector>();
+  ASSERT_NE(row, nullptr);
+  auto* valueVector = row->childAt(0)->as<velox::FlatVector<int32_t>>();
+  ASSERT_NE(valueVector, nullptr);
+  for (velox::vector_size_t i = 0; i < kRows; ++i) {
+    EXPECT_EQ(valueVector->valueAt(i), allValues[i]);
+  }
+
+  velox::VectorPtr nullableOutput;
+  const std::string_view nonNullValueData{
+      reinterpret_cast<const char*>(nonNullValues.data()),
+      nonNullValues.size() * sizeof(int32_t)};
+  deserializer.deserialize(
+      makeSerialized({true, false, true}, nonNullValueData), nullableOutput);
+  ASSERT_NE(nullableOutput, nullptr);
+  ASSERT_EQ(nullableOutput->size(), kRows);
+  EXPECT_FALSE(nullableOutput->isNullAt(0));
+  EXPECT_TRUE(nullableOutput->isNullAt(1));
+  EXPECT_FALSE(nullableOutput->isNullAt(2));
+  auto* nullableRow = nullableOutput->as<velox::RowVector>();
+  ASSERT_NE(nullableRow, nullptr);
+  auto* nullableValues =
+      nullableRow->childAt(0)->as<velox::FlatVector<int32_t>>();
+  ASSERT_NE(nullableValues, nullptr);
+  EXPECT_EQ(nullableValues->valueAt(0), nonNullValues[0]);
+  EXPECT_EQ(nullableValues->valueAt(2), nonNullValues[1]);
+}
+
+TEST_F(
+    SerializationTest,
+    encodedSerializerNullableContentNullBitmapAcrossBatches) {
+  constexpr velox::vector_size_t kRows = 4;
+  auto type = velox::ROW({{"value", velox::INTEGER()}});
+
+  SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+  Serializer serializer{options, type, pool_.get()};
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      DeserializerOptions{.hasHeader = true}};
+
+  auto makeInput = [&](int32_t base,
+                       const std::vector<velox::vector_size_t>& nullRows)
+      -> velox::VectorPtr {
+    auto values =
+        velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      values->asFlatVector<int32_t>()->set(i, base + i);
+    }
+    for (auto row : nullRows) {
+      values->setNull(row, true);
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{values});
+  };
+
+  std::vector<velox::VectorPtr> inputs = {
+      makeInput(100, {}),
+      makeInput(200, {1, 3}),
+      makeInput(300, {}),
+      makeInput(400, {0}),
+      makeInput(500, {}),
+      makeInput(600, {0, 1, 2, 3}),
+      makeInput(700, {}),
+  };
+
+  std::vector<std::string> serialized;
+  serialized.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    serialized.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+  }
+  std::vector<std::string_view> serializedViews;
+  serializedViews.reserve(serialized.size());
+  for (const auto& data : serialized) {
+    serializedViews.push_back(data);
+  }
+
+  auto expected = inputs.front();
+  for (size_t i = 1; i < inputs.size(); ++i) {
+    const auto oldSize = expected->size();
+    expected->resize(oldSize + inputs[i]->size());
+    expected->copy(inputs[i].get(), oldSize, 0, inputs[i]->size());
+  }
+
+  velox::VectorPtr output;
+  deserializer.deserialize(serializedViews, output);
+
+  ASSERT_EQ(output->size(), expected->size());
+  for (velox::vector_size_t i = 0; i < expected->size(); ++i) {
+    EXPECT_TRUE(vectorEquals(expected, output, i))
+        << "Content mismatch at row " << i
+        << "\nExpected: " << expected->toString(i)
+        << "\nActual: " << output->toString(i);
+  }
+}
+
+TEST_F(SerializationTest, encodedSerializerNestedRowNullsAcrossBatches) {
+  constexpr velox::vector_size_t kRows = 5;
+  auto nestedType = velox::ROW({{"score", velox::BIGINT()}});
+  auto type = velox::ROW({
+      {"id", velox::INTEGER()},
+      {"nested", nestedType},
+  });
+
+  SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+  Serializer serializer{options, type, pool_.get()};
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      DeserializerOptions{.hasHeader = true}};
+
+  auto makeInput = [&](int32_t idBase,
+                       const std::vector<velox::vector_size_t>& nestedNullRows)
+      -> velox::VectorPtr {
+    auto ids = velox::BaseVector::create(velox::INTEGER(), kRows, pool_.get());
+    auto scores =
+        velox::BaseVector::create(velox::BIGINT(), kRows, pool_.get());
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      ids->asFlatVector<int32_t>()->set(i, idBase + i);
+      scores->asFlatVector<int64_t>()->set(i, (idBase + i) * 10);
+    }
+
+    auto nested = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        nestedType,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{scores});
+    for (auto row : nestedNullRows) {
+      nested->setNull(row, true);
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{ids, nested});
+  };
+
+  struct TestCase {
+    std::string name;
+    std::vector<velox::vector_size_t> firstBatchNullRows;
+    std::vector<velox::vector_size_t> secondBatchNullRows;
+  };
+
+  const std::vector<TestCase> testCases = {
+      {
+          .name = "gap before nested null stream",
+          .firstBatchNullRows = {},
+          .secondBatchNullRows = {1, 3},
+      },
+      {
+          .name = "gap after nested null stream",
+          .firstBatchNullRows = {0, 2},
+          .secondBatchNullRows = {},
+      },
+      {
+          .name = "nested null stream missing from all batches",
+          .firstBatchNullRows = {},
+          .secondBatchNullRows = {},
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    auto first = makeInput(100, testCase.firstBatchNullRows);
+    auto second = makeInput(200, testCase.secondBatchNullRows);
+    std::vector<std::string> serialized;
+    serialized.emplace_back(
+        serializer.serialize(first, OrderedRanges::of(0, first->size())));
+    serialized.emplace_back(
+        serializer.serialize(second, OrderedRanges::of(0, second->size())));
+    std::vector<std::string_view> serializedViews;
+    serializedViews.reserve(serialized.size());
+    for (const auto& data : serialized) {
+      serializedViews.push_back(data);
+    }
+
+    auto expected = first;
+    const auto firstRows = first->size();
+    expected->resize(firstRows + second->size());
+    expected->copy(second.get(), firstRows, 0, second->size());
+
+    velox::VectorPtr output;
+    deserializer.deserialize(serializedViews, output);
+
+    ASSERT_EQ(output->size(), expected->size());
+    for (velox::vector_size_t i = 0; i < expected->size(); ++i) {
+      EXPECT_TRUE(vectorEquals(expected, output, i))
+          << "Content mismatch at row " << i
+          << "\nExpected: " << expected->toString(i)
+          << "\nActual: " << output->toString(i);
+    }
+  }
+}
+
+TEST_F(
+    SerializationTest,
+    encodedSerializerNestedRowNullsUnderArrayAcrossBatches) {
+  constexpr velox::vector_size_t kRows = 2;
+  auto nestedType = velox::ROW({{"score", velox::BIGINT()}});
+  auto type = velox::ROW({
+      {"events", velox::ARRAY(nestedType)},
+  });
+
+  SerializerOptions options{
+      .version = SerializationVersion::kSerialization,
+      .streamIndicesEncodingType = EncodingType::Trivial,
+      .streamSizesEncodingType = EncodingType::Trivial,
+  };
+  Serializer serializer{options, type, pool_.get()};
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      DeserializerOptions{.hasHeader = true}};
+
+  auto makeInput = [&](int64_t scoreBase,
+                       const std::array<velox::vector_size_t, kRows>& sizes,
+                       const std::vector<velox::vector_size_t>& nullElements)
+      -> velox::VectorPtr {
+    const velox::vector_size_t totalElements =
+        std::accumulate(sizes.begin(), sizes.end(), velox::vector_size_t{0});
+    auto scores =
+        velox::BaseVector::create(velox::BIGINT(), totalElements, pool_.get());
+    for (velox::vector_size_t i = 0; i < totalElements; ++i) {
+      scores->asFlatVector<int64_t>()->set(i, scoreBase + i);
+    }
+
+    auto nested = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        nestedType,
+        nullptr,
+        totalElements,
+        std::vector<velox::VectorPtr>{scores});
+    for (auto element : nullElements) {
+      nested->setNull(element, true);
+    }
+
+    auto offsets = velox::allocateOffsets(kRows, pool_.get());
+    auto arraySizes = velox::allocateSizes(kRows, pool_.get());
+    auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+    auto* rawSizes = arraySizes->asMutable<velox::vector_size_t>();
+    velox::vector_size_t runningOffset = 0;
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      rawOffsets[i] = runningOffset;
+      rawSizes[i] = sizes[i];
+      runningOffset += sizes[i];
+    }
+
+    auto events = std::make_shared<velox::ArrayVector>(
+        pool_.get(),
+        velox::ARRAY(nestedType),
+        nullptr,
+        kRows,
+        offsets,
+        arraySizes,
+        nested);
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{events});
+  };
+
+  struct TestCase {
+    std::string name;
+    std::vector<velox::vector_size_t> firstBatchNullElements;
+    std::vector<velox::vector_size_t> secondBatchNullElements;
+  };
+
+  const std::array<velox::vector_size_t, kRows> firstBatchSizes = {1, 1};
+  const std::array<velox::vector_size_t, kRows> secondBatchSizes = {2, 1};
+  const std::vector<TestCase> testCases = {
+      {
+          .name = "gap before nested array row null stream",
+          .firstBatchNullElements = {},
+          .secondBatchNullElements = {1},
+      },
+      {
+          .name = "gap after nested array row null stream",
+          .firstBatchNullElements = {0},
+          .secondBatchNullElements = {},
+      },
+      {
+          .name = "nested array row null stream all true in all batches",
+          .firstBatchNullElements = {},
+          .secondBatchNullElements = {},
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+    auto first =
+        makeInput(100, firstBatchSizes, testCase.firstBatchNullElements);
+    auto second =
+        makeInput(200, secondBatchSizes, testCase.secondBatchNullElements);
+
+    std::vector<std::string> serialized;
+    serialized.emplace_back(
+        serializer.serialize(first, OrderedRanges::of(0, first->size())));
+    serialized.emplace_back(
+        serializer.serialize(second, OrderedRanges::of(0, second->size())));
+    std::vector<std::string_view> serializedViews;
+    serializedViews.reserve(serialized.size());
+    for (const auto& data : serialized) {
+      serializedViews.push_back(data);
+    }
+
+    auto expected = first;
+    const auto firstRows = first->size();
+    expected->resize(firstRows + second->size());
+    expected->copy(second.get(), firstRows, 0, second->size());
+
+    velox::VectorPtr output;
+    deserializer.deserialize(serializedViews, output);
+
+    ASSERT_EQ(output->size(), expected->size());
+    for (velox::vector_size_t i = 0; i < expected->size(); ++i) {
+      EXPECT_TRUE(vectorEquals(expected, output, i))
+          << "Content mismatch at row " << i
+          << "\nExpected: " << expected->toString(i)
+          << "\nActual: " << output->toString(i);
+    }
   }
 }
 
@@ -1916,59 +3078,99 @@ TEST_P(SerializationTest, flatMapSparseKeysScatterBitmap) {
   }
 }
 
-TEST_P(SerializationTest, versionMismatch) {
-  // Test that deserializing with wrong version fails with a clear error.
-  auto type = velox::ROW({
-      {"int_val", velox::INTEGER()},
-      {"string_val", velox::VARCHAR()},
-  });
-
-  velox::VectorFuzzer fuzzer(
-      {
-          .vectorSize = 10,
-          .nullRatio = 0,
-          .stringLength = 10,
-      },
-      pool_.get());
-
-  auto input = fuzzer.fuzzInputRow(
-      std::dynamic_pointer_cast<const velox::RowType>(type));
-
-  // Serialize with dense format (no version header).
+TEST_P(SerializationTest, deserializeRejectsEmptyBatchList) {
+  auto type = velox::ROW({{"int_val", velox::INTEGER()}});
   SerializerOptions serializerOptions{};
   Serializer serializer{serializerOptions, type, pool_.get()};
-  auto serialized =
-      serializer.serialize(input, OrderedRanges::of(0, input->size()));
-
-  // Try to deserialize with kLegacyCompact (expects version header).
-  // The first byte is rowCount (not version), so it will be read as version
-  // and fail the version check.
   Deserializer deserializer{
       SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
-      pool_.get(),
-      DeserializerOptions{.hasHeader = true}};
+      pool_.get()};
 
   velox::VectorPtr output;
   NIMBLE_ASSERT_THROW(
-      deserializer.deserialize(serialized, output), "Unsupported version");
+      deserializer.deserialize(std::vector<std::string_view>{}, output),
+      "Expected at least one serialized batch");
 }
 
-TEST_P(SerializationTest, tabletVersionRejected) {
+TEST_P(SerializationTest, unsupportedWriterVersionsRejected) {
   auto type = velox::ROW({{"int_val", velox::INTEGER()}});
-  SerializerOptions options{.version = SerializationVersion::kTablet};
-  NIMBLE_ASSERT_THROW(
-      Serializer(options, type, pool_.get()),
-      "kTablet is not supported by the serializer");
+  struct TestCase {
+    SerializationVersion version;
+    std::string_view expectedMessage;
+  };
+
+  const std::vector<TestCase> testCases{
+      TestCase{
+          .version = SerializationVersion::kProjection,
+          .expectedMessage =
+              "Serializer writes must use kLegacy or kSerialization"},
+      TestCase{
+          .version = SerializationVersion::kTablet,
+          .expectedMessage =
+              "Serializer writes must use kLegacy or kSerialization"},
+  };
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(fmt::format("version={}", toString(testCase.version)));
+    SerializerOptions options{.version = testCase.version};
+    NIMBLE_ASSERT_THROW(
+        Serializer(options, type, pool_.get()), testCase.expectedMessage);
+  }
 }
 
-TEST_P(SerializationTest, streamSizesEncodingIgnoredForLegacy) {
-  auto type = velox::ROW({{"int_val", velox::INTEGER()}});
-  // Legacy format does not use stream sizes trailer, so non-trivial
-  // encoding types are accepted (and ignored).
-  SerializerOptions options{
-      .streamIndicesEncodingType = EncodingType::Delta,
-      .streamSizesEncodingType = EncodingType::Delta};
-  EXPECT_NO_THROW(Serializer(options, type, pool_.get()));
+TEST_F(
+    SerializationTest,
+    serializerNormalizesLegacyWriterVersionsToSerialization) {
+  auto type = velox::ROW({{"x", velox::INTEGER()}});
+  auto col = velox::BaseVector::create(velox::INTEGER(), 1, pool_.get());
+  col->asFlatVector<int32_t>()->set(0, 42);
+  auto row = std::make_shared<velox::RowVector>(
+      pool_.get(), type, nullptr, 1, std::vector<velox::VectorPtr>{col});
+
+  const std::vector<SerializationVersion> versions{
+      SerializationVersion::kLegacy,
+      SerializationVersion::kLegacyCompact,
+      SerializationVersion::kLegacySerialization};
+  for (const auto version : versions) {
+    SCOPED_TRACE(toString(version));
+    SerializerOptions options{.version = version};
+    Serializer serializer{options, type, pool_.get()};
+    std::string blob;
+    serializer.serialize(row, OrderedRanges::of(0, 1), blob);
+    ASSERT_FALSE(blob.empty());
+    const char* pos = blob.data();
+    const auto header =
+        serde::readSerializationHeader(pos, blob.data() + blob.size(), true);
+    EXPECT_EQ(header.version, SerializationVersion::kSerialization);
+    EXPECT_EQ(header.rowCount, 1);
+  }
+}
+
+TEST_F(SerializationTest, serializerDefaultWritesNoHeaderLegacy) {
+  auto type = velox::ROW({{"x", velox::INTEGER()}});
+  auto col = velox::BaseVector::create(velox::INTEGER(), 1, pool_.get());
+  col->asFlatVector<int32_t>()->set(0, 42);
+  auto row = std::make_shared<velox::RowVector>(
+      pool_.get(), type, nullptr, 1, std::vector<velox::VectorPtr>{col});
+
+  Serializer serializer{SerializerOptions{}, type, pool_.get()};
+  std::string blob;
+  serializer.serialize(row, OrderedRanges::of(0, 1), blob);
+  ASSERT_FALSE(blob.empty());
+
+  const char* pos = blob.data();
+  const auto header =
+      serde::readSerializationHeader(pos, blob.data() + blob.size(), false);
+  EXPECT_EQ(header.version, SerializationVersion::kLegacy);
+  EXPECT_EQ(header.rowCount, 1);
+  EXPECT_EQ(pos - blob.data(), sizeof(uint32_t));
+
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get()};
+  velox::VectorPtr output;
+  deserializer.deserialize(blob, output);
+  ASSERT_EQ(output->size(), row->size());
+  EXPECT_TRUE(vectorEquals(output, row, 0));
 }
 
 // Test encoding layout tree for non-FlatMap types.
@@ -2860,11 +4062,9 @@ TEST_P(SerializationTest, encodingLayoutTreeMapForFlatMap) {
       "Incompatible encoding layout node. Expecting flatmap node.");
 }
 
-TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
-  // Test that serializer skips constant in-map boolean streams: both all-false
-  // (key absent from a batch) and all-true (key present in every row). The
-  // deserializer uses visitValueStreamLeaves() to enumerate per-key value-
-  // stream anchors and probes a presence bitmap to distinguish the two cases.
+TEST_P(SerializationTest, flatMapInMapStreamsForDiscoveredKeys) {
+  // Test that serializer skips constant in-map boolean streams for discovered
+  // FlatMap keys while preserving mixed in-map streams.
   auto type = velox::ROW({
       {"id", velox::BIGINT()},
       {"flat_map", velox::MAP(velox::VARCHAR(), velox::DOUBLE())},
@@ -2872,26 +4072,28 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
 
   const velox::vector_size_t batchSize = 10;
 
-  // Helper to create a batch with specific keys present.
-  auto generateBatch =
-      [&](const std::vector<std::string>& keys) -> velox::VectorPtr {
-    const auto numKeys = static_cast<velox::vector_size_t>(keys.size());
-    const velox::vector_size_t totalEntries = batchSize * numKeys;
+  auto generateRowsBatch =
+      [&](const std::vector<std::vector<std::string>>& keysByRow)
+      -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(keysByRow.size());
+    velox::vector_size_t totalEntries = 0;
+    for (const auto& keys : keysByRow) {
+      totalEntries += static_cast<velox::vector_size_t>(keys.size());
+    }
 
-    auto ids =
-        velox::BaseVector::create(velox::BIGINT(), batchSize, pool_.get());
+    auto ids = velox::BaseVector::create(velox::BIGINT(), numRows, pool_.get());
     auto mapKeys =
         velox::BaseVector::create(velox::VARCHAR(), totalEntries, pool_.get());
     auto mapValues =
         velox::BaseVector::create(velox::DOUBLE(), totalEntries, pool_.get());
 
-    for (velox::vector_size_t i = 0; i < batchSize; ++i) {
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
       ids->asFlatVector<int64_t>()->set(i, i);
     }
 
     velox::vector_size_t idx = 0;
-    for (velox::vector_size_t row = 0; row < batchSize; ++row) {
-      for (const auto& key : keys) {
+    for (velox::vector_size_t row = 0; row < numRows; ++row) {
+      for (const auto& key : keysByRow[row]) {
         mapKeys->asFlatVector<velox::StringView>()->set(
             idx, velox::StringView(key));
         mapValues->asFlatVector<double>()->set(idx, row * 10.0 + idx);
@@ -2903,27 +4105,34 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
         pool_.get(),
         velox::MAP(velox::VARCHAR(), velox::DOUBLE()),
         nullptr,
-        batchSize,
-        velox::allocateOffsets(batchSize, pool_.get()),
-        velox::allocateSizes(batchSize, pool_.get()),
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
         mapKeys,
         mapValues);
 
     auto* rawOffsets =
-        mapVector->mutableOffsets(batchSize)->asMutable<velox::vector_size_t>();
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
     auto* rawSizes =
-        mapVector->mutableSizes(batchSize)->asMutable<velox::vector_size_t>();
-    for (velox::vector_size_t i = 0; i < batchSize; ++i) {
-      rawOffsets[i] = i * numKeys;
-      rawSizes[i] = numKeys;
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < numRows; ++i) {
+      rawOffsets[i] = offset;
+      rawSizes[i] = static_cast<velox::vector_size_t>(keysByRow[i].size());
+      offset += rawSizes[i];
     }
 
     return std::make_shared<velox::RowVector>(
         pool_.get(),
         type,
         nullptr,
-        batchSize,
+        numRows,
         std::vector<velox::VectorPtr>{ids, mapVector});
+  };
+  auto generateBatch =
+      [&](const std::vector<std::string>& keys) -> velox::VectorPtr {
+    return generateRowsBatch(
+        std::vector<std::vector<std::string>>(batchSize, keys));
   };
 
   SerializerOptions options{
@@ -2935,12 +4144,12 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
   };
   Serializer serializer{options, type, pool_.get()};
 
-  // Batch 1: keys "a" and "b" (both in-map streams are all-true -> skipped)
+  // Batch 1: keys "a" and "b" (both in-map streams are all-true).
   auto batch1 = generateBatch({"a", "b"});
   auto serialized1 = std::string(
       serializer.serialize(batch1, OrderedRanges::of(0, batch1->size())));
 
-  // Batch 2: only key "a" (key "b" absent -> all-false in-map, skipped)
+  // Batch 2: only key "a" (key "b" absent -> all-false in-map).
   auto batch2 = generateBatch({"a"});
   auto serialized2 = std::string(
       serializer.serialize(batch2, OrderedRanges::of(0, batch2->size())));
@@ -2951,16 +4160,27 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
       serializer.serialize(batch3, OrderedRanges::of(0, batch3->size())));
 
   // Batch 4: keys "a" and "b" again (key "a" and "b" all-true in-map, key "c"
-  // all-false in-map -> all three in-map streams are constant, all skipped)
+  // all-false in-map).
   auto batch4 = generateBatch({"a", "b"});
   auto serialized4 = std::string(
       serializer.serialize(batch4, OrderedRanges::of(0, batch4->size())));
+
+  std::vector<std::vector<std::string>> mixedKeys(batchSize);
+  for (velox::vector_size_t i = 0; i < batchSize; ++i) {
+    mixedKeys[i].emplace_back("a");
+    if (i % 2 == 0) {
+      mixedKeys[i].emplace_back("b");
+    }
+  }
+  auto batch5 = generateRowsBatch(mixedKeys);
+  auto serialized5 = std::string(
+      serializer.serialize(batch5, OrderedRanges::of(0, batch5->size())));
 
   // Helper to collect stream offsets present in serialized data.
   auto collectStreamOffsets =
       [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
     auto desOpts = deserializerOptions();
-    serde::StreamDataReader reader{pool_.get(), desOpts};
+    serde::StreamDataParser reader{pool_.get(), desOpts};
     reader.initialize(data);
     folly::F14FastSet<uint32_t> offsets;
     reader.iterateStreams(
@@ -2977,57 +4197,68 @@ TEST_P(SerializationTest, flatMapInMapStreamSkipping) {
   for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
     inMapOffsets.push_back(flatMap.inMapDescriptorAt(i).offset());
   }
-  // After batch 3, schema has keys "a", "b", "c" → 3 in-map streams.
+  // After batch 3, schema has keys "a", "b", "c": 3 in-map streams.
   ASSERT_EQ(inMapOffsets.size(), 3);
 
-  // Verify constant in-map streams are NOT stored in serialized data.
+  // Verify constant in-map streams are omitted once their keys are discovered.
   {
-    // Batch 1: keys "a" and "b" all-true → in-map "a" and "b" skipped.
-    // Key "c" not yet discovered.
+    // Batch 1: keys "a" and "b" all-true. Key "c" is not discovered yet.
     auto offsets1 = collectStreamOffsets(serialized1);
     EXPECT_FALSE(offsets1.contains(inMapOffsets[0]))
-        << "in-map 'a' should be skipped (all-true)";
+        << "in-map 'a' should be absent (all-true)";
     EXPECT_FALSE(offsets1.contains(inMapOffsets[1]))
-        << "in-map 'b' should be skipped (all-true)";
+        << "in-map 'b' should be absent (all-true)";
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[2]))
+        << "in-map 'c' should be absent before discovery";
 
-    // Batch 2: key "a" all-true, key "b" all-false → both skipped.
+    // Batch 2: key "a" all-true, key "b" all-false. Key "c" is not
+    // discovered yet.
     auto offsets2 = collectStreamOffsets(serialized2);
     EXPECT_FALSE(offsets2.contains(inMapOffsets[0]))
-        << "in-map 'a' should be skipped (all-true)";
+        << "in-map 'a' should be absent (all-true)";
     EXPECT_FALSE(offsets2.contains(inMapOffsets[1]))
-        << "in-map 'b' should be skipped (all-false)";
+        << "in-map 'b' should be absent (all-false)";
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[2]))
+        << "in-map 'c' should be absent before discovery";
 
-    // Batch 3: keys "a", "b", "c" all present → all in-map all-true → skipped.
+    // Batch 3: keys "a", "b", "c" all present.
     auto offsets3 = collectStreamOffsets(serialized3);
     EXPECT_FALSE(offsets3.contains(inMapOffsets[0]))
-        << "in-map 'a' should be skipped (all-true)";
+        << "in-map 'a' should be absent (all-true)";
     EXPECT_FALSE(offsets3.contains(inMapOffsets[1]))
-        << "in-map 'b' should be skipped (all-true)";
+        << "in-map 'b' should be absent (all-true)";
     EXPECT_FALSE(offsets3.contains(inMapOffsets[2]))
-        << "in-map 'c' should be skipped (all-true)";
+        << "in-map 'c' should be absent (all-true)";
 
-    // Batch 4: keys "a" and "b" all-true, key "c" all-false → all skipped.
+    // Batch 4: keys "a" and "b" all-true, key "c" all-false.
     auto offsets4 = collectStreamOffsets(serialized4);
     EXPECT_FALSE(offsets4.contains(inMapOffsets[0]))
-        << "in-map 'a' should be skipped (all-true)";
+        << "in-map 'a' should be absent (all-true)";
     EXPECT_FALSE(offsets4.contains(inMapOffsets[1]))
-        << "in-map 'b' should be skipped (all-true)";
+        << "in-map 'b' should be absent (all-true)";
     EXPECT_FALSE(offsets4.contains(inMapOffsets[2]))
-        << "in-map 'c' should be skipped (all-false)";
+        << "in-map 'c' should be absent (all-false)";
+
+    // Batch 5: key "b" is mixed and must remain physically present. Key "a"
+    // is all-true and key "c" is all-false.
+    auto offsets5 = collectStreamOffsets(serialized5);
+    EXPECT_FALSE(offsets5.contains(inMapOffsets[0]))
+        << "in-map 'a' should be absent (all-true)";
+    EXPECT_TRUE(offsets5.contains(inMapOffsets[1]))
+        << "in-map 'b' should be written (mixed)";
+    EXPECT_FALSE(offsets5.contains(inMapOffsets[2]))
+        << "in-map 'c' should be absent (all-false)";
   }
 
-  // Deserialize and verify correctness. This exercises three cases where
-  // DeserializerImpl::contiguousRead encounters empty batchSegments_:
-  // 1. Row nulls stream omitted (all non-null) — the Row wrapper.
-  // 2. In-map boolean stream omitted (constant all-true or all-false).
-  // 3. Value stream absent (key not present in batch, e.g. key "c" in
-  //    batches 1/2/4, key "b" value in batch 2).
+  // Deserialize and verify correctness. Keys that were not discovered yet in
+  // earlier batches are decoded as absent in those batches.
   Deserializer deserializer{nimbleSchema, pool_.get(), deserializerOptions()};
 
   // Verify each batch individually.
-  std::vector<velox::VectorPtr> inputs = {batch1, batch2, batch3, batch4};
+  std::vector<velox::VectorPtr> inputs = {
+      batch1, batch2, batch3, batch4, batch5};
   std::vector<std::string> serializedData = {
-      serialized1, serialized2, serialized3, serialized4};
+      serialized1, serialized2, serialized3, serialized4, serialized5};
 
   velox::VectorPtr output;
   for (size_t i = 0; i < inputs.size(); ++i) {
@@ -3284,6 +4515,85 @@ TEST_P(SerializationTest, flatMapAsStructWithMissingKeys) {
   }
 }
 
+TEST_P(SerializationTest, flatMapAsStructWithPreviouslyDiscoveredMissingKey) {
+  auto type = velox::ROW({
+      {"features", velox::MAP(velox::INTEGER(), velox::DOUBLE())},
+  });
+
+  auto makeInput = [&](const std::vector<std::vector<int32_t>>& keysByRow)
+      -> velox::VectorPtr {
+    const auto numRows = static_cast<velox::vector_size_t>(keysByRow.size());
+    velox::vector_size_t totalEntries = 0;
+    for (const auto& keys : keysByRow) {
+      totalEntries += static_cast<velox::vector_size_t>(keys.size());
+    }
+
+    auto keysFlat =
+        velox::BaseVector::create(velox::INTEGER(), totalEntries, pool_.get());
+    auto valuesFlat =
+        velox::BaseVector::create(velox::DOUBLE(), totalEntries, pool_.get());
+
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t row = 0; row < numRows; ++row) {
+      for (const auto key : keysByRow[row]) {
+        keysFlat->asFlatVector<int32_t>()->set(offset, key);
+        valuesFlat->asFlatVector<double>()->set(offset, row * 10.0 + key);
+        ++offset;
+      }
+    }
+
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        velox::MAP(velox::INTEGER(), velox::DOUBLE()),
+        nullptr,
+        numRows,
+        velox::allocateOffsets(numRows, pool_.get()),
+        velox::allocateSizes(numRows, pool_.get()),
+        keysFlat,
+        valuesFlat);
+
+    auto* rawOffsets =
+        mapVector->mutableOffsets(numRows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(numRows)->asMutable<velox::vector_size_t>();
+    offset = 0;
+    for (velox::vector_size_t row = 0; row < numRows; ++row) {
+      rawOffsets[row] = offset;
+      rawSizes[row] = static_cast<velox::vector_size_t>(keysByRow[row].size());
+      offset += rawSizes[row];
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        numRows,
+        std::vector<velox::VectorPtr>{mapVector});
+  };
+
+  const SerializerOptions serOptions{
+      .version = version(),
+      .flatMapColumns = {{"features", {}}},
+  };
+  Serializer serializer{serOptions, type, pool_.get()};
+
+  std::vector<velox::VectorPtr> inputs{
+      makeInput({{1, 2}, {1}, {2}, {}, {1, 2}}),
+      makeInput({{2}, {2, 3}, {3}, {}, {2}}),
+      makeInput({{1, 3}, {1}, {3}, {}, {1, 3}}),
+      makeInput({{1, 2, 3}, {2}, {1}, {}, {3}}),
+  };
+
+  std::vector<std::string> serializedData;
+  serializedData.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    serializedData.emplace_back(
+        serializer.serialize(input, OrderedRanges::of(0, input->size())));
+  }
+
+  verifyFlatMapAsStruct(serializer, serializedData, inputs);
+}
+
 // Standalone test for kTablet deserialization.
 // kTablet is not produced by the Serializer — it's constructed by reading
 // raw tablet stream bytes from a Nimble file and assembling them with a header
@@ -3380,7 +4690,8 @@ TEST_F(SerializationTest, tabletTrailerDeserialization) {
             /*enableChunking=*/true,
             streamIdsEncodingType,
             sizeIndicesEncodingType,
-            uniqueSizesEncodingType);
+            uniqueSizesEncodingType,
+            /*forceDuplicateFirstTwoStreams=*/true);
         ASSERT_EQ(tablet.serialized.size(), 1);
         ASSERT_EQ(tablet.numTabletStreams.size(), 1);
         ASSERT_GT(tablet.numTabletStreams[0], tablet.numUniqueTabletStreams[0]);
@@ -3405,7 +4716,7 @@ TEST_F(SerializationTest, tabletTrailerDeserialization) {
 }
 
 // Verifies ZSTD decompression round-trips correctly with the thread-local
-// ZSTD_DCtx reuse (always-on). Exercises the StreamDataReader and StreamData
+// ZSTD_DCtx reuse (always-on). Exercises the StreamDataParser and StreamData
 // decompress paths with kTablet chunked format.
 TEST_F(SerializationTest, zstdThreadLocalDCtxRoundTrip) {
   auto rowType = velox::ROW(
@@ -4092,7 +5403,7 @@ TEST_P(SerializationTest, flatMapDeserializeWithFlatMapSchema) {
 // Exercises the scatteredRead path in Deserializer when flat-map keys are
 // sparse (absent in some rows). Deserializing with outputType (struct mode)
 // triggers scatter bitmaps for each key. Without the nulls initialization fix
-// in DeserializerImpl::next(), this crashes in loadOffsets() accessing
+// in SegmentedStreamDecoder::next(), this crashes in loadOffsets() accessing
 // rawNulls() on an unallocated buffer.
 TEST_P(SerializationTest, flatMapScatteredReadWithSparseKeys) {
   if (!version().has_value() || version() == SerializationVersion::kLegacy) {
@@ -5393,15 +6704,24 @@ std::string buildLegacyTrivialTrailer(const std::vector<uint32_t>& denseSizes) {
 }
 
 // Rewrites a kSerialization blob to bytes a master-format kLegacyCompact writer
-// would have produced. The body wire format (varint row counts + per-stream
-// payloads) is byte-identical across the two versions; only the trailer
-// layout and the version byte differ. This lets us synthesize a production
-// kLegacyCompact blob without resurrecting the master writer.
+// would have produced. The stream payloads are byte-identical across the two
+// versions; this strips the kSerialization flags byte and rewrites the trailer.
 std::string rewriteAsLegacyCompactRaw(std::string_view kSerializationBlob) {
   const char* end = kSerializationBlob.data() + kSerializationBlob.size();
+  const char* headerEnd = kSerializationBlob.data();
+  const auto header = serde::readSerializationHeader(headerEnd, end, true);
+  NIMBLE_CHECK_EQ(header.version, SerializationVersion::kSerialization);
+  const auto bodyStartOffset =
+      static_cast<size_t>(headerEnd - kSerializationBlob.data());
+  const auto flagsOffset = bodyStartOffset - 1;
+
   auto [sparseIndices, sparseSizes] =
       serde::detail::readTrailerStreamMetadata(end);
   const auto newTrailerSize = serde::detail::readTrailerSize(end);
+  const auto bodyEndOffset =
+      kSerializationBlob.size() - sizeof(uint32_t) - newTrailerSize;
+  NIMBLE_CHECK_GE(
+      bodyEndOffset, bodyStartOffset, "Truncated kSerialization body");
 
   std::vector<uint32_t> denseSizes;
   if (!sparseIndices.empty()) {
@@ -5411,10 +6731,33 @@ std::string rewriteAsLegacyCompactRaw(std::string_view kSerializationBlob) {
     }
   }
 
-  std::string rewritten(kSerializationBlob.substr(
-      0, kSerializationBlob.size() - sizeof(uint32_t) - newTrailerSize));
-  rewritten[0] = static_cast<char>(SerializationVersion::kLegacyCompact);
+  std::string rewritten;
+  rewritten.reserve(
+      bodyEndOffset - 1 + sizeof(uint8_t) +
+      denseSizes.size() * sizeof(uint32_t) + sizeof(uint32_t));
+  rewritten.push_back(static_cast<char>(SerializationVersion::kLegacyCompact));
+  rewritten.append(kSerializationBlob.substr(1, flagsOffset - 1));
+  rewritten.append(kSerializationBlob.substr(
+      bodyStartOffset, bodyEndOffset - bodyStartOffset));
   rewritten.append(buildLegacyTrivialTrailer(denseSizes));
+  return rewritten;
+}
+
+std::string rewriteAsLegacySerialization(std::string_view kSerializationBlob) {
+  const char* end = kSerializationBlob.data() + kSerializationBlob.size();
+  const char* headerEnd = kSerializationBlob.data();
+  const auto header = serde::readSerializationHeader(headerEnd, end, true);
+  NIMBLE_CHECK_EQ(header.version, SerializationVersion::kSerialization);
+  const auto bodyStartOffset =
+      static_cast<size_t>(headerEnd - kSerializationBlob.data());
+  const auto flagsOffset = bodyStartOffset - 1;
+
+  std::string rewritten;
+  rewritten.reserve(kSerializationBlob.size() - 1);
+  rewritten.push_back(
+      static_cast<char>(SerializationVersion::kLegacySerialization));
+  rewritten.append(kSerializationBlob.substr(1, flagsOffset - 1));
+  rewritten.append(kSerializationBlob.substr(bodyStartOffset));
   return rewritten;
 }
 
@@ -5478,23 +6821,67 @@ TEST_F(SerializationTest, compactRawProductionBlobRoundtrip) {
   }
 }
 
-// kLegacyCompact is read-only post the two-array trailer change. Existing
-// callers (especially directory-branched prod code we can't touch in this
-// diff) still pass kLegacyCompact for writes — the Serializer must silently
-// upgrade them to kSerialization rather than throw, so they keep working
-// while migrating.
-TEST_F(SerializationTest, serializerUpgradesKLegacyCompactToKSerialization) {
-  auto type = velox::ROW({{"x", velox::INTEGER()}});
-  SerializerOptions options{
-      .version = SerializationVersion::kLegacyCompact,
+TEST_F(SerializationTest, legacySerializationProductionBlobRoundtrip) {
+  auto type = velox::ROW({
+      {"bool_val", velox::BOOLEAN()},
+      {"int_val", velox::INTEGER()},
+      {"long_val", velox::BIGINT()},
+      {"double_val", velox::DOUBLE()},
+      {"string_val", velox::VARCHAR()},
+  });
+
+  velox::VectorFuzzer fuzzer(
+      {
+          .vectorSize = 64,
+          .nullRatio = 0,
+          .stringLength = 16,
+          .stringVariableLength = true,
+      },
+      pool_.get(),
+      /*seed=*/12345);
+  auto input = fuzzer.fuzzInputRow(type);
+
+  SerializerOptions writerOptions{
+      .version = SerializationVersion::kSerialization,
   };
-  // Construction must not throw, and the produced blob must carry the
-  // kSerialization version byte (the silent-upgrade target).
-  Serializer serializer{options, type, pool_.get()};
+  Serializer serializer{writerOptions, type, pool_.get()};
+  const auto kSerializationBlob =
+      serializer.serialize(input, OrderedRanges::of(0, input->size()));
+
+  const std::string kLegacySerializationBlob =
+      rewriteAsLegacySerialization(kSerializationBlob);
+
+  ASSERT_FALSE(kLegacySerializationBlob.empty());
+  ASSERT_EQ(
+      static_cast<uint8_t>(kLegacySerializationBlob[0]),
+      static_cast<uint8_t>(SerializationVersion::kLegacySerialization));
+
+  DeserializerOptions deserOptions{.hasHeader = true};
+  Deserializer deserializer{
+      SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+      pool_.get(),
+      deserOptions};
+
+  velox::VectorPtr output;
+  deserializer.deserialize(kLegacySerializationBlob, output);
+
+  ASSERT_EQ(output->size(), input->size());
+  for (velox::vector_size_t i = 0; i < input->size(); ++i) {
+    EXPECT_TRUE(vectorEquals(input, output, i))
+        << "Row " << i << " mismatch:\n  expected: " << input->toString(i)
+        << "\n  actual:   " << output->toString(i);
+  }
+}
+
+TEST_F(SerializationTest, serializerHonorsRequestedEncodedVersion) {
+  auto type = velox::ROW({{"x", velox::INTEGER()}});
   auto col = velox::BaseVector::create(velox::INTEGER(), 1, pool_.get());
   col->asFlatVector<int32_t>()->set(0, 42);
   auto row = std::make_shared<velox::RowVector>(
       pool_.get(), type, nullptr, 1, std::vector<velox::VectorPtr>{col});
+
+  SerializerOptions options{.version = SerializationVersion::kSerialization};
+  Serializer serializer{options, type, pool_.get()};
   std::string blob;
   serializer.serialize(row, OrderedRanges::of(0, 1), blob);
   ASSERT_FALSE(blob.empty());
@@ -5507,11 +6894,9 @@ INSTANTIATE_TEST_SUITE_P(
     AllFormats,
     SerializationTest,
     ::testing::Values(
-        // Legacy format (no nimble encoding).
-        TestParams{.version = std::nullopt},
-        // kLegacyCompact format without compression.
+        // kSerialization format without compression.
         TestParams{.version = SerializationVersion::kSerialization},
-        // kLegacyCompact format with compression enabled (for
+        // kSerialization format with compression enabled (for
         // encodingLayoutTree tests).
         TestParams{
             .version = SerializationVersion::kSerialization,
@@ -5519,20 +6904,19 @@ INSTANTIATE_TEST_SUITE_P(
                 CompressionOptions{
                     .compressionAcceptRatio = 1.0f,
                     .zstdMinCompressionSize = 0}},
-        // kLegacyCompact format with Delta stream sizes encoding.
+        // kSerialization format with Delta stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::Delta},
-        // kLegacyCompact format with FixedBitWidth stream sizes encoding.
+        // kSerialization format with FixedBitWidth stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::FixedBitWidth},
-        // kLegacyCompact format with Varint stream sizes encoding.
+        // kSerialization format with Varint stream sizes encoding.
         TestParams{
             .version = SerializationVersion::kSerialization,
             .streamSizesEncodingType = EncodingType::Varint},
         // Buffer pool disabled variants.
-        TestParams{.version = std::nullopt, .bufferPoolCapacity = 0},
         TestParams{
             .version = SerializationVersion::kSerialization,
             .bufferPoolCapacity = 0},

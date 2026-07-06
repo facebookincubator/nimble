@@ -134,7 +134,7 @@ class TestEncoding : public nimble::Encoding {
       uint32_t /*rowCount*/,
       void* /*buffer*/,
       std::function<void*()> /*nulls*/,
-      const velox::bits::Bitmap* /*scatterBitmap*/,
+      const velox::bits::Bitmap* /*scatterOutputBitmap*/,
       uint32_t /*offset*/) override {
     return 0;
   }

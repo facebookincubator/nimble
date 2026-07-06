@@ -180,7 +180,14 @@ NimbleIndexProjector::NimbleIndexProjector(
   NIMBLE_CHECK_GT(numStripes_, 0, "NimbleIndexProjector requires stripes");
 
   projectedNimbleType_ = buildProjectedNimbleType(
-      nimbleSchema.get(), projectedSubfields, projectedStreamOffsets_);
+      nimbleSchema.get(),
+      projectedSubfields,
+      projectedStreamOffsets_,
+      rowOrFlatMapNullStreams_);
+  NIMBLE_CHECK_EQ(
+      projectedStreamOffsets_.size(),
+      rowOrFlatMapNullStreams_.size(),
+      "Projected stream offsets and Row/FlatMap null stream mask must align");
 }
 
 NimbleIndexProjector::Result NimbleIndexProjector::project(
@@ -441,6 +448,10 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
         stripeOffset + streamOffsets[streamId], streamSizes[streamId]};
     ++stripePlan.numStreams;
     stripePlan.projectedBytes += streamSizes[streamId];
+    if (rowOrFlatMapNullStreams_[i]) {
+      // A present Row/FlatMap null stream means the slice may carry nulls.
+      stripePlan.requiresNullBarrier = true;
+    }
   }
 }
 
@@ -642,11 +653,13 @@ namespace {
 /// Builds a kTablet IOBuf chain: [header] -> [shared body+trailer].
 folly::IOBuf assembleStripeSlice(
     uint32_t numRows,
+    bool requiresNullBarrier,
     RowRange rowRange,
     folly::IOBuf body,
     std::optional<std::string> resumeKey = std::nullopt) {
   serde::TabletChunkHeader header{
       .rowCount = numRows,
+      .requiresNullBarrier = requiresNullBarrier,
       .rowRange = rowRange,
       .resumeKey = std::move(resumeKey),
   };
@@ -688,6 +701,7 @@ void NimbleIndexProjector::buildResult(Result& result) {
       auto& response = result.responses[range.requestIndex];
       response.slices.emplace_back(assembleStripeSlice(
           stripePlan.numRows,
+          stripePlan.requiresNullBarrier,
           range.rowRange,
           stripeBody.cloneAsValue(),
           isLastSlice ? response.resumeKey : std::nullopt));

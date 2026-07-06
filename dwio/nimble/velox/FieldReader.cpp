@@ -512,8 +512,14 @@ class ScalarFieldReader final
           "Unexpected values buffer size.");
       auto* target = vector->values()->template asMutable<char>();
       std::fill(target, target + velox::bits::nbytes(rowCount), 0);
-      for (uint32_t i = 0; i < rowCount; ++i) {
-        velox::bits::maybeSetBit(target, i, buf[i]);
+      if (nonNullCount == rowCount) {
+        velox::bits::packBitmap(std::span<const bool>{buf, rowCount}, target);
+      } else {
+        for (uint32_t i = 0; i < rowCount; ++i) {
+          if (!vector->isNullAt(i)) {
+            velox::bits::maybeSetBit(target, i, buf[i]);
+          }
+        }
       }
     } else {
       NIMBLE_DCHECK_EQ(

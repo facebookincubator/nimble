@@ -16,8 +16,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
 
@@ -50,6 +53,14 @@ std::string toString(const folly::IOBuf& buf) {
     result.append(reinterpret_cast<const char*>(range.data()), range.size());
   }
   return result;
+}
+
+bool outputRequiresNullBarrier(const folly::IOBuf& buf) {
+  const auto serialized = toString(buf);
+  const char* pos = serialized.data();
+  const auto header =
+      readSerializationHeader(pos, serialized.data() + serialized.size(), true);
+  return header.requiresNullBarrier;
 }
 
 // Test parameter: input serialization version and output (project) version.
@@ -706,7 +717,7 @@ TEST_F(ProjectorTest, incompatibleFormatsRejected) {
 
     NIMBLE_ASSERT_THROW(
         projector.project(std::string_view(tabletInput)),
-        "Input must be a compact format");
+        "Input must be kLegacyCompact, kLegacySerialization, kSerialization, or kProjection");
   }
 }
 
@@ -1645,6 +1656,79 @@ TEST_F(ProjectorTest, projectFlatMapNonExistentKey) {
   }
 }
 
+TEST_F(ProjectorTest, flatMapMissingKeyDeserializesAsNullField) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(VARCHAR(), BIGINT())},
+  });
+
+  constexpr vector_size_t numRows = 4;
+  constexpr vector_size_t entriesPerRow = 2;
+  auto offsets = allocateOffsets(numRows, pool_.get());
+  auto sizes = allocateSizes(numRows, pool_.get());
+  auto* rawOffsets = offsets->asMutable<vector_size_t>();
+  auto* rawSizes = sizes->asMutable<vector_size_t>();
+  for (vector_size_t row = 0; row < numRows; ++row) {
+    rawOffsets[row] = row * entriesPerRow;
+    rawSizes[row] = entriesPerRow;
+  }
+
+  auto features = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(VARCHAR(), BIGINT()),
+      nullptr,
+      numRows,
+      offsets,
+      sizes,
+      makeStringVector({"a", "b", "a", "b", "a", "b", "a", "b"}),
+      makeIntVector<int64_t>({10, 11, 20, 21, 30, 31, 40, 41}));
+  auto input = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{makeIntVector<int64_t>({1, 2, 3, 4}), features});
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kSerialization,
+      .flatMapColumns = {{"features", {}}},
+  };
+  auto [serialized, inputSchema] = serializeWithSchema(input, type, serOpts);
+
+  Projector projector{
+      inputSchema,
+      makeSubfields({"features[\"a\"]", "features[\"x\"]"}),
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kProjection}};
+  auto projected = projectInput(projector, serialized, /*useIOBuf=*/false);
+
+  DeserializerOptions deserOpts{
+      .hasHeader = true,
+      .outputType = ROW({"features"}, {ROW({"a", "x"}, {BIGINT(), BIGINT()})})};
+  auto output =
+      deserialize(toString(projected), projector.projectedSchema(), deserOpts);
+
+  ASSERT_EQ(output->size(), numRows);
+  auto* featuresStruct = output->as<RowVector>()->childAt(0)->as<RowVector>();
+  ASSERT_NE(featuresStruct, nullptr);
+  ASSERT_EQ(featuresStruct->childrenSize(), 2);
+  EXPECT_EQ(featuresStruct->type()->asRow().nameOf(0), "a");
+  EXPECT_EQ(featuresStruct->type()->asRow().nameOf(1), "x");
+
+  const auto* presentKey = featuresStruct->childAt(0)->asFlatVector<int64_t>();
+  const auto* missingKey = featuresStruct->childAt(1)->asFlatVector<int64_t>();
+  ASSERT_NE(presentKey, nullptr);
+  ASSERT_NE(missingKey, nullptr);
+
+  const std::vector<int64_t> expectedPresentValues{10, 20, 30, 40};
+  for (vector_size_t row = 0; row < numRows; ++row) {
+    SCOPED_TRACE(fmt::format("row={}", row));
+    EXPECT_FALSE(presentKey->isNullAt(row));
+    EXPECT_EQ(presentKey->valueAt(row), expectedPresentValues[row]);
+    EXPECT_TRUE(missingKey->isNullAt(row));
+  }
+}
+
 // All-missing-keys projection on a FlatMap whose value subtree is a Row.
 // Exercises the `emitPlaceholderOffsets` Row branch end-to-end (Row.nulls +
 // 2 inner scalars = 3 UINT32_MAX value slots + 1 inMap slot per missing key).
@@ -1986,6 +2070,1120 @@ TEST_F(ProjectorTest, streamIndicesCorrect) {
   ASSERT_EQ(indices.size(), 2);
   EXPECT_EQ(indices[0], 0); // Root row nulls
   EXPECT_EQ(indices[1], 2); // Column b
+}
+
+TEST_F(ProjectorTest, nullBarrierFlagFollowsProjectedNullStreams) {
+  constexpr vector_size_t kRows = 3;
+
+  struct SerializedInput {
+    std::string_view name;
+    std::string serialized;
+    std::shared_ptr<const nimble::Type> schema;
+    bool expectedInputRequiresNullBarrier;
+  };
+
+  auto makeNestedRowInput = [&](std::string_view name,
+                                bool profileHasNull,
+                                bool rootHasNull) {
+    auto type = ROW({
+        {"id", BIGINT()},
+        {"profile", ROW({{"score", INTEGER()}})},
+    });
+
+    auto ids = makeIntVector<int64_t>({1, 2, 3});
+    auto scores = makeIntVector<int32_t>({10, 20, 30});
+    auto profile = std::make_shared<RowVector>(
+        pool_.get(),
+        ROW({{"score", INTEGER()}}),
+        nullptr,
+        kRows,
+        std::vector<VectorPtr>{scores});
+    if (profileHasNull) {
+      profile->setNull(1, true);
+    }
+    auto input = std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<VectorPtr>{ids, profile});
+    if (rootHasNull) {
+      input->setNull(2, true);
+    }
+
+    SerializerOptions serOpts{.version = SerializationVersion::kSerialization};
+    auto serialized = serialize(input, type, serOpts);
+    auto inputSchema = getNimbleSchema(type, serOpts);
+    return SerializedInput{
+        .name = name,
+        .serialized = std::move(serialized),
+        .schema = std::move(inputSchema),
+        .expectedInputRequiresNullBarrier = profileHasNull || rootHasNull,
+    };
+  };
+
+  auto makeFlatMapRowInput = [&](std::string_view name, bool valueRowHasNull) {
+    auto valueType = ROW({{"score", INTEGER()}});
+    auto type = ROW({
+        {"id", BIGINT()},
+        {"features", MAP(VARCHAR(), valueType)},
+    });
+
+    auto ids = makeIntVector<int64_t>({1, 2, 3});
+    auto offsets = allocateOffsets(kRows, pool_.get());
+    auto sizes = allocateSizes(kRows, pool_.get());
+    auto* rawOffsets = offsets->asMutable<vector_size_t>();
+    auto* rawSizes = sizes->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < kRows; ++i) {
+      rawOffsets[i] = i;
+      rawSizes[i] = 1;
+    }
+
+    auto keys = makeStringVector({"a", "a", "a"});
+    auto scores = makeIntVector<int32_t>({10, 20, 30});
+    auto values = std::make_shared<RowVector>(
+        pool_.get(), valueType, nullptr, kRows, std::vector<VectorPtr>{scores});
+    if (valueRowHasNull) {
+      values->setNull(1, true);
+    }
+    auto features = std::make_shared<MapVector>(
+        pool_.get(),
+        MAP(VARCHAR(), valueType),
+        nullptr,
+        kRows,
+        offsets,
+        sizes,
+        keys,
+        values);
+    auto input = std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<VectorPtr>{ids, features});
+
+    SerializerOptions serOpts{
+        .version = SerializationVersion::kSerialization,
+        .flatMapColumns = {{"features", {}}},
+    };
+    auto [serialized, inputSchema] = serializeWithSchema(input, type, serOpts);
+    return SerializedInput{
+        .name = name,
+        .serialized = std::move(serialized),
+        .schema = std::move(inputSchema),
+        .expectedInputRequiresNullBarrier = valueRowHasNull,
+    };
+  };
+
+  auto makeRegularDataNullInput = [&](std::string_view name) {
+    auto type = ROW({
+        {"id", BIGINT()},
+        {"nullable_score", INTEGER()},
+        {"items", ARRAY(INTEGER())},
+        {"attrs", MAP(VARCHAR(), INTEGER())},
+    });
+
+    auto ids = makeIntVector<int64_t>({1, 2, 3});
+    auto nullableScores = makeIntVector<int32_t>({10, 20, 30});
+    nullableScores->setNull(0, true);
+
+    auto arrayOffsets = allocateOffsets(kRows, pool_.get());
+    auto arraySizes = allocateSizes(kRows, pool_.get());
+    auto* rawArrayOffsets = arrayOffsets->asMutable<vector_size_t>();
+    auto* rawArraySizes = arraySizes->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < kRows; ++i) {
+      rawArrayOffsets[i] = i * 2;
+      rawArraySizes[i] = 2;
+    }
+    auto items = std::make_shared<ArrayVector>(
+        pool_.get(),
+        ARRAY(INTEGER()),
+        nullptr,
+        kRows,
+        arrayOffsets,
+        arraySizes,
+        makeIntVector<int32_t>({1, 2, 3, 4, 5, 6}));
+    items->setNull(1, true);
+
+    auto mapOffsets = allocateOffsets(kRows, pool_.get());
+    auto mapSizes = allocateSizes(kRows, pool_.get());
+    auto* rawMapOffsets = mapOffsets->asMutable<vector_size_t>();
+    auto* rawMapSizes = mapSizes->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < kRows; ++i) {
+      rawMapOffsets[i] = i;
+      rawMapSizes[i] = 1;
+    }
+    auto attrs = std::make_shared<MapVector>(
+        pool_.get(),
+        MAP(VARCHAR(), INTEGER()),
+        nullptr,
+        kRows,
+        mapOffsets,
+        mapSizes,
+        makeStringVector({"a", "b", "c"}),
+        makeIntVector<int32_t>({100, 200, 300}));
+    attrs->setNull(2, true);
+
+    auto input = std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<VectorPtr>{ids, nullableScores, items, attrs});
+
+    SerializerOptions serOpts{.version = SerializationVersion::kSerialization};
+    auto [serialized, inputSchema] = serializeWithSchema(input, type, serOpts);
+    return SerializedInput{
+        .name = name,
+        .serialized = std::move(serialized),
+        .schema = std::move(inputSchema),
+        .expectedInputRequiresNullBarrier = false,
+    };
+  };
+
+  auto inputRequiresNullBarrier = [](const SerializedInput& input) {
+    return outputRequiresNullBarrier(
+        folly::IOBuf::wrapBufferAsValue(
+            input.serialized.data(), input.serialized.size()));
+  };
+
+  const auto nestedRowNoNulls =
+      makeNestedRowInput("nestedRowNoNulls", false, false);
+  const auto nestedRowHasNulls =
+      makeNestedRowInput("nestedRowHasNulls", true, false);
+  const auto topLevelRowHasNulls =
+      makeNestedRowInput("topLevelRowHasNulls", false, true);
+  const auto flatMapRowNoNulls =
+      makeFlatMapRowInput("flatMapRowNoNulls", false);
+  const auto flatMapRowHasNulls =
+      makeFlatMapRowInput("flatMapRowHasNulls", true);
+  const auto regularDataNulls = makeRegularDataNullInput("regularDataNulls");
+
+  for (const auto* input :
+       {&nestedRowNoNulls,
+        &nestedRowHasNulls,
+        &topLevelRowHasNulls,
+        &flatMapRowNoNulls,
+        &flatMapRowHasNulls,
+        &regularDataNulls}) {
+    SCOPED_TRACE(input->name);
+    EXPECT_EQ(
+        inputRequiresNullBarrier(*input),
+        input->expectedInputRequiresNullBarrier);
+  }
+
+  auto rootNullResult = deserialize(
+      topLevelRowHasNulls.serialized,
+      topLevelRowHasNulls.schema,
+      {.hasHeader = true});
+  ASSERT_EQ(rootNullResult->size(), kRows);
+  EXPECT_TRUE(rootNullResult->isNullAt(2));
+
+  struct TestCase {
+    std::string_view name;
+    const SerializedInput* input;
+    std::vector<common::Subfield> subfields;
+    bool expectedRequiresNullBarrier;
+  };
+  std::vector<TestCase> testCases;
+  testCases.reserve(10);
+  testCases.push_back({
+      .name = "nestedRowNoNulls",
+      .input = &nestedRowNoNulls,
+      .subfields = makeSubfields({"profile.score"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "nestedRowHasNullsScalarOnly",
+      .input = &nestedRowHasNulls,
+      .subfields = makeSubfields({"id"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "nestedRowHasNulls",
+      .input = &nestedRowHasNulls,
+      .subfields = makeSubfields({"profile.score"}),
+      .expectedRequiresNullBarrier = true,
+  });
+  testCases.push_back({
+      .name = "topLevelRowHasNulls",
+      .input = &topLevelRowHasNulls,
+      .subfields = makeSubfields({"id"}),
+      .expectedRequiresNullBarrier = true,
+  });
+  testCases.push_back({
+      .name = "flatMapRowNoNulls",
+      .input = &flatMapRowNoNulls,
+      .subfields = makeSubfields({"features[\"a\"].score"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "flatMapRowHasNullsScalarOnly",
+      .input = &flatMapRowHasNulls,
+      .subfields = makeSubfields({"id"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "flatMapRowHasNulls",
+      .input = &flatMapRowHasNulls,
+      .subfields = makeSubfields({"features[\"a\"].score"}),
+      .expectedRequiresNullBarrier = true,
+  });
+  testCases.push_back({
+      .name = "regularScalarNulls",
+      .input = &regularDataNulls,
+      .subfields = makeSubfields({"nullable_score"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "regularArrayNulls",
+      .input = &regularDataNulls,
+      .subfields = makeSubfields({"items"}),
+      .expectedRequiresNullBarrier = false,
+  });
+  testCases.push_back({
+      .name = "regularMapNulls",
+      .input = &regularDataNulls,
+      .subfields = makeSubfields({"attrs"}),
+      .expectedRequiresNullBarrier = false,
+  });
+
+  for (const auto& testCase : testCases) {
+    for (bool useChained : {false, true}) {
+      SCOPED_TRACE(fmt::format("{} useChained={}", testCase.name, useChained));
+      Projector projector(
+          testCase.input->schema, testCase.subfields, pool_.get(), {});
+      folly::IOBuf projected;
+      if (useChained) {
+        const auto mid = testCase.input->serialized.size() / 2;
+        auto chainedBuf =
+            folly::IOBuf::copyBuffer(testCase.input->serialized.data(), mid);
+        chainedBuf->appendToChain(
+            folly::IOBuf::copyBuffer(
+                testCase.input->serialized.data() + mid,
+                testCase.input->serialized.size() - mid));
+        projected = projector.project(*chainedBuf);
+      } else {
+        projected =
+            projector.project(std::string_view(testCase.input->serialized));
+      }
+      EXPECT_EQ(
+          outputRequiresNullBarrier(projected),
+          testCase.expectedRequiresNullBarrier);
+      auto result = deserialize(
+          toString(projected),
+          projector.projectedSchema(),
+          {.hasHeader = true});
+      ASSERT_EQ(result->size(), kRows);
+    }
+  }
+}
+
+TEST_F(ProjectorTest, projectedRowNullMixedBatchPreserveNulls) {
+  constexpr vector_size_t kRowsPerBatch = 3;
+
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"score", INTEGER()},
+  });
+  SerializerOptions serOpts{.version = SerializationVersion::kSerialization};
+  auto inputSchema = getNimbleSchema(type, serOpts);
+  Projector projector(
+      inputSchema,
+      makeSubfields({"id"}),
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kProjection});
+
+  auto makeInput = [&](const std::vector<int64_t>& ids,
+                       const std::vector<int32_t>& scores,
+                       std::optional<vector_size_t> nullRow) {
+    auto input = std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<VectorPtr>{
+            makeIntVector<int64_t>(ids), makeIntVector<int32_t>(scores)});
+    if (nullRow.has_value()) {
+      input->setNull(*nullRow, true);
+    }
+    return input;
+  };
+
+  const auto noNullBatch = serialize(
+      makeInput({1, 2, 3}, {10, 20, 30}, std::nullopt), type, serOpts);
+  const auto nullBatch =
+      serialize(makeInput({4, 5, 6}, {40, 50, 60}, 1), type, serOpts);
+
+  auto projectedNoNull =
+      projectInput(projector, noNullBatch, /*useIOBuf=*/false);
+  auto projectedWithNull =
+      projectInput(projector, nullBatch, /*useIOBuf=*/false);
+  EXPECT_FALSE(outputRequiresNullBarrier(projectedNoNull));
+  EXPECT_TRUE(outputRequiresNullBarrier(projectedWithNull));
+
+  const auto projectedNoNullString = toString(projectedNoNull);
+  const auto projectedWithNullString = toString(projectedWithNull);
+  std::vector<std::string_view> batches{
+      projectedNoNullString, projectedWithNullString};
+  Deserializer deserializer{
+      projector.projectedSchema(), pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(batches, output);
+
+  ASSERT_EQ(output->size(), 2 * kRowsPerBatch);
+  const std::vector<bool> expectedRowNulls{
+      false, false, false, false, true, false};
+  for (vector_size_t i = 0; i < output->size(); ++i) {
+    EXPECT_EQ(output->isNullAt(i), expectedRowNulls[i]) << "row " << i;
+  }
+
+  auto* ids = output->as<RowVector>()->childAt(0)->as<FlatVector<int64_t>>();
+  ASSERT_NE(ids, nullptr);
+  EXPECT_EQ(ids->valueAt(0), 1);
+  EXPECT_EQ(ids->valueAt(1), 2);
+  EXPECT_EQ(ids->valueAt(2), 3);
+  EXPECT_EQ(ids->valueAt(3), 4);
+  EXPECT_EQ(ids->valueAt(5), 6);
+}
+
+TEST_F(ProjectorTest, projectedNestedRowNullsMixedBatchPreserveNulls) {
+  constexpr vector_size_t kRowsPerBatch = 3;
+
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"profile", ROW({{"score", INTEGER()}})},
+  });
+  SerializerOptions serOpts{.version = SerializationVersion::kSerialization};
+  auto inputSchema = getNimbleSchema(type, serOpts);
+  Projector projector(
+      inputSchema,
+      makeSubfields({"profile.score"}),
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kProjection});
+
+  auto makeInput = [&](const std::vector<int64_t>& ids,
+                       const std::vector<int32_t>& scores,
+                       std::optional<vector_size_t> nullProfileRow) {
+    auto profile = std::make_shared<RowVector>(
+        pool_.get(),
+        ROW({{"score", INTEGER()}}),
+        nullptr,
+        kRowsPerBatch,
+        std::vector<VectorPtr>{makeIntVector<int32_t>(scores)});
+    if (nullProfileRow.has_value()) {
+      profile->setNull(*nullProfileRow, true);
+    }
+    return std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<VectorPtr>{makeIntVector<int64_t>(ids), profile});
+  };
+
+  const auto noNullBatch = serialize(
+      makeInput({1, 2, 3}, {10, 20, 30}, std::nullopt), type, serOpts);
+  const auto nullBatch =
+      serialize(makeInput({4, 5, 6}, {40, 50, 60}, 1), type, serOpts);
+
+  auto projectedNoNull =
+      projectInput(projector, noNullBatch, /*useIOBuf=*/false);
+  auto projectedWithNull =
+      projectInput(projector, nullBatch, /*useIOBuf=*/false);
+  EXPECT_FALSE(outputRequiresNullBarrier(projectedNoNull));
+  EXPECT_TRUE(outputRequiresNullBarrier(projectedWithNull));
+
+  const auto projectedNoNullString = toString(projectedNoNull);
+  const auto projectedWithNullString = toString(projectedWithNull);
+  std::vector<std::string_view> batches{
+      projectedNoNullString, projectedWithNullString};
+  Deserializer deserializer{
+      projector.projectedSchema(), pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(batches, output);
+
+  ASSERT_EQ(output->size(), 2 * kRowsPerBatch);
+  auto* profile = output->as<RowVector>()->childAt(0)->as<RowVector>();
+  ASSERT_NE(profile, nullptr);
+  const std::vector<bool> expectedProfileNulls{
+      false, false, false, false, true, false};
+  for (vector_size_t i = 0; i < output->size(); ++i) {
+    EXPECT_EQ(profile->isNullAt(i), expectedProfileNulls[i]) << "row " << i;
+  }
+
+  auto* scores = profile->childAt(0)->as<FlatVector<int32_t>>();
+  ASSERT_NE(scores, nullptr);
+  EXPECT_EQ(scores->valueAt(0), 10);
+  EXPECT_EQ(scores->valueAt(1), 20);
+  EXPECT_EQ(scores->valueAt(2), 30);
+  EXPECT_EQ(scores->valueAt(3), 40);
+  EXPECT_EQ(scores->valueAt(5), 60);
+}
+
+TEST_F(ProjectorTest, projectedFlatMapNullsMixedBatchPreserveNulls) {
+  constexpr vector_size_t kRowsPerBatch = 3;
+
+  auto valueType = ROW({{"score", INTEGER()}});
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(VARCHAR(), valueType)},
+  });
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kSerialization,
+      .flatMapColumns = {{"features", {}}},
+  };
+
+  auto makeInput = [&](const std::vector<int64_t>& ids,
+                       const std::vector<int32_t>& scores,
+                       std::optional<vector_size_t> nullValueRow) {
+    auto offsets = allocateOffsets(kRowsPerBatch, pool_.get());
+    auto sizes = allocateSizes(kRowsPerBatch, pool_.get());
+    auto* rawOffsets = offsets->asMutable<vector_size_t>();
+    auto* rawSizes = sizes->asMutable<vector_size_t>();
+    for (vector_size_t i = 0; i < kRowsPerBatch; ++i) {
+      rawOffsets[i] = i;
+      rawSizes[i] = 1;
+    }
+
+    auto values = std::make_shared<RowVector>(
+        pool_.get(),
+        valueType,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<VectorPtr>{makeIntVector<int32_t>(scores)});
+    if (nullValueRow.has_value()) {
+      values->setNull(*nullValueRow, true);
+    }
+    auto features = std::make_shared<MapVector>(
+        pool_.get(),
+        MAP(VARCHAR(), valueType),
+        nullptr,
+        kRowsPerBatch,
+        offsets,
+        sizes,
+        makeStringVector({"a", "a", "a"}),
+        values);
+    return std::make_shared<RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRowsPerBatch,
+        std::vector<VectorPtr>{makeIntVector<int64_t>(ids), features});
+  };
+
+  const auto noNullInput = makeInput({1, 2, 3}, {10, 20, 30}, std::nullopt);
+  const auto nullInput = makeInput({4, 5, 6}, {40, 50, 60}, 1);
+  const auto [noNullBatch, inputSchema] =
+      serializeWithSchema(noNullInput, type, serOpts);
+  const auto [nullBatch, _] = serializeWithSchema(nullInput, type, serOpts);
+  Projector projector(
+      inputSchema,
+      makeSubfields({"features[\"a\"].score"}),
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kProjection});
+
+  auto projectedNoNull =
+      projectInput(projector, noNullBatch, /*useIOBuf=*/false);
+  auto projectedWithNull =
+      projectInput(projector, nullBatch, /*useIOBuf=*/false);
+  EXPECT_FALSE(outputRequiresNullBarrier(projectedNoNull));
+  EXPECT_TRUE(outputRequiresNullBarrier(projectedWithNull));
+
+  const auto projectedNoNullString = toString(projectedNoNull);
+  const auto projectedWithNullString = toString(projectedWithNull);
+  std::vector<std::string_view> batches{
+      projectedNoNullString, projectedWithNullString};
+  Deserializer deserializer{
+      projector.projectedSchema(), pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(batches, output);
+
+  ASSERT_EQ(output->size(), 2 * kRowsPerBatch);
+  auto* features = output->as<RowVector>()->childAt(0)->as<MapVector>();
+  ASSERT_NE(features, nullptr);
+  auto* values = features->mapValues()->as<RowVector>();
+  ASSERT_NE(values, nullptr);
+  const std::vector<bool> expectedValueNulls{
+      false, false, false, false, true, false};
+  for (vector_size_t i = 0; i < output->size(); ++i) {
+    ASSERT_EQ(features->sizeAt(i), 1) << "row " << i;
+    EXPECT_EQ(values->isNullAt(features->offsetAt(i)), expectedValueNulls[i])
+        << "row " << i;
+  }
+
+  auto* scores = values->childAt(0)->as<FlatVector<int32_t>>();
+  ASSERT_NE(scores, nullptr);
+  EXPECT_EQ(scores->valueAt(features->offsetAt(0)), 10);
+  EXPECT_EQ(scores->valueAt(features->offsetAt(1)), 20);
+  EXPECT_EQ(scores->valueAt(features->offsetAt(2)), 30);
+  EXPECT_EQ(scores->valueAt(features->offsetAt(3)), 40);
+  EXPECT_EQ(scores->valueAt(features->offsetAt(5)), 60);
+}
+
+TEST_F(ProjectorTest, projectedUnselectedNullColumnDoesNotRequireNullBarrier) {
+  constexpr vector_size_t kRowsPerBatch = 4;
+
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"kept", ROW({{"score", INTEGER()}})},
+      {"skipped", ROW({{"score", INTEGER()}})},
+  });
+  SerializerOptions serOpts{.version = SerializationVersion::kSerialization};
+  auto inputSchema = getNimbleSchema(type, serOpts);
+  Projector projector(
+      inputSchema,
+      makeSubfields({"kept.score"}),
+      pool_.get(),
+      {.projectVersion = SerializationVersion::kProjection});
+
+  auto kept = std::make_shared<RowVector>(
+      pool_.get(),
+      ROW({{"score", INTEGER()}}),
+      nullptr,
+      kRowsPerBatch,
+      std::vector<VectorPtr>{makeIntVector<int32_t>({10, 20, 30, 40})});
+  auto skipped = std::make_shared<RowVector>(
+      pool_.get(),
+      ROW({{"score", INTEGER()}}),
+      nullptr,
+      kRowsPerBatch,
+      std::vector<VectorPtr>{makeIntVector<int32_t>({100, 200, 300, 400})});
+  skipped->setNull(1, true);
+  skipped->setNull(3, true);
+  auto input = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      kRowsPerBatch,
+      std::vector<VectorPtr>{
+          makeIntVector<int64_t>({1, 2, 3, 4}), kept, skipped});
+
+  auto serialized = serialize(input, type, serOpts);
+  auto projected = projectInput(projector, serialized, /*useIOBuf=*/false);
+  EXPECT_FALSE(outputRequiresNullBarrier(projected));
+
+  const auto projectedString = toString(projected);
+  std::vector<std::string_view> batches{projectedString};
+  Deserializer deserializer{
+      projector.projectedSchema(), pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(batches, output);
+
+  ASSERT_EQ(output->size(), kRowsPerBatch);
+  auto* outputKept = output->as<RowVector>()->childAt(0)->as<RowVector>();
+  ASSERT_NE(outputKept, nullptr);
+  for (vector_size_t i = 0; i < kRowsPerBatch; ++i) {
+    EXPECT_FALSE(outputKept->isNullAt(i)) << "row " << i;
+  }
+  auto* scores = outputKept->childAt(0)->as<FlatVector<int32_t>>();
+  ASSERT_NE(scores, nullptr);
+  EXPECT_EQ(scores->valueAt(0), 10);
+  EXPECT_EQ(scores->valueAt(1), 20);
+  EXPECT_EQ(scores->valueAt(2), 30);
+  EXPECT_EQ(scores->valueAt(3), 40);
+}
+
+TEST_F(ProjectorTest, projectedComplexNullFuzzerPreservesNulls) {
+  constexpr vector_size_t kRowsPerBatch = 8;
+  constexpr int kIterations = 8;
+  constexpr int kBatches = 4;
+  constexpr vector_size_t kEntriesPerMapRow = 2;
+
+  auto mapValueType = ROW({
+      {"weight", DOUBLE()},
+      {"active", BOOLEAN()},
+  });
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"profile",
+       ROW({
+           {"score", INTEGER()},
+           {"details",
+            ROW({
+                {"rank", BIGINT()},
+                {"quality", DOUBLE()},
+            })},
+       })},
+      {"activity",
+       ROW({
+           {"clicks", INTEGER()},
+           {"label", VARCHAR()},
+           {"inner",
+            ROW({
+                {"flag", BOOLEAN()},
+                {"weight", DOUBLE()},
+            })},
+       })},
+      {"events",
+       ARRAY(ROW({
+           {"event_id", BIGINT()},
+           {"payload",
+            ROW({
+                {"score", DOUBLE()},
+                {"tag", VARCHAR()},
+            })},
+       }))},
+      {"attrs", MAP(VARCHAR(), mapValueType)},
+      {"flatAttrs", MAP(VARCHAR(), mapValueType)},
+  });
+
+  SerializerOptions serOpts{
+      .version = SerializationVersion::kSerialization,
+      .flatMapColumns = {{"flatAttrs", {}}},
+  };
+  const auto rowType = velox::checkedPointerCast<const velox::RowType>(type);
+
+  struct RowLeafPath {
+    std::string path;
+    std::vector<std::string_view> names;
+  };
+  struct FlatMapLeafPath {
+    std::string path;
+    std::string_view key;
+    std::string_view field;
+  };
+
+  const std::vector<RowLeafPath> rowLeafPaths = {
+      {"id", {"id"}},
+      {"profile.score", {"profile", "score"}},
+      {"profile.details.rank", {"profile", "details", "rank"}},
+      {"profile.details.quality", {"profile", "details", "quality"}},
+      {"activity.clicks", {"activity", "clicks"}},
+      {"activity.label", {"activity", "label"}},
+      {"activity.inner.flag", {"activity", "inner", "flag"}},
+      {"activity.inner.weight", {"activity", "inner", "weight"}},
+  };
+  const std::vector<FlatMapLeafPath> flatMapLeafPaths = {
+      {"flatAttrs[\"a\"].weight", "a", "weight"},
+      {"flatAttrs[\"a\"].active", "a", "active"},
+      {"flatAttrs[\"b\"].weight", "b", "weight"},
+      {"flatAttrs[\"b\"].active", "b", "active"},
+  };
+
+  auto makeFlatInputRow = [&](VectorFuzzer& fuzzer) {
+    std::vector<VectorPtr> children;
+    children.reserve(rowType->size());
+    for (size_t child = 0; child < rowType->size(); ++child) {
+      children.push_back(
+          fuzzer.fuzzFlat(rowType->childAt(child), kRowsPerBatch));
+    }
+    return std::make_shared<RowVector>(
+        pool_.get(), rowType, nullptr, kRowsPerBatch, std::move(children));
+  };
+
+  auto childIndex = [](const RowVector* row, std::string_view name) {
+    const auto& rowType = row->type()->asRow();
+    for (size_t i = 0; i < rowType.size(); ++i) {
+      if (rowType.nameOf(i) == name) {
+        return i;
+      }
+    }
+    NIMBLE_FAIL("Missing child {}", name);
+  };
+
+  auto leafVector = [&](const RowVector* root,
+                        const RowLeafPath& path) -> const BaseVector* {
+    const RowVector* row = root;
+    for (size_t i = 0; i + 1 < path.names.size(); ++i) {
+      row = row->childAt(childIndex(row, path.names[i]))->as<RowVector>();
+    }
+    return row->childAt(childIndex(row, path.names.back())).get();
+  };
+
+  auto pathIsNull = [&](const RowVector* root,
+                        const RowLeafPath& path,
+                        vector_size_t rowIndex) {
+    const RowVector* row = root;
+    if (row->isNullAt(rowIndex)) {
+      return true;
+    }
+    for (size_t i = 0; i + 1 < path.names.size(); ++i) {
+      row = row->childAt(childIndex(row, path.names[i]))->as<RowVector>();
+      if (row->isNullAt(rowIndex)) {
+        return true;
+      }
+    }
+    return row->childAt(childIndex(row, path.names.back()))->isNullAt(rowIndex);
+  };
+
+  auto expectLeafEqual = [&](const RowVector* expectedRoot,
+                             vector_size_t expectedRow,
+                             const RowVector* actualRoot,
+                             vector_size_t actualRow,
+                             const RowLeafPath& path) {
+    const auto expectedNull = pathIsNull(expectedRoot, path, expectedRow);
+    EXPECT_EQ(pathIsNull(actualRoot, path, actualRow), expectedNull)
+        << "path=" << path.path << " expectedRow=" << expectedRow
+        << " actualRow=" << actualRow;
+    if (expectedNull) {
+      return;
+    }
+
+    const auto* expected = leafVector(expectedRoot, path);
+    const auto* actual = leafVector(actualRoot, path);
+    switch (expected->type()->kind()) {
+      case TypeKind::BOOLEAN:
+        EXPECT_EQ(
+            expected->as<FlatVector<bool>>()->valueAt(expectedRow),
+            actual->as<FlatVector<bool>>()->valueAt(actualRow));
+        break;
+      case TypeKind::INTEGER:
+        EXPECT_EQ(
+            expected->as<FlatVector<int32_t>>()->valueAt(expectedRow),
+            actual->as<FlatVector<int32_t>>()->valueAt(actualRow));
+        break;
+      case TypeKind::BIGINT:
+        EXPECT_EQ(
+            expected->as<FlatVector<int64_t>>()->valueAt(expectedRow),
+            actual->as<FlatVector<int64_t>>()->valueAt(actualRow));
+        break;
+      case TypeKind::DOUBLE:
+        EXPECT_EQ(
+            expected->as<FlatVector<double>>()->valueAt(expectedRow),
+            actual->as<FlatVector<double>>()->valueAt(actualRow));
+        break;
+      case TypeKind::VARCHAR:
+        EXPECT_EQ(
+            expected->as<FlatVector<StringView>>()->valueAt(expectedRow),
+            actual->as<FlatVector<StringView>>()->valueAt(actualRow));
+        break;
+      default:
+        NIMBLE_FAIL(
+            "Unexpected projected type {}", expected->type()->toString());
+    }
+  };
+
+  auto makeStringRowMap = [&](bool hasNulls, double valueBase) {
+    const auto numEntries = kRowsPerBatch * kEntriesPerMapRow;
+    auto offsets = allocateOffsets(kRowsPerBatch, pool_.get());
+    auto sizes = allocateSizes(kRowsPerBatch, pool_.get());
+    auto* rawOffsets = offsets->asMutable<vector_size_t>();
+    auto* rawSizes = sizes->asMutable<vector_size_t>();
+    for (vector_size_t row = 0; row < kRowsPerBatch; ++row) {
+      rawOffsets[row] = row * kEntriesPerMapRow;
+      rawSizes[row] = kEntriesPerMapRow;
+    }
+
+    std::vector<std::string> keys;
+    keys.reserve(numEntries);
+    auto weights = BaseVector::create<FlatVector<double>>(
+        DOUBLE(), numEntries, pool_.get());
+    auto active = BaseVector::create<FlatVector<bool>>(
+        BOOLEAN(), numEntries, pool_.get());
+    for (vector_size_t row = 0; row < kRowsPerBatch; ++row) {
+      for (vector_size_t mapIndex = 0; mapIndex < kEntriesPerMapRow;
+           ++mapIndex) {
+        const auto entry = row * kEntriesPerMapRow + mapIndex;
+        keys.emplace_back(mapIndex == 0 ? "a" : "b");
+        weights->set(entry, valueBase + row * 10 + mapIndex);
+        active->set(entry, (row + mapIndex) % 2 == 0);
+      }
+    }
+
+    auto values = std::make_shared<RowVector>(
+        pool_.get(),
+        mapValueType,
+        nullptr,
+        numEntries,
+        std::vector<VectorPtr>{weights, active});
+    if (hasNulls) {
+      values->setNull(4 * kEntriesPerMapRow, true);
+    }
+    auto map = std::make_shared<MapVector>(
+        pool_.get(),
+        MAP(VARCHAR(), mapValueType),
+        nullptr,
+        kRowsPerBatch,
+        offsets,
+        sizes,
+        makeStringVector(keys),
+        values);
+    if (hasNulls) {
+      map->setNull(5, true);
+    }
+    return map;
+  };
+
+  auto findStringKeyEntry =
+      [&](const MapVector* map,
+          vector_size_t row,
+          std::string_view key) -> std::optional<vector_size_t> {
+    if (map->isNullAt(row)) {
+      return std::nullopt;
+    }
+    const auto* keys = map->mapKeys()->as<FlatVector<StringView>>();
+    const auto offset = map->offsetAt(row);
+    const auto size = map->sizeAt(row);
+    for (vector_size_t i = 0; i < size; ++i) {
+      const auto entry = offset + i;
+      if (keys->valueAt(entry).str() == key) {
+        return entry;
+      }
+    }
+    return std::nullopt;
+  };
+
+  auto flatMapFieldVector =
+      [&](const RowVector* root,
+          const FlatMapLeafPath& path,
+          vector_size_t row) -> std::pair<const BaseVector*, vector_size_t> {
+    const auto* map =
+        root->childAt(childIndex(root, "flatAttrs"))->as<MapVector>();
+    const auto entry = findStringKeyEntry(map, row, path.key);
+    NIMBLE_CHECK(entry.has_value(), "Expected FlatMap key in test data");
+    const auto* values = map->mapValues()->as<RowVector>();
+    return {
+        values->childAt(childIndex(values, path.field)).get(),
+        *entry,
+    };
+  };
+
+  auto flatMapFieldIsNull = [&](const RowVector* root,
+                                const FlatMapLeafPath& path,
+                                vector_size_t row) {
+    if (root->isNullAt(row)) {
+      return true;
+    }
+    const auto* map =
+        root->childAt(childIndex(root, "flatAttrs"))->as<MapVector>();
+    const auto entry = findStringKeyEntry(map, row, path.key);
+    if (!entry.has_value()) {
+      return true;
+    }
+    const auto* values = map->mapValues()->as<RowVector>();
+    if (values->isNullAt(*entry)) {
+      return true;
+    }
+    return values->childAt(childIndex(values, path.field))->isNullAt(*entry);
+  };
+
+  auto expectFlatMapLeafEqual = [&](const RowVector* expectedRoot,
+                                    vector_size_t expectedRow,
+                                    const RowVector* actualRoot,
+                                    vector_size_t actualRow,
+                                    const FlatMapLeafPath& path) {
+    const auto expectedNull =
+        flatMapFieldIsNull(expectedRoot, path, expectedRow);
+    EXPECT_EQ(flatMapFieldIsNull(actualRoot, path, actualRow), expectedNull)
+        << "path=" << path.path << " expectedRow=" << expectedRow
+        << " actualRow=" << actualRow;
+    if (expectedNull) {
+      return;
+    }
+
+    const auto [expected, expectedEntry] =
+        flatMapFieldVector(expectedRoot, path, expectedRow);
+    const auto [actual, actualEntry] =
+        flatMapFieldVector(actualRoot, path, actualRow);
+    switch (expected->type()->kind()) {
+      case TypeKind::BOOLEAN:
+        EXPECT_EQ(
+            expected->as<FlatVector<bool>>()->valueAt(expectedEntry),
+            actual->as<FlatVector<bool>>()->valueAt(actualEntry));
+        break;
+      case TypeKind::DOUBLE:
+        EXPECT_EQ(
+            expected->as<FlatVector<double>>()->valueAt(expectedEntry),
+            actual->as<FlatVector<double>>()->valueAt(actualEntry));
+        break;
+      default:
+        NIMBLE_FAIL(
+            "Unexpected FlatMap projected type {}",
+            expected->type()->toString());
+    }
+  };
+
+  auto expectRegularMapEqual = [&](const RowVector* expectedRoot,
+                                   vector_size_t expectedRow,
+                                   const RowVector* actualRoot,
+                                   vector_size_t actualRow) {
+    const auto* expectedMap =
+        expectedRoot->childAt(childIndex(expectedRoot, "attrs"))
+            ->as<MapVector>();
+    const auto* actualMap =
+        actualRoot->childAt(childIndex(actualRoot, "attrs"))->as<MapVector>();
+    const auto expectedNull = expectedRoot->isNullAt(expectedRow) ||
+        expectedMap->isNullAt(expectedRow);
+    const auto actualNull =
+        actualRoot->isNullAt(actualRow) || actualMap->isNullAt(actualRow);
+    EXPECT_EQ(actualNull, expectedNull)
+        << "expectedRow=" << expectedRow << " actualRow=" << actualRow;
+    if (expectedNull) {
+      return;
+    }
+    EXPECT_TRUE(actualMap->equalValueAt(expectedMap, actualRow, expectedRow))
+        << "expectedRow=" << expectedRow << " actualRow=" << actualRow;
+  };
+
+  const auto seed = folly::Random::rand32();
+  LOG(INFO) << "projectedComplexNullFuzzerPreservesNulls seed: " << seed;
+  folly::detail::DefaultGenerator rng{seed};
+
+  for (int iteration = 0; iteration < kIterations; ++iteration) {
+    SCOPED_TRACE(fmt::format("iteration {}", iteration));
+
+    std::vector<size_t> selectedRowIndices;
+    auto containsRowIndex = [&](size_t index) {
+      for (const auto selectedIndex : selectedRowIndices) {
+        if (selectedIndex == index) {
+          return true;
+        }
+      }
+      return false;
+    };
+    auto addRowIndex = [&](size_t index) {
+      if (!containsRowIndex(index)) {
+        selectedRowIndices.push_back(index);
+      }
+    };
+
+    for (size_t i = 0; i < rowLeafPaths.size(); ++i) {
+      if (folly::Random::oneIn(2, rng)) {
+        addRowIndex(i);
+      }
+    }
+    if (selectedRowIndices.empty()) {
+      addRowIndex(folly::Random::rand32(rng) % rowLeafPaths.size());
+    }
+    bool hasTwoLevelNestedProjection = false;
+    for (const auto index : selectedRowIndices) {
+      hasTwoLevelNestedProjection |= rowLeafPaths[index].names.size() > 2;
+    }
+    if (!hasTwoLevelNestedProjection) {
+      addRowIndex(2 + folly::Random::rand32(rng) % (rowLeafPaths.size() - 2));
+    }
+
+    std::vector<std::string_view> selectedFlatMapKeys;
+    auto addFlatMapKey = [&](std::string_view key) {
+      for (const auto selectedKey : selectedFlatMapKeys) {
+        if (selectedKey == key) {
+          return;
+        }
+      }
+      selectedFlatMapKeys.push_back(key);
+    };
+    addFlatMapKey("a");
+    if (folly::Random::oneIn(2, rng)) {
+      addFlatMapKey("b");
+    }
+
+    std::vector<common::Subfield> subfields;
+    std::vector<const RowLeafPath*> selectedRowPaths;
+    std::vector<const FlatMapLeafPath*> selectedFlatMapPaths;
+    subfields.emplace_back("attrs");
+    for (const auto index : selectedRowIndices) {
+      subfields.emplace_back(rowLeafPaths[index].path);
+      selectedRowPaths.push_back(&rowLeafPaths[index]);
+    }
+    for (const auto& path : flatMapLeafPaths) {
+      for (const auto selectedKey : selectedFlatMapKeys) {
+        if (path.key == selectedKey) {
+          subfields.emplace_back(path.path);
+          selectedFlatMapPaths.push_back(&path);
+          break;
+        }
+      }
+    }
+
+    std::vector<RowVectorPtr> inputs;
+    std::vector<std::string> serializedBatches;
+    std::vector<std::string> projectedStrings;
+    std::shared_ptr<const nimble::Type> inputSchema;
+    inputs.reserve(kBatches);
+    serializedBatches.reserve(kBatches);
+    projectedStrings.reserve(kBatches);
+
+    for (int batch = 0; batch < kBatches; ++batch) {
+      const auto hasNulls = batch % 2 == 1;
+      VectorFuzzer fuzzer(
+          {
+              .vectorSize = kRowsPerBatch,
+              .nullRatio = 0,
+              .stringLength = 12,
+              .stringVariableLength = true,
+              .containerLength = 3,
+              .containerVariableLength = true,
+              .useRandomNullPattern = true,
+              .normalizeMapKeys = true,
+          },
+          pool_.get(),
+          folly::Random::rand32(rng));
+      auto fuzzed = makeFlatInputRow(fuzzer);
+      std::vector<VectorPtr> children;
+      children.reserve(rowType->size());
+      for (size_t child = 0; child < rowType->size(); ++child) {
+        children.push_back(fuzzed->childAt(child));
+      }
+      children[childIndex(fuzzed.get(), "attrs")] =
+          makeStringRowMap(hasNulls, /*valueBase=*/1000);
+      children[childIndex(fuzzed.get(), "flatAttrs")] =
+          makeStringRowMap(hasNulls, /*valueBase=*/2000);
+      auto input = std::make_shared<RowVector>(
+          pool_.get(), type, nullptr, kRowsPerBatch, std::move(children));
+      if (hasNulls) {
+        auto* profile =
+            input->childAt(childIndex(input.get(), "profile"))->as<RowVector>();
+        auto* details =
+            profile->childAt(childIndex(profile, "details"))->as<RowVector>();
+        details->setNull(2, true);
+        auto* activity = input->childAt(childIndex(input.get(), "activity"))
+                             ->as<RowVector>();
+        auto* inner =
+            activity->childAt(childIndex(activity, "inner"))->as<RowVector>();
+        inner->setNull(3, true);
+      }
+
+      auto [serialized, schema] = serializeWithSchema(input, type, serOpts);
+      if (inputSchema == nullptr) {
+        inputSchema = schema;
+      }
+      inputs.push_back(input);
+      serializedBatches.push_back(std::move(serialized));
+    }
+
+    Projector projector(
+        inputSchema,
+        subfields,
+        pool_.get(),
+        {.projectVersion = SerializationVersion::kProjection});
+
+    for (int batch = 0; batch < kBatches; ++batch) {
+      const auto hasNulls = batch % 2 == 1;
+      auto projected =
+          projectInput(projector, serializedBatches[batch], /*useIOBuf=*/false);
+      EXPECT_EQ(outputRequiresNullBarrier(projected), hasNulls);
+      projectedStrings.push_back(toString(projected));
+    }
+
+    std::vector<std::string_view> batches;
+    batches.reserve(projectedStrings.size());
+    for (const auto& projectedString : projectedStrings) {
+      batches.push_back(projectedString);
+    }
+
+    Deserializer deserializer{
+        projector.projectedSchema(), pool_.get(), {.hasHeader = true}};
+    VectorPtr output;
+    deserializer.deserialize(batches, output);
+    ASSERT_EQ(output->size(), kRowsPerBatch * kBatches);
+
+    const auto* outputRow = output->as<RowVector>();
+    for (int batch = 0; batch < kBatches; ++batch) {
+      const auto* inputRow = inputs[batch].get();
+      for (vector_size_t row = 0; row < kRowsPerBatch; ++row) {
+        const auto outputRowIndex = batch * kRowsPerBatch + row;
+        expectRegularMapEqual(inputRow, row, outputRow, outputRowIndex);
+        for (const auto* path : selectedRowPaths) {
+          expectLeafEqual(inputRow, row, outputRow, outputRowIndex, *path);
+        }
+        for (const auto* path : selectedFlatMapPaths) {
+          expectFlatMapLeafEqual(
+              inputRow, row, outputRow, outputRowIndex, *path);
+        }
+      }
+    }
+  }
 }
 
 // Test auto name mapping via projectType for schema evolution (column renames).
@@ -2453,8 +3651,8 @@ TEST_F(ProjectorTest, projectMultipleFlatMapColumns) {
 }
 
 // Verifies that the projector correctly handles serialized FlatMap data with
-// constant in-map stream skipping (both all-false and all-true cases).
-TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
+// omitted constant in-map streams (both all-false and all-true cases).
+TEST_F(ProjectorTestBase, flatMapConstantInMapStreams) {
   auto type = ROW({
       {"id", BIGINT()},
       {"flat_map", MAP(VARCHAR(), DOUBLE())},
@@ -2515,8 +3713,8 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
       .flatMapColumns = {{"flat_map", {}}},
   };
 
-  // Serialize multiple batches with different key sets to trigger in-map
-  // stream skipping (all-false for absent keys, all-true for present keys).
+  // Serialize multiple batches with different key sets to exercise constant
+  // in-map streams (all-false for absent keys, all-true for present keys).
   Serializer serializer{serOpts, type, pool_.get()};
 
   // Batch 1: keys "a" and "b"
@@ -2524,7 +3722,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   auto serialized1 = std::string(
       serializer.serialize(batch1, OrderedRanges::of(0, batch1->size())));
 
-  // Batch 2: only key "a" (key "b" all-false in-map -> skipped)
+  // Batch 2: only key "a" (key "b" all-false in-map).
   auto batch2 = generateBatch({"a"});
   auto serialized2 = std::string(
       serializer.serialize(batch2, OrderedRanges::of(0, batch2->size())));
@@ -2534,8 +3732,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   auto serialized3 = std::string(
       serializer.serialize(batch3, OrderedRanges::of(0, batch3->size())));
 
-  // Batch 4: keys "a", "b" (key "c" all-false, "a" and "b" all-true -> all
-  // three in-map streams are constant, all skipped)
+  // Batch 4: keys "a", "b" (key "c" all-false, "a" and "b" all-true).
   auto batch4 = generateBatch({"a", "b"});
   auto serialized4 = std::string(
       serializer.serialize(batch4, OrderedRanges::of(0, batch4->size())));
@@ -2547,7 +3744,7 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   auto collectStreamOffsets =
       [&](std::string_view data) -> folly::F14FastSet<uint32_t> {
     DeserializerOptions desOpts{.hasHeader = true};
-    serde::StreamDataReader reader{pool_.get(), desOpts};
+    serde::StreamDataParser reader{pool_.get(), desOpts};
     reader.initialize(data);
     folly::F14FastSet<uint32_t> offsets;
     reader.iterateStreams(
@@ -2564,35 +3761,39 @@ TEST_F(ProjectorTestBase, flatMapInMapStreamSkipping) {
   }
   ASSERT_EQ(inMapOffsets.size(), 3);
 
-  // Verify constant in-map streams are NOT stored in serialized data.
+  // Verify constant in-map streams are omitted once their keys are discovered.
   {
     auto offsets1 = collectStreamOffsets(serialized1);
     EXPECT_FALSE(offsets1.contains(inMapOffsets[0]))
-        << "batch1: in-map 'a' should be skipped";
+        << "batch1: in-map 'a' should be absent";
     EXPECT_FALSE(offsets1.contains(inMapOffsets[1]))
-        << "batch1: in-map 'b' should be skipped";
+        << "batch1: in-map 'b' should be absent";
+    EXPECT_FALSE(offsets1.contains(inMapOffsets[2]))
+        << "batch1: in-map 'c' should be absent before discovery";
 
     auto offsets2 = collectStreamOffsets(serialized2);
     EXPECT_FALSE(offsets2.contains(inMapOffsets[0]))
-        << "batch2: in-map 'a' should be skipped";
+        << "batch2: in-map 'a' should be absent";
     EXPECT_FALSE(offsets2.contains(inMapOffsets[1]))
-        << "batch2: in-map 'b' should be skipped";
+        << "batch2: in-map 'b' should be absent";
+    EXPECT_FALSE(offsets2.contains(inMapOffsets[2]))
+        << "batch2: in-map 'c' should be absent before discovery";
 
     auto offsets3 = collectStreamOffsets(serialized3);
     EXPECT_FALSE(offsets3.contains(inMapOffsets[0]))
-        << "batch3: in-map 'a' should be skipped";
+        << "batch3: in-map 'a' should be absent";
     EXPECT_FALSE(offsets3.contains(inMapOffsets[1]))
-        << "batch3: in-map 'b' should be skipped";
+        << "batch3: in-map 'b' should be absent";
     EXPECT_FALSE(offsets3.contains(inMapOffsets[2]))
-        << "batch3: in-map 'c' should be skipped";
+        << "batch3: in-map 'c' should be absent";
 
     auto offsets4 = collectStreamOffsets(serialized4);
     EXPECT_FALSE(offsets4.contains(inMapOffsets[0]))
-        << "batch4: in-map 'a' should be skipped";
+        << "batch4: in-map 'a' should be absent";
     EXPECT_FALSE(offsets4.contains(inMapOffsets[1]))
-        << "batch4: in-map 'b' should be skipped";
+        << "batch4: in-map 'b' should be absent";
     EXPECT_FALSE(offsets4.contains(inMapOffsets[2]))
-        << "batch4: in-map 'c' should be skipped";
+        << "batch4: in-map 'c' should be absent";
   }
 
   // Project all columns through the projector. FlatMap requires explicit key

@@ -224,24 +224,40 @@ TEST_F(StreamChunkerTestsBase, shouldOmitNullStream) {
             /*isFirstChunk=*/false));
   }
 
-  // No nulls.
+  // No validity bitmap.
   {
     NullsStreamData nullsStream(
         *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
-    std::vector<bool> nonNullsTestData = {true, false};
     nullsStream.ensureAdditionalNullsCapacity(
-        /*mayHaveNulls=*/false, static_cast<uint32_t>(nonNullsTestData.size()));
+        /*mayHaveNulls=*/false, /*additionalSize=*/2);
 
-    // Omit stream when first chunk and empty.
     EXPECT_TRUE(
         detail::shouldOmitNullStream(
             nullsStream,
             /*minChunkSize=*/1,
             /*isFirstChunk=*/true));
+    EXPECT_FALSE(
+        detail::shouldOmitNullStream(
+            nullsStream,
+            /*minChunkSize=*/1,
+            /*isFirstChunk=*/false));
+  }
 
+  // Allocated validity bitmap, but all values are non-null.
+  {
+    NullsStreamData nullsStream(
+        *leafPool_, *descriptor, *inputBufferGrowthPolicy_);
+    std::vector<bool> nonNullsTestData = {true, true};
+    nullsStream.ensureAdditionalNullsCapacity(
+        /*mayHaveNulls=*/true, static_cast<uint32_t>(nonNullsTestData.size()));
     auto& nonNulls = nullsStream.mutableNonNulls();
     populateData(nonNulls, nonNullsTestData);
-    // No omit stream when not first chunk and not empty.
+
+    EXPECT_TRUE(
+        detail::shouldOmitNullStream(
+            nullsStream,
+            /*minChunkSize=*/1,
+            /*isFirstChunk=*/true));
     EXPECT_FALSE(
         detail::shouldOmitNullStream(
             nullsStream,

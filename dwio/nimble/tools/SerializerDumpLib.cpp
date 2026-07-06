@@ -20,6 +20,7 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/serializer/SerializerImpl.h"
 #include "dwio/nimble/serializer/legacy/TrailerReader.h"
 
@@ -64,12 +65,9 @@ SerializationDump::SerializationStats SerializationDump::serializationStats(
   const char* pos = serialized.data();
   const char* end = pos + serialized.size();
 
-  // Read version byte.
-  info.version =
-      static_cast<SerializationVersion>(static_cast<uint8_t>(*pos++));
-
-  // Read row count (varint for kLegacyCompact).
-  info.rowCount = varint::readVarint32(&pos);
+  const auto header = serde::readSerializationHeader(pos, end, true);
+  info.version = header.version;
+  info.rowCount = header.rowCount;
 
   // Walk the sparse (indices, sizes) trailer directly. Emit "empty" entries
   // for gaps between non-zero slots so the offset-indexed view is preserved.

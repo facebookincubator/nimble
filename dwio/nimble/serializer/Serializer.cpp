@@ -34,17 +34,22 @@ class FlatmapEncodingLayoutContext : public TypeBuilderContext {
       keyEncodings_;
 };
 
-// kLegacyCompact is read-only post the two-array trailer change. Callers that
-// still pass it (e.g., not-yet-migrated tests or downstream code we can't
-// update in this diff due to directory branching) are silently upgraded to
-// kSerialization so the round-trip still works on the new wire format. A
-// LOG(WARNING) flags the migration so the caller can switch.
-SerializerOptions upgradeReadOnlyVersion(SerializerOptions options) {
-  if (options.version.has_value() &&
-      options.version.value() == SerializationVersion::kLegacyCompact) {
+// Legacy writer spellings with a version header are read-only / migration-only.
+// Callers that still pass them are silently upgraded to kSerialization so
+// round-trips use the current wire format while call sites migrate. A missing
+// version is the production no-header legacy format and must remain stable.
+SerializerOptions normalizeWriterVersion(SerializerOptions options) {
+  if (!options.version.has_value()) {
+    return options;
+  }
+
+  const auto version = options.version.value();
+  if (version == SerializationVersion::kLegacy ||
+      version == SerializationVersion::kLegacyCompact ||
+      version == SerializationVersion::kLegacySerialization) {
     LOG_FIRST_N(WARNING, 10)
-        << "Serializer constructed with kLegacyCompact (read-only post the "
-           "two-array trailer change); silently upgrading to kSerialization. "
+        << "Serializer constructed with " << toString(version)
+        << " (legacy writer spelling); silently upgrading to kSerialization. "
            "Migrate the caller to pass kSerialization explicitly.";
     options.version = SerializationVersion::kSerialization;
   }
@@ -57,14 +62,15 @@ Serializer::Serializer(
     SerializerOptions options,
     const std::shared_ptr<const velox::Type>& type,
     velox::memory::MemoryPool* pool)
-    : options_{upgradeReadOnlyVersion(std::move(options))},
-      pool_{pool},
-      context_{*pool_},
+    : options_{normalizeWriterVersion(std::move(options))},
+      context_{*pool},
       buffer_{context_.bufferMemoryPool().get()} {
+  const auto version = options_.serializationVersion();
   NIMBLE_CHECK(
-      !isTabletVersion(options_.version),
-      "kTablet is not supported by the serializer. It is only used in projection.");
-  // streamSizesEncodingType is ignored for kLegacy (no trailer).
+      version == SerializationVersion::kLegacy ||
+          version == SerializationVersion::kSerialization,
+      "Serializer writes must use kLegacy or kSerialization. Got: {}",
+      version);
   const std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId =
       velox::dwio::common::TypeWithId::create(type);
 
@@ -79,22 +85,20 @@ Serializer::Serializer(
 
   typeWithId_ = typeWithId;
 
-  // Register handler for dynamically discovered FlatMap keys before creating
-  // the writer tree, so that predefined keys also trigger the handler.
+  // Register handler before creating the writer tree so both predefined and
+  // dynamically discovered FlatMap keys are tracked.
   if (!options_.flatMapColumns.empty()) {
     context_.setFlatmapFieldAddedEventHandler(
         [this](
             const TypeBuilder& flatmap,
             std::string_view fieldKey,
             const TypeBuilder& fieldType) {
-          // Track in-map stream offset for constant stream skipping.
           const auto& flatmapBuilder = flatmap.asFlatMap();
           inMapStreamOffsets_.insert(
               flatmapBuilder
                   .inMapDescriptorAt(flatmapBuilder.childrenCount() - 1)
                   .offset());
 
-          // Handle encoding layout if configured.
           if (options_.encodingLayoutTree.has_value()) {
             auto* ctx = flatmap.context<FlatmapEncodingLayoutContext>();
             if (ctx != nullptr) {
@@ -124,14 +128,32 @@ std::string_view Serializer::serialize(
   return {buffer_.data(), buffer_.size()};
 }
 
+void Serializer::validateSupportedInput(
+    const velox::VectorPtr& vector,
+    const OrderedRanges& ranges) const {
+  if (options_.flatMapColumns.empty() || !vector->mayHaveNulls()) {
+    return;
+  }
+
+  bool hasNullRow{false};
+  ranges.applyEach([&](auto offset) {
+    if (vector->isNullAt(offset)) {
+      hasNullRow = true;
+    }
+  });
+  NIMBLE_CHECK(
+      !hasNullRow,
+      "Top-level row nulls are not supported when serializing FlatMap columns.");
+}
+
 void Serializer::buildStreamEncodingLayouts() {
   if (!options_.encodingLayoutTree.has_value()) {
     return;
   }
 
   // NOTE: The event handler for dynamically discovered FlatMap keys is
-  // registered in the constructor, which combines both in-map offset tracking
-  // and encoding layout lookup in a single handler.
+  // registered in the constructor, so keyed encoding layouts can be applied
+  // as keys appear.
 
   // Traverse the encoding layout tree to build the stream encoding layouts map.
   const auto& rootType = context_.schemaBuilder().root();

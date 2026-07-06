@@ -25,6 +25,7 @@
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
@@ -187,18 +188,23 @@ class WriteHeaderTest : public ::testing::Test {
     auto actualVersion = static_cast<SerializationVersion>(*pos++);
     EXPECT_EQ(actualVersion, expectedVersion);
 
-    // Read row count. kLegacyCompact uses varint, kLegacy uses u32.
-    const bool isCompact = isCompactFormat(expectedVersion);
+    // Read row count. Non-legacy formats use varint; kLegacy uses u32.
     uint32_t actualRowCount;
-    if (isCompact) {
+    if (usesVarintRowCount(expectedVersion)) {
       actualRowCount = varint::readVarint32(&pos);
     } else {
       actualRowCount = encoding::readUint32(pos);
     }
     EXPECT_EQ(actualRowCount, expectedRowCount);
 
-    // For kLegacyCompact, verify stream sizes from trailer.
-    if (isCompactFormat(expectedVersion)) {
+    // Skip the flags byte for versions that carry one (no nulls expected here).
+    if (usesHeaderFlags(expectedVersion)) {
+      EXPECT_EQ(static_cast<uint8_t>(*pos++), 0)
+          << "unexpected null-barrier flag";
+    }
+
+    // Sequential stream layouts keep stream sizes in the trailer.
+    if (nonLegacyFormat(expectedVersion) && !isTabletVersion(expectedVersion)) {
       auto actualSizes = readTrailerStreamMetadataDenseForTest(end);
       if (actualSizes.size() < expectedSizes.size()) {
         actualSizes.resize(expectedSizes.size(), 0);
@@ -209,12 +215,6 @@ class WriteHeaderTest : public ::testing::Test {
 
   std::shared_ptr<memory::MemoryPool> pool_;
 };
-
-TEST_F(WriteHeaderTest, legacyFormat) {
-  std::string buffer;
-  serde::writeSerializationHeader(buffer, SerializationVersion::kLegacy, 100);
-  verifyHeader(buffer, SerializationVersion::kLegacy, 100, {});
-}
 
 TEST_F(WriteHeaderTest, compactRawFormatTrivial) {
   std::vector<uint32_t> sizes = {10, 20, 30};
@@ -268,79 +268,21 @@ TEST_F(WriteHeaderTest, compactRawFormatManySizes) {
 }
 
 TEST_F(WriteHeaderTest, zeroRowCount) {
-  {
-    SCOPED_TRACE("kLegacy");
-    std::string buffer;
-    serde::writeSerializationHeader(buffer, SerializationVersion::kLegacy, 0);
-    verifyHeader(buffer, SerializationVersion::kLegacy, 0, {});
-  }
-  {
-    SCOPED_TRACE("kLegacyCompact");
-    auto buffer = buildCompactRawHeaderTrailer(0, {});
-    verifyHeader(buffer, SerializationVersion::kSerialization, 0, {});
-  }
+  auto buffer = buildCompactRawHeaderTrailer(0, {});
+  verifyHeader(buffer, SerializationVersion::kSerialization, 0, {});
 }
 
 TEST_F(WriteHeaderTest, maxRowCount) {
-  {
-    SCOPED_TRACE("kLegacy");
-    std::string buffer;
-    serde::writeSerializationHeader(
-        buffer,
-        SerializationVersion::kLegacy,
-        std::numeric_limits<uint32_t>::max());
-    verifyHeader(
-        buffer,
-        SerializationVersion::kLegacy,
-        std::numeric_limits<uint32_t>::max(),
-        {});
-  }
-  {
-    SCOPED_TRACE("kLegacyCompact");
-    auto buffer =
-        buildCompactRawHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
-    verifyHeader(
-        buffer,
-        SerializationVersion::kSerialization,
-        std::numeric_limits<uint32_t>::max(),
-        {});
-  }
-}
-
-TEST_F(WriteHeaderTest, noVersionHeader) {
-  std::string buffer;
-  serde::writeSerializationHeader(buffer, std::nullopt, 100);
-
-  // No version byte - only row count.
-  EXPECT_EQ(buffer.size(), sizeof(uint32_t));
-
-  const char* pos = buffer.data();
-  uint32_t rowCount = encoding::readUint32(pos);
-  EXPECT_EQ(rowCount, 100);
+  auto buffer =
+      buildCompactRawHeaderTrailer(std::numeric_limits<uint32_t>::max(), {});
+  verifyHeader(
+      buffer,
+      SerializationVersion::kSerialization,
+      std::numeric_limits<uint32_t>::max(),
+      {});
 }
 
 // Tests for estimateHeaderSize
-
-TEST_F(WriteHeaderTest, estimateHeaderSizeLegacy) {
-  struct TestParam {
-    uint32_t rowCount;
-    std::string debugString() const {
-      return fmt::format("rowCount {}", rowCount);
-    }
-  };
-  std::vector<TestParam> testSettings = {
-      {0}, {1}, {1000}, {std::numeric_limits<uint32_t>::max()}};
-  for (const auto& testData : testSettings) {
-    SCOPED_TRACE(testData.debugString());
-    std::string buffer;
-    serde::writeSerializationHeader(
-        buffer, SerializationVersion::kLegacy, testData.rowCount);
-    EXPECT_EQ(
-        serde::estimateSerializationHeaderSize(
-            SerializationVersion::kLegacy, testData.rowCount),
-        buffer.size());
-  }
-}
 
 TEST_F(WriteHeaderTest, estimateHeaderSizeCompactRaw) {
   struct TestParam {
@@ -368,13 +310,6 @@ TEST_F(WriteHeaderTest, estimateHeaderSizeCompactRaw) {
             SerializationVersion::kSerialization, testData.rowCount),
         buffer.size());
   }
-}
-
-TEST_F(WriteHeaderTest, estimateHeaderSizeNoVersion) {
-  std::string buffer;
-  serde::writeSerializationHeader(buffer, std::nullopt, 100);
-  EXPECT_EQ(
-      serde::estimateSerializationHeaderSize(std::nullopt, 100), buffer.size());
 }
 
 // Tests for estimateTrailerSize
@@ -618,7 +553,7 @@ TEST_F(ParseStreamsTest, legacyFormatMultipleStreams) {
   EXPECT_EQ(streams[2], "third");
 }
 
-// kLegacyCompact format tests use writeHeader/parseStreams roundtrip since
+// kSerialization format tests use writeHeader/parseStreams roundtrip since
 // the size encoding is now opaque (nimble-encoded).
 
 TEST_F(ParseStreamsTest, denseFormatEmpty) {
@@ -629,9 +564,12 @@ TEST_F(ParseStreamsTest, denseFormatEmpty) {
   serde::detail::writeTrailer(
       {}, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
+  // Skip the header to reach the streams.
+  const char* streamsPos = buffer.data();
+  serde::readSerializationHeader(
+      streamsPos, buffer.data() + buffer.size(), /*hasHeader=*/true);
   auto streams = serde::detail::parseStreams(
-      // Skip version byte and row count varint.
-      buffer.data() + 1 + varint::varintSize(10),
+      streamsPos,
       buffer.data() + buffer.size(),
       SerializationVersion::kSerialization,
       pool_.get());
@@ -655,9 +593,10 @@ TEST_F(ParseStreamsTest, denseFormatSequential) {
   serde::detail::writeTrailer(
       sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
-  // Skip version byte + varint row count.
-  const char* pos = buffer.data() + 1;
-  varint::readVarint32(&pos);
+  // Skip the header.
+  const char* pos = buffer.data();
+  serde::readSerializationHeader(
+      pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
 
   auto streams = serde::detail::parseStreams(
       pos,
@@ -685,8 +624,9 @@ TEST_F(ParseStreamsTest, denseFormatWithGaps) {
   serde::detail::writeTrailer(
       sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
-  const char* pos = buffer.data() + 1;
-  varint::readVarint32(&pos);
+  const char* pos = buffer.data();
+  serde::readSerializationHeader(
+      pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
 
   auto streams = serde::detail::parseStreams(
       pos,
@@ -715,8 +655,9 @@ TEST_F(ParseStreamsTest, denseFormatOnlyLastStream) {
   serde::detail::writeTrailer(
       sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
-  const char* pos = buffer.data() + 1;
-  varint::readVarint32(&pos);
+  const char* pos = buffer.data();
+  serde::readSerializationHeader(
+      pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
 
   auto streams = serde::detail::parseStreams(
       pos,
@@ -1098,8 +1039,9 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingType) {
     buffer.append("s2");
     serde::detail::writeTrailer(sizes, encodingType, encodingType, buffer);
 
-    const char* pos = buffer.data() + 1;
-    varint::readVarint32(&pos);
+    const char* pos = buffer.data();
+    serde::readSerializationHeader(
+        pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
     auto streams = serde::detail::parseStreams(
         pos,
         buffer.data() + buffer.size(),
@@ -1125,8 +1067,9 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeDefault) {
   serde::detail::writeTrailer(
       sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
-  const char* pos = buffer.data() + 1;
-  varint::readVarint32(&pos);
+  const char* pos = buffer.data();
+  serde::readSerializationHeader(
+      pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
   auto streams = serde::detail::parseStreams(
       pos,
       buffer.data() + buffer.size(),
@@ -1154,8 +1097,9 @@ TEST_F(EncodeDecodeTest, streamSizesEncodingTypeCompactRaw) {
     buffer.append(std::string(30, 'c'));
     serde::detail::writeTrailer(sizes, encodingType, encodingType, buffer);
 
-    const char* pos = buffer.data() + 1;
-    varint::readVarint32(&pos);
+    const char* pos = buffer.data();
+    serde::readSerializationHeader(
+        pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
     auto streams = serde::detail::parseStreams(
         pos,
         buffer.data() + buffer.size(),
@@ -1194,7 +1138,7 @@ std::vector<ProjectedStream> projectStreams(
   std::vector<ProjectedStream> streams;
   streams.reserve(selectedStreamIndices.size());
 
-  if (isCompactFormat(version)) {
+  if (nonLegacyFormat(version) && !isTabletVersion(version)) {
     auto streamSizes = readTrailerStreamMetadataDenseForTest(end);
     const char* dataStart = pos;
 
@@ -1274,9 +1218,10 @@ class ProjectStreamsTest : public ParseStreamsTest {
     serde::detail::writeTrailer(
         sizes, EncodingType::Trivial, EncodingType::Trivial, buffer);
 
-    // Skip version byte + varint row count to get to streams position.
-    const char* pos = buffer.data() + 1;
-    varint::readVarint32(&pos);
+    // Skip the header (version + flags + varint row count) to reach streams.
+    const char* pos = buffer.data();
+    serde::readSerializationHeader(
+        pos, buffer.data() + buffer.size(), /*hasHeader=*/true);
     auto offset = pos - buffer.data();
     return buffer.substr(offset);
   }
@@ -1670,10 +1615,10 @@ TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
       CompressionType::Uncompressed);
 }
 
-// Tests for kTablet chunk header stripping in StreamDataReader.
+// Tests for kTablet chunk header stripping in StreamDataParser.
 // kTablet streams contain chunk headers:
 //   [chunkSize:u32][compressionType:1B][encoded_data...]
-// StreamDataReader must strip these headers and decompress as needed.
+// StreamDataParser must strip these headers and decompress as needed.
 
 class TabletChunkStripTest : public ::testing::Test {
  protected:
@@ -1724,7 +1669,7 @@ class TabletChunkStripTest : public ::testing::Test {
   // Assembles a kTablet buffer from streams and returns the data collected
   // by iterateStreams.
   // Each entry in 'streams' is the raw stream bytes (with chunk headers).
-  std::vector<std::pair<uint32_t, std::string>> deserializeTablet(
+  std::string buildTabletBuffer(
       uint32_t rowCount,
       const std::vector<std::pair<uint32_t, std::string>>& streams) {
     // Build dense sizes array.
@@ -1747,10 +1692,17 @@ class TabletChunkStripTest : public ::testing::Test {
         headerIOBuf.length());
     buffer.append(streamData);
     writeTabletTrailer(sizes, buffer);
+    return buffer;
+  }
 
-    // Parse via StreamDataReader.
+  std::vector<std::pair<uint32_t, std::string>> deserializeTablet(
+      uint32_t rowCount,
+      const std::vector<std::pair<uint32_t, std::string>>& streams) {
+    const auto buffer = buildTabletBuffer(rowCount, streams);
+
+    // Parse via StreamDataParser.
     DeserializerOptions options{.hasHeader = true};
-    StreamDataReader reader(pool_.get(), options);
+    StreamDataParser reader(pool_.get(), options);
     auto actualRows = reader.initialize(std::string_view(buffer));
     EXPECT_EQ(actualRows, rowCount);
 
@@ -1841,6 +1793,111 @@ TEST_F(TabletChunkStripTest, multipleStreams) {
   EXPECT_EQ(result[1].second, payload2);
 }
 
+TEST_F(TabletChunkStripTest, streamViewsRemainStable) {
+  struct StreamViewCase {
+    std::string name;
+    std::vector<std::pair<uint32_t, std::string>> firstStreams;
+    std::vector<std::pair<uint32_t, std::string>> secondStreams;
+    std::vector<std::pair<uint32_t, std::string>> expectedAfterFirstBatch;
+    std::vector<std::pair<uint32_t, std::string>> expectedAfterSecondBatch;
+  };
+
+  const auto payload = [](char value) { return std::string(4096, value); };
+  const auto materialize =
+      [](const std::vector<std::pair<uint32_t, std::string_view>>& views) {
+        std::vector<std::pair<uint32_t, std::string>> result;
+        result.reserve(views.size());
+        for (const auto& [offset, data] : views) {
+          result.emplace_back(offset, std::string{data});
+        }
+        return result;
+      };
+
+  const auto uncompressed0 = payload('a');
+  const auto uncompressed1 = payload('b');
+  const auto uncompressed2 = payload('c');
+  const auto compressed0 = payload('d');
+  const auto compressed1 = payload('e');
+  const auto compressed2 = payload('f');
+  const auto mixed0 = payload('g');
+  const auto mixed1 = payload('h');
+  const auto mixed2 = payload('i');
+  const auto mixed3 = payload('j');
+  const auto mixed4 = payload('k');
+  const auto mixed5 = payload('l');
+
+  const std::vector<StreamViewCase> testCases{
+      {
+          .name = "uncompressed",
+          .firstStreams =
+              {{0, buildUncompressedChunk(uncompressed0)},
+               {1, buildUncompressedChunk(uncompressed1)}},
+          .secondStreams = {{0, buildUncompressedChunk(uncompressed2)}},
+          .expectedAfterFirstBatch = {{0, uncompressed0}, {1, uncompressed1}},
+          .expectedAfterSecondBatch =
+              {{0, uncompressed0}, {1, uncompressed1}, {0, uncompressed2}},
+      },
+      {
+          .name = "compressed",
+          .firstStreams =
+              {{0, buildCompressedChunk(compressed0)},
+               {1, buildCompressedChunk(compressed1)}},
+          .secondStreams = {{0, buildCompressedChunk(compressed2)}},
+          .expectedAfterFirstBatch = {{0, compressed0}, {1, compressed1}},
+          .expectedAfterSecondBatch =
+              {{0, compressed0}, {1, compressed1}, {0, compressed2}},
+      },
+      {
+          .name = "mixed",
+          .firstStreams =
+              {{0,
+                concatChunks(
+                    {buildUncompressedChunk(mixed0),
+                     buildCompressedChunk(mixed1)})},
+               {1,
+                concatChunks(
+                    {buildCompressedChunk(mixed2),
+                     buildUncompressedChunk(mixed3)})}},
+          .secondStreams =
+              {{0,
+                concatChunks(
+                    {buildUncompressedChunk(mixed4),
+                     buildCompressedChunk(mixed5)})}},
+          .expectedAfterFirstBatch =
+              {{0, mixed0 + mixed1}, {1, mixed2 + mixed3}},
+          .expectedAfterSecondBatch =
+              {{0, mixed0 + mixed1},
+               {1, mixed2 + mixed3},
+               {0, mixed4 + mixed5}},
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(testCase.name);
+
+    const auto firstBatch = buildTabletBuffer(10, testCase.firstStreams);
+    const auto secondBatch = buildTabletBuffer(20, testCase.secondStreams);
+
+    DeserializerOptions options{.hasHeader = true};
+    StreamDataParser reader(pool_.get(), options);
+
+    std::vector<std::pair<uint32_t, std::string_view>> views;
+    EXPECT_EQ(reader.initialize(firstBatch), 10);
+    reader.iterateStreams([&](uint32_t offset, std::string_view data) {
+      views.emplace_back(offset, data);
+    });
+    EXPECT_EQ(materialize(views), testCase.expectedAfterFirstBatch);
+
+    EXPECT_EQ(reader.initialize(secondBatch), 20);
+    reader.iterateStreams([&](uint32_t offset, std::string_view data) {
+      views.emplace_back(offset, data);
+    });
+    EXPECT_EQ(materialize(views), testCase.expectedAfterSecondBatch);
+
+    reader.reset();
+  }
+}
+
 TEST_F(TabletChunkStripTest, multipleStreamsMultipleChunks) {
   // Stream 0: two uncompressed chunks.
   std::string s0p1 = "stream0 part1";
@@ -1871,14 +1928,15 @@ TEST_F(TabletChunkStripTest, multipleStreamsMultipleChunks) {
 }
 
 TEST_F(TabletChunkStripTest, emptyPayloadChunk) {
-  // Single uncompressed chunk with empty payload.
-  // The chunk header is still present (5 bytes), so iterateStreams calls the
-  // callback with the stripped (empty) data.
-  auto stream = buildUncompressedChunk("");
-  auto result = deserializeTablet(10, {{0, stream}});
-  ASSERT_EQ(result.size(), 1);
-  EXPECT_EQ(result[0].first, 0);
-  EXPECT_TRUE(result[0].second.empty());
+  for (const auto& [name, stream] : {
+           std::pair{"uncompressed", buildUncompressedChunk("")},
+           std::pair{"compressed", buildCompressedChunk("")},
+       }) {
+    SCOPED_TRACE(name);
+    NIMBLE_ASSERT_THROW(
+        deserializeTablet(10, {{0, stream}}),
+        "Chunked stream must have a non-empty payload");
+  }
 }
 
 TEST_F(TabletChunkStripTest, largePayload) {
@@ -1916,7 +1974,7 @@ TEST_F(TabletChunkStripTest, largePayloadMultipleChunks) {
   EXPECT_EQ(result[0].second, payload);
 }
 
-// Tests for ZSTD_DCtx reuse in StreamData and StreamDataReader.
+// Tests for ZSTD_DCtx reuse in StreamData and StreamDataParser.
 // Inherits from TabletChunkStripTest for shared helpers
 // (buildCompressedChunk, pool_, etc.).
 
@@ -1936,7 +1994,7 @@ class ZstdDCtxReuseTest : public TabletChunkStripTest {
   }
 
   // Like TabletChunkStripTest::deserializeTablet, but passes
-  // the fixture's shared dctx to StreamDataReader.
+  // the fixture's shared dctx to StreamDataParser.
   std::vector<std::pair<uint32_t, std::string>> deserializeTabletWithDCtx(
       uint32_t rowCount,
       const std::vector<std::pair<uint32_t, std::string>>& streams) {
@@ -1960,7 +2018,7 @@ class ZstdDCtxReuseTest : public TabletChunkStripTest {
     writeTabletTrailer(sizes, buffer);
 
     DeserializerOptions options{.hasHeader = true};
-    StreamDataReader reader(pool_.get(), options);
+    StreamDataParser reader(pool_.get(), options);
     auto actualRows = reader.initialize(std::string_view(buffer));
     EXPECT_EQ(actualRows, rowCount);
 
@@ -1997,6 +2055,33 @@ TEST_F(ZstdDCtxReuseTest, streamDataLegacyZstdWithDCtx) {
   EXPECT_EQ(output, expected);
 }
 
+TEST_F(ZstdDCtxReuseTest, streamDataLegacyDecodeFails) {
+  const std::vector<int32_t> expected = {10, 20, 30, 40};
+  std::string_view payload(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+  auto compressed = buildLegacyCompressedData(payload);
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
+
+  std::vector<int32_t> output(expected.size());
+  NIMBLE_ASSERT_THROW(
+      sd.decode(
+          output.data(),
+          /*offset=*/0,
+          static_cast<uint32_t>(output.size()),
+          sizeof(int32_t)),
+      "Legacy StreamData must be decoded through copyTo() or decodeStrings()");
+}
+
 TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
   const std::vector<int32_t> values1 = {1, 2, 3};
   std::string_view payload1(
@@ -2026,17 +2111,25 @@ TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
       output1.size() * sizeof(int32_t));
   EXPECT_EQ(output1, values1);
 
-  // Reset with new data; dctx is bound at construction and persists.
-  sd.reset(compressed2, SerializationVersion::kLegacy);
+  // Recreate with new data; decompression buffer storage is external and
+  // persists across StreamData lifetimes.
+  serde::StreamData sd2(
+      ScalarKind::Int32,
+      compressed2,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output2(values2.size());
-  sd.copyTo(
+  sd2.copyTo(
       reinterpret_cast<char*>(output2.data()),
       output2.size() * sizeof(int32_t));
   EXPECT_EQ(output2, values2);
 }
 
-TEST_F(ZstdDCtxReuseTest, streamDataReaderCompressedChunkWithDCtx) {
+TEST_F(ZstdDCtxReuseTest, streamDataParserCompressedChunkWithDCtx) {
   std::string payload = "compressed data that should be zstd encoded for test";
   auto chunk = buildCompressedChunk(payload);
   auto result = deserializeTabletWithDCtx(10, {{0, chunk}});
@@ -2046,7 +2139,7 @@ TEST_F(ZstdDCtxReuseTest, streamDataReaderCompressedChunkWithDCtx) {
   EXPECT_EQ(result[0].second, payload);
 }
 
-TEST_F(ZstdDCtxReuseTest, streamDataReaderDCtxReusedAcrossStreams) {
+TEST_F(ZstdDCtxReuseTest, streamDataParserDCtxReusedAcrossStreams) {
   std::string payload1 = "first compressed stream payload data";
   std::string payload2 = "second compressed stream payload data";
   auto chunk1 = buildCompressedChunk(payload1);
@@ -2162,16 +2255,23 @@ TEST_F(LZ4RoundtripTest, streamDataLZ4ReusedAcrossReset) {
       static_cast<uint32_t>(output1.size() * sizeof(int32_t)));
   EXPECT_EQ(output1, values1);
 
-  sd.reset(compressed2, SerializationVersion::kLegacy);
+  serde::StreamData sd2(
+      ScalarKind::Int32,
+      compressed2,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
 
   std::vector<int32_t> output2(values2.size());
-  sd.copyTo(
+  sd2.copyTo(
       reinterpret_cast<char*>(output2.data()),
       static_cast<uint32_t>(output2.size() * sizeof(int32_t)));
   EXPECT_EQ(output2, values2);
 }
 
-TEST_F(LZ4RoundtripTest, streamDataReaderLZ4CompressedChunk) {
+TEST_F(LZ4RoundtripTest, streamDataParserLZ4CompressedChunk) {
   std::string payload = "compressed data that should be lz4 encoded for test";
   auto chunk = buildLZ4CompressedChunk(payload);
   auto result = deserializeTablet(10, {{0, chunk}});
@@ -2181,7 +2281,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4CompressedChunk) {
   EXPECT_EQ(result[0].second, payload);
 }
 
-TEST_F(LZ4RoundtripTest, streamDataReaderLZ4ReusedAcrossStreams) {
+TEST_F(LZ4RoundtripTest, streamDataParserLZ4ReusedAcrossStreams) {
   std::string payload1 = "first compressed stream payload data";
   std::string payload2 = "second compressed stream payload data";
   auto chunk1 = buildLZ4CompressedChunk(payload1);
@@ -2194,7 +2294,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4ReusedAcrossStreams) {
   EXPECT_EQ(result[1].second, payload2);
 }
 
-TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MultipleChunks) {
+TEST_F(LZ4RoundtripTest, streamDataParserLZ4MultipleChunks) {
   std::string part1 = "first chunk of lz4 compressed data here";
   std::string part2 = "second chunk of lz4 compressed data here";
   auto stream = concatChunks(
@@ -2206,7 +2306,7 @@ TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MultipleChunks) {
   EXPECT_EQ(result[0].second, part1 + part2);
 }
 
-TEST_F(LZ4RoundtripTest, streamDataReaderLZ4MixedWithUncompressed) {
+TEST_F(LZ4RoundtripTest, streamDataParserLZ4MixedWithUncompressed) {
   std::string part1 = "uncompressed chunk one";
   std::string part2 = "lz4 compressed chunk two with some data";
   std::string part3 = "another uncompressed chunk three";
@@ -2323,22 +2423,22 @@ TEST_F(LZ4RoundtripTest, encodeDecodeLZ4HighCompression) {
   EXPECT_EQ(output, expected);
 }
 
-// Exercises the StreamDataReader::initialize path (delegates to the shared
+// Exercises the StreamDataParser::initialize path (delegates to the shared
 // readTabletChunkFieldsAfterVersion helper) on forged kTablet input.
 // Uses the WriteHeaderTest fixture purely for its initialized MemoryPool.
-class StreamDataReaderTabletTest : public WriteHeaderTest {
+class StreamDataParserTabletTest : public WriteHeaderTest {
  protected:
   void expectInitializeThrows(const std::string& buf) {
     DeserializerOptions options;
     options.hasHeader = true;
-    StreamDataReader reader{pool_.get(), options};
+    StreamDataParser reader{pool_.get(), options};
     EXPECT_THROW(
         reader.initialize(std::string_view(buf.data(), buf.size())),
         NimbleInternalError);
   }
 };
 
-TEST_F(StreamDataReaderTabletTest, rejectsRowRangeExceedingRowCount) {
+TEST_F(StreamDataParserTabletTest, rejectsRowRangeExceedingRowCount) {
   std::string buf;
   buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x05); // rowCount = 5
@@ -2348,7 +2448,7 @@ TEST_F(StreamDataReaderTabletTest, rejectsRowRangeExceedingRowCount) {
   expectInitializeThrows(buf);
 }
 
-TEST_F(StreamDataReaderTabletTest, rejectsInvertedRowRange) {
+TEST_F(StreamDataParserTabletTest, rejectsInvertedRowRange) {
   std::string buf;
   buf.push_back(static_cast<char>(SerializationVersion::kTablet));
   buf.push_back(0x0a); // rowCount = 10
@@ -2358,7 +2458,7 @@ TEST_F(StreamDataReaderTabletTest, rejectsInvertedRowRange) {
   expectInitializeThrows(buf);
 }
 
-TEST_F(StreamDataReaderTabletTest, rejectsTruncatedResumeKey) {
+TEST_F(StreamDataParserTabletTest, rejectsTruncatedResumeKey) {
   // Valid version + rowCount + row range + resumeKeyLength=4 (declares a
   // 3-byte key), but only 1 byte of resume key follows.
   std::string buf;

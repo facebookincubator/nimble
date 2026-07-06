@@ -44,6 +44,19 @@ ZSTD_DCtx* getThreadLocalDCtx() {
 
 StreamData::StreamData(
     ScalarKind kind,
+    std::vector<velox::BufferPtr>& stringBuffers,
+    velox::memory::MemoryPool* pool,
+    velox::BufferPtr* decompressionBuffer)
+    : kind_{kind},
+      pool_{pool},
+      decompressionBuffer_{decompressionBuffer},
+      stringBuffers_{&stringBuffers} {
+  NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool required for encoding");
+  NIMBLE_CHECK_NOT_NULL(decompressionBuffer_, "Decompression buffer required");
+}
+
+StreamData::StreamData(
+    ScalarKind kind,
     std::string_view data,
     std::vector<velox::BufferPtr>& stringBuffers,
     velox::memory::MemoryPool* pool,
@@ -60,6 +73,14 @@ StreamData::StreamData(
   init(data);
 }
 
+void StreamData::reset(std::string_view data, SerializationVersion version) {
+  readRows_ = 0;
+  encoding_.reset();
+  encodingEnabled_ = nonLegacyFormat(version);
+  useVarintRowCount_ = !isTabletVersion(version);
+  init(data);
+}
+
 // Copy legacy stream data to output buffer.
 // Data is already decompressed by init() -> decompress().
 uint32_t StreamData::copyTo(char* output, uint32_t bufferSize) {
@@ -70,7 +91,9 @@ uint32_t StreamData::copyTo(char* output, uint32_t bufferSize) {
   return length;
 }
 
-uint32_t StreamData::decodeStrings(uint32_t count, std::string_view* output) {
+StreamData::DecodeResult StreamData::decodeStrings(
+    uint32_t count,
+    std::string_view* output) {
   if (encodingEnabled_) {
     return decode(output, /*offset=*/0, count, /*width=*/0);
   }
@@ -78,16 +101,10 @@ uint32_t StreamData::decodeStrings(uint32_t count, std::string_view* output) {
   while (pos_ < end_ && index < count) {
     output[index++] = encoding::readString(pos_);
   }
-  return index;
-}
-
-void StreamData::reset(std::string_view data, SerializationVersion version) {
-  readRows_ = 0;
-  encoding_.reset();
-  encodingEnabled_ = nonLegacyFormat(version);
-  useVarintRowCount_ = !isTabletVersion(version);
-  // Re-initialize with new data.
-  init(data);
+  return {
+      .numOutputRows = index,
+      .nonNullOutputRows = index,
+      .segmentExhausted = pos_ == end_};
 }
 
 void StreamData::init(std::string_view data) {
@@ -174,6 +191,8 @@ void StreamData::decompress() {
 void StreamData::prepareForDecoding(std::string_view data) {
   NIMBLE_CHECK(encodingEnabled_);
   NIMBLE_CHECK_NULL(encoding_, "Encoding already set");
+  NIMBLE_CHECK_NOT_NULL(
+      stringBuffers_, "String buffer storage required for encoded stream data");
 
   // Use nimble EncodingFactory to decode the data.
   // The encoded data is self-describing with type information.
@@ -191,80 +210,174 @@ void StreamData::prepareForDecoding(std::string_view data) {
       });
 }
 
-uint32_t StreamData::decode(
+StreamData::DecodeResult StreamData::decode(
+    void* output,
+    uint32_t offset,
+    uint32_t count,
+    uint32_t width,
+    const std::function<void*()>& getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap) {
+  // Nimble encoding path: use materialize() to decode.
+  NIMBLE_CHECK_NOT_NULL(
+      encoding_,
+      "Legacy StreamData must be decoded through copyTo() or decodeStrings()");
+  // Only decode as many values as remain in the encoding.
+  const uint32_t remainingRows = this->remainingRows();
+  const uint32_t readCount = std::min(count, remainingRows);
+  const bool segmentExhausted = readCount == remainingRows;
+  // materializeNullable() is also the scatter-output API. Use it when the
+  // encoding carries nulls, or when a parent in-map stream selected sparse
+  // output rows that must be filled with decoded values and absent-row nulls.
+  if (encoding_->isNullable() || scatterOutputBitmap != nullptr) {
+    const auto nonNulls = decodeNullable(
+        output, offset, readCount, width, getOutputNulls, scatterOutputBitmap);
+    return {
+        .numOutputRows = readCount,
+        .nonNullOutputRows = nonNulls,
+        .segmentExhausted = segmentExhausted};
+  }
+  decodeNonNull(output, offset, readCount, width);
+  return {
+      .numOutputRows = readCount,
+      .nonNullOutputRows = readCount,
+      .segmentExhausted = segmentExhausted};
+}
+
+uint32_t StreamData::decodeNullable(
+    void* output,
+    uint32_t offset,
+    uint32_t readCount,
+    uint32_t width,
+    const std::function<void*()>& getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap) {
+  NIMBLE_CHECK_NOT_NULL(getOutputNulls, "Null buffer callback required");
+  switch (width) {
+    case 0: {
+      const auto nonNulls = encoding_->materializeNullable(
+          readCount, output, getOutputNulls, scatterOutputBitmap, offset);
+      readRows_ += readCount;
+      return nonNulls;
+    }
+    case 1: {
+      const auto nonNulls = encoding_->materializeNullable(
+          readCount,
+          reinterpret_cast<int8_t*>(output),
+          getOutputNulls,
+          scatterOutputBitmap,
+          offset);
+      readRows_ += readCount;
+      return nonNulls;
+    }
+    case 2: {
+      const auto nonNulls = encoding_->materializeNullable(
+          readCount,
+          reinterpret_cast<int16_t*>(output),
+          getOutputNulls,
+          scatterOutputBitmap,
+          offset);
+      readRows_ += readCount;
+      return nonNulls;
+    }
+    case 4: {
+      const auto nonNulls = encoding_->materializeNullable(
+          readCount,
+          reinterpret_cast<int32_t*>(output),
+          getOutputNulls,
+          scatterOutputBitmap,
+          offset);
+      readRows_ += readCount;
+      return nonNulls;
+    }
+    case 8: {
+      const auto nonNulls = encoding_->materializeNullable(
+          readCount,
+          reinterpret_cast<int64_t*>(output),
+          getOutputNulls,
+          scatterOutputBitmap,
+          offset);
+      readRows_ += readCount;
+      return nonNulls;
+    }
+    default:
+      NIMBLE_FAIL("Unexpected width {} for nimble decoding", width);
+  }
+}
+
+void StreamData::decodeNonNull(
+    void* output,
+    uint32_t offset,
+    uint32_t readCount,
+    uint32_t width) {
+  switch (width) {
+    case 0: {
+      // String type: output is std::string_view*
+      auto* dest = static_cast<std::string_view*>(output) + offset;
+      materialize(readCount, dest);
+      return;
+    }
+    case 1: {
+      auto* dest = static_cast<char*>(output) + offset * width;
+      materialize(readCount, reinterpret_cast<int8_t*>(dest));
+      return;
+    }
+    case 2: {
+      auto* dest = static_cast<char*>(output) + offset * width;
+      materialize(readCount, reinterpret_cast<int16_t*>(dest));
+      return;
+    }
+    case 4: {
+      auto* dest = static_cast<char*>(output) + offset * width;
+      materialize(readCount, reinterpret_cast<int32_t*>(dest));
+      return;
+    }
+    case 8: {
+      auto* dest = static_cast<char*>(output) + offset * width;
+      materialize(readCount, reinterpret_cast<int64_t*>(dest));
+      return;
+    }
+    default:
+      NIMBLE_FAIL("Unexpected width {} for nimble decoding", width);
+  }
+}
+
+StreamData::DecodeResult StreamData::decodeLegacy(
     void* output,
     uint32_t offset,
     uint32_t count,
     uint32_t width) {
-  if (encodingEnabled_) {
-    // Nimble encoding path: use materialize() to decode.
-    NIMBLE_CHECK_NOT_NULL(encoding_);
-    // Only decode as many values as remain in the encoding.
-    const uint32_t readCount = std::min(count, remainingRows());
-    switch (width) {
-      case 0: {
-        // String type: output is std::string_view*
-        auto* dest = static_cast<std::string_view*>(output) + offset;
-        materialize(readCount, dest);
-        break;
-      }
-      case 1: {
-        auto* dest = static_cast<char*>(output) + offset * width;
-        materialize(readCount, reinterpret_cast<int8_t*>(dest));
-        break;
-      }
-      case 2: {
-        auto* dest = static_cast<char*>(output) + offset * width;
-        materialize(readCount, reinterpret_cast<int16_t*>(dest));
-        break;
-      }
-      case 4: {
-        auto* dest = static_cast<char*>(output) + offset * width;
-        materialize(readCount, reinterpret_cast<int32_t*>(dest));
-        break;
-      }
-      case 8: {
-        auto* dest = static_cast<char*>(output) + offset * width;
-        materialize(readCount, reinterpret_cast<int64_t*>(dest));
-        break;
-      }
-      default:
-        NIMBLE_FAIL("Unexpected width {} for nimble decoding", width);
-    }
-    return readCount;
-  }
-
-  // Legacy compression path: read raw bytes from pos_.
+  NIMBLE_CHECK(!encodingEnabled_, "decodeLegacy called for encoded stream");
   NIMBLE_CHECK_NE(width, 0, "String type not supported for legacy path");
   if (count == 0) {
-    return 0;
+    return {.segmentExhausted = pos_ == end_};
   }
-  const size_t bytesToRead = count * width;
-  NIMBLE_CHECK_LE(
-      pos_ + bytesToRead, end_, "Not enough data for legacy decode");
   auto* dest = static_cast<char*>(output) + offset * width;
-  std::memcpy(dest, pos_, bytesToRead);
-  pos_ += bytesToRead;
-  return count;
+  const auto copied = copyTo(dest, count * width);
+  NIMBLE_CHECK_EQ(copied % width, 0, "Legacy stream ended mid-value");
+  const auto rows = copied / width;
+  return {
+      .numOutputRows = rows,
+      .nonNullOutputRows = rows,
+      .segmentExhausted = pos_ == end_};
 }
 
-StreamDataReader::StreamDataReader(
+StreamDataParser::StreamDataParser(
     velox::memory::MemoryPool* pool,
     const DeserializerOptions& options)
-    : options_{options}, pool_{pool}, chunkStrippingBuffer_{pool_} {
+    : options_{options}, pool_{pool} {
   NIMBLE_CHECK_NOT_NULL(pool_);
 }
 
-uint32_t StreamDataReader::initialize(std::string_view data) {
+uint32_t StreamDataParser::initialize(std::string_view data) {
   pos_ = data.data();
   end_ = data.end();
   auto header = readSerializationHeader(pos_, end_, options_.hasHeader);
   version_ = header.version;
+  requiresNullBarrier_ = header.requiresNullBarrier;
   rowRange_ = header.rowRange;
   return header.rowCount;
 }
 
-std::string_view StreamDataReader::stripChunkHeaders(
+std::string_view StreamDataParser::stripChunkHeaders(
     std::string_view streamData) {
   const auto* pos = streamData.data();
   const auto* end = pos + streamData.size();
@@ -273,17 +386,24 @@ std::string_view StreamDataReader::stripChunkHeaders(
       streamData.size(), kChunkHeaderSize, "Truncated chunk header in stream");
 
   if (auto result = tryFastChunkHeaderStrip(pos, end)) {
+    NIMBLE_CHECK(
+        !result->empty(), "Chunked stream must have a non-empty payload");
     return *result;
   }
   return slowChunkHeaderStrip(pos, end);
 }
 
-std::string_view StreamDataReader::slowChunkHeaderStrip(
+std::string_view StreamDataParser::slowChunkHeaderStrip(
     const char* pos,
     const char* end) {
   // TODO: Consider using IOBuf chain to avoid concatenation for multi-chunk
   // streams.
-  chunkStrippingBuffer_.clear();
+  const auto payloadSize = strippedStreamSize(pos, end);
+  NIMBLE_CHECK_GT(
+      payloadSize, 0, "Chunked stream must have a non-empty payload");
+  auto buffer = velox::AlignedBuffer::allocateExact<char>(payloadSize, pool_);
+  auto* output = buffer->asMutable<char>();
+  auto* const outputEnd = output + payloadSize;
   while (pos < end) {
     NIMBLE_CHECK_GE(
         static_cast<size_t>(end - pos),
@@ -294,13 +414,16 @@ std::string_view StreamDataReader::slowChunkHeaderStrip(
         chunkLength,
         static_cast<uint32_t>(end - pos),
         "Chunk data exceeds stream boundary");
-    appendChunkData(compressionType, pos, chunkLength);
+    appendChunkData(compressionType, pos, chunkLength, output);
     pos += chunkLength;
   }
-  return {chunkStrippingBuffer_.data(), chunkStrippingBuffer_.size()};
+  NIMBLE_CHECK_EQ(output, outputEnd, "Stripped chunk size mismatch");
+  const auto* data = buffer->as<char>();
+  strippedStreamBuffers_.emplace_back(std::move(buffer));
+  return {data, payloadSize};
 }
 
-std::optional<std::string_view> StreamDataReader::tryFastChunkHeaderStrip(
+std::optional<std::string_view> StreamDataParser::tryFastChunkHeaderStrip(
     const char* pos,
     const char* end) {
   const auto [chunkLength, compressionType] = readChunkHeader(pos);
@@ -317,50 +440,87 @@ std::optional<std::string_view> StreamDataReader::tryFastChunkHeaderStrip(
   return std::nullopt;
 }
 
-void StreamDataReader::appendChunkData(
+size_t StreamDataParser::strippedStreamSize(const char* pos, const char* end) {
+  size_t size = 0;
+  while (pos < end) {
+    NIMBLE_CHECK_GE(
+        static_cast<size_t>(end - pos),
+        kChunkHeaderSize,
+        "Truncated chunk header in stream");
+    const auto [chunkLength, compressionType] = readChunkHeader(pos);
+    NIMBLE_CHECK_LE(
+        chunkLength,
+        static_cast<uint32_t>(end - pos),
+        "Chunk data exceeds stream boundary");
+    size += decodedChunkSize(compressionType, pos, chunkLength);
+    pos += chunkLength;
+  }
+  return size;
+}
+
+size_t StreamDataParser::decodedChunkSize(
     CompressionType compression,
     const char* data,
     uint32_t length) {
   switch (compression) {
-    case CompressionType::Uncompressed: {
-      const auto offset = chunkStrippingBuffer_.size();
-      chunkStrippingBuffer_.resize(offset + length);
-      std::memcpy(chunkStrippingBuffer_.data() + offset, data, length);
-      break;
-    }
+    case CompressionType::Uncompressed:
+      return length;
     case CompressionType::Zstd: {
       const auto decompressedSize = ZSTD_getFrameContentSize(data, length);
       NIMBLE_CHECK(
           decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
               decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
           "Error determining decompressed size");
-      const auto offset = chunkStrippingBuffer_.size();
-      chunkStrippingBuffer_.resize(offset + decompressedSize);
+      return decompressedSize;
+    }
+    case CompressionType::Lz4: {
+      NIMBLE_CHECK_GE(
+          length, sizeof(uint32_t), "Truncated LZ4 chunk size header");
+      const auto* pos = data;
+      return encoding::readUint32(pos);
+    }
+    default:
+      NIMBLE_UNSUPPORTED("Unsupported chunk compression {}", compression);
+  }
+}
+
+void StreamDataParser::appendChunkData(
+    CompressionType compression,
+    const char* data,
+    uint32_t length,
+    char*& output) {
+  switch (compression) {
+    case CompressionType::Uncompressed: {
+      std::memcpy(output, data, length);
+      output += length;
+      break;
+    }
+    case CompressionType::Zstd: {
+      const auto decompressedSize = decodedChunkSize(compression, data, length);
       const auto ret = ZSTD_decompressDCtx(
-          getThreadLocalDCtx(),
-          chunkStrippingBuffer_.data() + offset,
-          decompressedSize,
-          data,
-          length);
+          getThreadLocalDCtx(), output, decompressedSize, data, length);
       NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
+      NIMBLE_CHECK_EQ(
+          ret, decompressedSize, "ZSTD chunk decompressed size mismatch");
+      output += decompressedSize;
       break;
     }
     case CompressionType::Lz4: {
+      const auto decompressedSize = decodedChunkSize(compression, data, length);
       const auto* pos = data;
-      const auto decompressedSize = encoding::readUint32(pos);
+      encoding::readUint32(pos);
       const auto compressedSize =
           static_cast<size_t>(length - sizeof(uint32_t));
-      const auto offset = chunkStrippingBuffer_.size();
-      chunkStrippingBuffer_.resize(offset + decompressedSize);
       const auto ret = LZ4_decompress_safe(
           pos,
-          chunkStrippingBuffer_.data() + offset,
+          output,
           static_cast<int>(compressedSize),
           static_cast<int>(decompressedSize));
       NIMBLE_CHECK_EQ(
           ret,
           static_cast<int>(decompressedSize),
           "LZ4 chunk decompressed size mismatch");
+      output += decompressedSize;
       break;
     }
     default:

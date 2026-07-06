@@ -76,15 +76,15 @@ uint32_t ChunkedStreamDecoder::next(
     uint32_t count,
     void* output,
     std::vector<velox::BufferPtr>& stringBuffers,
-    std::function<void*()> nulls,
-    const velox::bits::Bitmap* scatterBitmap) {
+    std::function<void*()> getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap) {
   NIMBLE_DCHECK(stringBuffers.empty());
 
   if (count == 0) {
-    if (nulls && scatterBitmap) {
-      auto nullsPtr = nulls();
+    if (getOutputNulls && scatterOutputBitmap) {
+      auto nullsPtr = getOutputNulls();
       // @lint-ignore CLANGTIDY facebook-hte-BadMemset
-      memset(nullsPtr, 0, velox::bits::nbytes(scatterBitmap->size()));
+      memset(nullsPtr, 0, velox::bits::nbytes(scatterOutputBitmap->size()));
     }
     return 0;
   }
@@ -97,7 +97,7 @@ uint32_t ChunkedStreamDecoder::next(
   void* nullsPtr = nullptr;
   std::function<void*()> initNulls = [&]() {
     if (!nullsPtr) {
-      nullsPtr = nulls();
+      nullsPtr = getOutputNulls();
     }
     return nullsPtr;
   };
@@ -109,18 +109,19 @@ uint32_t ChunkedStreamDecoder::next(
     uint32_t chunkNonNullCount = 0;
     uint32_t endOffset = 0;
 
-    if (!nulls || !scatterBitmap) {
-      NIMBLE_CHECK(!scatterBitmap, "unexpected scatter bitmap");
+    if (!getOutputNulls || !scatterOutputBitmap) {
+      NIMBLE_CHECK_NULL(
+          scatterOutputBitmap, "Unexpected scatter output bitmap");
       chunkNonNullCount = encoding_->materializeNullable(
           rowsToRead, output, initNulls, nullptr, offset);
       endOffset = offset + rowsToRead;
     } else {
       endOffset = velox::bits::findSetBit(
-          static_cast<const char*>(scatterBitmap->bits()),
+          static_cast<const char*>(scatterOutputBitmap->bits()),
           offset,
-          scatterBitmap->size(),
+          scatterOutputBitmap->size(),
           rowsToRead + 1);
-      velox::bits::Bitmap localBitmap{scatterBitmap->bits(), endOffset};
+      velox::bits::Bitmap localBitmap{scatterOutputBitmap->bits(), endOffset};
       chunkNonNullCount = encoding_->materializeNullable(
           rowsToRead, output, initNulls, &localBitmap, offset);
     }

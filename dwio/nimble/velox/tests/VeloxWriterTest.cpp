@@ -1721,6 +1721,182 @@ void testChunks(
   validateChunkSize(reader, minStreamChunkRawSize, maxStreamChunkRawSize);
 }
 
+TEST_F(VeloxWriterTest, omitsAllNonNullRowNullStreams) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto makeVector = [&]() {
+    return vectorMaker.rowVector(
+        {"nested"},
+        {vectorMaker.rowVector(
+            {"c1"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})})});
+  };
+  auto makeVectorWithAllocatedAllNonNullNulls = [&]() {
+    constexpr velox::vector_size_t kSize = 3;
+    auto nestedType = velox::ROW({"c1"}, {velox::INTEGER()});
+    auto nestedNulls = velox::AlignedBuffer::allocate<bool>(
+        kSize, leafPool_.get(), velox::bits::kNotNull);
+    auto nested = std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        nestedType,
+        nestedNulls,
+        kSize,
+        std::vector<velox::VectorPtr>{
+            vectorMaker.flatVector<int32_t>({1, 2, 3})});
+
+    auto rootNulls = velox::AlignedBuffer::allocate<bool>(
+        kSize, leafPool_.get(), velox::bits::kNotNull);
+    return std::make_shared<velox::RowVector>(
+        leafPool_.get(),
+        velox::ROW({"nested"}, {nestedType}),
+        rootNulls,
+        kSize,
+        std::vector<velox::VectorPtr>{nested});
+  };
+
+  auto allNonNullVector = makeVector();
+  auto allocatedAllNonNullVector = makeVectorWithAllocatedAllNonNullNulls();
+  auto topLevelNullVector = makeVector();
+  topLevelNullVector->setNull(1, true);
+
+  struct TestCase {
+    std::string_view name;
+    velox::RowVectorPtr input;
+    velox::RowVectorPtr expected;
+    bool ignoreTopLevelNulls;
+    bool enableChunking;
+    bool expectRootNullStreamOmitted;
+  };
+
+  const std::vector<TestCase> testCases{
+      {
+          .name = "allNonNull",
+          .input = allNonNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = false,
+          .expectRootNullStreamOmitted = true,
+      },
+      {
+          .name = "allNonNull",
+          .input = allNonNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = true,
+          .expectRootNullStreamOmitted = true,
+      },
+      {
+          .name = "allocatedAllNonNullNulls",
+          .input = allocatedAllNonNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = false,
+          .expectRootNullStreamOmitted = true,
+      },
+      {
+          .name = "allocatedAllNonNullNulls",
+          .input = allocatedAllNonNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = true,
+          .expectRootNullStreamOmitted = true,
+      },
+      {
+          .name = "preservedTopLevelNulls",
+          .input = topLevelNullVector,
+          .expected = topLevelNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = false,
+          .expectRootNullStreamOmitted = false,
+      },
+      {
+          .name = "preservedTopLevelNulls",
+          .input = topLevelNullVector,
+          .expected = topLevelNullVector,
+          .ignoreTopLevelNulls = false,
+          .enableChunking = true,
+          .expectRootNullStreamOmitted = false,
+      },
+      {
+          .name = "ignoredTopLevelNulls",
+          .input = topLevelNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = true,
+          .enableChunking = false,
+          .expectRootNullStreamOmitted = true,
+      },
+      {
+          .name = "ignoredTopLevelNulls",
+          .input = topLevelNullVector,
+          .expected = allNonNullVector,
+          .ignoreTopLevelNulls = true,
+          .enableChunking = true,
+          .expectRootNullStreamOmitted = true,
+      },
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(
+        fmt::format(
+            "case={}, enableChunking={}",
+            testCase.name,
+            testCase.enableChunking));
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+
+    nimble::VeloxWriterOptions options;
+    options.enableChunking = testCase.enableChunking;
+    options.ignoreTopLevelNulls = testCase.ignoreTopLevelNulls;
+
+    nimble::VeloxWriter writer(
+        testCase.input->type(),
+        std::move(writeFile),
+        *rootPool_,
+        std::move(options));
+    writer.write(testCase.input);
+    writer.close();
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+    ASSERT_EQ(1, tablet->stripeCount());
+
+    nimble::VeloxReader reader(readFile.get(), *leafPool_);
+    const auto& root = reader.schema()->asRow();
+    const auto& nested = root.childAt(0)->asRow();
+    const auto rootNullOffset = root.nullsDescriptor().offset();
+    const auto nestedNullOffset = nested.nullsDescriptor().offset();
+    const auto stripeIdentifier = tablet->stripeIdentifier(0);
+    const auto streamSizes = tablet->streamSizes(stripeIdentifier);
+    ASSERT_GT(streamSizes.size(), static_cast<size_t>(rootNullOffset));
+    ASSERT_GT(streamSizes.size(), static_cast<size_t>(nestedNullOffset));
+
+    std::array<uint32_t, 2> nullStreamOffsets{rootNullOffset, nestedNullOffset};
+    auto streamLoaders = tablet->load(stripeIdentifier, nullStreamOffsets);
+    ASSERT_EQ(2, streamLoaders.size());
+
+    // All-non-null Row null streams are omitted on the wire. The root null
+    // stream is omitted only when the root is logically all-non-null (no nulls,
+    // or top-level nulls ignored); otherwise it is written and round-trips the
+    // top-level nulls. The always-non-null nested row null stream is omitted.
+    if (testCase.expectRootNullStreamOmitted) {
+      EXPECT_EQ(0, streamSizes[rootNullOffset]);
+      EXPECT_EQ(nullptr, streamLoaders[0]);
+    } else {
+      EXPECT_GT(streamSizes[rootNullOffset], 0);
+      EXPECT_NE(nullptr, streamLoaders[0]);
+    }
+    EXPECT_EQ(0, streamSizes[nestedNullOffset]);
+    EXPECT_EQ(nullptr, streamLoaders[1]);
+
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader.next(testCase.expected->size(), result));
+    ASSERT_EQ(result->size(), testCase.expected->size());
+    for (velox::vector_size_t i = 0; i < testCase.expected->size(); ++i) {
+      ASSERT_TRUE(result->equalValueAt(testCase.expected.get(), i, i));
+    }
+  }
+}
+
 TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 

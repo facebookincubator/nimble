@@ -1165,9 +1165,7 @@ void VeloxWriter::processStream(
   if ((context != nullptr) && context->isNullStream()) {
     // For null streams we promote the null values to be written as
     // boolean data.
-    // We still apply the same null logic, where if all values are
-    // non-nulls, we omit the entire stream.
-    if (streamData.hasNulls()) {
+    if (streamData.hasNullValues()) {
       NullsAsDataStreamData nullsStreamData{streamData};
       encodeStream(nullsStreamData, streamSize, chunkSize);
     }
@@ -1179,10 +1177,8 @@ void VeloxWriter::processStream(
     // these by checking value stream presence: all-true keys have value
     // streams, all-false keys do not.
     //
-    // NOTE: old readers that don't understand missing in-map streams will
-    // misinterpret data. This must stay behind the
-    // skipConstantFlatMapInMapStreams option until the new reader is fully
-    // rolled out.
+    // NOTE: readers that don't infer missing in-map streams require
+    // skipConstantFlatMapInMapStreams to remain false.
     streamData.materialize();
     if (!isConstantBoolStream(streamData.data())) {
       encodeStream(streamData, streamSize, chunkSize);

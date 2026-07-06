@@ -61,8 +61,8 @@ class SentinelEncoding final
   uint32_t materializeNullable(
       uint32_t rowCount,
       void* buffer,
-      std::function<void*()> nulls,
-      const velox::bits::Bitmap* scatterBitmap = nullptr,
+      std::function<void*()> getOutputNulls,
+      const velox::bits::Bitmap* scatterOutputBitmap = nullptr,
       uint32_t offset = 0) final;
 
   // // Our signature here for estimate size and serialize are a little
@@ -155,8 +155,8 @@ template <typename T>
 uint32_t SentinelEncoding<T>::materializeNullable(
     uint32_t rowCount,
     void* buffer,
-    std::function<void*()> nulls,
-    const velox::bits::Bitmap* scatterBitmap,
+    std::function<void*()> getOutputNulls,
+    const velox::bits::Bitmap* scatterOutputBitmap,
     uint32_t offset) {
   if (offset > 0) {
     buffer = static_cast<physicalType*>(buffer) + offset;
@@ -165,8 +165,9 @@ uint32_t SentinelEncoding<T>::materializeNullable(
 
   // Member variables in tight loops are bad.
   const physicalType localSentinel = sentinelValue_;
-  auto scatterCount = scatterBitmap ? scatterBitmap->size() - offset : rowCount;
-  void* nullBitmap = nulls();
+  auto scatterCount =
+      scatterOutputBitmap ? scatterOutputBitmap->size() - offset : rowCount;
+  void* nullBitmap = getOutputNulls();
   velox::bits::BitmapBuilder nullBits{nullBitmap, offset + scatterCount};
   nullBits.clear(offset, offset + scatterCount);
 
@@ -176,7 +177,7 @@ uint32_t SentinelEncoding<T>::materializeNullable(
     physicalType* castBuffer = static_cast<physicalType*>(buffer);
 
     for (int64_t i = offset + scatterCount - 1; i >= offset; --i) {
-      if (scatterBitmap->test(i)) {
+      if (scatterOutputBitmap->test(i)) {
         --lastValue;
         if (*lastValue != localSentinel) {
           castBuffer[i] = *lastValue;

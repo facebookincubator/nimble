@@ -242,6 +242,11 @@ class NimbleIndexProjector {
     uint32_t stripeIndex{};
     // Total rows in this stripe.
     uint32_t numRows{0};
+    // True when any projected Row/FlatMap null stream is present in this
+    // stripe, i.e. the slice may carry nulls. Surfaced in the kTablet chunk
+    // header so the deserializer routes the slice to the per-batch barrier path
+    // instead of the dense-batch concat fast path.
+    bool requiresNullBarrier{false};
     // Number of projected streams present in this stripe.
     uint32_t numStreams{0};
     // Total logical bytes across all projected streams in this stripe.
@@ -318,6 +323,10 @@ class NimbleIndexProjector {
   // encoding-specific types (ArrayWithOffsets, SlidingWindowMap, FlatMap).
   std::shared_ptr<const Type> projectedNimbleType_;
   std::vector<uint32_t> projectedStreamOffsets_;
+  // Parallel to projectedStreamOffsets_: true at the projected stream indices
+  // that are Row/FlatMap null streams. Present streams with this bit require
+  // the null-barrier path.
+  std::vector<bool> rowOrFlatMapNullStreams_;
 
   // Per-project() call state. Set by initRequest(), populated through the
   // pipeline (lookupStripes → prepareStripes → loadStripes → processStripes),

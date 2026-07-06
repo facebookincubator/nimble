@@ -25,14 +25,21 @@ TEST(OptionsTest, serializationVersionEnumValues) {
   // Verify enum underlying values match expected wire format versions.
   EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kLegacy), 0);
   EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kLegacyCompact), 2);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kSerialization), 3);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kProjection), 4);
-  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTablet), 5);
+  EXPECT_EQ(
+      static_cast<uint8_t>(SerializationVersion::kLegacySerialization), 3);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kSerialization), 4);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kProjection), 5);
+  EXPECT_EQ(static_cast<uint8_t>(SerializationVersion::kTablet), 6);
 }
 
 TEST(OptionsTest, toStringVersion) {
   EXPECT_EQ(toString(SerializationVersion::kLegacy), "kLegacy");
   EXPECT_EQ(toString(SerializationVersion::kLegacyCompact), "kLegacyCompact");
+  EXPECT_EQ(
+      toString(SerializationVersion::kLegacySerialization),
+      "kLegacySerialization");
+  EXPECT_EQ(toString(SerializationVersion::kSerialization), "kSerialization");
+  EXPECT_EQ(toString(SerializationVersion::kProjection), "kProjection");
   EXPECT_EQ(toString(SerializationVersion::kTablet), "kTablet");
 }
 
@@ -56,10 +63,10 @@ TEST(OptionsTest, serializerOptionsDefaults) {
   EXPECT_EQ(options.compressionType, CompressionType::Uncompressed);
   EXPECT_EQ(options.compressionThreshold, 0);
   EXPECT_EQ(options.compressionLevel, 0);
-  EXPECT_FALSE(options.version.has_value());
+  EXPECT_EQ(options.version, std::nullopt);
   EXPECT_TRUE(options.flatMapColumns.empty());
 
-  // Verify helper methods with defaults (nullopt = legacy format).
+  // Verify helper methods with defaults.
   EXPECT_FALSE(options.hasVersionHeader());
   EXPECT_EQ(options.serializationVersion(), SerializationVersion::kLegacy);
   EXPECT_FALSE(options.enableEncoding());
@@ -74,7 +81,8 @@ TEST(OptionsTest, serializerOptionsDefaults) {
 }
 
 TEST(OptionsTest, serializerOptionsWithLegacyVersion) {
-  // Explicit kLegacy still means version header is present.
+  // Raw options preserve explicit kLegacy; Serializer normalizes it before
+  // writing.
   SerializerOptions options{.version = SerializationVersion::kLegacy};
 
   EXPECT_TRUE(options.version.has_value());
@@ -123,29 +131,52 @@ TEST(OptionsTest, serializerOptionsWithCompactRawVersion) {
   EXPECT_TRUE(options.enableEncoding());
 }
 
+TEST(OptionsTest, serializerOptionsWithTabletVersion) {
+  SerializerOptions options{.version = SerializationVersion::kTablet};
+
+  EXPECT_TRUE(options.hasVersionHeader());
+  EXPECT_EQ(options.serializationVersion(), SerializationVersion::kTablet);
+  EXPECT_TRUE(options.enableEncoding());
+}
+
 TEST(OptionsTest, nonLegacyFormat) {
   EXPECT_FALSE(nonLegacyFormat(SerializationVersion::kLegacy));
   EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kLegacyCompact));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kLegacySerialization));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kSerialization));
+  EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kProjection));
   EXPECT_TRUE(nonLegacyFormat(SerializationVersion::kTablet));
 }
 
-TEST(OptionsTest, isCompactFormat) {
-  EXPECT_FALSE(isCompactFormat(SerializationVersion::kLegacy));
-  EXPECT_TRUE(isCompactFormat(SerializationVersion::kLegacyCompact));
-  EXPECT_FALSE(isCompactFormat(SerializationVersion::kTablet));
+TEST(OptionsTest, usesHeaderFlags) {
+  EXPECT_FALSE(usesHeaderFlags(SerializationVersion::kLegacy));
+  EXPECT_FALSE(usesHeaderFlags(SerializationVersion::kLegacyCompact));
+  EXPECT_FALSE(usesHeaderFlags(SerializationVersion::kLegacySerialization));
+  EXPECT_TRUE(usesHeaderFlags(SerializationVersion::kSerialization));
+  EXPECT_TRUE(usesHeaderFlags(SerializationVersion::kProjection));
+  EXPECT_FALSE(usesHeaderFlags(SerializationVersion::kTablet));
 }
 
-TEST(OptionsTest, isCompactFormatOptional) {
-  EXPECT_FALSE(isCompactFormat(std::nullopt));
-  EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kLegacy}));
+TEST(OptionsTest, usesHeaderFlagsOptional) {
+  EXPECT_FALSE(usesHeaderFlags(std::nullopt));
+  EXPECT_FALSE(usesHeaderFlags(std::optional{SerializationVersion::kLegacy}));
+  EXPECT_FALSE(
+      usesHeaderFlags(std::optional{SerializationVersion::kLegacyCompact}));
+  EXPECT_FALSE(usesHeaderFlags(
+      std::optional{SerializationVersion::kLegacySerialization}));
   EXPECT_TRUE(
-      isCompactFormat(std::optional{SerializationVersion::kLegacyCompact}));
-  EXPECT_FALSE(isCompactFormat(std::optional{SerializationVersion::kTablet}));
+      usesHeaderFlags(std::optional{SerializationVersion::kSerialization}));
+  EXPECT_TRUE(
+      usesHeaderFlags(std::optional{SerializationVersion::kProjection}));
+  EXPECT_FALSE(usesHeaderFlags(std::optional{SerializationVersion::kTablet}));
 }
 
 TEST(OptionsTest, isTabletVersion) {
   EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacy));
   EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacyCompact));
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kLegacySerialization));
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kSerialization));
+  EXPECT_FALSE(isTabletVersion(SerializationVersion::kProjection));
   EXPECT_TRUE(isTabletVersion(SerializationVersion::kTablet));
 }
 
@@ -154,12 +185,44 @@ TEST(OptionsTest, isTabletVersionOptional) {
   EXPECT_FALSE(isTabletVersion(std::optional{SerializationVersion::kLegacy}));
   EXPECT_FALSE(
       isTabletVersion(std::optional{SerializationVersion::kLegacyCompact}));
+  EXPECT_FALSE(isTabletVersion(
+      std::optional{SerializationVersion::kLegacySerialization}));
+  EXPECT_FALSE(
+      isTabletVersion(std::optional{SerializationVersion::kSerialization}));
+  EXPECT_FALSE(
+      isTabletVersion(std::optional{SerializationVersion::kProjection}));
   EXPECT_TRUE(isTabletVersion(std::optional{SerializationVersion::kTablet}));
+}
+
+TEST(OptionsTest, nonLegacyNonTabletSelectsSequentialStreamLayout) {
+  struct TestCase {
+    SerializationVersion version;
+    bool expected;
+  };
+
+  const TestCase testCases[] = {
+      {SerializationVersion::kLegacy, false},
+      {SerializationVersion::kLegacyCompact, true},
+      {SerializationVersion::kLegacySerialization, true},
+      {SerializationVersion::kSerialization, true},
+      {SerializationVersion::kProjection, true},
+      {SerializationVersion::kTablet, false},
+  };
+
+  for (const auto& testCase : testCases) {
+    SCOPED_TRACE(toString(testCase.version));
+    EXPECT_EQ(
+        nonLegacyFormat(testCase.version) && !isTabletVersion(testCase.version),
+        testCase.expected);
+  }
 }
 
 TEST(OptionsTest, usesVarintRowCount) {
   EXPECT_FALSE(usesVarintRowCount(SerializationVersion::kLegacy));
   EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kLegacyCompact));
+  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kLegacySerialization));
+  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kSerialization));
+  EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kProjection));
   EXPECT_TRUE(usesVarintRowCount(SerializationVersion::kTablet));
 }
 
@@ -169,6 +232,12 @@ TEST(OptionsTest, usesVarintRowCountOptional) {
       usesVarintRowCount(std::optional{SerializationVersion::kLegacy}));
   EXPECT_TRUE(
       usesVarintRowCount(std::optional{SerializationVersion::kLegacyCompact}));
+  EXPECT_TRUE(usesVarintRowCount(
+      std::optional{SerializationVersion::kLegacySerialization}));
+  EXPECT_TRUE(
+      usesVarintRowCount(std::optional{SerializationVersion::kSerialization}));
+  EXPECT_TRUE(
+      usesVarintRowCount(std::optional{SerializationVersion::kProjection}));
   EXPECT_TRUE(usesVarintRowCount(std::optional{SerializationVersion::kTablet}));
 }
 
