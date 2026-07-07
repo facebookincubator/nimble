@@ -179,9 +179,8 @@ TEST_F(NullColumnReaderTest, filterIsNullOnMissing) {
 }
 
 // IsNotNull filter on a missing column.
-// Note: top-level missing field filter rejection is handled by
-// SplitReader::filterOnStats, not by the file reader. The reader materializes
-// all rows with the missing column as null constants regardless of filters.
+// With runtime filtering enabled for missing constants, all rows are
+// filtered out because the column materializes as all-null.
 TEST_F(NullColumnReaderTest, filterIsNotNullOnMissing) {
   constexpr int kSize = 50;
   auto input = makeRowVector({
@@ -194,16 +193,13 @@ TEST_F(NullColumnReaderTest, filterIsNotNullOnMissing) {
   auto readers = makeReaders(input, readType, scanSpec);
   auto result = BaseVector::create(readType, 0, pool());
   ASSERT_EQ(readers.rowReader->next(kSize, result), kSize);
-  // Reader returns all rows; the missing column is all nulls.
-  auto* row = result->asUnchecked<RowVector>();
-  for (int i = 0; i < kSize; ++i) {
-    ASSERT_TRUE(row->childAt(1)->isNullAt(i));
-  }
+  // Reader returns empty result; the missing column is all nulls.
+  ASSERT_EQ(result->size(), 0);
 }
 
 // BigintRange filter on a missing column.
-// Same as above: top-level missing field filter evaluation is handled by
-// SplitReader, not by the file reader.
+// Missing column materializes as null, which does not pass this filter
+// (nullAllowed=false), so all rows are filtered out.
 TEST_F(NullColumnReaderTest, filterValueOnMissing) {
   constexpr int kSize = 50;
   auto input = makeRowVector({
@@ -217,11 +213,8 @@ TEST_F(NullColumnReaderTest, filterValueOnMissing) {
   auto readers = makeReaders(input, readType, scanSpec);
   auto result = BaseVector::create(readType, 0, pool());
   ASSERT_EQ(readers.rowReader->next(kSize, result), kSize);
-  // Reader returns all rows; the missing column is all nulls.
-  auto* row = result->asUnchecked<RowVector>();
-  for (int i = 0; i < kSize; ++i) {
-    ASSERT_TRUE(row->childAt(1)->isNullAt(i));
-  }
+  // Reader returns empty result; the missing column is all nulls.
+  ASSERT_EQ(result->size(), 0);
 }
 
 // BigintRange(nullAllowed=true) on a missing column — all rows pass.
