@@ -31,6 +31,12 @@ std::shared_ptr<const Type> roundTrip(SchemaBuilder& schemaBuilder) {
   return SchemaDeserializer::deserialize(serialized);
 }
 
+std::shared_ptr<const Type> roundTrip(const Type& type) {
+  SchemaSerializer serializer;
+  auto serialized = serializer.serialize(type);
+  return SchemaDeserializer::deserialize(serialized);
+}
+
 } // namespace
 
 TEST(SchemaSerializationTest, ScalarInt8) {
@@ -468,4 +474,24 @@ TEST(SchemaSerializationTest, NoAttributesWireShapeMatchesLegacy) {
   for (size_t i = 0; i < row.childrenCount(); ++i) {
     EXPECT_TRUE(row.childAt(i)->attributes().empty()) << "child " << i;
   }
+}
+
+TEST(SchemaSerializationTest, SerializeTypePreservesSchemaShape) {
+  SchemaBuilder schemaBuilder;
+  test::FlatMapChildAdder adder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW(
+          {{"offsetArray", NIMBLE_OFFSETARRAY(NIMBLE_BIGINT())},
+           {"slidingMap",
+            NIMBLE_SLIDINGWINDOWMAP(NIMBLE_STRING(), NIMBLE_INTEGER())},
+           {"flatMap", NIMBLE_FLATMAP(String, NIMBLE_DOUBLE(), adder)},
+           {"timestamp", NIMBLE_TIMESTAMPMICRONANO()}}));
+  adder.addChild("key1");
+  adder.addChild("key2");
+
+  const auto deserializedType = roundTrip(schemaBuilder);
+  const auto reserializedType = roundTrip(*deserializedType);
+
+  test::compareSchema(schemaBuilder.schemaNodes(), reserializedType);
 }
