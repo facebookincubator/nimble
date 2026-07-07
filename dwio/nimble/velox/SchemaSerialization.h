@@ -27,6 +27,8 @@ class SchemaSerializer {
 
   std::string_view serialize(const SchemaBuilder& builder);
 
+  std::string_view serialize(const Type& type);
+
  private:
   flatbuffers::FlatBufferBuilder builder_;
 };

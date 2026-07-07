@@ -14,6 +14,11 @@
  * limitations under the License.
  */
 #include "dwio/nimble/velox/SchemaSerialization.h"
+
+#include <optional>
+#include <utility>
+#include <vector>
+
 #include "dwio/nimble/velox/SchemaReader.h"
 
 namespace facebook::nimble {
@@ -182,53 +187,180 @@ std::pair<Kind, ScalarKind> serializationNodeToKind(
   }
 }
 
+void addNode(
+    std::vector<SchemaNode>& nodes,
+    const Type& type,
+    std::optional<std::string> name = std::nullopt) {
+  switch (type.kind()) {
+    case Kind::Scalar: {
+      const auto& scalar = type.asScalar();
+      nodes.emplace_back(
+          type.kind(),
+          scalar.scalarDescriptor().offset(),
+          scalar.scalarDescriptor().scalarKind(),
+          std::move(name));
+      break;
+    }
+    case Kind::TimestampMicroNano: {
+      const auto& timestampMicroNano = type.asTimestampMicroNano();
+      nodes.emplace_back(
+          type.kind(),
+          timestampMicroNano.microsDescriptor().offset(),
+          ScalarKind::Int64,
+          std::move(name));
+      nodes.emplace_back(
+          Kind::Scalar,
+          timestampMicroNano.nanosDescriptor().offset(),
+          ScalarKind::UInt16,
+          std::nullopt);
+      break;
+    }
+    case Kind::Array: {
+      const auto& array = type.asArray();
+      nodes.emplace_back(
+          type.kind(),
+          array.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name));
+      addNode(nodes, *array.elements());
+      break;
+    }
+    case Kind::ArrayWithOffsets: {
+      const auto& array = type.asArrayWithOffsets();
+      nodes.emplace_back(
+          type.kind(),
+          array.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name));
+      nodes.emplace_back(
+          Kind::Scalar,
+          array.offsetsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::nullopt);
+      addNode(nodes, *array.elements());
+      break;
+    }
+    case Kind::Row: {
+      const auto& row = type.asRow();
+      nodes.emplace_back(
+          type.kind(),
+          row.nullsDescriptor().offset(),
+          ScalarKind::Bool,
+          std::move(name),
+          row.childrenCount());
+      for (size_t i = 0; i < row.childrenCount(); ++i) {
+        addNode(nodes, *row.childAt(i), row.nameAt(i));
+      }
+      break;
+    }
+    case Kind::Map: {
+      const auto& map = type.asMap();
+      nodes.emplace_back(
+          type.kind(),
+          map.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name));
+      addNode(nodes, *map.keys());
+      addNode(nodes, *map.values());
+      break;
+    }
+    case Kind::SlidingWindowMap: {
+      const auto& map = type.asSlidingWindowMap();
+      nodes.emplace_back(
+          type.kind(),
+          map.offsetsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::move(name));
+      nodes.emplace_back(
+          Kind::Scalar,
+          map.lengthsDescriptor().offset(),
+          ScalarKind::UInt32,
+          std::nullopt);
+      addNode(nodes, *map.keys());
+      addNode(nodes, *map.values());
+      break;
+    }
+    case Kind::FlatMap: {
+      const auto& map = type.asFlatMap();
+      nodes.emplace_back(
+          type.kind(),
+          map.nullsDescriptor().offset(),
+          map.keyScalarKind(),
+          std::move(name),
+          map.childrenCount());
+      for (size_t i = 0; i < map.childrenCount(); ++i) {
+        nodes.emplace_back(
+            Kind::Scalar,
+            map.inMapDescriptorAt(i).offset(),
+            ScalarKind::Bool,
+            map.nameAt(i));
+        addNode(nodes, *map.childAt(i));
+      }
+      break;
+    }
+    default:
+      NIMBLE_UNREACHABLE("Unknown type kind {}.", toString(type.kind()));
+  }
+}
+
+std::vector<SchemaNode> schemaNodes(const Type& type) {
+  std::vector<SchemaNode> nodes;
+  addNode(nodes, type);
+  return nodes;
+}
+
+std::string_view serializeNodes(
+    flatbuffers::FlatBufferBuilder& builder,
+    const std::vector<SchemaNode>& nodes) {
+  builder.Clear();
+  auto schema = builder.CreateVector<flatbuffers::Offset<
+      serialization::SchemaNode>>(nodes.size(), [&builder, &nodes](size_t i) {
+    const auto& node = nodes[i];
+    // Build the attribute vector for this node. Empty attributes
+    // skip the vtable slot so wire output stays byte-identical to
+    // pre-attributes serialization for callers that never set
+    // attributes.
+    flatbuffers::Offset<
+        flatbuffers::Vector<flatbuffers::Offset<serialization::StringPair>>>
+        attributes = 0;
+    if (!node.attributes().empty()) {
+      std::vector<flatbuffers::Offset<serialization::StringPair>> attrOffsets;
+      attrOffsets.reserve(node.attributes().size());
+      for (const auto& [key, value] : node.attributes()) {
+        attrOffsets.push_back(
+            serialization::CreateStringPair(
+                builder,
+                builder.CreateString(key),
+                builder.CreateString(value)));
+      }
+      attributes = builder.CreateVector(attrOffsets);
+    }
+    return serialization::CreateSchemaNode(
+        builder,
+        nodeToSerializationKind(&node),
+        node.childrenCount(),
+        node.name().has_value() ? builder.CreateString(node.name().value()) : 0,
+        node.offset(),
+        attributes);
+  });
+
+  builder.Finish(serialization::CreateSchema(builder, schema));
+  return {
+      reinterpret_cast<const char*>(builder.GetBufferPointer()),
+      builder.GetSize()};
+}
+
 } // namespace
 
 SchemaSerializer::SchemaSerializer() : builder_{kInitialSchemaSectionSize} {}
 
 std::string_view SchemaSerializer::serialize(
     const SchemaBuilder& schemaBuilder) {
-  auto nodes = schemaBuilder.schemaNodes();
-  builder_.Clear();
-  auto schema =
-      builder_.CreateVector<flatbuffers::Offset<serialization::SchemaNode>>(
-          nodes.size(), [this, &nodes](size_t i) {
-            const auto& node = nodes[i];
-            // Build the attribute vector for this node. Empty attributes
-            // skip the vtable slot so wire output stays byte-identical to
-            // pre-attributes serialization for callers that never set
-            // attributes.
-            flatbuffers::Offset<flatbuffers::Vector<
-                flatbuffers::Offset<serialization::StringPair>>>
-                attributes = 0;
-            if (!node.attributes().empty()) {
-              std::vector<flatbuffers::Offset<serialization::StringPair>>
-                  attrOffsets;
-              attrOffsets.reserve(node.attributes().size());
-              for (const auto& [key, value] : node.attributes()) {
-                attrOffsets.push_back(
-                    serialization::CreateStringPair(
-                        builder_,
-                        builder_.CreateString(key),
-                        builder_.CreateString(value)));
-              }
-              attributes = builder_.CreateVector(attrOffsets);
-            }
-            return serialization::CreateSchemaNode(
-                builder_,
-                nodeToSerializationKind(&node),
-                node.childrenCount(),
-                node.name().has_value()
-                    ? builder_.CreateString(node.name().value())
-                    : 0,
-                node.offset(),
-                attributes);
-          });
+  return serializeNodes(builder_, schemaBuilder.schemaNodes());
+}
 
-  builder_.Finish(serialization::CreateSchema(builder_, schema));
-  return {
-      reinterpret_cast<const char*>(builder_.GetBufferPointer()),
-      builder_.GetSize()};
+std::string_view SchemaSerializer::serialize(const Type& type) {
+  return serializeNodes(builder_, schemaNodes(type));
 }
 
 std::shared_ptr<const Type> SchemaDeserializer::deserialize(
