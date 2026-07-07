@@ -118,6 +118,20 @@ class TypeBuilder {
 
   Kind kind() const;
 
+  // Sets the per-type string-keyed attribute bag. Insertion order is
+  // preserved end-to-end through schema serialization. Overwrites any
+  // previously set attributes. Intended for writer-side callers that annotate
+  // nodes with format-specific metadata.
+  void setAttributes(
+      std::vector<std::pair<std::string, std::string>> attributes) {
+    attributes_ = std::move(attributes);
+  }
+
+  // Returns the per-type string-keyed attribute bag. Empty by default.
+  const std::vector<std::pair<std::string, std::string>>& attributes() const {
+    return attributes_;
+  }
+
   ScalarTypeBuilder& asScalar();
   TimestampMicroNanoTypeBuilder& asTimestampMicroNano();
   ArrayTypeBuilder& asArray();
@@ -144,6 +158,7 @@ class TypeBuilder {
  private:
   Kind kind_;
   mutable std::unique_ptr<TypeBuilderContext> context_;
+  std::vector<std::pair<std::string, std::string>> attributes_;
 
   friend class SchemaBuilder;
 };

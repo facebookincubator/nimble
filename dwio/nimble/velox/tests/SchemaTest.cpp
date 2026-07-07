@@ -616,6 +616,58 @@ TEST(SchemaTests, typeBuilderCheckedContext) {
   EXPECT_EQ(wrongCtx, nullptr);
 }
 
+TEST(SchemaTests, typeBuilderAttributesEmptyByDefault) {
+  // A freshly created TypeBuilder exposes an empty attribute bag before any
+  // setAttributes call. The accessor lives on the base TypeBuilder, so verify
+  // it on both a leaf (scalar) and a container (row) builder.
+  nimble::SchemaBuilder builder;
+  auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+  auto row = builder.createRowTypeBuilder(0);
+
+  EXPECT_TRUE(scalar->attributes().empty());
+  EXPECT_TRUE(row->attributes().empty());
+}
+
+TEST(SchemaTests, typeBuilderSetAttributesPreservesOrder) {
+  // setAttributes stores the bag verbatim and attributes() returns it with
+  // insertion order preserved (no sorting/dedup). Exercised directly on the
+  // builder, independent of schema serialization.
+  const std::vector<std::pair<std::string, std::string>> kAttrs = {
+      {"key.a", "12"},
+      {"key.b", "true"},
+      {"key.c", "LONG"},
+  };
+
+  nimble::SchemaBuilder builder;
+  auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int64);
+  scalar->setAttributes(kAttrs);
+  EXPECT_EQ(scalar->attributes(), kAttrs);
+
+  // Same API on the base class, so it must behave identically on a row.
+  auto row = builder.createRowTypeBuilder(0);
+  row->setAttributes(kAttrs);
+  EXPECT_EQ(row->attributes(), kAttrs);
+}
+
+TEST(SchemaTests, typeBuilderSetAttributesOverwrites) {
+  // The second setAttributes call fully replaces the first (documented
+  // overwrite semantics) -- it does not merge or append.
+  const std::vector<std::pair<std::string, std::string>> kFirst = {
+      {"key.a", "1"},
+      {"key.b", "true"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kSecond = {
+      {"key.a", "2"},
+  };
+
+  nimble::SchemaBuilder builder;
+  auto scalar = builder.createScalarTypeBuilder(nimble::ScalarKind::Int32);
+  scalar->setAttributes(kFirst);
+  scalar->setAttributes(kSecond);
+
+  EXPECT_EQ(scalar->attributes(), kSecond);
+}
+
 TEST(SchemaTests, rowTypeFindChild) {
   nimble::SchemaBuilder builder;
 

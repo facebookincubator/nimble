@@ -290,6 +290,7 @@ void StatisticsCollector::merge(const StatisticsCollector& other) {
       return std::make_unique<StringStatisticsCollector>();
     case velox::TypeKind::BOOLEAN:
     case velox::TypeKind::TIMESTAMP:
+    case velox::TypeKind::HUGEINT:
     case velox::TypeKind::ROW:
     case velox::TypeKind::ARRAY:
     case velox::TypeKind::MAP:

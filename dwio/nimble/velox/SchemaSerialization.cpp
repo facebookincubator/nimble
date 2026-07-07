@@ -194,6 +194,26 @@ std::string_view SchemaSerializer::serialize(
       builder_.CreateVector<flatbuffers::Offset<serialization::SchemaNode>>(
           nodes.size(), [this, &nodes](size_t i) {
             const auto& node = nodes[i];
+            // Build the attribute vector for this node. Empty attributes
+            // skip the vtable slot so wire output stays byte-identical to
+            // pre-attributes serialization for callers that never set
+            // attributes.
+            flatbuffers::Offset<flatbuffers::Vector<
+                flatbuffers::Offset<serialization::StringPair>>>
+                attributes = 0;
+            if (!node.attributes().empty()) {
+              std::vector<flatbuffers::Offset<serialization::StringPair>>
+                  attrOffsets;
+              attrOffsets.reserve(node.attributes().size());
+              for (const auto& [key, value] : node.attributes()) {
+                attrOffsets.push_back(
+                    serialization::CreateStringPair(
+                        builder_,
+                        builder_.CreateString(key),
+                        builder_.CreateString(value)));
+              }
+              attributes = builder_.CreateVector(attrOffsets);
+            }
             return serialization::CreateSchemaNode(
                 builder_,
                 nodeToSerializationKind(&node),
@@ -201,7 +221,8 @@ std::string_view SchemaSerializer::serialize(
                 node.name().has_value()
                     ? builder_.CreateString(node.name().value())
                     : 0,
-                node.offset());
+                node.offset(),
+                attributes);
           });
 
   builder_.Finish(serialization::CreateSchema(builder_, schema));
@@ -220,13 +241,26 @@ std::shared_ptr<const Type> SchemaDeserializer::deserialize(
   for (auto i = 0; i < nodeCount; ++i) {
     auto* node = schema->nodes()->Get(i);
     auto kind = serializationNodeToKind(node);
+    // Older NIMBLE files predate the `attributes` flatbuffer field and
+    // surface as nullptr here. Treat that case the same as a present-but-
+    // empty list so the deserialized SchemaNode always exposes a vector.
+    std::vector<std::pair<std::string, std::string>> attributes;
+    if (node->attributes() != nullptr) {
+      attributes.reserve(node->attributes()->size());
+      for (const auto* pair : *node->attributes()) {
+        attributes.emplace_back(
+            pair->key() ? pair->key()->str() : std::string{},
+            pair->value() ? pair->value()->str() : std::string{});
+      }
+    }
     nodes.emplace_back(
         kind.first,
         node->offset(),
         kind.second,
         node->name() ? std::optional<std::string>(node->name()->str())
                      : std::nullopt,
-        node->children());
+        node->children(),
+        std::move(attributes));
   }
 
   return SchemaReader::getSchema(nodes);

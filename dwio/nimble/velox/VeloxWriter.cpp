@@ -16,6 +16,7 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include <memory>
+#include <unordered_map>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
@@ -450,6 +451,49 @@ WriterStreamContext& getStreamContext(
 // restrictive) external configuration and perform internal conversion to node
 // ids. Once the new language is ready, we'll switch to using it instead and
 // this translation logic will be removed.
+
+// Resolves a dotted-path key (e.g. "user.name") against a TypeWithId tree by
+// walking RowType children. Returns nullptr if any segment fails to match a
+// row child. The empty path resolves to `root`. Paths that traverse a
+// non-Row parent return nullptr; callers currently emit flat top-level /
+// nested-struct keys only. Returning nullptr is the intentional "unresolved
+// path" result; folly is avoided per the velox coding guideline, so the
+// nullable-return check is suppressed instead of using FOLLY_NULLABLE.
+//
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
+const velox::dwio::common::TypeWithId* resolveDottedPath(
+    const velox::dwio::common::TypeWithId& root,
+    std::string_view path) {
+  if (path.empty()) {
+    return &root;
+  }
+  const velox::dwio::common::TypeWithId* current = &root;
+  size_t start = 0;
+  while (start <= path.size()) {
+    auto dot = path.find('.', start);
+    auto end = (dot == std::string_view::npos) ? path.size() : dot;
+    auto segment = path.substr(start, end - start);
+    if (current->type()->kind() != velox::TypeKind::ROW) {
+      return nullptr;
+    }
+    std::shared_ptr<const velox::dwio::common::TypeWithId> child;
+    try {
+      child = current->childByName(std::string(segment));
+    } catch (const velox::VeloxUserError&) {
+      return nullptr;
+    }
+    if (child == nullptr) {
+      return nullptr;
+    }
+    current = child.get();
+    if (dot == std::string_view::npos) {
+      break;
+    }
+    start = dot + 1;
+  }
+  return current;
+}
+
 std::unique_ptr<FieldWriter> createRootFieldWriter(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     detail::WriterContext& context) {
@@ -491,21 +535,40 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
     context.initStatsCollectors(type);
   }
 
-  return FieldWriter::create(context, type, [&](const TypeBuilder& type) {
-    switch (type.kind()) {
-      case Kind::Row: {
-        getStreamContext(type.asRow().nullsDescriptor()).setIsNullStream(true);
-        break;
+  // Translate dotted-path column-name keys to TypeWithId::id keys so the
+  // typeAddedHandler can look them up in O(1) as each TypeBuilder is
+  // constructed. Paths that fail to resolve are silently dropped (see
+  // VeloxWriterOptions::attributesByColumn doc).
+  std::unordered_map<uint32_t, std::vector<std::pair<std::string, std::string>>>
+      attributesByNodeId;
+  if (!context.options().attributesByColumn.empty()) {
+    attributesByNodeId.reserve(context.options().attributesByColumn.size());
+    for (const auto& [path, attributes] :
+         context.options().attributesByColumn) {
+      const auto* resolved = resolveDottedPath(*type, path);
+      if (resolved != nullptr) {
+        attributesByNodeId.emplace(resolved->id(), attributes);
       }
-      case Kind::FlatMap: {
-        getStreamContext(type.asFlatMap().nullsDescriptor())
-            .setIsNullStream(true);
-        break;
-      }
-      default:
-        break;
     }
-  });
+  }
+
+  return FieldWriter::create(
+      context,
+      type,
+      [&, nodeAttributes = std::move(attributesByNodeId)](
+          TypeBuilder& type, uint32_t nodeId) {
+        if (type.kind() == Kind::Row) {
+          getStreamContext(type.asRow().nullsDescriptor())
+              .setIsNullStream(true);
+        } else if (type.kind() == Kind::FlatMap) {
+          getStreamContext(type.asFlatMap().nullsDescriptor())
+              .setIsNullStream(true);
+        }
+        auto it = nodeAttributes.find(nodeId);
+        if (it != nodeAttributes.end()) {
+          type.setAttributes(it->second);
+        }
+      });
 }
 
 void initializeEncodingLayouts(
