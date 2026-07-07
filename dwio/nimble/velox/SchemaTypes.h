@@ -19,6 +19,9 @@
 #include <cstdint>
 #include <optional>
 #include <ostream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace facebook::nimble {
 
@@ -110,12 +113,14 @@ class SchemaNode {
       offset_size offset,
       ScalarKind scalarKind,
       std::optional<std::string> name = std::nullopt,
-      size_t childrenCount = 0)
+      size_t childrenCount = 0,
+      std::vector<std::pair<std::string, std::string>> attributes = {})
       : kind_{kind},
         offset_{offset},
         name_{std::move(name)},
         scalarKind_{scalarKind},
-        childrenCount_{childrenCount} {}
+        childrenCount_{childrenCount},
+        attributes_{std::move(attributes)} {}
 
   Kind kind() const {
     return kind_;
@@ -137,12 +142,20 @@ class SchemaNode {
     return scalarKind_;
   }
 
+  // Returns the per-node string-keyed attribute bag. Preserves insertion
+  // order so that attributes can round-trip through the flatbuffer
+  // serialization without reordering. Empty by default.
+  const std::vector<std::pair<std::string, std::string>>& attributes() const {
+    return attributes_;
+  }
+
  private:
   Kind kind_;
   offset_size offset_;
   std::optional<std::string> name_;
   ScalarKind scalarKind_;
   size_t childrenCount_;
+  std::vector<std::pair<std::string, std::string>> attributes_;
 };
 
 } // namespace facebook::nimble
