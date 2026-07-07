@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
 #include <limits>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -174,6 +175,64 @@ TYPED_TEST(MainlyConstantEncodingTest, SerializeThenDeserialize) {
     EXPECT_EQ(encoding->rowCount(), rowCount);
     for (uint32_t i = 0; i < rowCount; ++i) {
       EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+    }
+  }
+}
+
+TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
+  using D = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  // 7 and 5 are tied for most-frequent (3 occurrences each). The common value
+  // is chosen via std::max_element over an absl::flat_hash_map whose iteration
+  // order is seeded per table, so each encode() below sees a differently-seeded
+  // map. The tie must be broken by value (deterministically) so that identical
+  // input always produces identical serialized bytes.
+  nimble::Vector<D> values{this->pool_.get()};
+  for (const auto value : {7, 7, 7, 5, 5, 5, 1}) {
+    values.push_back(static_cast<D>(value));
+  }
+  const uint32_t rowCount = values.size();
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  const auto stringBufferFactory = [&](uint32_t totalLength) {
+    return stringBuffers
+        .emplace_back(
+            velox::AlignedBuffer::allocate<char>(
+                totalLength, this->pool_.get()))
+        ->template asMutable<void>();
+  };
+
+  // The tie-data must still round-trip to the original values.
+  auto encoding =
+      nimble::test::Encoder<nimble::MainlyConstantEncoding<D>>::createEncoding(
+          *this->buffer_,
+          values,
+          stringBufferFactory,
+          nimble::CompressionType::Uncompressed,
+          options);
+  nimble::Vector<D> result(this->pool_.get(), rowCount);
+  encoding->materialize(rowCount, result.data());
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+  }
+
+  // Re-encoding the same input must yield byte-identical output regardless of
+  // per-run hash-map iteration order.
+  std::string expected;
+  constexpr int kIterations = 32;
+  for (int i = 0; i < kIterations; ++i) {
+    nimble::Buffer buffer{*this->pool_};
+    const std::string encoded{
+        nimble::test::Encoder<nimble::MainlyConstantEncoding<D>>::encode(
+            buffer, values, nimble::CompressionType::Uncompressed, options)};
+    if (i == 0) {
+      expected = encoded;
+    } else {
+      EXPECT_EQ(encoded, expected)
+          << "MainlyConstant serialization is not deterministic (iteration "
+          << i << ")";
     }
   }
 }

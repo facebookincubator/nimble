@@ -61,6 +61,25 @@
 
 namespace facebook::nimble {
 
+namespace internal {
+
+template <typename UniqueCounts>
+auto mainlyConstantCommonValue(const UniqueCounts& uniqueCounts) {
+  // Select the highest-frequency value. Break count ties by the smaller value
+  // so absl::flat_hash_map iteration order cannot affect estimates or output.
+  return std::max_element(
+      uniqueCounts.cbegin(),
+      uniqueCounts.cend(),
+      [](const auto& left, const auto& right) {
+        if (left.second != right.second) {
+          return left.second < right.second;
+        }
+        return left.first > right.first;
+      });
+}
+
+} // namespace internal
+
 // Data layout is:
 // EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
@@ -100,14 +119,10 @@ class MainlyConstantEncodingBase
     // uncommon value there will be an index. These indices will most likely
     // be stored bit-packed, with bit width of max(rowCount).
 
-    // Find most common item count
+    // Find most common item count.
     const auto& uniqueCounts = statistics.uniqueCounts().value();
-    const auto maxUniqueCount = std::max_element(
-        uniqueCounts.cbegin(),
-        uniqueCounts.cend(),
-        [](const auto& left, const auto& right) {
-          return left.second < right.second;
-        });
+    const auto maxUniqueCount =
+        internal::mainlyConstantCommonValue(uniqueCounts);
     // Deduce uncommon values count
     const uint64_t uncommonCount = rowCount - maxUniqueCount->second;
     // Uncommon values (sparse bool) bitmap will have index per value,
@@ -612,8 +627,6 @@ MainlyConstantEncoding<T>::MainlyConstantEncoding(
   NIMBLE_CHECK(pos == data.end(), "Unexpected mainly constant encoding end");
 }
 
-namespace internal {} // namespace internal
-
 template <typename T>
 std::string_view MainlyConstantEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
@@ -625,10 +638,8 @@ std::string_view MainlyConstantEncoding<T>::encode(
     NIMBLE_INCOMPATIBLE_ENCODING("MainlyConstantEncoding cannot be empty.");
   }
 
-  const auto commonElement = std::max_element(
-      selection.statistics().uniqueCounts().value().cbegin(),
-      selection.statistics().uniqueCounts().value().cend(),
-      [](const auto& a, const auto& b) { return a.second < b.second; });
+  const auto& uniqueCounts = selection.statistics().uniqueCounts().value();
+  const auto commonElement = internal::mainlyConstantCommonValue(uniqueCounts);
 
   const uint32_t entryCount = values.size();
   const uint32_t uncommonCount = entryCount - commonElement->second;

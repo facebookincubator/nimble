@@ -52,10 +52,8 @@ std::string_view MainlyConstantEncoding<std::string_view>::encode(
     NIMBLE_INCOMPATIBLE_ENCODING("MainlyConstantEncoding cannot be empty.");
   }
 
-  const auto commonElement = std::max_element(
-      selection.statistics().uniqueCounts()->cbegin(),
-      selection.statistics().uniqueCounts()->cend(),
-      [](const auto& a, const auto& b) { return a.second < b.second; });
+  const auto& uniqueCounts = selection.statistics().uniqueCounts().value();
+  const auto commonElement = internal::mainlyConstantCommonValue(uniqueCounts);
 
   const uint32_t entryCount = values.size();
   const uint32_t uncommonCount = entryCount - commonElement->second;

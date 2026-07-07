@@ -350,10 +350,18 @@ std::string_view MainlyConstantEncoding<T>::encode(
     NIMBLE_INCOMPATIBLE_ENCODING("MainlyConstantEncoding cannot be empty.");
   }
 
+  // Tie-break on the value so the common value is deterministic;
+  // absl::flat_hash_map iteration order is randomized per run, which would
+  // otherwise make the encoded output vary for identical input.
   const auto commonElement = std::max_element(
       selection.statistics().uniqueCounts().value().cbegin(),
       selection.statistics().uniqueCounts().value().cend(),
-      [](const auto& a, const auto& b) { return a.second < b.second; });
+      [](const auto& a, const auto& b) {
+        if (a.second != b.second) {
+          return a.second < b.second;
+        }
+        return a.first < b.first;
+      });
 
   const uint32_t entryCount = values.size();
   const uint32_t uncommonCount = entryCount - commonElement->second;
