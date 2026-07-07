@@ -65,6 +65,7 @@ class WriterContext : public FieldWriterContext {
         : this->options_.stringBufferGrowthPolicyFactory();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
     disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
+    maxFlatMapKeys_ = options_.maxFlatMapKeys;
     if (this->options_.encodingExecutor &&
         this->options_.maxEncodeParallelism > 0) {
       setParallelEncoding(

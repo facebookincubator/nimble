@@ -514,6 +514,124 @@ TEST_F(
   writer.close();
 }
 
+// A single write whose map has more distinct keys than maxFlatMapKeys fails.
+TEST_F(VeloxWriterTest, FlatMapKeyLimitExceededInSingleWriteThrows) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // One row with 10 distinct BIGINT keys against a limit of 4.
+  auto vector = vectorMaker.rowVector(
+      {"flatmap"},
+      {vectorMaker.mapVector<int64_t, int64_t>(
+          /* size */
+          1,
+          /* sizeAt */ [](auto) { return 10; },
+          /* keyAt */ [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+          /* valueAt */ [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+          /* isNullAt */ [](auto) { return false; })});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.flatMapColumns = {{"flatmap", {}}}, .maxFlatMapKeys = 4});
+
+  NIMBLE_ASSERT_USER_THROW(
+      writer.write(vector), "Too many flatmap keys for node");
+}
+
+// A map whose distinct key count is at/under maxFlatMapKeys writes fine.
+TEST_F(VeloxWriterTest, FlatMapKeyLimitWithinLimitSucceeds) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // 5 distinct keys, well under the limit of 100.
+  auto vector = vectorMaker.rowVector(
+      {"flatmap"},
+      {vectorMaker.mapVector<int64_t, int64_t>(
+          /* size */
+          10,
+          /* sizeAt */ [](auto) { return 5; },
+          /* keyAt */ [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+          /* valueAt */
+          [](auto row, auto mapIndex) -> int64_t {
+            return row * 10 + mapIndex;
+          },
+          /* isNullAt */ [](auto) { return false; })});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.flatMapColumns = {{"flatmap", {}}}, .maxFlatMapKeys = 100});
+
+  EXPECT_NO_THROW(writer.write(vector));
+  EXPECT_NO_THROW(writer.close());
+}
+
+// The limit is file-wide: distinct keys accumulate across write() calls even
+// when no single write exceeds it.
+TEST_F(VeloxWriterTest, FlatMapKeyLimitAccumulatesAcrossWrites) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // Each batch has 8 distinct keys (< limit 10), but the two batches use
+  // disjoint key ranges, so the file-wide count (16) exceeds the limit.
+  auto makeBatch = [&](int64_t keyOffset) {
+    return vectorMaker.rowVector(
+        {"flatmap"},
+        {vectorMaker.mapVector<int64_t, int64_t>(
+            /* size */
+            1,
+            /* sizeAt */ [](auto) { return 8; },
+            /* keyAt */
+            [keyOffset](auto, auto mapIndex) -> int64_t {
+              return keyOffset + mapIndex;
+            },
+            /* valueAt */
+            [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+            /* isNullAt */ [](auto) { return false; })});
+  };
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      makeBatch(0)->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.flatMapColumns = {{"flatmap", {}}}, .maxFlatMapKeys = 10});
+
+  // First batch: 8 distinct keys, under the limit.
+  EXPECT_NO_THROW(writer.write(makeBatch(0)));
+  // Second batch: 8 new keys push the file-wide total to 16, over the limit.
+  NIMBLE_ASSERT_USER_THROW(
+      writer.write(makeBatch(100)), "Too many flatmap keys for node");
+}
+
+// A maxFlatMapKeys of 0 disables the cap (unlimited keys).
+TEST_F(VeloxWriterTest, FlatMapKeyLimitZeroMeansUnlimited) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // 50 distinct keys, which would exceed any small positive limit.
+  auto vector = vectorMaker.rowVector(
+      {"flatmap"},
+      {vectorMaker.mapVector<int64_t, int64_t>(
+          /* size */
+          1,
+          /* sizeAt */ [](auto) { return 50; },
+          /* keyAt */ [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+          /* valueAt */ [](auto, auto mapIndex) -> int64_t { return mapIndex; },
+          /* isNullAt */ [](auto) { return false; })});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.flatMapColumns = {{"flatmap", {}}}, .maxFlatMapKeys = 0});
+
+  EXPECT_NO_THROW(writer.write(vector));
+  EXPECT_NO_THROW(writer.close());
+}
+
 TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 

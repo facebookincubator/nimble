@@ -23,6 +23,7 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
+#include "dwio/nimble/velox/NimbleConfig.h"
 #include "dwio/nimble/velox/OrderedRanges.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/StreamData.h"
@@ -240,6 +241,14 @@ class FieldWriterContext {
 
   inline void setIgnoreTopLevelNulls(bool value) {
     ignoreTopLevelNulls_ = value;
+  }
+
+  inline uint32_t maxFlatMapKeys() const {
+    return maxFlatMapKeys_;
+  }
+
+  inline void setMaxFlatMapKeys(uint32_t value) {
+    maxFlatMapKeys_ = value;
   }
 
   void setParallelEncoding(
@@ -486,6 +495,7 @@ class FieldWriterContext {
   folly::F14FastSet<uint32_t> deduplicatedMapNodeIds_;
   bool ignoreTopLevelNulls_{false};
   bool disableSharedStringBuffers_{false};
+  uint32_t maxFlatMapKeys_{kDefaultMaxFlatMapKeys};
 
   folly::Executor* encodeExecutor_{nullptr};
   uint32_t maxEncodeParallelism_{0};
