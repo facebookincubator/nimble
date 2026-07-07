@@ -15,15 +15,31 @@
  */
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+#include <cstring>
+#include <string>
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace facebook;
+
+namespace {
+
+struct EncodingTestAccess : nimble::Encoding {
+  using nimble::Encoding::serializePrefix;
+  using nimble::Encoding::serializePrefixSize;
+};
+
+} // namespace
 
 template <bool UseVarint>
 struct FBWTestConfig {
@@ -54,6 +70,35 @@ class FixedBitWidthEncodingTest : public ::testing::Test {
             stringBufferFactory(),
             nimble::CompressionType::Uncompressed,
             options);
+  }
+
+  std::string encodeByteRounded(
+      const nimble::Vector<uint32_t>& values,
+      const nimble::Encoding::Options& options = {}) {
+    constexpr uint8_t kByteRoundedBits{8};
+    constexpr uint32_t kBaseline{0};
+    const auto payloadSize =
+        nimble::FixedBitArray::bufferSize(values.size(), kByteRoundedBits);
+    const auto encodingSize = EncodingTestAccess::serializePrefixSize(
+                                  values.size(), options.useVarintRowCount) +
+        sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint8_t) + payloadSize;
+    std::string serialized(encodingSize, '\0');
+    char* pos = serialized.data();
+    EncodingTestAccess::serializePrefix(
+        nimble::EncodingType::FixedBitWidth,
+        nimble::TypeTraits<uint32_t>::dataType,
+        values.size(),
+        options.useVarintRowCount,
+        pos);
+    nimble::encoding::writeChar(
+        static_cast<char>(nimble::CompressionType::Uncompressed), pos);
+    nimble::encoding::write(kBaseline, pos);
+    nimble::encoding::writeChar(kByteRoundedBits, pos);
+    std::memset(pos, 0, payloadSize);
+    nimble::FixedBitArray fixedBitArray(pos, kByteRoundedBits);
+    fixedBitArray.bulkSetWithBaseline(
+        /*start=*/0, values.size(), values.data(), kBaseline);
+    return serialized;
   }
 
   std::function<void*(uint32_t)> stringBufferFactory() {
@@ -89,6 +134,81 @@ TYPED_TEST(FixedBitWidthEncodingTest, serializeThenDeserialize) {
   for (uint32_t i = 0; i < 10; ++i) {
     EXPECT_EQ(result[i], values[i]) << "index " << i;
   }
+}
+
+TYPED_TEST(
+    FixedBitWidthEncodingTest,
+    usesByteRoundedBitsByDefaultAndExactBitsWhenEnabled) {
+  auto values = this->toVector(
+      {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
+       18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+       36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52});
+  nimble::Encoding::Options defaultOptions;
+  defaultOptions.useVarintRowCount = TypeParam::useVarint;
+  nimble::Encoding::Options exactOptions;
+  exactOptions.useVarintRowCount = TypeParam::useVarint;
+  exactOptions.fixedBitWidthUseExactBits = true;
+
+  nimble::Buffer defaultBuffer{*this->pool_};
+  const auto defaultSerialized =
+      nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::encode(
+          defaultBuffer,
+          values,
+          nimble::CompressionType::Uncompressed,
+          defaultOptions);
+
+  const auto defaultPrefixSize = nimble::EncodingPrefix::readPrefixSize(
+      defaultSerialized, TypeParam::useVarint);
+  EXPECT_EQ(
+      static_cast<uint8_t>(
+          defaultSerialized[defaultPrefixSize + sizeof(uint8_t) + 4]),
+      8);
+
+  nimble::Buffer exactBuffer{*this->pool_};
+  const auto exactSerialized =
+      nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::encode(
+          exactBuffer,
+          values,
+          nimble::CompressionType::Uncompressed,
+          exactOptions);
+
+  const auto exactPrefixSize = nimble::EncodingPrefix::readPrefixSize(
+      exactSerialized, TypeParam::useVarint);
+  EXPECT_EQ(
+      static_cast<uint8_t>(
+          exactSerialized[exactPrefixSize + sizeof(uint8_t) + 4]),
+      6);
+
+  auto encoding = nimble::EncodingFactory().create(
+      *this->pool_,
+      defaultSerialized,
+      this->stringBufferFactory(),
+      defaultOptions);
+  std::vector<uint32_t> result(values.size());
+  encoding->materialize(values.size(), result.data());
+  EXPECT_EQ(result, std::vector<uint32_t>(values.begin(), values.end()));
+}
+
+TYPED_TEST(FixedBitWidthEncodingTest, decodesByteRoundedPayload) {
+  auto values = this->toVector(
+      {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
+       18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+       36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52});
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  const auto serialized = this->encodeByteRounded(values, options);
+
+  const auto prefixSize =
+      nimble::EncodingPrefix::readPrefixSize(serialized, TypeParam::useVarint);
+  EXPECT_EQ(
+      static_cast<uint8_t>(serialized[prefixSize + sizeof(uint8_t) + 4]), 8);
+
+  auto encoding = nimble::EncodingFactory().create(
+      *this->pool_, serialized, this->stringBufferFactory(), options);
+  std::vector<uint32_t> result(values.size());
+  encoding->materialize(values.size(), result.data());
+  EXPECT_EQ(result, std::vector<uint32_t>(values.begin(), values.end()));
 }
 
 TYPED_TEST(FixedBitWidthEncodingTest, singleValue) {

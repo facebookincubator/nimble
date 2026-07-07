@@ -43,12 +43,10 @@ namespace detail {
 // This class is meant to quickly estimate the size of encoded data using a
 // given encoding type. It does a lot of assumptions, and it is not meant to be
 // 100% accurate.
-template <typename T, bool FixedByteWidth>
+template <typename T>
 struct EncodingSizeEstimation {
   using physicalType = typename TypeTraits<T>::physicalType;
 
-  // TODO: Add EncodingType::ALP size estimation case once the actual ALP
-  // algorithm is implemented.
   static std::optional<uint64_t> estimateNumericSize(
       const EncodingType encodingType,
       const uint64_t entryCount,
@@ -63,25 +61,25 @@ struct EncodingSizeEstimation {
         // candidate. MainlyConstantEncoding::estimateSize already supports
         // usePerBlockStats + blockSize params.
         return MainlyConstantEncoding<physicalType>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Trivial: {
         return TrivialEncoding<physicalType>::estimateSize(entryCount);
       }
       case EncodingType::FixedBitWidth: {
         return FixedBitWidthEncoding<physicalType>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Dictionary: {
         // TODO: Wire per-block tightening when BlockBitPacking is a
         // candidate. DictionaryEncoding::estimateSize already supports
         // usePerBlockStats + blockSize params.
         return DictionaryEncoding<physicalType>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::RLE: {
         return RLEEncoding<physicalType>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Varint: {
         // Note: the condition below actually support floating point numbers as
@@ -153,21 +151,21 @@ struct EncodingSizeEstimation {
   static std::optional<uint64_t> estimateBoolSize(
       const EncodingType encodingType,
       const size_t entryCount,
-      const Statistics<physicalType>& statistics) {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<bool>::estimateSize(statistics);
       }
       case EncodingType::SparseBool: {
         return SparseBoolEncoding::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Trivial: {
         return TrivialEncoding<bool>::estimateSize(entryCount);
       }
       case EncodingType::RLE: {
-        return RLEEncoding<bool>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+        return RLEEncoding<bool>::estimateSize(entryCount, statistics, options);
       }
       default: {
         return std::nullopt;
@@ -186,26 +184,22 @@ struct EncodingSizeEstimation {
       }
       case EncodingType::MainlyConstant: {
         return MainlyConstantEncoding<std::string_view>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Trivial: {
         return TrivialEncoding<std::string_view>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Dictionary: {
         return DictionaryEncoding<std::string_view>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::RLE: {
         return RLEEncoding<std::string_view>::estimateSize(
-            entryCount, statistics, FixedByteWidth);
+            entryCount, statistics, options);
       }
       case EncodingType::Fsst: {
-        return FsstEncoding::estimateSize(
-            entryCount,
-            statistics,
-            FixedByteWidth,
-            options.fsstCompressionTargetRatio);
+        return FsstEncoding::estimateSize(entryCount, statistics, options);
       }
       default: {
         return std::nullopt;
@@ -221,7 +215,7 @@ struct EncodingSizeEstimation {
     if constexpr (isNumericType<physicalType>()) {
       return estimateNumericSize(encodingType, entryCount, statistics, options);
     } else if constexpr (isBoolType<physicalType>()) {
-      return estimateBoolSize(encodingType, entryCount, statistics);
+      return estimateBoolSize(encodingType, entryCount, statistics, options);
     } else if constexpr (isStringType<physicalType>()) {
       return estimateStringSize(encodingType, entryCount, statistics, options);
     }

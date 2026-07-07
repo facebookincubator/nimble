@@ -108,13 +108,24 @@ TEST_F(VeloxWriterTest, emptyFile) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-TEST_F(VeloxWriterTest, buildEncodingOptionsPropagatesFsstCompressionTarget) {
-  nimble::VeloxWriterOptions options;
-  options.fsstCompressionTargetRatio = 0.42;
+TEST_F(VeloxWriterTest, buildEncodingOptionsPropagatesEncodingOptions) {
+  {
+    const nimble::VeloxWriterOptions options;
+    const auto encodingOptions = options.buildEncodingOptions();
+    EXPECT_FALSE(encodingOptions.fixedBitWidthUseExactBits);
+  }
 
-  const auto encodingOptions = options.buildEncodingOptions();
+  for (const auto useExactBits : {false, true}) {
+    SCOPED_TRACE(fmt::format("useExactBits={}", useExactBits));
+    nimble::VeloxWriterOptions options;
+    options.fsstCompressionTargetRatio = 0.42;
+    options.fixedBitWidthUseExactBits = useExactBits;
 
-  EXPECT_DOUBLE_EQ(encodingOptions.fsstCompressionTargetRatio, 0.42);
+    const auto encodingOptions = options.buildEncodingOptions();
+
+    EXPECT_DOUBLE_EQ(encodingOptions.fsstCompressionTargetRatio, 0.42);
+    EXPECT_EQ(encodingOptions.fixedBitWidthUseExactBits, useExactBits);
+  }
 }
 
 TEST_F(VeloxWriterTest, fsstEncodingTargetControlsWriterEncoding) {

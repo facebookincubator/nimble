@@ -135,6 +135,10 @@ class Encoding {
     /// reads it back from the stream (self-describing).
     uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 
+    /// When true, FOR-family payloads use the exact required bit width. When
+    /// false, FixedBitWidth and PFOR round to byte or bucket boundaries.
+    bool fixedBitWidthUseExactBits{false};
+
     /// Per-column decoding statistics for timing decompression.
     velox::dwio::common::DecodingStats* decodingStats = nullptr;
 

@@ -380,7 +380,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   static uint64_t estimateSize(
       uint64_t /*rowCount*/,
       const Statistics<physicalType>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Estimate the two nested streams produced by RLE:
     //
     //   run lengths: one length per consecutive run, estimated as
@@ -392,10 +392,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
     // Run lengths are encoded as a FixedBitWidth child.
     const uint64_t runLengthsEncodingSize =
         FixedBitWidthEncoding<uint32_t>::estimateSize(
-            runCount,
-            statistics.minRepeat(),
-            statistics.maxRepeat(),
-            fixedByteWidth);
+            runCount, statistics.minRepeat(), statistics.maxRepeat(), options);
 
     uint64_t runValuesEncodingSize{0};
     if constexpr (isStringType<physicalType>()) {
@@ -404,11 +401,11 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       // run.
       runValuesEncodingSize =
           DictionaryEncoding<std::string_view>::estimateSize(
-              runCount, statistics, fixedByteWidth);
+              runCount, statistics, options);
     } else {
       // Run values are encoded as a FixedBitWidth child.
       runValuesEncodingSize = FixedBitWidthEncoding<physicalType>::estimateSize(
-          runCount, statistics, fixedByteWidth);
+          runCount, statistics, options);
     }
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
@@ -488,7 +485,7 @@ class RLEEncoding<bool> final
   static uint64_t estimateSize(
       uint64_t /*rowCount*/,
       const Statistics<bool>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Assumptions:
     // Run lengths are stored using bit-packing (with bit width
     // needed to store max repetition count).
@@ -497,10 +494,7 @@ class RLEEncoding<bool> final
     // Run lengths are encoded as a FixedBitWidth child.
     const uint64_t runLengthsEncodingSize =
         FixedBitWidthEncoding<uint32_t>::estimateSize(
-            runCount,
-            statistics.minRepeat(),
-            statistics.maxRepeat(),
-            fixedByteWidth);
+            runCount, statistics.minRepeat(), statistics.maxRepeat(), options);
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
     return outerEncodingSize + initialValueSize + runLengthsEncodingSize;

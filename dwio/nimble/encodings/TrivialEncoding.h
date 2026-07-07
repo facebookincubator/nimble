@@ -135,13 +135,13 @@ class TrivialEncoding<std::string_view> final
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<std::string_view>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     return estimateSize(
         rowCount,
         statistics.totalStringsLength(),
         statistics.min().size(),
         statistics.max().size(),
-        fixedByteWidth);
+        options);
   }
 
   static uint64_t estimateSize(
@@ -149,11 +149,11 @@ class TrivialEncoding<std::string_view> final
       uint64_t totalStringsLength,
       uint64_t minLength,
       uint64_t maxLength,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // String lengths are encoded as a FixedBitWidth child.
     const uint64_t lengthsEncodingSize =
         FixedBitWidthEncoding<uint32_t>::estimateSize(
-            rowCount, minLength, maxLength, fixedByteWidth);
+            rowCount, minLength, maxLength, options);
     return EncodingPrefix::kFixedPrefixSize + kPrefixSize + totalStringsLength +
         lengthsEncodingSize;
   }

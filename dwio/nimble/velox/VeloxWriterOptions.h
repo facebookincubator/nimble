@@ -45,6 +45,7 @@ struct VeloxWriterOptions {
   Encoding::Options buildEncodingOptions() const {
     return {
         .blockBitPackingBlockSize = blockBitPackingBlockSize,
+        .fixedBitWidthUseExactBits = fixedBitWidthUseExactBits,
         .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
   }
 
@@ -156,6 +157,10 @@ struct VeloxWriterOptions {
   /// enable for production tables without consulting the Nimble team
   ///(oncall: dwios).
   uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
+
+  /// When true, FOR-family payloads use the exact required bit width. When
+  /// false, FixedBitWidth and PFOR round to byte or bucket boundaries.
+  bool fixedBitWidthUseExactBits{false};
 
   /// FSST is kept only when its final encoded size is at most this fraction of
   /// the original string bytes.

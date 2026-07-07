@@ -136,9 +136,9 @@ class PFOREncoding final
   // Shared by encode() and EncodingSizeEstimation to keep the two in sync.
   //
   // Note: buckets have 7-bit granularity, so the selected baseBitWidth may
-  // overestimate by up to 6 bits. This is deliberate — the encode() path
-  // uses the exact bitsRequired() on each residual, so the actual wire
-  // format is tight. The overestimate only affects size estimation.
+  // overestimate by up to 6 bits. The encode() path may tighten the serialized
+  // base width after the actual residual pass when exact bit-width mode is
+  // enabled.
   template <typename BucketArray>
   static std::pair<uint8_t, uint64_t> selectBaseBitWidth(
       const BucketArray& bucketCounts,
@@ -403,15 +403,15 @@ std::string_view PFOREncoding<T>::encode(
     const uint8_t maxBitWidth =
         static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
 
-    const auto [baseBitWidth, expectedExceptions] = selectBaseBitWidth(
+    const auto [selectedBaseBitWidth, expectedExceptions] = selectBaseBitWidth(
         selection.statistics().bucketCounts(), rowCount, maxBitWidth);
 
     // Single pass: compute residuals, identify exceptions that overflow
     // baseBitWidth, and zero-mask exception slots in the residual array.
     constexpr uint32_t kBitsPerPhysicalType = sizeof(physicalType) * 8;
-    const physicalType baseMask = baseBitWidth == 0
+    const physicalType baseMask = selectedBaseBitWidth == 0
         ? physicalType{0}
-        : static_cast<physicalType>(velox::bits::lowMask(baseBitWidth));
+        : static_cast<physicalType>(velox::bits::lowMask(selectedBaseBitWidth));
 
     Vector<uint32_t> exceptionPositions{&buffer.getMemoryPool()};
     Vector<physicalType> exceptionValues{&buffer.getMemoryPool()};
@@ -421,19 +421,30 @@ std::string_view PFOREncoding<T>::encode(
 
     Vector<physicalType> maskedResiduals{&buffer.getMemoryPool()};
     maskedResiduals.resize(rowCount);
+    physicalType maxBaseResidual{0};
     for (auto i = 0; i < rowCount; ++i) {
       const physicalType residual =
           static_cast<physicalType>(values[i] - baseline);
-      if (baseBitWidth < kBitsPerPhysicalType && residual > baseMask) {
+      if (selectedBaseBitWidth < kBitsPerPhysicalType && residual > baseMask) {
         exceptionPositions.emplace_back(i);
         exceptionValues.emplace_back(residual);
         maskedResiduals[i] = physicalType{0};
       } else {
         maskedResiduals[i] = residual;
+        maxBaseResidual = std::max(maxBaseResidual, residual);
       }
     }
     const uint32_t numExceptions =
         static_cast<uint32_t>(exceptionPositions.size());
+    const uint8_t exactBaseBitWidth =
+        static_cast<uint8_t>(velox::bits::bitsRequired(maxBaseResidual));
+    NIMBLE_CHECK_LE(
+        exactBaseBitWidth,
+        selectedBaseBitWidth,
+        "Pfor exact bit width should not exceed selected bit width.");
+    const uint8_t baseBitWidth = options.fixedBitWidthUseExactBits
+        ? exactBaseBitWidth
+        : selectedBaseBitWidth;
 
     const uint64_t bitpackedSize = baseBitWidth == 0
         ? 0

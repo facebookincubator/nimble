@@ -256,31 +256,33 @@ TEST_F(FsstEncodingTest, estimateSizeUsesTargetRatioAndLengthEncodingWidth) {
       "common/prefix/string/value/three",
   };
   const auto statistics = Statistics<std::string_view>::create(values);
-
-  auto estimatedVariablePart = [&](double compressionTargetRatio,
-                                   bool fixedByteWidth) {
-    const uint64_t estimatedBlobSize = static_cast<uint64_t>(
-        statistics.totalStringsLength() * compressionTargetRatio);
-    const uint64_t estimatedMaxCompressedLength = static_cast<uint64_t>(
-        std::ceil(statistics.max().size() * compressionTargetRatio));
-    return estimatedBlobSize +
-        FixedBitWidthEncoding<uint32_t>::estimateSize(
-               values.size(), 0, estimatedMaxCompressedLength, fixedByteWidth);
+  auto makeOptions = [](double compressionTargetRatio) {
+    Encoding::Options options;
+    options.fsstCompressionTargetRatio = compressionTargetRatio;
+    return options;
   };
 
-  const auto fixedWidthSizeAt50 = FsstEncoding::estimateSize(
-      values.size(), statistics, /*fixedByteWidth=*/true, 0.5);
-  const auto fixedWidthSizeAt60 = FsstEncoding::estimateSize(
-      values.size(), statistics, /*fixedByteWidth=*/true, 0.6);
-  const auto bitPackedSizeAt60 = FsstEncoding::estimateSize(
-      values.size(), statistics, /*fixedByteWidth=*/false, 0.6);
+  auto estimatedVariablePart = [&](const Encoding::Options& options) {
+    const uint64_t estimatedBlobSize = static_cast<uint64_t>(
+        statistics.totalStringsLength() * options.fsstCompressionTargetRatio);
+    const uint64_t estimatedMaxCompressedLength =
+        static_cast<uint64_t>(std::ceil(
+            statistics.max().size() * options.fsstCompressionTargetRatio));
+    return estimatedBlobSize +
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+               values.size(), 0, estimatedMaxCompressedLength, options);
+  };
+
+  const auto optionsAt50 = makeOptions(0.5);
+  const auto optionsAt60 = makeOptions(0.6);
+  const auto fixedWidthSizeAt50 =
+      FsstEncoding::estimateSize(values.size(), statistics, optionsAt50);
+  const auto fixedWidthSizeAt60 =
+      FsstEncoding::estimateSize(values.size(), statistics, optionsAt60);
 
   EXPECT_EQ(
       fixedWidthSizeAt60 - fixedWidthSizeAt50,
-      estimatedVariablePart(0.6, true) - estimatedVariablePart(0.5, true));
-  EXPECT_EQ(
-      fixedWidthSizeAt60 - bitPackedSizeAt60,
-      estimatedVariablePart(0.6, true) - estimatedVariablePart(0.6, false));
+      estimatedVariablePart(optionsAt60) - estimatedVariablePart(optionsAt50));
 }
 
 TEST_F(FsstEncodingTest, fsstCompressionTargetRatioFallsBackToTrivial) {

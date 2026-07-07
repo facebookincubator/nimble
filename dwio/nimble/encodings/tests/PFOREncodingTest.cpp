@@ -24,6 +24,8 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
@@ -33,6 +35,33 @@
 using namespace ::facebook;
 
 namespace facebook::nimble::test {
+
+struct PforWireInfo {
+  uint8_t baseBitWidth;
+  uint32_t numExceptions;
+  size_t basePayloadSize;
+};
+
+PforWireInfo readPforWireInfo(
+    std::string_view encoded,
+    bool useVarintRowCount) {
+  const auto prefixSize =
+      EncodingPrefix::readPrefixSize(encoded, useVarintRowCount);
+  const char* pos = encoded.data() + prefixSize;
+  pos += sizeof(uint32_t);
+  const auto baseBitWidth = static_cast<uint8_t>(encoding::readChar(pos));
+  const auto numExceptions = encoding::readUint32(pos);
+  const auto exceptionPositionsSize = encoding::readUint32(pos);
+  pos += exceptionPositionsSize;
+  const auto exceptionValuesSize = encoding::readUint32(pos);
+  pos += exceptionValuesSize;
+  return {
+      .baseBitWidth = baseBitWidth,
+      .numExceptions = numExceptions,
+      .basePayloadSize =
+          static_cast<size_t>(encoded.data() + encoded.size() - pos),
+  };
+}
 
 // The Pfor wire format is byte-identical for a signed cpp type and its
 // matching unsigned physical type, so the per-type tests run on the unsigned
@@ -183,6 +212,78 @@ TEST(PFOREncodingBufferPoolTest, reusesExceptionBuffers) {
   decodeAndVerify();
   EXPECT_EQ(decodePool->stats().numAllocs, numAllocsAfterFirstDecode);
 }
+
+struct PforBitWidthStorageParam {
+  bool fixedBitWidthUseExactBits;
+  uint8_t expectedBaseBitWidth;
+};
+
+class PforBitWidthStorageTest
+    : public ::testing::TestWithParam<PforBitWidthStorageParam> {};
+
+TEST_P(PforBitWidthStorageTest, storesExpectedBasePayloadWidth) {
+  constexpr uint32_t kRowCount{130};
+  constexpr uint32_t kNumExceptions{13};
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  std::vector<uint32_t> values;
+  values.reserve(kRowCount);
+  for (uint32_t i = 0; i < kRowCount; ++i) {
+    values.push_back(i < kRowCount - kNumExceptions ? i % 64 : 512 + i);
+  }
+
+  ManualEncodingSelectionPolicyFactory manualFactory;
+  EncodingSelectionPolicyCreator creator = [&manualFactory](DataType dataType) {
+    return manualFactory.createPolicy(dataType);
+  };
+  EncodingLayout layout{
+      EncodingType::PFOR,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<uint32_t>>(
+      std::move(layout), CompressionOptions{}, creator);
+
+  Encoding::Options options;
+  options.fixedBitWidthUseExactBits = GetParam().fixedBitWidthUseExactBits;
+  Buffer buffer{*pool};
+  const auto encoded = EncodingFactory::encode<uint32_t>(
+      std::move(policy),
+      std::span<const uint32_t>{values.data(), values.size()},
+      buffer,
+      options);
+  const std::string encodedStorage{encoded};
+
+  const auto wireInfo =
+      readPforWireInfo(encodedStorage, options.useVarintRowCount);
+  EXPECT_EQ(wireInfo.baseBitWidth, GetParam().expectedBaseBitWidth);
+  EXPECT_EQ(wireInfo.numExceptions, kNumExceptions);
+  EXPECT_EQ(
+      wireInfo.basePayloadSize,
+      FixedBitArray::bufferSize(
+          values.size(), GetParam().expectedBaseBitWidth));
+
+  auto encoding =
+      EncodingFactory(options).create(*pool, encodedStorage, nullptr);
+  std::vector<uint32_t> decoded(values.size());
+  encoding->materialize(static_cast<uint32_t>(decoded.size()), decoded.data());
+  EXPECT_EQ(decoded, values);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PforBitWidthStorageModes,
+    PforBitWidthStorageTest,
+    ::testing::Values(
+        PforBitWidthStorageParam{
+            .fixedBitWidthUseExactBits = false,
+            .expectedBaseBitWidth = 7,
+        },
+        PforBitWidthStorageParam{
+            .fixedBitWidthUseExactBits = true,
+            .expectedBaseBitWidth = 6,
+        }),
+    [](const ::testing::TestParamInfo<PforBitWidthStorageParam>& info) {
+      return info.param.fixedBitWidthUseExactBits ? "Exact" : "Rounded";
+    });
 
 TYPED_TEST(PFOREncodingTest, residualsAtBitWidthBoundary) {
   // Residuals exactly at the (1<<7)-1 = 127 boundary — verifies the

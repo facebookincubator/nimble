@@ -105,8 +105,7 @@ class FsstEncoding final
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<std::string_view>& statistics,
-      bool fixedByteWidth,
-      double compressionTargetRatio);
+      const Encoding::Options& options);
 
   /// Returns the nested compressed-lengths encoding from serialized FSST data.
   static std::string_view lengthsEncoding(

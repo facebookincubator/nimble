@@ -336,12 +336,14 @@ code {
       <div class="enc-card" style="width:100%">
         <div class="enc-name">FixedBitWidth <span class="tag tag-unchanged">UNCHANGED</span></div>
         <div class="formula" style="font-size:0.62rem;margin:0.2rem 0 0">
-          estimateSize(rowCount, statistics, fixedByteWidth) {<br>
-          &nbsp;&nbsp;return estimateSize(rowCount, statistics.min(), statistics.max(), fixedByteWidth);<br>
+          estimateSize(rowCount, statistics, options) {<br>
+          &nbsp;&nbsp;return estimateSize(rowCount, statistics.min(), statistics.max(), options);<br>
           }<br>
           <br>
-          estimateSize(rowCount, minValue, maxValue, fixedByteWidth) {<br>
-          &nbsp;&nbsp;payloadSize = bitPackedBytes(minValue, maxValue, rowCount, fixedByteWidth);<br>
+          estimateSize(rowCount, minValue, maxValue, options) {<br>
+          &nbsp;&nbsp;bitWidth = bitsRequired(maxValue - minValue);<br>
+          &nbsp;&nbsp;if (!options.fixedBitWidthUseExactBits) bitWidth = roundUpToByte(bitWidth);<br>
+          &nbsp;&nbsp;payloadSize = nbytes(bitWidth * rowCount);<br>
           &nbsp;&nbsp;return prefix + kPrefixSize + payloadSize;<br>
           }
         </div>

@@ -74,7 +74,7 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<bool>& statistics,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Assumptions:
     // Uncommon indices are stored bit-packed (with bit width capable of
     // representing max entry count).
@@ -82,13 +82,13 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
     const auto exceptionCount = std::min(
         statistics.uniqueCounts().value().at(true),
         statistics.uniqueCounts().value().at(false));
-    return estimateSize(rowCount, exceptionCount, fixedByteWidth);
+    return estimateSize(rowCount, exceptionCount, options);
   }
 
   static uint64_t estimateSize(
       uint64_t rowCount,
       uint64_t exceptionCount,
-      bool fixedByteWidth) {
+      const Encoding::Options& options = {}) {
     // Sparse indices are encoded as a FixedBitWidth child.
     // A rowCount sentinel is appended after the real sparse positions so the
     // decoder can stop without storing an explicit index count.
@@ -97,7 +97,7 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
             exceptionCount + 1,
             /*minValue=*/0,
             /*maxValue=*/rowCount,
-            fixedByteWidth);
+            options);
 
     return EncodingPrefix::kFixedPrefixSize + kPrefixSize + indicesEncodingSize;
   }
