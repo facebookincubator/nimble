@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 
 namespace facebook::nimble {
@@ -299,6 +300,10 @@ const StreamDescriptorBuilder& FlatMapTypeBuilder::inMapDescriptorAt(
   return *inMapDescriptors_[index];
 }
 
+size_t FlatMapTypeBuilder::inMapDescriptorCount() const {
+  return inMapDescriptors_.size();
+}
+
 const TypeBuilder& FlatMapTypeBuilder::childAt(size_t index) const {
   NIMBLE_CHECK_LT(index, children_.size(), "Index out of range.");
   return *children_[index];
@@ -478,12 +483,23 @@ offset_size SchemaBuilder::allocateStreamOffset() {
   return currentOffset_++;
 }
 
-void SchemaBuilder::addNode(
+namespace {
+
+const TypeBuilder& schemaChild(const TypeBuilder& type) {
+  return type;
+}
+
+const Type& schemaChild(const std::shared_ptr<const Type>& type) {
+  return *type;
+}
+
+template <typename TypeLike>
+void addSchemaNode(
     std::vector<SchemaNode>& nodes,
-    const TypeBuilder& type,
-    std::optional<std::string> name) const {
-  // Attributes are owned by the main TypeBuilder and are emitted onto the
-  // first (primary) SchemaNode for that TypeBuilder. Synthetic child stream
+    const TypeLike& type,
+    std::optional<std::string> name = std::nullopt) {
+  // Attributes are owned by the logical type and are emitted onto the first
+  // (primary) SchemaNode for that type. Synthetic child stream
   // descriptor nodes (e.g. nanos for TimestampMicroNano, offsets for
   // ArrayWithOffsets, lengths for SlidingWindowMap, in-map nodes for
   // FlatMap) do not carry attributes.
@@ -525,7 +541,7 @@ void SchemaBuilder::addNode(
           std::move(name),
           /*childrenCount*/ 0,
           type.attributes());
-      addNode(nodes, array.elements());
+      addSchemaNode(nodes, schemaChild(array.elements()));
       break;
     }
     case Kind::ArrayWithOffsets: {
@@ -542,11 +558,11 @@ void SchemaBuilder::addNode(
           array.offsetsDescriptor().offset(),
           ScalarKind::UInt32,
           std::nullopt);
-      addNode(nodes, array.elements());
+      addSchemaNode(nodes, schemaChild(array.elements()));
       break;
     }
     case Kind::Row: {
-      auto& row = type.asRow();
+      const auto& row = type.asRow();
       nodes.emplace_back(
           type.kind(),
           row.nullsDescriptor().offset(),
@@ -554,8 +570,8 @@ void SchemaBuilder::addNode(
           std::move(name),
           row.childrenCount(),
           type.attributes());
-      for (auto i = 0; i < row.childrenCount(); ++i) {
-        addNode(nodes, row.childAt(i), row.nameAt(i));
+      for (size_t i = 0; i < row.childrenCount(); ++i) {
+        addSchemaNode(nodes, schemaChild(row.childAt(i)), row.nameAt(i));
       }
       break;
     }
@@ -568,8 +584,8 @@ void SchemaBuilder::addNode(
           std::move(name),
           /*childrenCount*/ 0,
           type.attributes());
-      addNode(nodes, map.keys());
-      addNode(nodes, map.values());
+      addSchemaNode(nodes, schemaChild(map.keys()));
+      addSchemaNode(nodes, schemaChild(map.values()));
       break;
     }
     case Kind::SlidingWindowMap: {
@@ -586,12 +602,12 @@ void SchemaBuilder::addNode(
           map.lengthsDescriptor().offset(),
           ScalarKind::UInt32,
           std::nullopt);
-      addNode(nodes, map.keys());
-      addNode(nodes, map.values());
+      addSchemaNode(nodes, schemaChild(map.keys()));
+      addSchemaNode(nodes, schemaChild(map.values()));
       break;
     }
     case Kind::FlatMap: {
-      auto& map = type.asFlatMap();
+      const auto& map = type.asFlatMap();
 
       size_t childrenSize = map.childrenCount();
       nodes.emplace_back(
@@ -602,7 +618,7 @@ void SchemaBuilder::addNode(
           childrenSize,
           type.attributes());
       NIMBLE_CHECK_EQ(
-          map.inMapDescriptors_.size(),
+          map.inMapDescriptorCount(),
           childrenSize,
           "Flat map in-maps collection size and children collection size should be the same.");
       for (size_t i = 0; i < childrenSize; ++i) {
@@ -611,7 +627,7 @@ void SchemaBuilder::addNode(
             map.inMapDescriptorAt(i).offset(),
             ScalarKind::Bool,
             map.nameAt(i));
-        addNode(nodes, map.childAt(i));
+        addSchemaNode(nodes, schemaChild(map.childAt(i)));
       }
 
       break;
@@ -622,11 +638,19 @@ void SchemaBuilder::addNode(
   }
 }
 
+} // namespace
+
 std::vector<SchemaNode> SchemaBuilder::schemaNodes() const {
   auto& root = this->root();
   std::vector<SchemaNode> nodes;
   nodes.reserve(currentOffset_);
-  addNode(nodes, *root);
+  addSchemaNode(nodes, *root);
+  return nodes;
+}
+
+std::vector<SchemaNode> schemaNodes(const Type& type) {
+  std::vector<SchemaNode> nodes;
+  addSchemaNode(nodes, type);
   return nodes;
 }
 

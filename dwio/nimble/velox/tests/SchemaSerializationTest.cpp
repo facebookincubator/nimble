@@ -37,9 +37,24 @@ std::shared_ptr<const Type> roundTrip(const Type& type) {
   return SchemaDeserializer::deserialize(serialized);
 }
 
+void expectSchemaNodesEqual(
+    const std::vector<SchemaNode>& expected,
+    const std::vector<SchemaNode>& actual) {
+  ASSERT_EQ(expected.size(), actual.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(expected[i].kind(), actual[i].kind());
+    EXPECT_EQ(expected[i].offset(), actual[i].offset());
+    EXPECT_EQ(expected[i].name(), actual[i].name());
+    EXPECT_EQ(expected[i].scalarKind(), actual[i].scalarKind());
+    EXPECT_EQ(expected[i].childrenCount(), actual[i].childrenCount());
+    EXPECT_EQ(expected[i].attributes(), actual[i].attributes());
+  }
+}
+
 } // namespace
 
-TEST(SchemaSerializationTest, ScalarInt8) {
+TEST(SchemaSerializationTest, scalarInt8) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(schemaBuilder, NIMBLE_ROW({{"field", NIMBLE_TINYINT()}}));
   auto root = roundTrip(schemaBuilder);
@@ -53,7 +68,7 @@ TEST(SchemaSerializationTest, ScalarInt8) {
       row.childAt(0)->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, ScalarTypes) {
+TEST(SchemaSerializationTest, scalarTypes) {
   struct TestCase {
     std::string name;
     ScalarKind expectedKind;
@@ -91,7 +106,7 @@ TEST(SchemaSerializationTest, ScalarTypes) {
   }
 }
 
-TEST(SchemaSerializationTest, RowType) {
+TEST(SchemaSerializationTest, rowType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder,
@@ -117,7 +132,7 @@ TEST(SchemaSerializationTest, RowType) {
       row.childAt(2)->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, ArrayType) {
+TEST(SchemaSerializationTest, arrayType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder, NIMBLE_ROW({{"arr", NIMBLE_ARRAY(NIMBLE_BIGINT())}}));
@@ -132,7 +147,7 @@ TEST(SchemaSerializationTest, ArrayType) {
       arr.elements()->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, MapType) {
+TEST(SchemaSerializationTest, mapType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder,
@@ -150,7 +165,7 @@ TEST(SchemaSerializationTest, MapType) {
       map.values()->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, ArrayWithOffsetsType) {
+TEST(SchemaSerializationTest, arrayWithOffsetsType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder, NIMBLE_ROW({{"oa", NIMBLE_OFFSETARRAY(NIMBLE_BIGINT())}}));
@@ -165,7 +180,7 @@ TEST(SchemaSerializationTest, ArrayWithOffsetsType) {
       arr.elements()->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, SlidingWindowMapType) {
+TEST(SchemaSerializationTest, slidingWindowMapType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder,
@@ -185,7 +200,7 @@ TEST(SchemaSerializationTest, SlidingWindowMapType) {
       swm.values()->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, FlatMapType) {
+TEST(SchemaSerializationTest, flatMapType) {
   SchemaBuilder schemaBuilder;
   test::FlatMapChildAdder adder;
   NIMBLE_SCHEMA(
@@ -204,7 +219,7 @@ TEST(SchemaSerializationTest, FlatMapType) {
       fm.childAt(0)->asScalar().scalarDescriptor().scalarKind());
 }
 
-TEST(SchemaSerializationTest, TimestampMicroNanoType) {
+TEST(SchemaSerializationTest, timestampMicroNanoType) {
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
       schemaBuilder, NIMBLE_ROW({{"ts", NIMBLE_TIMESTAMPMICRONANO()}}));
@@ -214,7 +229,7 @@ TEST(SchemaSerializationTest, TimestampMicroNanoType) {
   EXPECT_EQ(Kind::TimestampMicroNano, row.childAt(0)->kind());
 }
 
-TEST(SchemaSerializationTest, NestedComplex) {
+TEST(SchemaSerializationTest, nestedComplex) {
   // ROW containing ARRAY of MAP
   SchemaBuilder schemaBuilder;
   NIMBLE_SCHEMA(
@@ -250,7 +265,7 @@ TEST(SchemaSerializationTest, NestedComplex) {
 // SchemaReader::getSchema -> Type::attributes().
 // ---------------------------------------------------------------------------
 
-TEST(SchemaSerializationTest, AttributesRoundTripOnLeaf) {
+TEST(SchemaSerializationTest, attributesRoundTripOnLeaf) {
   // Set string-keyed attributes on the leaf TypeBuilder before it is
   // attached to the row. The keys must survive serialize -> deserialize and
   // surface on the deserialized Type with insertion order preserved.
@@ -276,7 +291,7 @@ TEST(SchemaSerializationTest, AttributesRoundTripOnLeaf) {
   EXPECT_EQ(kAttrs, child->attributes());
 }
 
-TEST(SchemaSerializationTest, AttributesRoundTripOnParentAndChild) {
+TEST(SchemaSerializationTest, attributesRoundTripOnParentAndChild) {
   // Both a nested struct (RowType) and one of its leaves carry distinct
   // attribute bags. Verify each set lands on the corresponding deserialized
   // Type independently and does not bleed between nodes.
@@ -312,7 +327,7 @@ TEST(SchemaSerializationTest, AttributesRoundTripOnParentAndChild) {
   EXPECT_EQ(kChildAttrs, innerLeaf->attributes());
 }
 
-TEST(SchemaSerializationTest, AttributesEmptyByDefault) {
+TEST(SchemaSerializationTest, attributesEmptyByDefault) {
   // A builder without setAttributes(...) must produce a deserialized Type
   // tree where every node exposes an empty (not throwing, not null) vector.
   // This is the no-op upgrade path for every NIMBLE writer that does not
@@ -344,7 +359,7 @@ TEST(SchemaSerializationTest, AttributesEmptyByDefault) {
 //       on-disk bytes for callers that haven't opted in to attributes.
 // ---------------------------------------------------------------------------
 
-TEST(SchemaSerializationTest, LegacyWireBufferDeserializesWithEmptyAttributes) {
+TEST(SchemaSerializationTest, legacyWireBufferDeserializesWithEmptyAttributes) {
   // Construct a flatbuffer Schema with NO `attributes` vtable slot on any
   // node -- byte-for-byte the wire format used by every NIMBLE writer
   // before this stack landed. SchemaDeserializer must accept it, produce
@@ -430,7 +445,7 @@ TEST(SchemaSerializationTest, LegacyWireBufferDeserializesWithEmptyAttributes) {
   EXPECT_TRUE(row.childAt(1)->attributes().empty());
 }
 
-TEST(SchemaSerializationTest, NoAttributesWireShapeMatchesLegacy) {
+TEST(SchemaSerializationTest, noAttributesWireShapeMatchesLegacy) {
   // When no TypeBuilder calls setAttributes(...), the new serializer must
   // NOT emit the `attributes` vtable slot on any node. This is the
   // byte-shape invariant for every NIMBLE writer that has not opted in to
@@ -476,7 +491,59 @@ TEST(SchemaSerializationTest, NoAttributesWireShapeMatchesLegacy) {
   }
 }
 
-TEST(SchemaSerializationTest, SerializeTypePreservesSchemaShape) {
+TEST(SchemaSerializationTest, schemaNodesFromTypeMatchesBuilderNodes) {
+  const std::vector<std::pair<std::string, std::string>> kRootAttrs = {
+      {"root", "attrs"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kArrayAttrs = {
+      {"array", "attrs"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kLeafAttrs = {
+      {"leaf", "attrs"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kFlatMapAttrs = {
+      {"flatmap", "attrs"},
+  };
+
+  SchemaBuilder schemaBuilder;
+  auto offsetArrayElement =
+      schemaBuilder.createScalarTypeBuilder(ScalarKind::Int64);
+  offsetArrayElement->setAttributes(kLeafAttrs);
+  auto offsetArray = schemaBuilder.createArrayWithOffsetsTypeBuilder();
+  offsetArray->setChildren(offsetArrayElement);
+  offsetArray->setAttributes(kArrayAttrs);
+
+  auto slidingMap = schemaBuilder.createSlidingWindowMapTypeBuilder();
+  slidingMap->setChildren(
+      schemaBuilder.createScalarTypeBuilder(ScalarKind::String),
+      schemaBuilder.createScalarTypeBuilder(ScalarKind::Int32));
+
+  auto flatMap = schemaBuilder.createFlatMapTypeBuilder(ScalarKind::String);
+  flatMap->setAttributes(kFlatMapAttrs);
+  flatMap->addChild(
+      "key1", schemaBuilder.createScalarTypeBuilder(ScalarKind::Double));
+  auto flatMapArrayElement =
+      schemaBuilder.createScalarTypeBuilder(ScalarKind::UInt32);
+  auto flatMapArray = schemaBuilder.createArrayTypeBuilder();
+  flatMapArray->setChildren(flatMapArrayElement);
+  flatMap->addChild("key2", flatMapArray);
+
+  auto timestamp = schemaBuilder.createTimestampMicroNanoTypeBuilder();
+
+  auto root = schemaBuilder.createRowTypeBuilder(4);
+  root->setAttributes(kRootAttrs);
+  root->addChild("offsetArray", offsetArray);
+  root->addChild("slidingMap", slidingMap);
+  root->addChild("flatMap", flatMap);
+  root->addChild("timestamp", timestamp);
+
+  const auto deserializedType = roundTrip(schemaBuilder);
+
+  expectSchemaNodesEqual(
+      schemaBuilder.schemaNodes(), schemaNodes(*deserializedType));
+}
+
+TEST(SchemaSerializationTest, serializeTypePreservesSchemaShape) {
   SchemaBuilder schemaBuilder;
   test::FlatMapChildAdder adder;
   NIMBLE_SCHEMA(
@@ -494,4 +561,40 @@ TEST(SchemaSerializationTest, SerializeTypePreservesSchemaShape) {
   const auto reserializedType = roundTrip(*deserializedType);
 
   test::compareSchema(schemaBuilder.schemaNodes(), reserializedType);
+}
+
+TEST(SchemaSerializationTest, serializeTypePreservesAttributes) {
+  const std::vector<std::pair<std::string, std::string>> kRowAttrs = {
+      {"row", "root"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kArrayAttrs = {
+      {"array", "items"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kLeafAttrs = {
+      {"leaf", "value"},
+  };
+
+  SchemaBuilder schemaBuilder;
+  auto leaf = schemaBuilder.createScalarTypeBuilder(ScalarKind::Binary);
+  leaf->setAttributes(kLeafAttrs);
+  auto array = schemaBuilder.createArrayTypeBuilder();
+  array->setChildren(leaf);
+  array->setAttributes(kArrayAttrs);
+  auto row = schemaBuilder.createRowTypeBuilder(1);
+  row->addChild("field", array);
+  row->setAttributes(kRowAttrs);
+
+  const auto deserializedType = roundTrip(schemaBuilder);
+  const auto reserializedType = roundTrip(*deserializedType);
+
+  ASSERT_EQ(Kind::Row, reserializedType->kind());
+  EXPECT_EQ(kRowAttrs, reserializedType->attributes());
+
+  const auto& arrayType = reserializedType->asRow().childAt(0);
+  ASSERT_EQ(Kind::Array, arrayType->kind());
+  EXPECT_EQ(kArrayAttrs, arrayType->attributes());
+
+  const auto& leafType = arrayType->asArray().elements();
+  ASSERT_EQ(Kind::Scalar, leafType->kind());
+  EXPECT_EQ(kLeafAttrs, leafType->attributes());
 }

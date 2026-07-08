@@ -315,6 +315,10 @@ const StreamDescriptor& FlatMapType::inMapDescriptorAt(size_t index) const {
   return *inMapDescriptors_[index];
 }
 
+size_t FlatMapType::inMapDescriptorCount() const {
+  return inMapDescriptors_.size();
+}
+
 ScalarKind FlatMapType::keyScalarKind() const {
   return keyScalarKind_;
 }

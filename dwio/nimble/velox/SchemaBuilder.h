@@ -46,6 +46,7 @@
 namespace facebook::nimble {
 
 class SchemaBuilder;
+class Type;
 class ScalarTypeBuilder;
 class TimestampMicroNanoTypeBuilder;
 class ArrayTypeBuilder;
@@ -275,6 +276,10 @@ class FlatMapTypeBuilder : public TypeBuilder {
  public:
   const StreamDescriptorBuilder& nullsDescriptor() const;
   const StreamDescriptorBuilder& inMapDescriptorAt(size_t index) const;
+  /// Returns the number of in-map stream descriptors tracked for flat-map keys.
+  /// This should match childrenCount(): the schema keeps one descriptor per
+  /// key, independent of whether a stripe stores data for that stream.
+  size_t inMapDescriptorCount() const;
   size_t childrenCount() const;
   const TypeBuilder& childAt(size_t index) const;
   const std::string& nameAt(size_t index) const;
@@ -368,11 +373,6 @@ class SchemaBuilder {
   void registerChild(const std::shared_ptr<TypeBuilder>& type);
   offset_size allocateStreamOffset();
 
-  void addNode(
-      std::vector<SchemaNode>& nodes,
-      const TypeBuilder& type,
-      std::optional<std::string> name = std::nullopt) const;
-
   // Schema builder is building a tree of types. As a tree, it should have a
   // single root. We use |roots_| to track that the callers don't forget to
   // attach every created type to a parent (and thus constructing a valid tree).
@@ -402,5 +402,9 @@ class SchemaBuilder {
 };
 
 std::ostream& operator<<(std::ostream& out, const SchemaBuilder& schema);
+
+/// Converts a deserialized type tree into the same DFS schema node layout
+/// produced by SchemaBuilder::schemaNodes().
+std::vector<SchemaNode> schemaNodes(const Type& type);
 
 } // namespace facebook::nimble
