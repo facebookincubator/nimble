@@ -216,6 +216,10 @@ class FlatMapType : public Type {
 
   const StreamDescriptor& nullsDescriptor() const;
   const StreamDescriptor& inMapDescriptorAt(size_t index) const;
+  /// Returns the number of in-map stream descriptors tracked for flat-map keys.
+  /// This should match childrenCount(): the schema keeps one descriptor per
+  /// key, independent of whether a stripe stores data for that stream.
+  size_t inMapDescriptorCount() const;
   ScalarKind keyScalarKind() const;
   size_t childrenCount() const;
   const std::shared_ptr<const Type>& childAt(size_t index) const;
