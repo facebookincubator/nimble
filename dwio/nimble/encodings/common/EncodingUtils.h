@@ -21,11 +21,6 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-// FOR and FrequencyPartition integration commented out (disabled):
-/*
-#include "dwio/nimble/encodings/ForEncoding.h"
-#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
-*/
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -34,12 +29,6 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-// SubIntSplit integration commented out (disabled):
-/*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
-#endif
-*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 
@@ -120,9 +109,10 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::SparseBool:
       if constexpr (std::is_same_v<T, bool>) {
         return f(static_cast<SparseBoolEncoding&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+      NIMBLE_UNREACHABLE(
+          "SparseBool encoding only supports bool data types, got {}.",
+          encoding.dataType());
     case EncodingType::Varint:
       if constexpr (folly::IsOneOf<
                         T,
@@ -133,9 +123,10 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
                         float,
                         double>::value) {
         return f(static_cast<VarintEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+      NIMBLE_UNREACHABLE(
+          "Varint encoding only supports 32- and 64-bit numeric data types, got {}.",
+          encoding.dataType());
     case EncodingType::Constant:
       return f(static_cast<ConstantEncoding<T>&>(encoding));
     case EncodingType::MainlyConstant:
@@ -143,49 +134,28 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
     case EncodingType::ALP:
-      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+      if constexpr (isFloatingPointType<T>()) {
+        return f(static_cast<ALPEncoding<T>&>(encoding));
+      }
+      NIMBLE_UNSUPPORTED(
+          "ALP encoding only supports float and double data types, got {}.",
+          encoding.dataType());
     case EncodingType::BlockBitPacking:
       return f(static_cast<BlockBitPackingEncoding<T>&>(encoding));
     case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<PFOREncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+      NIMBLE_UNREACHABLE(
+          "PFOR encoding only supports integral data types, got {}.",
+          encoding.dataType());
     case EncodingType::SimdForBitpack:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<SimdForBitpackEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
-      // SubIntSplit integration commented out (disabled):
-      /*
-  #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-      case EncodingType::SubIntSplit:
-        if constexpr (isNumericType<T>() && sizeof(T) >= 4) {
-          return f(static_cast<SubIntSplitEncoding<T>&>(encoding));
-        } else {
-          NIMBLE_UNREACHABLE(toString(encoding.dataType()));
-        }
-  #endif
-      */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::FOR:
-      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
-        return f(static_cast<ForEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
-      }
-    case EncodingType::FrequencyPartition:
-      if constexpr (!std::is_same_v<T, bool>) {
-        return f(static_cast<FrequencyPartitionEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
-      }
-#endif
-    */
+      NIMBLE_UNREACHABLE(
+          "SimdForBitpack encoding only supports integral data types, got {}.",
+          encoding.dataType());
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());
   }

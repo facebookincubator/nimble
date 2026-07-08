@@ -349,7 +349,8 @@ std::string_view EncodingFactory::encode(
   using physicalType = typename TypeTraits<T>::physicalType;
   auto physicalValues = toPhysicalSpan(values);
   auto statistics = Statistics<physicalType>::create(physicalValues);
-  auto selectionResult = selectorPolicy->select(physicalValues, statistics);
+  auto selectionResult =
+      selectorPolicy->select(physicalValues, statistics, Encoding::Options{});
   EncodingSelection<physicalType> selection{
       std::move(selectionResult),
       std::move(statistics),
@@ -367,8 +368,8 @@ std::string_view EncodingFactory::encodeNullable(
   using physicalType = typename TypeTraits<T>::physicalType;
   auto physicalValues = toPhysicalSpan(values);
   auto statistics = Statistics<physicalType>::create(physicalValues);
-  auto selectionResult =
-      selectorPolicy->selectNullable(physicalValues, nulls, statistics);
+  auto selectionResult = selectorPolicy->selectNullable(
+      physicalValues, nulls, statistics, Encoding::Options{});
   EncodingSelection<physicalType> selection{
       std::move(selectionResult),
       std::move(statistics),

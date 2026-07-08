@@ -62,16 +62,6 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier EncodedValues = 0;
   };
 
-  // SubIntSplit integration commented out (disabled):
-  /*
-  struct SubIntSplit {
-    // Section identifiers equal the section index (0..splitCount-1).
-    // Maximum 64 sections (one per bit of a 64-bit integer).
-    // The identifier is written directly as section_index, so no named
-    // constants are defined here; callers use the index directly.
-  };
-  */
-
   struct FrequencyPartition {
     // Partition metadata
     // Eventually we may want to allow for non-power-of-two bit partitions, but

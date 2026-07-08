@@ -1608,7 +1608,8 @@ TEST_F(EncodeTypedCompressionTest, defaultFactoryNoCompression) {
   ASSERT_NE(typed, nullptr);
 
   std::vector<uint32_t> data(1000, 42);
-  auto result = typed->select(data, Statistics<uint32_t>::create(data));
+  auto result = typed->select(
+      data, Statistics<uint32_t>::create(data), Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   EXPECT_EQ(
       compressionPolicy->config().compressionType,

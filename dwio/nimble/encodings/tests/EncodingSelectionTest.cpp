@@ -130,9 +130,11 @@ void verifySizeEstimate(
       },
       std::nullopt);
 
+  const nimble::Encoding::Options options;
+
   // Check the serialized uncompressed size
-  auto serialized =
-      nimble::EncodingFactory::encode<T>(std::move(policy), values, buffer);
+  auto serialized = nimble::EncodingFactory::encode<T>(
+      std::move(policy), values, buffer, options);
   auto actualSize = serialized.size();
   EXPECT_EQ(actualSize, expectedActualSize);
 
@@ -140,7 +142,8 @@ void verifySizeEstimate(
   auto estimatedSize = nimble::detail::EncodingSizeEstimation<T>::estimateSize(
       encodingTypeForEstimation,
       values.size(),
-      nimble::Statistics<T>::create(values));
+      nimble::Statistics<T>::create(values),
+      options);
   EXPECT_EQ(estimatedSize, expectedEstimatedSize);
 }
 
@@ -250,7 +253,7 @@ TEST_P(FixedBitWidthSelectionTest, selectsExpectedEncodingForNarrowValues) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    FixedBitWidthUseExactBits,
+    fixedBitWidthUseExactBits,
     FixedBitWidthSelectionTest,
     ::testing::Values(
         FixedBitWidthSelectionParam{
@@ -282,7 +285,7 @@ TYPED_TEST_CASE(EncodingSelectionNumericTests, NumericTypes);
 template <typename C>
 class EncodingSelectionNumericTests : public ::testing::Test {};
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectConst) {
+TYPED_TEST(EncodingSelectionNumericTests, selectConst) {
   using T = TypeParam;
 
   for (const T value :
@@ -306,7 +309,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectConst) {
   }
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectMainlyConst) {
+TYPED_TEST(EncodingSelectionNumericTests, selectMainlyConst) {
   using T = TypeParam;
 
   for (const T value : {
@@ -383,7 +386,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectMainlyConst) {
   }
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectTrivial) {
+TYPED_TEST(EncodingSelectionNumericTests, selectTrivial) {
   using T = TypeParam;
 
   auto seed = folly::Random::rand32();
@@ -407,7 +410,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectTrivial) {
       });
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectFixedBitWidth) {
+TYPED_TEST(EncodingSelectionNumericTests, selectFixedBitWidth) {
   using T = TypeParam;
 
   auto seed = folly::Random::rand32();
@@ -436,7 +439,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectFixedBitWidth) {
   }
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectDictionary) {
+TYPED_TEST(EncodingSelectionNumericTests, selectDictionary) {
   using T = TypeParam;
 
   auto seed = folly::Random::rand32();
@@ -460,8 +463,10 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectDictionary) {
            .level = 0,
            .nestedEncodingName = ""},
           {.encodingType = nimble::EncodingType::Trivial,
-           .dataType = nimble::TypeTraits<
-               typename nimble::EncodingPhysicalType<T>::type>::dataType,
+           .dataType = nimble::isFloatingPointType<T>()
+               ? nimble::TypeTraits<T>::dataType
+               : nimble::TypeTraits<
+                     typename nimble::EncodingPhysicalType<T>::type>::dataType,
            .level = 1,
            .nestedEncodingName = "Alphabet"},
           {.encodingType = nimble::EncodingType::FixedBitWidth,
@@ -471,7 +476,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectDictionary) {
       });
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectRunLength) {
+TYPED_TEST(EncodingSelectionNumericTests, selectRunLength) {
   using T = TypeParam;
 
   auto seed = folly::Random::rand32();
@@ -550,7 +555,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectRunLength) {
   }
 }
 
-TYPED_TEST(EncodingSelectionNumericTests, SelectVarint) {
+TYPED_TEST(EncodingSelectionNumericTests, selectVarint) {
   using T = TypeParam;
 
   if constexpr (sizeof(T) < 4) {
@@ -586,7 +591,7 @@ TYPED_TEST(EncodingSelectionNumericTests, SelectVarint) {
       });
 }
 
-TEST(EncodingSelectionBoolTests, SelectConst) {
+TEST(EncodingSelectionBoolTests, selectConst) {
   using T = bool;
 
   for (const T value : {true, false}) {
@@ -606,7 +611,7 @@ TEST(EncodingSelectionBoolTests, SelectConst) {
   }
 }
 
-TEST(EncodingSelectionBoolTests, SelectSparseBool) {
+TEST(EncodingSelectionBoolTests, selectSparseBool) {
   using T = bool;
 
   for (const T value : {false, true}) {
@@ -634,7 +639,7 @@ TEST(EncodingSelectionBoolTests, SelectSparseBool) {
   }
 }
 
-TEST(EncodingSelectionBoolTests, SelectTrivial) {
+TEST(EncodingSelectionBoolTests, selectTrivial) {
   using T = bool;
 
   auto seed = folly::Random::rand32();
@@ -693,7 +698,7 @@ TEST(EncodingSelectionBoolTests, SelectTrivial) {
   }
 }
 
-TEST(EncodingSelectionBoolTests, SelectRunLength) {
+TEST(EncodingSelectionBoolTests, selectRunLength) {
   using T = bool;
 
   auto seed = folly::Random::rand32();
@@ -747,7 +752,7 @@ TEST(EncodingSelectionBoolTests, SelectRunLength) {
       });
 }
 
-TEST(EncodingSelectionStringTests, SelectConst) {
+TEST(EncodingSelectionStringTests, selectConst) {
   using T = std::string_view;
 
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
@@ -786,7 +791,7 @@ TEST(EncodingSelectionStringTests, SelectConst) {
   }
 }
 
-TEST(EncodingSelectionStringTests, SelectMainlyConst) {
+TEST(EncodingSelectionStringTests, selectMainlyConst) {
   using T = std::string_view;
 
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
@@ -856,7 +861,7 @@ TEST(EncodingSelectionStringTests, SelectMainlyConst) {
   }
 }
 
-TEST(EncodingSelectionStringTests, SelectTrivial) {
+TEST(EncodingSelectionStringTests, selectTrivial) {
   using T = std::string_view;
 
   auto seed = folly::Random::rand32();
@@ -910,7 +915,7 @@ TEST(EncodingSelectionStringTests, SelectTrivial) {
       });
 }
 
-TEST(EncodingSelectionStringTests, SelectDictionary) {
+TEST(EncodingSelectionStringTests, selectDictionary) {
   using T = std::string_view;
 
   auto seed = folly::Random::rand32();
@@ -966,7 +971,7 @@ TEST(EncodingSelectionStringTests, SelectDictionary) {
       });
 }
 
-TEST(EncodingSelectionStringTests, SelectRunLength) {
+TEST(EncodingSelectionStringTests, selectRunLength) {
   using T = std::string_view;
 
   auto seed = folly::Random::rand32();
@@ -1039,7 +1044,7 @@ TEST(EncodingSelectionStringTests, SelectRunLength) {
       });
 }
 
-TEST(EncodingSelectionTests, TestNullable) {
+TEST(EncodingSelectionTests, testNullable) {
   using T = std::string_view;
   auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*pool};
@@ -1074,8 +1079,10 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
               defaultEncodingReadFactors(),
           nimble::CompressionOptions{},
           std::nullopt);
-  auto result =
-      compressPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = compressPolicy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   // Compression should be attempted (non-Uncompressed type).
   EXPECT_NE(
@@ -1090,8 +1097,10 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
         dynamic_cast<nimble::EncodingSelectionPolicy<uint32_t>*>(
             defaultPolicy.get());
     ASSERT_NE(typedDefault, nullptr);
-    auto defaultResult =
-        typedDefault->select(data, nimble::Statistics<uint32_t>::create(data));
+    auto defaultResult = typedDefault->select(
+        data,
+        nimble::Statistics<uint32_t>::create(data),
+        nimble::Encoding::Options{});
     auto defaultCompressionPolicy = defaultResult.compressionPolicyFactory();
     EXPECT_NE(
         defaultCompressionPolicy->config().compressionType,
@@ -1106,7 +1115,9 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlag) {
           /*compressionOptions=*/std::nullopt,
           std::nullopt);
   auto noCompressResult = noCompressPolicy->select(
-      data, nimble::Statistics<uint32_t>::create(data));
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto noCompressionPolicy = noCompressResult.compressionPolicyFactory();
   // Compression should be Uncompressed (default NoCompressionPolicy).
   EXPECT_EQ(
@@ -1139,8 +1150,10 @@ TEST(ManualEncodingSelectionPolicyTest, noCompressFlagPropagesToNested) {
 
   // The nested policy should also disable compression.
   std::vector<uint32_t> data(100, 7);
-  auto nestedResult =
-      typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto nestedResult = typedNested->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
   EXPECT_EQ(
       nestedCompressionPolicy->config().compressionType,
@@ -1164,8 +1177,10 @@ TEST(ManualEncodingSelectionPolicyTest, perEncodingCompressionAcceptRatio) {
   for (uint32_t i = 0; i < data.size(); ++i) {
     data[i] = i % 100;
   }
-  auto cbpResult =
-      cbpPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto cbpResult = cbpPolicy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   EXPECT_EQ(cbpResult.encodingType, nimble::EncodingType::BlockBitPacking);
   auto cbpCompressionPolicy = cbpResult.compressionPolicyFactory();
   // BlockBitPacking ratio is 0.7: reject compression that only saves 20%.
@@ -1182,8 +1197,10 @@ TEST(ManualEncodingSelectionPolicyTest, perEncodingCompressionAcceptRatio) {
               {nimble::EncodingType::Trivial, 1.0}},
           nimble::CompressionOptions{},
           std::nullopt);
-  auto trivialResult =
-      trivialPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto trivialResult = trivialPolicy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   EXPECT_EQ(trivialResult.encodingType, nimble::EncodingType::Trivial);
   auto trivialCompressionPolicy = trivialResult.compressionPolicyFactory();
   // Trivial uses default ratio 0.98: accept compression that saves 20%.
@@ -1207,8 +1224,10 @@ TEST(ManualEncodingSelectionPolicyTest, customCompressionAcceptRatioOverride) {
   for (uint32_t i = 0; i < data.size(); ++i) {
     data[i] = i;
   }
-  auto result =
-      fbwPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = fbwPolicy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   EXPECT_EQ(result.encodingType, nimble::EncodingType::FixedBitWidth);
   auto compressionPolicy = result.compressionPolicyFactory();
   // FixedBitWidth ratio is 0.0: reject all compression.
@@ -1222,8 +1241,10 @@ TEST(ManualEncodingSelectionPolicyTest, customCompressionAcceptRatioOverride) {
               {nimble::EncodingType::BlockBitPacking, 1.0}},
           options,
           std::nullopt);
-  auto cbpResult =
-      cbpPolicy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto cbpResult = cbpPolicy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto cbpCompressionPolicy = cbpResult.compressionPolicyFactory();
   // BlockBitPacking has no override here, uses default 0.98: accept moderate
   // savings.
@@ -1245,7 +1266,10 @@ TEST(ManualEncodingSelectionPolicyFactoryTest, noCompressFactory) {
   ASSERT_NE(typed, nullptr);
 
   std::vector<uint32_t> data(100, 42);
-  auto result = typed->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = typed->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   EXPECT_EQ(
       compressionPolicy->config().compressionType,
@@ -1277,8 +1301,10 @@ TEST(
 
   // The nested policy should also disable compression.
   std::vector<uint32_t> data(100, 7);
-  auto nestedResult =
-      typedNested->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto nestedResult = typedNested->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto nestedCompressionPolicy = nestedResult.compressionPolicyFactory();
   EXPECT_EQ(
       nestedCompressionPolicy->config().compressionType,
@@ -1552,8 +1578,10 @@ TEST(ManualEncodingSelectionPolicyTest, defaultCompressionType) {
               defaultEncodingReadFactors(),
           nimble::CompressionOptions{},
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   auto info = compressionPolicy->config();
 
@@ -1578,8 +1606,10 @@ TEST(ManualEncodingSelectionPolicyTest, explicitZstdCompressionType) {
               defaultEncodingReadFactors(),
           options,
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   auto info = compressionPolicy->config();
 
@@ -1604,8 +1634,10 @@ TEST(ManualEncodingSelectionPolicyTest, explicitMetaInternalCompressionType) {
               defaultEncodingReadFactors(),
           options,
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   auto compressionPolicy = result.compressionPolicyFactory();
   auto info = compressionPolicy->config();
 
@@ -1665,8 +1697,10 @@ TEST(ManualEncodingSelectionPolicyTest, compressionAcceptRatioOverride) {
               defaultEncodingReadFactors(),
           options,
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
 
   // Data is all-constant, so Constant encoding is selected.
   EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
@@ -1719,8 +1753,10 @@ TEST(
               defaultEncodingReadFactors(),
           options,
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
 
   // Data is all-constant, so Constant encoding is selected — not Trivial.
   EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
@@ -1751,8 +1787,10 @@ TEST(
               defaultEncodingReadFactors(),
           options,
           std::nullopt);
-  auto result =
-      policy->select(data, nimble::Statistics<uint32_t>::create(data));
+  auto result = policy->select(
+      data,
+      nimble::Statistics<uint32_t>::create(data),
+      nimble::Encoding::Options{});
   EXPECT_EQ(result.encodingType, nimble::EncodingType::Constant);
 
   auto compressionPolicy = result.compressionPolicyFactory();

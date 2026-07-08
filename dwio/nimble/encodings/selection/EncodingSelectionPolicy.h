@@ -114,15 +114,31 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult select(
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) override {
+      const Encoding::Options& options) override {
     if (values.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
       };
     }
 
+    auto candidateEncodingReadFactors = candidateEncodingReadFactors_;
+    // TODO: Remove this opt-in once ALP is production-ready for default
+    // selection.
+    if constexpr (isFloatingPointType<T>()) {
+      if (options.allowNestedAlpSelection &&
+          identifier_ == EncodingIdentifiers::Dictionary::Alphabet &&
+          std::none_of(
+              candidateEncodingReadFactors.begin(),
+              candidateEncodingReadFactors.end(),
+              [](const auto& entry) {
+                return entry.first == EncodingType::ALP;
+              })) {
+        candidateEncodingReadFactors.emplace_back(EncodingType::ALP, 1.0);
+      }
+    }
+
     // Fast path: when there are no candidate encodings, fall back to Trivial.
-    if (candidateEncodingReadFactors_.empty()) {
+    if (candidateEncodingReadFactors.empty()) {
       return {
           .encodingType = EncodingType::Trivial,
       };
@@ -132,11 +148,11 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     EncodingType selectedEncoding = EncodingType::Trivial;
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
-    for (const auto& entry : candidateEncodingReadFactors_) {
+    for (const auto& entry : candidateEncodingReadFactors) {
       const auto encodingType = entry.first;
       const auto estimatedSize =
           detail::EncodingSizeEstimation<T>::estimateSize(
-              encodingType, values.size(), statistics, options);
+              encodingType, values, statistics, options);
       if (!estimatedSize.has_value()) {
         NIMBLE_SELECTION_LOG(encodingType << " encoding is incompatible.");
         continue;
@@ -192,7 +208,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
       const Statistics<physicalType>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -219,7 +235,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // should we allow trivial string lengths to be encoded using trivial
     // encoding?)
     std::vector<std::pair<EncodingType, float>> nestedEncodingReadFactors;
-    nestedEncodingReadFactors.reserve(candidateEncodingReadFactors_.size() - 1);
+    nestedEncodingReadFactors.reserve(candidateEncodingReadFactors_.size());
     for (const auto& entry : candidateEncodingReadFactors_) {
       if (entry.first != parentEncodingType) {
         nestedEncodingReadFactors.emplace_back(entry);
@@ -251,8 +267,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
 class ManualEncodingSelectionPolicyFactory {
  public:
-  /// TODO: Add EncodingType::ALP with an appropriate read factor once the
-  /// actual ALP algorithm is implemented.
+  /// TODO: Add ALP once it is production-ready for default manual selection.
   static std::vector<std::pair<EncodingType, float>>
   defaultEncodingReadFactors();
 
@@ -272,8 +287,6 @@ class ManualEncodingSelectionPolicyFactory {
       DataType dataType) const;
 
  private:
-  // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
-  // implemented and size estimation is wired up in EncodingSizeEstimation.h.
   static std::vector<EncodingType> possibleEncodings();
 
   const std::vector<std::pair<EncodingType, float>> encodingReadFactors_;
@@ -324,13 +337,13 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   EncodingSelectionResult select(
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) override;
+      const Encoding::Options& options) override;
 
   EncodingSelectionResult selectNullable(
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
       const Statistics<physicalType>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     return {
         .encodingType = EncodingType::Nullable,
     };
@@ -346,12 +359,13 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // parent), it provides an additional safety net, making sure the encoding
     // selection will eventually converge, and also slightly speeds up nested
     // encoding selection.
+    //
     // TODO: validate the assumptions here compared to brute forcing, to see if
     // the same encoding is selected multiple times in the tree (for example,
     // should we allow trivial string lengths to be encoded using trivial
     // encoding?)
     std::vector<EncodingType> nestedEncodingChoices;
-    nestedEncodingChoices.reserve(encodingChoices_.size() - 1);
+    nestedEncodingChoices.reserve(encodingChoices_.size());
     for (const auto& encodingType_ : encodingChoices_) {
       if (encodingType_ != parentEncodingType) {
         nestedEncodingChoices.push_back(encodingType_);
@@ -365,8 +379,7 @@ class LearnedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   }
 
  private:
-  // TODO: Add EncodingType::ALP here once the actual ALP algorithm is
-  // implemented.
+  // TODO: Add ALP once it is production-ready for learned selection.
   static std::vector<EncodingType> possibleEncodingChoices() {
     return {
         EncodingType::Constant,
@@ -429,7 +442,7 @@ class ReplayedEncodingSelectionPolicy
   nimble::EncodingSelectionResult select(
       std::span<const physicalType> /* values */,
       const nimble::Statistics<physicalType>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     if (!compressionOptions_.has_value()) {
       return {
           .encodingType = encodingLayout_.encodingType(),
@@ -449,7 +462,7 @@ class ReplayedEncodingSelectionPolicy
       std::span<const physicalType> /* values */,
       std::span<const bool> /* nulls */,
       const Statistics<physicalType>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     // NullableEncoding asks createImpl() for nullable data and nulls children.
     // The replay policy is initialized with the data layout, so synthesize the
     // nullable parent shape here.

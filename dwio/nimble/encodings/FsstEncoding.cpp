@@ -64,7 +64,7 @@ class TrivialFallbackSelectionPolicy final
   EncodingSelectionResult select(
       std::span<const std::string_view> /* values */,
       const Statistics<std::string_view>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     return trivialSelectionResult();
   }
 
@@ -72,7 +72,7 @@ class TrivialFallbackSelectionPolicy final
       std::span<const std::string_view> /* values */,
       std::span<const bool> /* nulls */,
       const Statistics<std::string_view>& /* statistics */,
-      const Encoding::Options& /* options */ = {}) override {
+      const Encoding::Options& /* options */) override {
     NIMBLE_UNSUPPORTED("Nullable FSST fallback is not supported.");
   }
 
@@ -221,7 +221,7 @@ std::string_view FsstEncoding::encodeTrivialFallback(
   auto fallbackPolicy = std::make_unique<TrivialFallbackSelectionPolicy>(
       selection, compressionPolicy);
   EncodingSelection<std::string_view> fallbackSelection{
-      fallbackPolicy->select(values, selection.statistics()),
+      fallbackPolicy->select(values, selection.statistics(), options),
       Statistics<std::string_view>{selection.statistics()},
       std::move(fallbackPolicy)};
   return TrivialEncoding<std::string_view>::encode(

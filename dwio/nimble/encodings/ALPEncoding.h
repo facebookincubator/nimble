@@ -15,19 +15,26 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
+#include <vector>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "velox/common/encode/Coding.h"
 
 /// ALP (Adaptive Lossless floating-Point) encoding for float/double.
 ///
@@ -37,7 +44,7 @@
 ///   1 byte:  factor   (uint8)
 ///   4 bytes: exceptionCount (uint32)
 ///   4 bytes: encodedValuesSize (uint32, size of nested encoding)
-///   N bytes: nested encoding of int64 encoded values
+///   N bytes: nested encoding of ZigZag-coded signed encoded values
 ///   exceptionCount * 4 bytes: exception positions (uint32 each)
 ///   exceptionCount * sizeof(physicalType) bytes: exception values
 
@@ -45,114 +52,16 @@ namespace facebook::nimble {
 
 namespace detail::alp {
 
-/// Pre-computed powers of 10 for double precision.
-inline constexpr double kPow10Double[] = {
-    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
-    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23,
-};
-inline constexpr int kMaxExponent = 23;
-inline constexpr int kMaxFactor = 23;
-
-/// ALP prefix: exponent(1) + factor(1) + exceptionCount(4) +
-/// encodedValuesSize(4).
-inline constexpr int kAlpPrefixSize = 10;
-
-/// Sample up to this many values to find the best (exponent, factor) pair.
-inline constexpr uint32_t kSampleSize = 1024;
-
-/// Checks whether a double value round-trips losslessly through int64
-/// encoding with the given (exponent, factor) pair.
 template <typename FloatType>
-inline bool roundTrips(FloatType value, int exponent, int factor) {
-  double scaled = static_cast<double>(value) * kPow10Double[exponent];
-  if (scaled < static_cast<double>(std::numeric_limits<int64_t>::min()) ||
-      scaled > static_cast<double>(std::numeric_limits<int64_t>::max())) {
-    return false;
-  }
-  int64_t encoded = static_cast<int64_t>(std::llround(scaled));
-
-  double restored = static_cast<double>(encoded) / kPow10Double[exponent];
-  if (factor > 0) {
-    int64_t factored =
-        static_cast<int64_t>(std::llround(scaled / kPow10Double[factor]));
-    double fromFactored = static_cast<double>(factored) * kPow10Double[factor] /
-        kPow10Double[exponent];
-    restored = fromFactored;
-  }
-
-  return static_cast<FloatType>(restored) == value;
+inline FloatType toLogical(
+    typename TypeTraits<FloatType>::physicalType physicalValue) {
+  return EncodingPhysicalType<FloatType>::asEncodingLogicalType(physicalValue);
 }
 
-/// Finds the best (exponent, factor) pair that maximizes round-trip success
-/// rate on the given sample.
 template <typename FloatType>
-inline std::pair<uint8_t, uint8_t> findBestExponentFactor(
-    std::span<const FloatType> values) {
-  uint32_t sampleSize =
-      std::min(static_cast<uint32_t>(values.size()), kSampleSize);
-
-  uint8_t bestE = 0;
-  uint8_t bestF = 0;
-  uint32_t bestCount = 0;
-
-  for (int e = 0; e <= kMaxExponent; ++e) {
-    uint32_t countNoFactor = 0;
-    for (uint32_t i = 0; i < sampleSize; ++i) {
-      if (roundTrips(values[i], e, /*factor=*/0)) {
-        ++countNoFactor;
-      }
-    }
-    if (countNoFactor > bestCount) {
-      bestCount = countNoFactor;
-      bestE = static_cast<uint8_t>(e);
-      bestF = 0;
-    }
-    if (bestCount == sampleSize) {
-      break;
-    }
-
-    for (int f = 1; f <= std::min(e, kMaxFactor); ++f) {
-      uint32_t countWithFactor = 0;
-      for (uint32_t i = 0; i < sampleSize; ++i) {
-        if (roundTrips(values[i], e, f)) {
-          ++countWithFactor;
-        }
-      }
-      if (countWithFactor > bestCount) {
-        bestCount = countWithFactor;
-        bestE = static_cast<uint8_t>(e);
-        bestF = static_cast<uint8_t>(f);
-      }
-      if (bestCount == sampleSize) {
-        break;
-      }
-    }
-    if (bestCount == sampleSize) {
-      break;
-    }
-  }
-  return {bestE, bestF};
-}
-
-/// Encodes a single value with the given (exponent, factor) pair.
-inline int64_t encodeValue(double value, int exponent, int factor) {
-  double scaled = value * kPow10Double[exponent];
-  if (factor > 0) {
-    return static_cast<int64_t>(std::llround(scaled / kPow10Double[factor]));
-  }
-  return static_cast<int64_t>(std::llround(scaled));
-}
-
-/// Decodes a single encoded integer back to a floating-point value.
-template <typename FloatType>
-inline FloatType decodeValue(int64_t encoded, int exponent, int factor) {
-  if (factor > 0) {
-    return static_cast<FloatType>(
-        static_cast<double>(encoded) * kPow10Double[factor] /
-        kPow10Double[exponent]);
-  }
-  return static_cast<FloatType>(
-      static_cast<double>(encoded) / kPow10Double[exponent]);
+inline typename TypeTraits<FloatType>::physicalType toPhysical(
+    FloatType logicalValue) {
+  return EncodingPhysicalType<FloatType>::asEncodingPhysicalType(logicalValue);
 }
 
 } // namespace detail::alp
@@ -182,11 +91,11 @@ class ALPEncoding final
     const uint32_t encodedValuesSize = encoding::readUint32(pos);
 
     const EncodingFactory encodingFactory(options);
-    auto nullStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
+    auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
     encodedValuesEncoding_ = encodingFactory.create(
         *this->pool_,
         std::string_view(pos, encodedValuesSize),
-        nullStringBufferFactory);
+        noStringBufferFactory);
     pos += encodedValuesSize;
 
     exceptionPositions_ = pos;
@@ -209,11 +118,12 @@ class ALPEncoding final
   void materialize(uint32_t rowCount, void* buffer) final {
     auto* output = static_cast<physicalType*>(buffer);
     for (uint32_t i = 0; i < rowCount; ++i) {
-      output[i] = detail::alp::decodeValue<physicalType>(
-          static_cast<int64_t>(encodedBuffer_[pos_ + i]), exponent_, factor_);
+      const auto encoded = velox::ZigZag::decode(encodedBuffer_[pos_ + i]);
+      output[i] = detail::alp::toPhysical<cppDataType>(
+          decodeValue(encoded, exponent_, factor_));
     }
 
-    patchExceptions(output, pos_, rowCount);
+    patchExceptions(pos_, rowCount, output);
     pos_ += rowCount;
   }
 
@@ -228,15 +138,10 @@ class ALPEncoding final
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params) {
     auto skipFn = [&](auto toSkip) { pos_ += toSkip; };
     auto decodeFn = [&] {
-      physicalType value = detail::alp::decodeValue<physicalType>(
-          static_cast<int64_t>(encodedBuffer_[pos_]), exponent_, factor_);
-      auto exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
-      auto exVals = reinterpret_cast<const physicalType*>(exceptionValues_);
-      for (uint32_t e = 0; e < exceptionCount_; ++e) {
-        if (exPos[e] == pos_) {
-          value = exVals[e];
-          break;
-        }
+      physicalType value = detail::alp::toPhysical<cppDataType>(decodeValue(
+          velox::ZigZag::decode(encodedBuffer_[pos_]), exponent_, factor_));
+      if (const auto* exceptionValue = findException(pos_)) {
+        value = *exceptionValue;
       }
       ++pos_;
       return value;
@@ -248,8 +153,8 @@ class ALPEncoding final
     return fmt::format(
         "{}{}<{}> rowCount={} exponent={} factor={} exceptions={}",
         std::string(offset, ' '),
-        toString(this->encodingType()),
-        toString(this->dataType()),
+        this->encodingType(),
+        this->dataType(),
         this->rowCount(),
         exponent_,
         factor_,
@@ -267,30 +172,37 @@ class ALPEncoding final
     }
 
     const uint32_t rowCount = values.size();
+    auto* pool = &buffer.getMemoryPool();
 
-    auto [exponent, factor] =
-        detail::alp::findBestExponentFactor<physicalType>(values);
+    Vector<cppDataType> logicalValues(pool, rowCount);
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      logicalValues[i] = detail::alp::toLogical<cppDataType>(values[i]);
+    }
 
-    Vector<uint64_t> encodedValues(&buffer.getMemoryPool(), rowCount);
-    Vector<uint32_t> exceptionPositions(&buffer.getMemoryPool());
-    Vector<physicalType> exceptionValues(&buffer.getMemoryPool());
+    const auto [exponent, factor] = findBestExponentFactor(
+        std::span<const cppDataType>{
+            logicalValues.data(), logicalValues.size()});
+
+    Vector<uint64_t> encodedValues(pool, rowCount);
+    Vector<uint32_t> exceptionPositions(pool);
+    Vector<physicalType> exceptionValues(pool);
 
     for (uint32_t i = 0; i < rowCount; ++i) {
-      int64_t encoded = detail::alp::encodeValue(
-          static_cast<double>(values[i]), exponent, factor);
-      encodedValues[i] = static_cast<uint64_t>(encoded);
-
-      physicalType restored =
-          detail::alp::decodeValue<physicalType>(encoded, exponent, factor);
-      if (restored != values[i]) {
+      if (!canRepresentExactly(logicalValues[i], values[i], exponent, factor)) {
+        encodedValues[i] = 0;
         exceptionPositions.push_back(i);
         exceptionValues.push_back(values[i]);
+        continue;
       }
+
+      const auto encoded =
+          encodeValue(static_cast<double>(logicalValues[i]), exponent, factor);
+      encodedValues[i] = velox::ZigZag::encode(encoded);
     }
 
     const uint32_t exceptionCount = exceptionPositions.size();
 
-    Buffer tempBuffer{buffer.getMemoryPool()};
+    Buffer tempBuffer{*pool};
     std::string_view serializedEncoded =
         selection.template encodeNested<uint64_t>(
             EncodingIdentifiers::ALP::EncodedValues,
@@ -301,9 +213,8 @@ class ALPEncoding final
     const uint32_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
     const uint32_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
     const uint32_t encodingSize =
-        Encoding::serializePrefixSize(rowCount, useVarint) +
-        detail::alp::kAlpPrefixSize + serializedEncoded.size() +
-        exceptionPositionsSize + exceptionValuesSize;
+        Encoding::serializePrefixSize(rowCount, useVarint) + kAlpPrefixSize +
+        serializedEncoded.size() + exceptionPositionsSize + exceptionValuesSize;
 
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
@@ -323,11 +234,214 @@ class ALPEncoding final
       pos += exceptionValuesSize;
     }
 
-    NIMBLE_DCHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
+    NIMBLE_CHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
     return {reserved, encodingSize};
   }
 
+  static std::optional<uint64_t> estimateSize(
+      std::span<const physicalType> values,
+      const Encoding::Options& options = {}) {
+    if (values.empty()) {
+      return std::nullopt;
+    }
+
+    const uint64_t rowCount = values.size();
+    const uint32_t sampleSize =
+        std::min(static_cast<uint32_t>(rowCount), kSampleSize);
+
+    std::vector<cppDataType> logicalValues;
+    logicalValues.reserve(sampleSize);
+    std::vector<physicalType> sampledValues;
+    sampledValues.reserve(sampleSize);
+    for (uint32_t i = 0; i < sampleSize; ++i) {
+      const auto value = values[sampledValueIndex(i, rowCount, sampleSize)];
+      logicalValues.push_back(detail::alp::toLogical<cppDataType>(value));
+      sampledValues.push_back(value);
+    }
+
+    const auto [exponent, factor] = findBestExponentFactor(
+        std::span<const cppDataType>{
+            logicalValues.data(), logicalValues.size()});
+
+    std::vector<uint64_t> encodedValues;
+    encodedValues.reserve(sampleSize);
+    uint64_t sampleExceptionCount{0};
+    for (auto i = 0; i < sampleSize; ++i) {
+      if (!canRepresentExactly(
+              logicalValues[i], sampledValues[i], exponent, factor)) {
+        encodedValues.push_back(0);
+        ++sampleExceptionCount;
+        continue;
+      }
+
+      const auto encoded =
+          encodeValue(static_cast<double>(logicalValues[i]), exponent, factor);
+      encodedValues.push_back(velox::ZigZag::encode(encoded));
+    }
+
+    const auto encodedStats = Statistics<uint64_t>::create(
+        std::span<const uint64_t>{encodedValues.data(), encodedValues.size()});
+    // Match existing nested-stream estimators: use FixedBitWidth as a simple
+    // representative estimate instead of recursively modeling nested selection.
+    const uint64_t nestedEncodedValuesSize =
+        FixedBitWidthEncoding<uint64_t>::estimateSize(
+            rowCount, encodedStats, options);
+    const uint64_t exceptionCount =
+        (sampleExceptionCount * rowCount + sampleSize - 1) / sampleSize;
+    const uint64_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
+    const uint64_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
+    return Encoding::serializePrefixSize(
+               static_cast<uint32_t>(rowCount), options.useVarintRowCount) +
+        kAlpPrefixSize + nestedEncodedValuesSize + exceptionPositionsSize +
+        exceptionValuesSize;
+  }
+
  private:
+  // Pre-computed powers of 10 for double precision.
+  static constexpr std::array<double, 24> kPow10Double{
+      1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
+      1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23};
+  // Largest exponent and factor values backed by kPow10Double.
+  static constexpr int kMaxExponent{23};
+  static constexpr int kMaxFactor{23};
+  // ALP prefix: exponent(1) + factor(1) + exceptionCount(4) +
+  // encodedValuesSize(4).
+  static constexpr int kAlpPrefixSize{10};
+  // Sample up to this many values to find the best (exponent, factor) pair.
+  static constexpr uint32_t kSampleSize{1024};
+
+  // Maps a dense sample ordinal to an evenly spaced input row.
+  static uint64_t sampledValueIndex(
+      uint32_t sampleIndex,
+      uint64_t rowCount,
+      uint32_t sampleSize) {
+    return sampleIndex * rowCount / sampleSize;
+  }
+
+  // Checks whether the selected ALP transform can encode the value without an
+  // exception.
+  static bool canRepresentExactly(
+      cppDataType value,
+      physicalType physicalValue,
+      int exponent,
+      int factor) {
+    const double exponentMultiplier = kPow10Double[exponent];
+    const double factorMultiplier = kPow10Double[factor];
+    const double scaled = static_cast<double>(value) * exponentMultiplier;
+    if (!std::isfinite(scaled)) {
+      return false;
+    }
+    if (scaled < static_cast<double>(std::numeric_limits<int64_t>::min()) ||
+        scaled > static_cast<double>(std::numeric_limits<int64_t>::max())) {
+      return false;
+    }
+    const int64_t factored =
+        static_cast<int64_t>(std::llround(scaled / factorMultiplier));
+    const double restored =
+        static_cast<double>(factored) * factorMultiplier / exponentMultiplier;
+
+    return detail::alp::toPhysical<cppDataType>(
+               static_cast<cppDataType>(restored)) == physicalValue;
+  }
+
+  // Selects the sampled (exponent, factor) pair that preserves the most values.
+  static std::pair<uint8_t, uint8_t> findBestExponentFactor(
+      std::span<const cppDataType> values) {
+    const uint32_t sampleSize =
+        std::min(static_cast<uint32_t>(values.size()), kSampleSize);
+
+    uint8_t bestExponent = 0;
+    uint8_t bestFactor = 0;
+    uint32_t bestRepresentableCount = 0;
+
+    for (int e = 0; e <= kMaxExponent; ++e) {
+      uint32_t countNoFactor = 0;
+      for (uint32_t i = 0; i < sampleSize; ++i) {
+        if (canRepresentExactly(
+                values[i],
+                detail::alp::toPhysical<cppDataType>(values[i]),
+                e,
+                /*factor=*/0)) {
+          ++countNoFactor;
+        }
+      }
+      if (countNoFactor > bestRepresentableCount) {
+        bestRepresentableCount = countNoFactor;
+        bestExponent = static_cast<uint8_t>(e);
+        bestFactor = 0;
+      }
+      if (bestRepresentableCount == sampleSize) {
+        break;
+      }
+
+      for (int f = 1; f <= std::min(e, kMaxFactor); ++f) {
+        uint32_t countWithFactor = 0;
+        for (uint32_t i = 0; i < sampleSize; ++i) {
+          if (canRepresentExactly(
+                  values[i],
+                  detail::alp::toPhysical<cppDataType>(values[i]),
+                  e,
+                  f)) {
+            ++countWithFactor;
+          }
+        }
+        if (countWithFactor > bestRepresentableCount) {
+          bestRepresentableCount = countWithFactor;
+          bestExponent = static_cast<uint8_t>(e);
+          bestFactor = static_cast<uint8_t>(f);
+        }
+        if (bestRepresentableCount == sampleSize) {
+          break;
+        }
+      }
+      if (bestRepresentableCount == sampleSize) {
+        break;
+      }
+    }
+    return {bestExponent, bestFactor};
+  }
+
+  // Converts a floating-point value to the integer stored by ALP.
+  static int64_t encodeValue(double value, int exponent, int factor) {
+    const double scaled = value * kPow10Double[exponent];
+    return static_cast<int64_t>(std::llround(scaled / kPow10Double[factor]));
+  }
+
+  // Reconstructs a floating-point value from an ALP integer.
+  static cppDataType decodeValue(int64_t encoded, int exponent, int factor) {
+    return static_cast<cppDataType>(
+        static_cast<double>(encoded) * kPow10Double[factor] /
+        kPow10Double[exponent]);
+  }
+
+  void
+  patchExceptions(uint32_t startRow, uint32_t rowCount, physicalType* output) {
+    const auto* exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    const auto* exVals =
+        reinterpret_cast<const physicalType*>(exceptionValues_);
+    const auto* exBegin = exPos;
+    const auto* exEnd = exPos + exceptionCount_;
+    const auto* first = std::lower_bound(exBegin, exEnd, startRow);
+    const auto* last = std::lower_bound(first, exEnd, startRow + rowCount);
+    for (auto* it = first; it != last; ++it) {
+      const uint32_t absPos = *it;
+      output[absPos - startRow] = exVals[it - exBegin];
+    }
+  }
+
+  const physicalType* findException(uint32_t row) const {
+    const auto* exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    const auto* exVals =
+        reinterpret_cast<const physicalType*>(exceptionValues_);
+    const auto* exBegin = exPos;
+    const auto* exEnd = exPos + exceptionCount_;
+    const auto* it = std::lower_bound(exBegin, exEnd, row);
+    if (it == exEnd || *it != row) {
+      return nullptr;
+    }
+    return exVals + (it - exBegin);
+  }
+
   uint8_t exponent_;
   uint8_t factor_;
   uint32_t exceptionCount_;
@@ -336,18 +450,6 @@ class ALPEncoding final
   const char* exceptionValues_;
   std::vector<uint64_t> encodedBuffer_;
   uint32_t pos_;
-
-  void
-  patchExceptions(physicalType* output, uint32_t startRow, uint32_t rowCount) {
-    auto exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
-    auto exVals = reinterpret_cast<const physicalType*>(exceptionValues_);
-    for (uint32_t e = 0; e < exceptionCount_; ++e) {
-      uint32_t absPos = exPos[e];
-      if (absPos >= startRow && absPos < startRow + rowCount) {
-        output[absPos - startRow] = exVals[e];
-      }
-    }
-  }
 };
 
 } // namespace facebook::nimble

@@ -16,12 +16,11 @@
 #pragma once
 
 #include <glog/logging.h>
-#include <algorithm>
 #include <optional>
 #include <span>
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -34,24 +33,58 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
-#include "velox/common/base/BitUtil.h"
 
 namespace facebook::nimble {
 
 namespace detail {
 
-// This class is meant to quickly estimate the size of encoded data using a
-// given encoding type. It does a lot of assumptions, and it is not meant to be
-// 100% accurate.
+/// Estimates encoded data size for encoding selection. Estimates are heuristic
+/// and are not expected to match the serialized size exactly.
 template <typename T>
 struct EncodingSizeEstimation {
   using physicalType = typename TypeTraits<T>::physicalType;
 
+  static std::optional<uint64_t> estimateSize(
+      const EncodingType encodingType,
+      const size_t entryCount,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    if constexpr (isNumericType<physicalType>()) {
+      return estimateNumericSize(encodingType, entryCount, statistics, options);
+    } else if constexpr (isBoolType<physicalType>()) {
+      return estimateBoolSize(encodingType, entryCount, statistics, options);
+    } else if constexpr (isStringType<physicalType>()) {
+      return estimateStringSize(encodingType, entryCount, statistics, options);
+    }
+
+    NIMBLE_UNREACHABLE(
+        "Unable to estimate size for type {}.", folly::demangle(typeid(T)));
+  }
+
+  static std::optional<uint64_t> estimateSize(
+      const EncodingType encodingType,
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    if constexpr (isNumericType<physicalType>()) {
+      return estimateNumericSize(encodingType, values, statistics, options);
+    } else if constexpr (isBoolType<physicalType>()) {
+      return estimateBoolSize(encodingType, values.size(), statistics, options);
+    } else if constexpr (isStringType<physicalType>()) {
+      return estimateStringSize(
+          encodingType, values.size(), statistics, options);
+    }
+
+    NIMBLE_UNREACHABLE(
+        "Unable to estimate size for type {}.", folly::demangle(typeid(T)));
+  }
+
+ private:
   static std::optional<uint64_t> estimateNumericSize(
       const EncodingType encodingType,
       const uint64_t entryCount,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) {
+      const Encoding::Options& options) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<physicalType>::estimateSize(statistics);
@@ -111,39 +144,31 @@ struct EncodingSizeEstimation {
         return BlockBitPackingEncoding<physicalType>::estimateSize(
             statistics, options.blockBitPackingBlockSize);
       }
-      // SubIntSplit integration commented out (disabled):
-      /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-      case EncodingType::SubIntSplit: {
-        if constexpr (
-            isNumericType<physicalType>() &&
-            (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
-          constexpr uint64_t kTypeWidthBits =
-              static_cast<uint64_t>(sizeof(physicalType)) * 8u;
-          const uint64_t rangeBits =
-              velox::bits::bitsRequired(statistics.max() - statistics.min());
-          if (rangeBits > (kTypeWidthBits * 3) / 4) {
-            return std::nullopt;
-          }
-          const auto fbwEst = estimateNumericSize(
-              EncodingType::FixedBitWidth, entryCount, statistics);
-          if (!fbwEst.has_value()) {
-            return std::nullopt;
-          }
-          constexpr uint64_t kOverheadBytes = 6u + 2u + 4u * 6u + 4u * 8u;
-          const uint64_t estimate =
-              static_cast<uint64_t>(
-                  static_cast<double>(fbwEst.value()) * 0.90) +
-              kOverheadBytes;
-          return estimate;
+      case EncodingType::ALP: {
+        return std::nullopt;
+      }
+      default: {
+        return std::nullopt;
+      }
+    }
+  }
+
+  static std::optional<uint64_t> estimateNumericSize(
+      const EncodingType encodingType,
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    switch (encodingType) {
+      case EncodingType::ALP: {
+        if constexpr (isFloatingPointType<T>()) {
+          return ALPEncoding<T>::estimateSize(values, options);
         } else {
           return std::nullopt;
         }
       }
-#endif
-      */
       default: {
-        return std::nullopt;
+        return estimateNumericSize(
+            encodingType, values.size(), statistics, options);
       }
     }
   }
@@ -177,7 +202,7 @@ struct EncodingSizeEstimation {
       const EncodingType encodingType,
       const size_t entryCount,
       const Statistics<std::string_view>& statistics,
-      const Encoding::Options& options = {}) {
+      const Encoding::Options& options) {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<std::string_view>::estimateSize(statistics);
@@ -205,23 +230,6 @@ struct EncodingSizeEstimation {
         return std::nullopt;
       }
     }
-  }
-
-  static std::optional<uint64_t> estimateSize(
-      const EncodingType encodingType,
-      const size_t entryCount,
-      const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) {
-    if constexpr (isNumericType<physicalType>()) {
-      return estimateNumericSize(encodingType, entryCount, statistics, options);
-    } else if constexpr (isBoolType<physicalType>()) {
-      return estimateBoolSize(encodingType, entryCount, statistics, options);
-    } else if constexpr (isStringType<physicalType>()) {
-      return estimateStringSize(encodingType, entryCount, statistics, options);
-    }
-
-    NIMBLE_UNREACHABLE(
-        "Unable to estimate size for type {}.", folly::demangle(typeid(T)));
   }
 };
 } // namespace detail

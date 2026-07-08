@@ -20,11 +20,6 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
-// FOR and FrequencyPartition integration commented out (disabled):
-/*
-#include "dwio/nimble/encodings/ForEncoding.h"
-#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
-*/
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -33,12 +28,6 @@
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
-// SubIntSplit integration commented out (disabled):
-/*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-#include "dwio/nimble/encodings/SubIntSplitEncoding.h"
-#endif
-*/
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -299,9 +288,18 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
     }
     case EncodingType::ALP: {
-      // TODO: Wire up ALPEncoding deserialization once the actual ALP algorithm
-      // is implemented. ALP only supports float and double.
-      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+      switch (dataType) {
+        case DataType::Float:
+          return std::make_unique<ALPEncoding<float>>(
+              pool, data, stringBufferFactory, options);
+        case DataType::Double:
+          return std::make_unique<ALPEncoding<double>>(
+              pool, data, stringBufferFactory, options);
+        default:
+          NIMBLE_INCOMPATIBLE_ENCODING(
+              "ALP encoding only supports float and double data types, got {}.",
+              dataType);
+      }
     }
     case EncodingType::BlockBitPacking: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(BlockBitPackingEncoding, dataType);
@@ -312,25 +310,6 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::SubIntSplit: {
-      RETURN_ENCODING_BY_VARINT_TYPE(SubIntSplitEncoding, dataType);
-    }
-#endif
-    */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::FOR: {
-      RETURN_ENCODING_BY_INTEGER_TYPE(ForEncoding, dataType);
-    }
-    case EncodingType::FrequencyPartition: {
-      RETURN_ENCODING_BY_NON_BOOL_TYPE(FrequencyPartitionEncoding, dataType);
-    }
-#endif
-    */
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType:{} -- garbage input?",
@@ -419,10 +398,9 @@ std::string_view EncodingFactory::encode(
       if constexpr (isNumericType<physicalType>()) {
         return FixedBitWidthEncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "FixedBitWidth encoding should not be selected for non-numeric data types.");
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "FixedBitWidth encoding should not be selected for non-numeric data types.");
     }
     case EncodingType::Varint: {
       // TODO: we can support floating point types, but currently Statistics
@@ -434,130 +412,86 @@ std::string_view EncodingFactory::encode(
           (sizeof(physicalType) == 4 || sizeof(T) == 8)) {
         return VarintEncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "Varint encoding can only be selected for large numeric data types.");
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Varint encoding can only be selected for large numeric data types.");
     }
     case EncodingType::MainlyConstant: {
-      if constexpr (std::is_same<T, bool>::value) {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "MainlyConstant encoding should not be selected for bool data types.");
-      } else {
+      if constexpr (!std::is_same<T, bool>::value) {
         return MainlyConstantEncoding<T>::encode(
             selection, castedValues, buffer, options);
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "MainlyConstant encoding should not be selected for bool data types.");
     }
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::FrequencyPartition: {
-      if constexpr (std::is_same<T, bool>::value) {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "FrequencyPartition encoding should not be selected for bool data
-types."); } else { return FrequencyPartitionEncoding<T>::encode( selection,
-castedValues, buffer, options);
-      }
-    }
-    case EncodingType::FOR: {
-      if constexpr (
-          std::is_integral<physicalType>::value &&
-          !std::is_same<T, bool>::value) {
-        return ForEncoding<T>::encode(selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "For encoding can only be selected for integral data types (not
-bool).");
-      }
-    }
-#endif
-    */
     case EncodingType::SparseBool: {
-      if constexpr (!std::is_same<T, bool>::value) {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "SparseBool encoding should not be selected for non-bool data types.");
-      } else {
+      if constexpr (std::is_same<T, bool>::value) {
         return SparseBoolEncoding::encode(
             selection, castedValues, buffer, options);
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "SparseBool encoding should not be selected for non-bool data types.");
     }
     case EncodingType::Prefix: {
-      if constexpr (!std::is_same<T, std::string_view>::value) {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "Prefix encoding should only be selected for string_view data types.");
-      } else {
+      if constexpr (std::is_same<T, std::string_view>::value) {
         return PrefixEncoding::encode(selection, castedValues, buffer, options);
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Prefix encoding should only be selected for string_view data types.");
     }
     case EncodingType::Fsst: {
-      if constexpr (!std::is_same<T, std::string_view>::value) {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "Fsst encoding should only be selected for string_view data types.");
-      } else {
+      if constexpr (std::is_same<T, std::string_view>::value) {
         return FsstEncoding::encode(selection, castedValues, buffer, options);
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Fsst encoding should only be selected for string_view data types.");
     }
     case EncodingType::Delta: {
       if constexpr (isNumericType<physicalType>()) {
         return DeltaEncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "Delta encoding should not be selected for non-numeric data type: {}.",
-            toString(TypeTraits<T>::dataType));
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Delta encoding should not be selected for non-numeric data type: {}.",
+          TypeTraits<T>::dataType);
     }
     case EncodingType::ALP: {
-      NIMBLE_UNSUPPORTED("ALP encoding is not yet implemented.");
+      if constexpr (isFloatingPointType<T>()) {
+        return ALPEncoding<T>::encode(selection, castedValues, buffer, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "ALP encoding should only be selected for float or double data types, got {}.",
+          TypeTraits<T>::dataType);
     }
     case EncodingType::BlockBitPacking: {
       if constexpr (isNumericType<physicalType>()) {
         return BlockBitPackingEncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "BlockBitPacking encoding should not be selected for non-numeric data types.");
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "BlockBitPacking encoding should not be selected for non-numeric data types.");
     }
     case EncodingType::PFOR: {
       if constexpr (isIntegralType<physicalType>()) {
         return PFOREncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "PFOR encoding should not be selected for non-integral data type: {}.",
-            toString(TypeTraits<T>::dataType));
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "PFOR encoding should not be selected for non-integral data type: {}.",
+          TypeTraits<T>::dataType);
     }
     case EncodingType::SimdForBitpack: {
       if constexpr (isIntegralType<physicalType>()) {
         return SimdForBitpackEncoding<T>::encode(
             selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "SimdForBitpack encoding only supports integral data types, got {}.",
-            TypeTraits<T>::dataType);
       }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "SimdForBitpack encoding only supports integral data types, got {}.",
+          TypeTraits<T>::dataType);
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::SubIntSplit: {
-      if constexpr (
-          isNumericType<physicalType>() &&
-          (sizeof(physicalType) == 4 || sizeof(physicalType) == 8)) {
-        return SubIntSplitEncoding<T>::encode(
-            selection, castedValues, buffer, options);
-      } else {
-        NIMBLE_INCOMPATIBLE_ENCODING(
-            "SubIntSplit encoding only supports 32- and 64-bit numeric types.");
-      }
-    }
-#endif
-    */
     default: {
       NIMBLE_UNSUPPORTED(
-          "Encoding {} is not supported.", toString(selection.encodingType()));
+          "Encoding {} is not supported.", selection.encodingType());
     }
   }
 }
@@ -578,7 +512,7 @@ std::string_view EncodingFactory::encodeNullable(
     default: {
       NIMBLE_UNSUPPORTED(
           "Encoding {} is not supported for nullable data.",
-          toString(selection.encodingType()));
+          selection.encodingType());
     }
   }
 }

@@ -144,6 +144,12 @@ class DictionaryEncoding
   }
 
  private:
+  static std::string_view encodeAlphabet(
+      EncodingSelection<physicalType>& selection,
+      const Vector<physicalType>& alphabet,
+      Buffer& buffer,
+      const Encoding::Options& options);
+
   uint32_t* ensureIndicesBuffer(uint32_t numElements) {
     const auto bytes = numElements * sizeof(uint32_t);
     if (indicesBuffer_ == nullptr || indicesBuffer_->capacity() < bytes) {
@@ -329,6 +335,38 @@ void DictionaryEncoding<T>::readIndicesWithVisitor(
 }
 
 template <typename T>
+std::string_view DictionaryEncoding<T>::encodeAlphabet(
+    EncodingSelection<physicalType>& selection,
+    const Vector<physicalType>& alphabet,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  if constexpr (isFloatingPointType<T>()) {
+    Vector<T> logicalAlphabet{&buffer.getMemoryPool()};
+    logicalAlphabet.resize(alphabet.size());
+    for (uint32_t i = 0; i < alphabet.size(); ++i) {
+      logicalAlphabet[i] =
+          EncodingPhysicalType<T>::asEncodingLogicalType(alphabet[i]);
+    }
+
+    auto nestedPolicy = std::unique_ptr<EncodingSelectionPolicy<T>>(
+        static_cast<EncodingSelectionPolicy<T>*>(
+            selection
+                .template createNestedPolicy<T>(
+                    selection.encodingType(),
+                    EncodingIdentifiers::Dictionary::Alphabet)
+                .release()));
+    return EncodingFactory::encode<T>(
+        std::move(nestedPolicy),
+        std::span<const T>{logicalAlphabet.data(), logicalAlphabet.size()},
+        buffer,
+        options);
+  } else {
+    return selection.template encodeNested<physicalType>(
+        EncodingIdentifiers::Dictionary::Alphabet, {alphabet}, buffer, options);
+  }
+}
+
+template <typename T>
 std::string_view DictionaryEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
@@ -401,11 +439,7 @@ std::string_view DictionaryEncoding<T>::encode(
 
   Buffer tempBuffer{buffer.getMemoryPool()};
   std::string_view serializedAlphabet =
-      selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Dictionary::Alphabet,
-          {alphabet},
-          tempBuffer,
-          options);
+      encodeAlphabet(selection, alphabet, tempBuffer, options);
   std::string_view serializedIndices =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::Dictionary::Indices,
