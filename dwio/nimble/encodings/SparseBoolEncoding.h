@@ -62,6 +62,20 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
   void materializeBoolsAsBits(uint32_t rowCount, uint64_t* buffer, int begin)
       final;
 
+  /// Returns the bool value represented by the sparse position stream.
+  bool sparseValue() const noexcept {
+    return sparseValue_;
+  }
+
+  /// Appends sparse positions in the next rowCount rows, relative to the
+  /// current row, and advances the row cursor.
+  uint32_t materializeSparseIndices(
+      uint32_t rowCount,
+      Vector<uint32_t>& buffer);
+
+  /// Advances rowCount rows and returns how many sparse positions were skipped.
+  uint32_t skipSparseIndices(uint32_t rowCount);
+
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 

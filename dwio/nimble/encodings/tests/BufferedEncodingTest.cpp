@@ -116,6 +116,22 @@ TEST_F(BufferedEncodingTest, valueModeNotDictionaryEnabled) {
   }
 }
 
+TEST_F(BufferedEncodingTest, valueModeRowCount) {
+  std::vector<uint32_t> data = {11, 22, 33, 44, 55};
+  auto encoding = createTrivialEncoding(data);
+  const auto expectedRowCount = encoding->rowCount();
+
+  nimble::detail::BufferedEncoding<uint32_t, 2> buf(std::move(encoding));
+  EXPECT_EQ(buf.rowCount(), expectedRowCount);
+
+  EXPECT_EQ(buf.nextValue(), data[0]);
+  EXPECT_EQ(buf.rowCount(), expectedRowCount);
+
+  buf.reset();
+  EXPECT_EQ(buf.rowCount(), expectedRowCount);
+  EXPECT_EQ(buf.nextValue(), data[0]);
+}
+
 TEST_F(BufferedEncodingTest, dictionaryModeRead) {
   std::vector<uint32_t> data = {10, 20, 30, 10, 20, 30, 10, 20, 30, 10};
   auto encoding = createDictEncoding(data);

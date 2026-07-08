@@ -41,6 +41,11 @@ class BufferedEncoding {
     encoding_->reset();
   }
 
+  /// Returns the number of values in the wrapped encoding.
+  uint32_t rowCount() const {
+    return encoding_->rowCount();
+  }
+
  private:
   FOLLY_ALWAYS_INLINE void refill() {
     auto numRows = std::min<uint32_t>(
