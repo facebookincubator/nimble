@@ -139,6 +139,11 @@ class Encoding {
     /// false, FixedBitWidth and PFOR round to byte or bucket boundaries.
     bool fixedBitWidthUseExactBits{false};
 
+    /// EXPERIMENTATION: Allows ALP to participate in nested floating-point
+    /// encoding selection. False by default; do not enable for production
+    /// until ALP is production-ready.
+    bool allowNestedAlpSelection{false};
+
     /// Per-column decoding statistics for timing decompression.
     velox::dwio::common::DecodingStats* decodingStats = nullptr;
 

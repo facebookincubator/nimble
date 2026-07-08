@@ -17,6 +17,7 @@
 
 #include <bit>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <random>
 #include <string_view>
@@ -152,6 +153,75 @@ Vector<T> makeBitStructuredData(
   return data;
 }
 
+template <typename T, typename RNG>
+Vector<T> makeFloatingPointDecimalData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_floating_point_v<T>) {
+    constexpr double kDivisors[] = {1.0, 10.0, 100.0, 1000.0, 10000.0};
+    const auto divisor =
+        kDivisors[folly::Random::rand32(rng) % std::size(kDivisors)];
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      const auto base =
+          static_cast<int32_t>((i * 37 + folly::Random::rand32(rng)) % 2001) -
+          1000;
+      data.push_back(static_cast<T>(static_cast<double>(base) / divisor));
+    }
+  }
+  return data;
+}
+
+template <typename T, typename RNG>
+Vector<T> makeFloatingPointSpecialData(
+    velox::memory::MemoryPool& pool,
+    [[maybe_unused]] RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_floating_point_v<T>) {
+    const T values[] = {
+        T{0},
+        -T{0},
+        std::numeric_limits<T>::infinity(),
+        -std::numeric_limits<T>::infinity(),
+        std::numeric_limits<T>::quiet_NaN(),
+        std::numeric_limits<T>::denorm_min(),
+        std::numeric_limits<T>::min(),
+        -std::numeric_limits<T>::min()};
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      data.push_back(values[i % std::size(values)]);
+    }
+  }
+  return data;
+}
+
+template <typename T, typename RNG>
+Vector<T> makeFloatingPointMixedExceptionData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_floating_point_v<T>) {
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      const auto scaled =
+          static_cast<T>(static_cast<int32_t>(i % 257) - 128) / T{100};
+      if ((i + folly::Random::rand32(rng)) % 5 == 0) {
+        data.push_back(std::nextafter(scaled, std::numeric_limits<T>::max()));
+      } else {
+        data.push_back(scaled);
+      }
+    }
+  }
+  return data;
+}
+
 // ============================================================================
 // Fuzzer operations
 // ============================================================================
@@ -258,6 +328,18 @@ class EncodingFuzzer {
     if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
       datasets.push_back(
           makeBitStructuredData<T>(*pool_, rng, rowCount, buffer_.get()));
+    }
+
+    if constexpr (std::is_floating_point_v<T>) {
+      datasets.push_back(
+          makeFloatingPointDecimalData<T>(
+              *pool_, rng, rowCount, buffer_.get()));
+      datasets.push_back(
+          makeFloatingPointSpecialData<T>(
+              *pool_, rng, rowCount, buffer_.get()));
+      datasets.push_back(
+          makeFloatingPointMixedExceptionData<T>(
+              *pool_, rng, rowCount, buffer_.get()));
     }
 
     // Small data (1-3 rows) for edge cases.

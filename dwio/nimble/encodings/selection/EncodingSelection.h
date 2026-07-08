@@ -193,14 +193,14 @@ class EncodingSelectionPolicy : public EncodingSelectionPolicyBase {
   virtual EncodingSelectionResult select(
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) = 0;
+      const Encoding::Options& options) = 0;
 
   /// Same as the |select()| method above, but for nullable values.
   virtual EncodingSelectionResult selectNullable(
       std::span<const physicalType> values,
       std::span<const bool> nulls,
       const Statistics<physicalType>& statistics,
-      const Encoding::Options& options = {}) = 0;
+      const Encoding::Options& options) = 0;
 
   virtual ~EncodingSelectionPolicy() = default;
 };

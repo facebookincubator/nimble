@@ -20,6 +20,7 @@
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -30,6 +31,7 @@
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/VarintEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "velox/common/base/BitUtil.h"
@@ -101,8 +103,8 @@ class EncodingSizeEstimationTest : public ::testing::Test {
       auto stats = Statistics<T>::create(data);
       const uint32_t numValues = static_cast<uint32_t>(data.size());
 
-      auto estimated = Est::estimateNumericSize(
-          EncodingType::SimdForBitpack, numValues, stats);
+      auto estimated = Est::estimateSize(
+          EncodingType::SimdForBitpack, numValues, stats, defaultOptions_);
       ASSERT_TRUE(estimated.has_value());
 
       nimble::Buffer buffer{*pool_};
@@ -153,7 +155,57 @@ class EncodingSizeEstimationTest : public ::testing::Test {
         << encoded.size();
   }
 
+  template <typename T>
+  void verifyAlpEstimateVsActualSize() {
+    using physicalType = typename TypeTraits<T>::physicalType;
+    using Est = detail::EncodingSizeEstimation<T>;
+    SCOPED_TRACE(toString(TypeTraits<T>::dataType));
+
+    std::vector<T> data;
+    data.reserve(512);
+    for (int32_t i = 0; i < 512; ++i) {
+      data.push_back(static_cast<T>((i % 33) - 16) / static_cast<T>(4));
+    }
+
+    const auto physicalValues =
+        EncodingPhysicalType<T>::asEncodingPhysicalTypeSpan(
+            std::span<const T>{data.data(), data.size()});
+    auto stats = Statistics<physicalType>::create(physicalValues);
+
+    EXPECT_FALSE(
+        Est::estimateSize(
+            EncodingType::ALP, data.size(), stats, defaultOptions_)
+            .has_value());
+
+    const auto estimated = Est::estimateSize(
+        EncodingType::ALP, physicalValues, stats, defaultOptions_);
+    ASSERT_TRUE(estimated.has_value());
+
+    auto policy = std::make_unique<ManualEncodingSelectionPolicy<T>>(
+        std::vector<std::pair<EncodingType, float>>{
+            {EncodingType::FixedBitWidth, 1.0},
+        },
+        std::nullopt,
+        std::nullopt);
+    EncodingSelection<physicalType> selection{
+        {.encodingType = EncodingType::ALP},
+        Statistics<physicalType>::create(physicalValues),
+        std::move(policy)};
+
+    Buffer buffer{*pool_};
+    const auto encoded = ALPEncoding<T>::encode(
+        selection, physicalValues, buffer, defaultOptions_);
+
+    EXPECT_GT(estimated.value(), encoded.size() / 2)
+        << "estimate too low: " << estimated.value() << " vs actual "
+        << encoded.size();
+    EXPECT_LT(estimated.value(), encoded.size() * 2)
+        << "estimate too high: " << estimated.value() << " vs actual "
+        << encoded.size();
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
+  const Encoding::Options defaultOptions_;
 };
 
 TEST_F(EncodingSizeEstimationTest, numericConstant) {
@@ -162,7 +214,8 @@ TEST_F(EncodingSizeEstimationTest, numericConstant) {
   std::vector<uint32_t> data(100, 42);
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Constant, 100, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Constant, 100, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_GT(size.value(), 0);
   EXPECT_LT(size.value(), 100 * sizeof(uint32_t));
@@ -174,7 +227,8 @@ TEST_F(EncodingSizeEstimationTest, numericConstantNonConstantData) {
   std::vector<uint32_t> data = {1, 2, 3};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Constant, 3, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Constant, 3, stats, defaultOptions_);
   EXPECT_FALSE(size.has_value());
 }
 
@@ -184,7 +238,8 @@ TEST_F(EncodingSizeEstimationTest, numericTrivial) {
   std::vector<uint32_t> data = {1, 2, 3, 4, 5};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Trivial, 5, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Trivial, 5, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_GE(size.value(), 5 * sizeof(uint32_t));
 }
@@ -195,7 +250,8 @@ TEST_F(EncodingSizeEstimationTest, numericFixedBitWidth) {
   std::vector<uint32_t> data = {100, 101, 102, 103, 104};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::FixedBitWidth, 5, stats);
+  auto size =
+      Est::estimateSize(EncodingType::FixedBitWidth, 5, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_LT(size.value(), 5 * sizeof(uint32_t));
 }
@@ -208,7 +264,7 @@ TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateUsesExactBits) {
   Encoding::Options options;
   options.fixedBitWidthUseExactBits = true;
 
-  const auto size = Est::estimateNumericSize(
+  const auto size = Est::estimateSize(
       EncodingType::FixedBitWidth, data.size(), stats, options);
 
   ASSERT_TRUE(size.has_value());
@@ -228,7 +284,8 @@ TEST_F(EncodingSizeEstimationTest, numericDictionary) {
   std::vector<uint32_t> data = {1, 2, 1, 2, 1, 2, 1, 2, 1, 2};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Dictionary, 10, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Dictionary, 10, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_GT(size.value(), 0);
 }
@@ -240,8 +297,8 @@ TEST_F(EncodingSizeEstimationTest, numericMainlyConstant) {
   data[50] = 99;
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size =
-      Est::estimateNumericSize(EncodingType::MainlyConstant, 100, stats);
+  auto size = Est::estimateSize(
+      EncodingType::MainlyConstant, 100, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_LT(size.value(), 100 * sizeof(uint32_t));
 }
@@ -258,7 +315,7 @@ TEST_F(EncodingSizeEstimationTest, numericRle) {
   }
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::RLE, 100, stats);
+  auto size = Est::estimateSize(EncodingType::RLE, 100, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_LT(size.value(), 100 * sizeof(uint32_t));
 }
@@ -269,7 +326,8 @@ TEST_F(EncodingSizeEstimationTest, numericVarint32) {
   std::vector<uint32_t> data = {0, 1, 127, 128, 255, 256, 1000};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Varint, 7, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Varint, 7, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_GT(size.value(), 0);
 }
@@ -280,7 +338,8 @@ TEST_F(EncodingSizeEstimationTest, numericVarint64) {
   std::vector<uint64_t> data = {0, 1, 127, 128, 16384, 1000000};
   auto stats = Statistics<uint64_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::Varint, 6, stats);
+  auto size =
+      Est::estimateSize(EncodingType::Varint, 6, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_GT(size.value(), 0);
 }
@@ -291,7 +350,8 @@ TEST_F(EncodingSizeEstimationTest, numericUnsupportedEncoding) {
   std::vector<uint32_t> data = {1, 2, 3};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateNumericSize(EncodingType::SparseBool, 3, stats);
+  auto size =
+      Est::estimateSize(EncodingType::SparseBool, 3, stats, defaultOptions_);
   EXPECT_FALSE(size.has_value());
 }
 
@@ -301,11 +361,21 @@ TEST_F(EncodingSizeEstimationTest, numericEstimateSizeDispatches) {
   std::vector<uint32_t> data = {1, 2, 3, 4, 5};
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto size = Est::estimateSize(EncodingType::Trivial, 5, stats);
+  auto size = Est::estimateSize(
+      EncodingType::Trivial, data.size(), stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
 
-  auto directSize = Est::estimateNumericSize(EncodingType::Trivial, 5, stats);
-  EXPECT_EQ(size.value(), directSize.value());
+  auto sizeFromValues = Est::estimateSize(
+      EncodingType::Trivial,
+      std::span<const uint32_t>{data},
+      stats,
+      defaultOptions_);
+  EXPECT_EQ(sizeFromValues, size);
+}
+
+TEST_F(EncodingSizeEstimationTest, alpEstimateRequiresValuesAndMatchesActual) {
+  verifyAlpEstimateVsActualSize<float>();
+  verifyAlpEstimateVsActualSize<double>();
 }
 
 TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateUsesValueRange) {
@@ -566,9 +636,9 @@ TEST_F(EncodingSizeEstimationTest, trivialSmallerThanDictionaryForUnique) {
   auto stats = Statistics<uint32_t>::create(data);
 
   auto trivialSize =
-      Est::estimateNumericSize(EncodingType::Trivial, 100, stats);
+      Est::estimateSize(EncodingType::Trivial, 100, stats, defaultOptions_);
   auto dictSize =
-      Est::estimateNumericSize(EncodingType::Dictionary, 100, stats);
+      Est::estimateSize(EncodingType::Dictionary, 100, stats, defaultOptions_);
 
   ASSERT_TRUE(trivialSize.has_value());
   ASSERT_TRUE(dictSize.has_value());
@@ -585,9 +655,9 @@ TEST_F(EncodingSizeEstimationTest, dictionarySmallerForHighRepetition) {
   auto stats = Statistics<uint32_t>::create(data);
 
   auto trivialSize =
-      Est::estimateNumericSize(EncodingType::Trivial, 1000, stats);
+      Est::estimateSize(EncodingType::Trivial, 1000, stats, defaultOptions_);
   auto dictSize =
-      Est::estimateNumericSize(EncodingType::Dictionary, 1000, stats);
+      Est::estimateSize(EncodingType::Dictionary, 1000, stats, defaultOptions_);
 
   ASSERT_TRUE(trivialSize.has_value());
   ASSERT_TRUE(dictSize.has_value());
@@ -601,9 +671,9 @@ TEST_F(EncodingSizeEstimationTest, constantSmallestForConstantData) {
   auto stats = Statistics<uint32_t>::create(data);
 
   auto constantSize =
-      Est::estimateNumericSize(EncodingType::Constant, 1000, stats);
+      Est::estimateSize(EncodingType::Constant, 1000, stats, defaultOptions_);
   auto trivialSize =
-      Est::estimateNumericSize(EncodingType::Trivial, 1000, stats);
+      Est::estimateSize(EncodingType::Trivial, 1000, stats, defaultOptions_);
 
   ASSERT_TRUE(constantSize.has_value());
   ASSERT_TRUE(trivialSize.has_value());
@@ -622,9 +692,10 @@ TEST_F(EncodingSizeEstimationTest, rleSmallForLongRuns) {
   }
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto rleSize = Est::estimateNumericSize(EncodingType::RLE, 1000, stats);
+  auto rleSize =
+      Est::estimateSize(EncodingType::RLE, 1000, stats, defaultOptions_);
   auto trivialSize =
-      Est::estimateNumericSize(EncodingType::Trivial, 1000, stats);
+      Est::estimateSize(EncodingType::Trivial, 1000, stats, defaultOptions_);
 
   ASSERT_TRUE(rleSize.has_value());
   ASSERT_TRUE(trivialSize.has_value());
@@ -640,10 +711,10 @@ TEST_F(EncodingSizeEstimationTest, fbwSmallForNarrowRange) {
   }
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto fbwSize =
-      Est::estimateNumericSize(EncodingType::FixedBitWidth, 1000, stats);
+  auto fbwSize = Est::estimateSize(
+      EncodingType::FixedBitWidth, 1000, stats, defaultOptions_);
   auto trivialSize =
-      Est::estimateNumericSize(EncodingType::Trivial, 1000, stats);
+      Est::estimateSize(EncodingType::Trivial, 1000, stats, defaultOptions_);
 
   ASSERT_TRUE(fbwSize.has_value());
   ASSERT_TRUE(trivialSize.has_value());
@@ -660,17 +731,21 @@ TEST_F(EncodingSizeEstimationTest, uint64AllEncodings) {
   auto stats = Statistics<uint64_t>::create(data);
 
   ASSERT_TRUE(
-      Est::estimateNumericSize(EncodingType::Trivial, 100, stats).has_value());
-  ASSERT_TRUE(
-      Est::estimateNumericSize(EncodingType::FixedBitWidth, 100, stats)
+      Est::estimateSize(EncodingType::Trivial, 100, stats, defaultOptions_)
           .has_value());
   ASSERT_TRUE(
-      Est::estimateNumericSize(EncodingType::Dictionary, 100, stats)
+      Est::estimateSize(
+          EncodingType::FixedBitWidth, 100, stats, defaultOptions_)
           .has_value());
   ASSERT_TRUE(
-      Est::estimateNumericSize(EncodingType::RLE, 100, stats).has_value());
+      Est::estimateSize(EncodingType::Dictionary, 100, stats, defaultOptions_)
+          .has_value());
   ASSERT_TRUE(
-      Est::estimateNumericSize(EncodingType::Varint, 100, stats).has_value());
+      Est::estimateSize(EncodingType::RLE, 100, stats, defaultOptions_)
+          .has_value());
+  ASSERT_TRUE(
+      Est::estimateSize(EncodingType::Varint, 100, stats, defaultOptions_)
+          .has_value());
 }
 
 TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
@@ -688,7 +763,7 @@ TEST_F(EncodingSizeEstimationTest, pforEstimateVsActualSize) {
   const uint32_t numValues = static_cast<uint32_t>(data.size());
 
   auto estimated =
-      Est::estimateNumericSize(EncodingType::PFOR, numValues, stats);
+      Est::estimateSize(EncodingType::PFOR, numValues, stats, defaultOptions_);
   ASSERT_TRUE(estimated.has_value());
 
   // Actually encode and measure real size.
@@ -890,8 +965,8 @@ TEST_F(
   }
   auto stats = Statistics<uint32_t>::create(data);
 
-  auto estimate =
-      Est::estimateNumericSize(EncodingType::BlockBitPacking, 2048, stats);
+  auto estimate = Est::estimateSize(
+      EncodingType::BlockBitPacking, 2048, stats, defaultOptions_);
   ASSERT_TRUE(estimate.has_value());
   EXPECT_GT(estimate.value(), 0);
 
@@ -903,8 +978,8 @@ TEST_F(
   // Verify options.blockBitPackingBlockSize is threaded through.
   Encoding::Options options;
   options.blockBitPackingBlockSize = 512;
-  auto estimateSmallBlock = Est::estimateNumericSize(
-      EncodingType::BlockBitPacking, 2048, stats, options);
+  auto estimateSmallBlock =
+      Est::estimateSize(EncodingType::BlockBitPacking, 2048, stats, options);
   ASSERT_TRUE(estimateSmallBlock.has_value());
   EXPECT_NE(estimateSmallBlock.value(), estimate.value());
 }

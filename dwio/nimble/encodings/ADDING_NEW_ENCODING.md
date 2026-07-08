@@ -218,7 +218,7 @@ case EncodingType::MyEncoding:
 
 **File:** `dwio/nimble/encodings/selection/EncodingSizeEstimation.h`
 
-Add estimation logic to the appropriate method(s):
+Add estimation logic to the appropriate private helper(s):
 
 - `estimateNumericSize<T>()` — for numeric types
 - `estimateBoolSize()` — for bool

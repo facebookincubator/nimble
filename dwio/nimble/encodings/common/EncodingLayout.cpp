@@ -14,14 +14,10 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
-#include <algorithm>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
-// SubIntSplit integration commented out (disabled):
-// #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
@@ -30,98 +26,6 @@ namespace facebook::nimble {
 
 namespace {
 constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
-
-// SubIntSplit is currently the only encoding that populates an encoding config.
-// These helpers serialize/deserialize that config (extra-data). The call sites
-// are currently commented out, so the functions are marked [[maybe_unused]].
-[[maybe_unused]] uint32_t serializedConfigSize(
-    const EncodingLayout::Config& config) {
-  if (config.values().empty()) {
-    return 0;
-  }
-
-  uint32_t size = sizeof(uint16_t);
-  for (const auto& [key, value] : config.values()) {
-    size += sizeof(uint16_t) + static_cast<uint32_t>(key.size());
-    size += sizeof(uint16_t) + static_cast<uint32_t>(value.size());
-  }
-  NIMBLE_CHECK_LE(
-      size,
-      std::numeric_limits<uint16_t>::max(),
-      "EncodingLayout config too large.");
-  return size;
-}
-
-[[maybe_unused]] void serializeConfig(
-    const EncodingLayout::Config& config,
-    char*& pos) {
-  std::vector<std::pair<std::string_view, std::string_view>> entries;
-  entries.reserve(config.values().size());
-  for (const auto& [key, value] : config.values()) {
-    entries.emplace_back(key, value);
-  }
-  std::sort(
-      entries.begin(), entries.end(), [](const auto& left, const auto& right) {
-        return left.first < right.first;
-      });
-
-  encoding::write<uint16_t>(static_cast<uint16_t>(entries.size()), pos);
-  for (const auto& [key, value] : entries) {
-    encoding::write<uint16_t>(static_cast<uint16_t>(key.size()), pos);
-    encoding::writeBytes(key, pos);
-    encoding::write<uint16_t>(static_cast<uint16_t>(value.size()), pos);
-    encoding::writeBytes(value, pos);
-  }
-}
-
-[[maybe_unused]] EncodingLayout::Config deserializeConfig(
-    std::string_view extraData) {
-  if (extraData.empty()) {
-    return {};
-  }
-
-  const char* pos = extraData.data();
-  const char* const end = extraData.data() + extraData.size();
-  std::unordered_map<std::string, std::string> configs;
-
-  NIMBLE_CHECK_LE(
-      static_cast<size_t>(end - pos),
-      extraData.size(),
-      "Invalid encoding layout config.");
-  const uint16_t configCount = encoding::read<uint16_t>(pos);
-  configs.reserve(configCount);
-
-  for (uint16_t i = 0; i < configCount; ++i) {
-    NIMBLE_CHECK_LE(
-        sizeof(uint16_t),
-        static_cast<size_t>(end - pos),
-        "Invalid encoding layout config.");
-    const uint16_t keySize = encoding::read<uint16_t>(pos);
-    NIMBLE_CHECK_LE(
-        keySize,
-        static_cast<size_t>(end - pos),
-        "Invalid encoding layout config.");
-    std::string key(pos, keySize);
-    pos += keySize;
-
-    NIMBLE_CHECK_LE(
-        sizeof(uint16_t),
-        static_cast<size_t>(end - pos),
-        "Invalid encoding layout config.");
-    const uint16_t valueSize = encoding::read<uint16_t>(pos);
-    NIMBLE_CHECK_LE(
-        valueSize,
-        static_cast<size_t>(end - pos),
-        "Invalid encoding layout config.");
-    std::string value(pos, valueSize);
-    pos += valueSize;
-
-    configs.emplace(std::move(key), std::move(value));
-  }
-
-  NIMBLE_CHECK_EQ(pos, end, "Invalid encoding layout config length.");
-  return EncodingLayout::Config{std::move(configs)};
-}
 
 // Captures one size-prefixed nested sub-stream into `children` (nullopt when
 // the sub-stream is empty)
@@ -173,30 +77,9 @@ int32_t EncodingLayout::serialize(std::span<char> output) const {
   // We store at least kMinEncodingLayoutBufferSize bytes: encoding type,
   // compression type, children count and extra data size (2 bytes), plus one
   // byte per child.
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
-  const uint32_t extraDataSize = serializedConfigSize(encodingConfig_);
-  NIMBLE_CHECK(
-      output.size() >=
-          kMinEncodingLayoutBufferSize + extraDataSize + children_.size(),
-      "Captured encoding layout buffer too small.");
-
-  char* pos = output.data();
-  pos[0] = static_cast<char>(encodingType_);
-  pos[1] = static_cast<char>(compressionType_);
-  pos[2] = static_cast<char>(children_.size());
-  pos += 3;
-  encoding::write<uint16_t>(static_cast<uint16_t>(extraDataSize), pos);
-
-  int32_t size = static_cast<int32_t>(pos - output.data());
-  if (extraDataSize > 0) {
-    char* extraPos = output.data() + size;
-    serializeConfig(encodingConfig_, extraPos);
-    size += extraDataSize;
-  }
-  */
-  NIMBLE_CHECK(
-      output.size() >= kMinEncodingLayoutBufferSize + children_.size(),
+  NIMBLE_CHECK_GE(
+      output.size(),
+      kMinEncodingLayoutBufferSize + children_.size(),
       "Captured encoding layout buffer too small.");
 
   output[0] = static_cast<char>(encodingType_);
@@ -223,28 +106,15 @@ int32_t EncodingLayout::serialize(std::span<char> output) const {
 
 std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
     std::string_view encoding) {
-  NIMBLE_CHECK(
-      encoding.size() >= kMinEncodingLayoutBufferSize,
+  NIMBLE_CHECK_GE(
+      encoding.size(),
+      kMinEncodingLayoutBufferSize,
       "Invalid captured encoding layout. Buffer too small.");
 
   auto pos = encoding.data();
   const auto encodingType = encoding::read<uint8_t, EncodingType>(pos);
   const auto compressionType = encoding::read<uint8_t, CompressionType>(pos);
   const auto childrenCount = encoding::read<uint8_t>(pos);
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
-  const auto extraDataSize = encoding::read<uint16_t>(pos);
-
-  NIMBLE_CHECK_GE(
-      encoding.size(),
-      kMinEncodingLayoutBufferSize + extraDataSize,
-      "Invalid captured encoding layout. Buffer too small.");
-
-  const auto encodingConfig = deserializeConfig(
-      {encoding.data() + kMinEncodingLayoutBufferSize, extraDataSize});
-
-  uint32_t offset = kMinEncodingLayoutBufferSize + extraDataSize;
-  */
   [[maybe_unused]] const auto extraDataSize = encoding::read<uint16_t>(pos);
 
   NIMBLE_DCHECK_EQ(extraDataSize, 0, "Extra data currently not supported.");
@@ -264,15 +134,6 @@ std::pair<EncodingLayout, uint32_t> EncodingLayout::create(
     }
   }
 
-  // SubIntSplit-specific logic commented out to restore original behavior:
-  /*
-  return {
-      {encodingType,
-       std::move(encodingConfig),
-       compressionType,
-       std::move(children)},
-      offset};
-  */
   return {{encodingType, {}, compressionType, std::move(children)}, offset};
 }
 
@@ -306,61 +167,6 @@ namespace {
 
 constexpr uint32_t kEncodingPrefixSize = 6;
 
-// SubIntSplit integration commented out (disabled):
-/*
-Captures the layout of a SubIntSplit encoding by reading its per-section bit
-ranges and recursively capturing each split's nested encoding. The recovered
-bit boundaries are preserved in the encoding config so the same split layout
-can be replayed.
-[[maybe_unused]] EncodingLayout captureSubIntSplit(
-    std::string_view encoding,
-    CompressionType compressionType) {
-  const char* pos = encoding.data() + kEncodingPrefixSize;
-  const uint8_t splitCount = encoding::read<uint8_t>(pos);
-  encoding::read<uint8_t>(pos); // reserved
-
-  struct SectionMeta {
-    uint8_t bitStart;
-    uint8_t bitEnd;
-    uint32_t encodedSize;
-  };
-
-  std::vector<SectionMeta> sectionMeta;
-  sectionMeta.reserve(splitCount);
-  for (uint8_t s = 0; s < splitCount; ++s) {
-    SectionMeta meta{};
-    meta.bitStart = encoding::read<uint8_t>(pos);
-    meta.bitEnd = encoding::read<uint8_t>(pos);
-    meta.encodedSize = encoding::readUint32(pos);
-    sectionMeta.push_back(meta);
-  }
-
-  std::vector<std::optional<const EncodingLayout>> children;
-  children.reserve(splitCount);
-  for (uint8_t s = 0; s < splitCount; ++s) {
-    children.emplace_back(
-        EncodingLayoutCapture::capture({pos, sectionMeta[s].encodedSize}));
-    pos += sectionMeta[s].encodedSize;
-  }
-
-  std::vector<detail::subintsplit::SegmentPlan> boundaryPlans;
-  boundaryPlans.reserve(splitCount);
-  for (uint8_t s = 0; s < splitCount; ++s) {
-    detail::subintsplit::SegmentPlan segment{};
-    segment.bitStart = static_cast<int>(sectionMeta[s].bitStart);
-    segment.bitEnd = static_cast<int>(sectionMeta[s].bitEnd);
-    boundaryPlans.push_back(segment);
-  }
-
-  return {
-      EncodingType::SubIntSplit,
-      EncodingLayout::Config{
-          detail::subintsplit::makePreserveSplitConfig(boundaryPlans)},
-      compressionType,
-      std::move(children)};
-}
-*/
-
 } // namespace
 
 EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
@@ -383,18 +189,24 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::Varint:
     case EncodingType::Constant:
     case EncodingType::Prefix:
-    case EncodingType::ALP:
     case EncodingType::SimdForBitpack:
-    // SubIntSplit integration is disabled; treat it as a non-nested encoding
-    // (zero children) so its layout is captured without nested logic.
     case EncodingType::SubIntSplit:
-    // FOR and FrequencyPartition integration is disabled; treat them as
-    // non-nested encodings (zero children). Their nested-capture logic is
-    // commented out below.
     case EncodingType::FOR:
     case EncodingType::FrequencyPartition:
       // Non nested encodings have zero children
       break;
+    case EncodingType::ALP: {
+      const char* pos = encoding.data() + kEncodingPrefixSize;
+      encoding::read<uint8_t>(pos); // exponent
+      encoding::read<uint8_t>(pos); // factor
+      encoding::readUint32(pos); // exceptionCount
+      const uint32_t encodedValuesBytes = encoding::readUint32(pos);
+
+      children.reserve(1);
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, encodedValuesBytes}));
+      break;
+    }
     case EncodingType::PFOR: {
       const auto dataType =
           encoding::peek<uint8_t, DataType>(encoding.data() + 1);
@@ -519,41 +331,6 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
               {pos, encoding.size() - (pos - encoding.data())}));
       break;
     }
-      // SubIntSplit-specific logic commented out to restore original behavior:
-      /*
-      case EncodingType::SubIntSplit:
-        return captureSubIntSplit(encoding, compressionType);
-      */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-    case EncodingType::FOR: {
-      compressionType = encoding::peek<uint8_t, CompressionType>(
-          encoding.data() + kEncodingPrefixSize);
-      const bool enableBitOffsets = encoding::peek<uint8_t, bool>(
-          encoding.data() + kEncodingPrefixSize + 9);
-
-      const char* pos = encoding.data() + kEncodingPrefixSize + 10;
-
-      const uint32_t bitWidthsBytes = encoding::readUint32(pos);
-      children.emplace_back(
-          EncodingLayoutCapture::capture({pos, bitWidthsBytes}));
-      pos += bitWidthsBytes;
-
-      const uint32_t referencesBytes = encoding::readUint32(pos);
-      children.emplace_back(
-          EncodingLayoutCapture::capture({pos, referencesBytes}));
-      pos += referencesBytes;
-
-      if (enableBitOffsets) {
-        const uint32_t bitOffsetsBytes = encoding::readUint32(pos);
-        children.emplace_back(
-            EncodingLayoutCapture::capture({pos, bitOffsetsBytes}));
-      }
-      break;
-    }
-    case EncodingType::FrequencyPartition:
-      break;
-    */
     case EncodingType::Nullable: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);

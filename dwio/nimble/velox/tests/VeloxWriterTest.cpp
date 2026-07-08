@@ -83,6 +83,86 @@ class VeloxWriterTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
+nimble::EncodingSelectionPolicyCreator makeEncodingSelectionPolicyCreator(
+    nimble::EncodingType encodingType) {
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      {{encodingType, 1.0}}, std::nullopt};
+  return [factory = std::move(factory)](nimble::DataType dataType)
+             -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return factory.createPolicy(dataType);
+  };
+}
+
+nimble::EncodingLayout captureFirstColumnEncoding(
+    const std::string& file,
+    velox::memory::MemoryPool* pool) {
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet =
+      nimble::TabletReader::create(readFile, pool, makeTestTabletOptions(pool));
+  auto section =
+      tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+  NIMBLE_CHECK(section.has_value(), "Schema not found.");
+  auto schema =
+      nimble::SchemaDeserializer::deserialize(section->content().data());
+  const auto& scalarNode = schema->asRow().childAt(0)->asScalar();
+
+  std::vector<uint32_t> streamIdentifiers{
+      scalarNode.scalarDescriptor().offset()};
+  auto streams = tablet->load(tablet->stripeIdentifier(0), streamIdentifiers);
+  nimble::InMemoryChunkedStream chunkedStream{*pool, std::move(streams[0])};
+  NIMBLE_CHECK(chunkedStream.hasNext(), "Expected at least one chunk.");
+  return nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+}
+
+template <typename T>
+void testAlpE2EWriterSelection(
+    velox::memory::MemoryPool& rootPool,
+    velox::memory::MemoryPool* leafPool) {
+  SCOPED_TRACE(fmt::format("type={}", nimble::TypeTraits<T>::dataType));
+
+  velox::test::VectorMaker vectorMaker{leafPool};
+  auto vector = vectorMaker.rowVector(
+      {"c0"}, {vectorMaker.flatVector<T>(512, [](auto row) {
+        return static_cast<T>(static_cast<int32_t>(row % 101) - 50) /
+            static_cast<T>(4);
+      })});
+
+  {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options;
+    options.encodingSelectionPolicyCreator =
+        makeEncodingSelectionPolicyCreator(nimble::EncodingType::ALP);
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), rootPool, std::move(options));
+    writer.write(vector);
+    writer.close();
+
+    const auto captured = captureFirstColumnEncoding(file, leafPool);
+    EXPECT_EQ(captured.encodingType(), nimble::EncodingType::ALP);
+  }
+
+  {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options;
+    options.allowNestedAlpSelection = true;
+    options.encodingSelectionPolicyCreator =
+        makeEncodingSelectionPolicyCreator(nimble::EncodingType::Dictionary);
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), rootPool, std::move(options));
+    writer.write(vector);
+    writer.close();
+
+    const auto captured = captureFirstColumnEncoding(file, leafPool);
+    ASSERT_EQ(captured.encodingType(), nimble::EncodingType::Dictionary);
+    const auto& alphabet =
+        captured.child(nimble::EncodingIdentifiers::Dictionary::Alphabet);
+    ASSERT_TRUE(alphabet.has_value());
+    EXPECT_EQ(alphabet->encodingType(), nimble::EncodingType::ALP);
+  }
+}
+
 TEST_F(VeloxWriterTest, emptyFile) {
   auto type = velox::ROW({{"simple", velox::INTEGER()}});
 
@@ -113,19 +193,32 @@ TEST_F(VeloxWriterTest, buildEncodingOptionsPropagatesEncodingOptions) {
     const nimble::VeloxWriterOptions options;
     const auto encodingOptions = options.buildEncodingOptions();
     EXPECT_FALSE(encodingOptions.fixedBitWidthUseExactBits);
+    EXPECT_FALSE(encodingOptions.allowNestedAlpSelection);
   }
 
   for (const auto useExactBits : {false, true}) {
     SCOPED_TRACE(fmt::format("useExactBits={}", useExactBits));
-    nimble::VeloxWriterOptions options;
-    options.fsstCompressionTargetRatio = 0.42;
-    options.fixedBitWidthUseExactBits = useExactBits;
+    for (const auto allowNestedAlpSelection : {false, true}) {
+      SCOPED_TRACE(
+          fmt::format("allowNestedAlpSelection={}", allowNestedAlpSelection));
+      nimble::VeloxWriterOptions options;
+      options.fsstCompressionTargetRatio = 0.42;
+      options.fixedBitWidthUseExactBits = useExactBits;
+      options.allowNestedAlpSelection = allowNestedAlpSelection;
 
-    const auto encodingOptions = options.buildEncodingOptions();
+      const auto encodingOptions = options.buildEncodingOptions();
 
-    EXPECT_DOUBLE_EQ(encodingOptions.fsstCompressionTargetRatio, 0.42);
-    EXPECT_EQ(encodingOptions.fixedBitWidthUseExactBits, useExactBits);
+      EXPECT_DOUBLE_EQ(encodingOptions.fsstCompressionTargetRatio, 0.42);
+      EXPECT_EQ(encodingOptions.fixedBitWidthUseExactBits, useExactBits);
+      EXPECT_EQ(
+          encodingOptions.allowNestedAlpSelection, allowNestedAlpSelection);
+    }
   }
+}
+
+TEST_F(VeloxWriterTest, alpEncodingSelectionControlsWriterEncoding) {
+  testAlpE2EWriterSelection<float>(*rootPool_, leafPool_.get());
+  testAlpE2EWriterSelection<double>(*rootPool_, leafPool_.get());
 }
 
 TEST_F(VeloxWriterTest, fsstEncodingTargetControlsWriterEncoding) {

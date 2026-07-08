@@ -114,12 +114,21 @@ void traverseEncodings(
     case EncodingType::Varint:
     case EncodingType::Constant:
     case EncodingType::Prefix:
-    case EncodingType::ALP:
     case EncodingType::SimdForBitpack:
     // SubIntSplit integration is disabled; treat it as having no nested
     // encoding to traverse.
     case EncodingType::SubIntSplit: {
       // don't have any nested encoding
+      break;
+    }
+    case EncodingType::ALP: {
+      const char* pos = stream.data() + kEncodingPrefixSize;
+      encoding::read<uint8_t>(pos); // exponent
+      encoding::read<uint8_t>(pos); // factor
+      encoding::readUint32(pos); // exceptionCount
+      const uint32_t encodedValuesSize = encoding::readUint32(pos);
+      traverseEncodings(
+          {pos, encodedValuesSize}, level + 1, 0, "EncodedValues", visitor);
       break;
     }
     case EncodingType::BlockBitPacking: {
@@ -271,32 +280,6 @@ void traverseEncodings(
           visitor);
       break;
     }
-    // SubIntSplit integration commented out (disabled):
-    /*
-    case EncodingType::SubIntSplit: {
-      const char* pos = stream.data() + kEncodingPrefixSize;
-      const uint8_t splitCount = encoding::read<uint8_t>(pos);
-      encoding::read<uint8_t>(pos); // reserved
-
-      std::vector<uint32_t> sectionBytes(splitCount);
-      for (uint8_t s = 0; s < splitCount; ++s) {
-        encoding::read<uint8_t>(pos); // bitStart
-        encoding::read<uint8_t>(pos); // bitEnd
-        sectionBytes[s] = encoding::readUint32(pos);
-      }
-
-      for (uint8_t s = 0; s < splitCount; ++s) {
-        traverseEncodings(
-            {pos, sectionBytes[s]},
-            level + 1,
-            s,
-            folly::to<std::string>("Section", static_cast<int>(s)),
-            visitor);
-        pos += sectionBytes[s];
-      }
-      break;
-    }
-    */
     case EncodingType::Sentinel: {
       const char* pos = stream.data() + kEncodingPrefixSize + 8;
       traverseEncodings(

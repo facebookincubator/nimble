@@ -47,6 +47,7 @@ struct VeloxWriterOptions {
     return {
         .blockBitPackingBlockSize = blockBitPackingBlockSize,
         .fixedBitWidthUseExactBits = fixedBitWidthUseExactBits,
+        .allowNestedAlpSelection = allowNestedAlpSelection,
         .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
   }
 
@@ -195,6 +196,11 @@ struct VeloxWriterOptions {
   /// FSST is kept only when its final encoded size is at most this fraction of
   /// the original string bytes.
   double fsstCompressionTargetRatio{0.6};
+
+  /// EXPERIMENTATION: Allows ALP to participate in nested floating-point
+  /// encoding selection. False by default; do not enable for production until
+  /// ALP is production-ready.
+  bool allowNestedAlpSelection{false};
 
   /// In low-memory mode, the writer is trying to perform smaller (and more
   /// precise) buffer allocations. This means that overall, the writer will

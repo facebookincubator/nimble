@@ -114,6 +114,7 @@ ManualEncodingSelectionPolicyFactory::possibleEncodings() {
       // EXPERIMENTAL: The following encodings are not production-ready. Do not
       // enable for production tables without consulting the Nimble team
       // (oncall: dwios).
+      EncodingType::ALP,
       EncodingType::PFOR,
       EncodingType::SimdForBitpack,
       EncodingType::SubIntSplit,
