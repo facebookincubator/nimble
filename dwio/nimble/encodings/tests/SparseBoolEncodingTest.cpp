@@ -24,6 +24,8 @@
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
+#include <vector>
+
 using namespace facebook;
 
 template <bool UseVarint>
@@ -137,6 +139,79 @@ TYPED_TEST(SparseBoolEncodingTest, sparseFalse) {
   for (uint32_t i = 0; i < 10; ++i) {
     EXPECT_EQ(result[i], values[i]) << "index " << i;
   }
+}
+
+TYPED_TEST(SparseBoolEncodingTest, materializeSparseIndicesForSparseFalse) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  auto values = this->toVector(
+      {true, true, false, true, false, true, true, false, true, true});
+  auto encoding = this->createEncoding(values, options);
+  auto* sparseBool = dynamic_cast<nimble::SparseBoolEncoding*>(encoding.get());
+  ASSERT_NE(sparseBool, nullptr);
+  EXPECT_FALSE(sparseBool->sparseValue());
+
+  nimble::Vector<uint32_t> positions{this->pool_.get()};
+  EXPECT_EQ(sparseBool->materializeSparseIndices(5, positions), 2);
+  EXPECT_EQ(
+      std::vector<uint32_t>(positions.begin(), positions.end()),
+      std::vector<uint32_t>({2, 4}));
+
+  EXPECT_EQ(sparseBool->materializeSparseIndices(5, positions), 1);
+  EXPECT_EQ(
+      std::vector<uint32_t>(positions.begin(), positions.end()),
+      std::vector<uint32_t>({2}));
+
+  sparseBool->reset();
+  EXPECT_EQ(sparseBool->skipSparseIndices(5), 2);
+  EXPECT_EQ(sparseBool->materializeSparseIndices(5, positions), 1);
+  EXPECT_EQ(
+      std::vector<uint32_t>(positions.begin(), positions.end()),
+      std::vector<uint32_t>({2}));
+}
+
+TYPED_TEST(SparseBoolEncodingTest, materializeSparseIndicesForSparseTrue) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  auto values = this->toVector(
+      {false, true, false, false, false, false, true, false, false, false});
+  auto encoding = this->createEncoding(values, options);
+  auto* sparseBool = dynamic_cast<nimble::SparseBoolEncoding*>(encoding.get());
+  ASSERT_NE(sparseBool, nullptr);
+  EXPECT_TRUE(sparseBool->sparseValue());
+
+  nimble::Vector<uint32_t> positions{this->pool_.get()};
+  EXPECT_EQ(sparseBool->materializeSparseIndices(10, positions), 2);
+  EXPECT_EQ(
+      std::vector<uint32_t>(positions.begin(), positions.end()),
+      std::vector<uint32_t>({1, 6}));
+
+  sparseBool->reset();
+  EXPECT_EQ(sparseBool->skipSparseIndices(5), 1);
+  EXPECT_EQ(sparseBool->materializeSparseIndices(5, positions), 1);
+  EXPECT_EQ(
+      std::vector<uint32_t>(positions.begin(), positions.end()),
+      std::vector<uint32_t>({1}));
+}
+
+TYPED_TEST(SparseBoolEncodingTest, sparseValueReportsPositionPolarity) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  auto sparseFalseValues = this->toVector(
+      {true, true, false, true, true, true, true, true, true, true});
+  auto sparseFalseEncoding = this->createEncoding(sparseFalseValues, options);
+  auto* sparseFalse =
+      dynamic_cast<nimble::SparseBoolEncoding*>(sparseFalseEncoding.get());
+  ASSERT_NE(sparseFalse, nullptr);
+  EXPECT_FALSE(sparseFalse->sparseValue());
+
+  auto sparseTrueValues = this->toVector(
+      {false, false, true, false, false, false, false, false, false, false});
+  auto sparseTrueEncoding = this->createEncoding(sparseTrueValues, options);
+  auto* sparseTrue =
+      dynamic_cast<nimble::SparseBoolEncoding*>(sparseTrueEncoding.get());
+  ASSERT_NE(sparseTrue, nullptr);
+  EXPECT_TRUE(sparseTrue->sparseValue());
 }
 
 TYPED_TEST(SparseBoolEncodingTest, singleElement) {

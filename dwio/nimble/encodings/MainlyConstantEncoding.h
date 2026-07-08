@@ -35,6 +35,7 @@
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "velox/buffer/BufferPool.h"
+#include "velox/common/Casts.h"
 #include "velox/common/base/SimdUtil.h"
 #include "velox/common/memory/Memory.h"
 
@@ -102,6 +103,7 @@ class MainlyConstantEncodingBase
       : TypedEncoding<T, physicalType>(pool, data, options),
         isCommonBuffer_(this->template getVectorBuffer<bool>()),
         otherValuesBuffer_(this->template getVectorBuffer<physicalType>()),
+        otherIndicesBuffer_(this->template getVectorBuffer<uint32_t>()),
         dictionaryAlphabet_(&pool) {}
 
   static uint64_t estimateSize(
@@ -178,6 +180,7 @@ class MainlyConstantEncodingBase
   ~MainlyConstantEncodingBase() override {
     this->releaseVectorBuffer(isCommonBuffer_);
     this->releaseVectorBuffer(otherValuesBuffer_);
+    this->releaseVectorBuffer(otherIndicesBuffer_);
   }
 
   void reset() final {
@@ -186,6 +189,15 @@ class MainlyConstantEncodingBase
   }
 
   void skip(uint32_t rowCount) override {
+    if (auto* sparseUncommon = sparseUncommonPositions()) {
+      const uint32_t nonCommonCount =
+          sparseUncommon->skipSparseIndices(rowCount);
+      if (nonCommonCount != 0) {
+        otherValues_->skip(nonCommonCount);
+      }
+      return;
+    }
+
     // Use bit-packed booleans for efficient SIMD counting.
     const auto numWords = velox::bits::nwords(rowCount);
     isCommonBuffer_.resize(numWords * sizeof(uint64_t));
@@ -207,6 +219,11 @@ class MainlyConstantEncodingBase
   }
 
   void materialize(uint32_t rowCount, void* buffer) override {
+    if (auto* sparseUncommon = sparseUncommonPositions()) {
+      materializeWithSparseUncommonIndices(rowCount, buffer, *sparseUncommon);
+      return;
+    }
+
     // Use bit-packed booleans for efficient SIMD counting.
     // isCommon_ encodes a bool stream so materializeBoolsAsBits is always
     // implemented.
@@ -562,6 +579,37 @@ class MainlyConstantEncodingBase
     return count;
   }
 
+  SparseBoolEncoding* sparseUncommonPositions() {
+    if (isCommon_->encodingType() != EncodingType::SparseBool) {
+      return nullptr;
+    }
+
+    auto* sparseBool =
+        velox::checkedPointerCast<SparseBoolEncoding>(isCommon_.get());
+    return sparseBool->sparseValue() ? nullptr : sparseBool;
+  }
+
+  void materializeWithSparseUncommonIndices(
+      uint32_t rowCount,
+      void* buffer,
+      SparseBoolEncoding& sparseUncommon) {
+    const uint32_t nonCommonCount =
+        sparseUncommon.materializeSparseIndices(rowCount, otherIndicesBuffer_);
+
+    physicalType* output = static_cast<physicalType*>(buffer);
+    velox::simd::simdFill(output, commonValue_, rowCount);
+
+    if (nonCommonCount == 0) {
+      return;
+    }
+
+    otherValuesBuffer_.reserve(nonCommonCount);
+    otherValues_->materialize(nonCommonCount, otherValuesBuffer_.data());
+    for (uint32_t i = 0; i < nonCommonCount; ++i) {
+      output[otherIndicesBuffer_[i]] = otherValuesBuffer_[i];
+    }
+  }
+
   std::unique_ptr<Encoding> isCommon_;
   std::unique_ptr<Encoding> otherValues_;
   physicalType commonValue_;
@@ -576,6 +624,7 @@ class MainlyConstantEncodingBase
 
   Vector<bool> isCommonBuffer_;
   Vector<physicalType> otherValuesBuffer_;
+  Vector<uint32_t> otherIndicesBuffer_;
   velox::BufferPtr indicesBuffer_;
   mutable Vector<physicalType> dictionaryAlphabet_;
 };

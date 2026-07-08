@@ -19,9 +19,12 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <type_traits>
@@ -234,5 +237,83 @@ TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
           << "MainlyConstant serialization is not deterministic (iteration "
           << i << ")";
     }
+  }
+}
+
+TEST(MainlyConstantEncodingV1Test, materializeSparseBoolIsCommon) {
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  const auto toBoolVector = [&](std::initializer_list<bool> values) {
+    nimble::Vector<bool> vector{pool.get()};
+    vector.insert(vector.end(), values.begin(), values.end());
+    return vector;
+  };
+  const auto toInt32Vector = [&](std::initializer_list<int32_t> values) {
+    nimble::Vector<int32_t> vector{pool.get()};
+    vector.insert(vector.end(), values.begin(), values.end());
+    return vector;
+  };
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useVarint=" << useVarint);
+    const nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+    nimble::Buffer childBuffer{*pool};
+    nimble::Buffer mainlyConstantBuffer{*pool};
+    std::vector<velox::BufferPtr> stringBuffers;
+    const auto stringBufferFactory = [&](uint32_t totalLength) {
+      return stringBuffers
+          .emplace_back(
+              velox::AlignedBuffer::allocate<char>(totalLength, pool.get()))
+          ->template asMutable<void>();
+    };
+
+    const auto isCommon = toBoolVector(
+        {true, true, false, true, false, true, true, false, true, true});
+    const auto otherValues = toInt32Vector({20, 40, 70});
+    const auto serializedIsCommon =
+        nimble::test::Encoder<nimble::SparseBoolEncoding>::encode(
+            childBuffer,
+            isCommon,
+            nimble::CompressionType::Uncompressed,
+            options);
+    const auto serializedOtherValues =
+        nimble::test::Encoder<nimble::TrivialEncoding<int32_t>>::encode(
+            childBuffer,
+            otherValues,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    const uint32_t rowCount = isCommon.size();
+    const uint32_t encodingSize =
+        nimble::EncodingPrefix::serializedSize(rowCount, useVarint) + 8 +
+        serializedIsCommon.size() + serializedOtherValues.size() +
+        sizeof(uint32_t);
+    char* const reserved = mainlyConstantBuffer.reserve(encodingSize);
+    char* pos = reserved;
+    nimble::EncodingPrefix::serialize(
+        nimble::EncodingType::MainlyConstant,
+        nimble::DataType::Int32,
+        rowCount,
+        useVarint,
+        pos);
+    nimble::encoding::writeString(serializedIsCommon, pos);
+    nimble::encoding::writeString(serializedOtherValues, pos);
+    nimble::encoding::write<uint32_t>(7, pos);
+    ASSERT_EQ(pos - reserved, encodingSize);
+
+    nimble::MainlyConstantEncoding<int32_t> encoding{
+        *pool, {reserved, encodingSize}, stringBufferFactory, options};
+    nimble::Vector<int32_t> result{pool.get(), rowCount};
+    encoding.materialize(rowCount, result.data());
+    EXPECT_EQ(
+        std::vector<int32_t>(result.begin(), result.end()),
+        std::vector<int32_t>({7, 7, 20, 7, 40, 7, 7, 70, 7, 7}));
+
+    encoding.reset();
+    encoding.skip(3);
+    nimble::Vector<int32_t> partial{pool.get(), 4};
+    encoding.materialize(4, partial.data());
+    EXPECT_EQ(
+        std::vector<int32_t>(partial.begin(), partial.end()),
+        std::vector<int32_t>({7, 40, 7, 7}));
   }
 }

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <numeric>
+#include <algorithm>
 
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 
@@ -95,6 +95,40 @@ void SparseBoolEncoding::materializeBoolsAsBits(
     }
   }
   row_ = end;
+}
+
+uint32_t SparseBoolEncoding::materializeSparseIndices(
+    uint32_t rowCount,
+    Vector<uint32_t>& buffer) {
+  const uint32_t maxSparsePositions =
+      std::min(rowCount, indices_.rowCount() - 1);
+  buffer.reserve(maxSparsePositions);
+  const uint32_t begin = row_;
+  const uint32_t end = row_ + rowCount;
+  uint32_t count{0};
+  auto* positions = buffer.data();
+  while (nextIndex_ < end) {
+    NIMBLE_DCHECK_LT(
+        count,
+        maxSparsePositions,
+        "SparseBool sparse position count exceeds its upper bound.");
+    positions[count++] = nextIndex_ - begin;
+    nextIndex_ = indices_.nextValue();
+  }
+  buffer.update_size(count);
+  row_ = end;
+  return count;
+}
+
+uint32_t SparseBoolEncoding::skipSparseIndices(uint32_t rowCount) {
+  uint32_t count{0};
+  const uint32_t end = row_ + rowCount;
+  while (nextIndex_ < end) {
+    ++count;
+    nextIndex_ = indices_.nextValue();
+  }
+  row_ = end;
+  return count;
 }
 
 std::string_view SparseBoolEncoding::encode(
