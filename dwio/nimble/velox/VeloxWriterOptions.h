@@ -22,6 +22,7 @@
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
+#include "dwio/nimble/velox/NimbleConfig.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
 
@@ -100,6 +101,11 @@ struct VeloxWriterOptions {
   /// identical schemas regardless of data arrival order. Unknown keys not in
   /// the set will cause an error during writing.
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
+
+  // Maximum number of distinct flat-map keys allowed per file; 0 means
+  // unlimited. Writing fails when exceeded, bounding the per-key native memory
+  // the flat-map writer holds.
+  uint32_t maxFlatMapKeys{kDefaultMaxFlatMapKeys};
 
   /// Per-column string-keyed attributes to stamp onto the NIMBLE schema.
   // Keyed by a dotted path of `RowType` child names that resolves to a node

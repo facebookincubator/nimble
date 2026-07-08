@@ -89,6 +89,11 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
       return parseVector<uint32_t>(val);
     });
 
+// Maximum number of distinct flat-map keys allowed per file; 0 means unlimited.
+/* static */ Config::Entry<uint32_t> Config::MAP_FLAT_MAX_KEYS(
+    "orc.map.flat.max.keys",
+    kDefaultMaxFlatMapKeys);
+
 /* static */ Config::Entry<const std::vector<uint32_t>>
     Config::DEDUPLICATED_COLS(
         "alpha.map.deduplicated.cols",

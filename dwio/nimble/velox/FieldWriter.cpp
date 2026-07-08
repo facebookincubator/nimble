@@ -2059,6 +2059,19 @@ class FlatMapFieldWriter : public FieldWriter {
           nodeId_);
       std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex()};
 
+      // Bound the number of distinct flat-map keys to prevent unbounded native
+      // memory growth. High-cardinality keys (e.g. BIGINT ids) are unsuitable
+      // for flat-map encoding; use a regular map or raise
+      // orc.map.flat.max.keys. A limit of 0 means unlimited. Checked under
+      // flatMapSchemaMutex_ so the size check and the allValueFields_ insertion
+      // below are atomic.
+      const auto maxFlatMapKeys = context_.maxFlatMapKeys();
+      NIMBLE_USER_CHECK(
+          maxFlatMapKeys == 0 || allValueFields_.size() < maxFlatMapKeys,
+          "Too many flatmap keys for node {}: limit is {}",
+          nodeId_,
+          maxFlatMapKeys);
+
       auto valueFieldWriter = FieldWriter::create(context_, valueType_);
       const auto& inMapDescriptor = typeBuilder_->asFlatMap().addChild(
           stringKey, valueFieldWriter->typeBuilder());
@@ -2071,7 +2084,6 @@ class FlatMapFieldWriter : public FieldWriter {
       flatFieldIt =
           allValueFields_.emplace(ownedKey, std::move(flatMapValueField)).first;
     }
-    // TODO: assert on not having too many keys?
     // Use the key stored in allValueFields_ (which points to owned memory)
     // rather than the input key (which may point to transient vector buffers).
     it = currentValueFields_

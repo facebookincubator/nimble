@@ -21,6 +21,11 @@
 
 namespace facebook::nimble {
 
+// Default cap on the number of distinct flat-map keys per file; 0 means
+// unlimited. Shared default for Config::MAP_FLAT_MAX_KEYS,
+// VeloxWriterOptions::maxFlatMapKeys, and FieldWriterContext::maxFlatMapKeys_.
+inline constexpr uint32_t kDefaultMaxFlatMapKeys = 30000;
+
 class Config : public velox::config::ConfigBase {
  public:
   template <typename T>
@@ -28,6 +33,8 @@ class Config : public velox::config::ConfigBase {
 
   static Entry<bool> FLATTEN_MAP;
   static Entry<const std::vector<uint32_t>> MAP_FLAT_COLS;
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<uint32_t> MAP_FLAT_MAX_KEYS;
   static Entry<const std::vector<uint32_t>> BATCH_REUSE_COLS;
   static Entry<const std::vector<uint32_t>> DEDUPLICATED_COLS;
   static Entry<uint64_t> RAW_STRIPE_SIZE;
