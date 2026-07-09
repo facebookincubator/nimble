@@ -46,3 +46,33 @@ target_link_libraries(
   velox_memory
   fsst
 )
+
+add_executable(nimble_encoding_view_benchmark EncodingViewBenchmark.cpp)
+
+target_link_libraries(
+  nimble_encoding_view_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  Folly::follybenchmark
+  Folly::folly
+  velox_common_base
+  velox_memory
+  fmt::fmt
+)
+
+add_executable(
+  nimble_simd_for_bitpack_benchmark
+  SimdForBitpackBenchmark.cpp
+)
+
+target_link_libraries(
+  nimble_simd_for_bitpack_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  Folly::follybenchmark
+  Folly::folly
+  velox_common_base
+  velox_memory
+)

@@ -42,7 +42,6 @@ namespace facebook::nimble {
 /// Wire format (after Encoding prefix):
 ///   [baseline: sizeof(T)] [bitWidth: 1B] [packed groups]
 ///   Each group = bitWidth * 4 bytes (32 values). Omitted when bitWidth == 0.
-///   Narrow types (uint8/16) widen to uint32 for packing.
 template <typename T>
 class SimdForBitpackEncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
@@ -53,6 +52,9 @@ class SimdForBitpackEncoding final
  public:
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
+
+  static constexpr uint32_t kGroupSize =
+      facebook::velox::fastpforlib::BITPACKING_ALGORITHM_GROUP_SIZE;
 
   SimdForBitpackEncoding(
       velox::memory::MemoryPool& pool,
@@ -84,9 +86,6 @@ class SimdForBitpackEncoding final
 
  private:
   static constexpr int kPrefixSize = sizeof(physicalType) + sizeof(uint8_t);
-
-  static constexpr uint32_t kGroupSize =
-      facebook::velox::fastpforlib::BITPACKING_ALGORITHM_GROUP_SIZE;
 
   // Return the number of FastPFor groups needed to cover `rowCount` values.
   static constexpr uint64_t numGroups(uint64_t rowCount) {
@@ -180,16 +179,21 @@ template <typename T>
 void SimdForBitpackEncoding<T>::unpackGroup(
     uint32_t groupIndex,
     physicalType* output) const {
+  static_assert(
+      isOneByteIntegralType<physicalType>() ||
+          isTwoByteIntegralType<physicalType>() ||
+          isFourByteIntegralType<physicalType>() ||
+          isEightByteIntegralType<physicalType>(),
+      "Unexpected SimdForBitpack physical type width.");
   const uint32_t* groupStart = reinterpret_cast<const uint32_t*>(packedData_) +
       static_cast<uint64_t>(groupIndex) * bitWidth_;
-  if constexpr (isFourByteIntegralType<physicalType>()) {
-    facebook::velox::fastpforlib::fastunpack(
-        groupStart, reinterpret_cast<uint32_t*>(output), bitWidth_);
-  } else if constexpr (isEightByteIntegralType<physicalType>()) {
+  if constexpr (isEightByteIntegralType<physicalType>()) {
     facebook::velox::fastpforlib::fastunpack(
         groupStart, reinterpret_cast<uint64_t*>(output), bitWidth_);
+  } else if constexpr (isFourByteIntegralType<physicalType>()) {
+    facebook::velox::fastpforlib::fastunpack(
+        groupStart, reinterpret_cast<uint32_t*>(output), bitWidth_);
   } else {
-    // Narrow types: unpack to uint32 temp then downcast.
     std::array<uint32_t, kGroupSize> temp{};
     facebook::velox::fastpforlib::fastunpack(
         groupStart, temp.data(), bitWidth_);
@@ -305,6 +309,12 @@ std::string_view SimdForBitpackEncoding<T>::encode(
             typename std::make_unsigned<physicalType>::type,
             physicalType>,
         "SimdForBitpack physical type must be unsigned.");
+    static_assert(
+        isOneByteIntegralType<physicalType>() ||
+            isTwoByteIntegralType<physicalType>() ||
+            isFourByteIntegralType<physicalType>() ||
+            isEightByteIntegralType<physicalType>(),
+        "Unexpected SimdForBitpack physical type width.");
     const bool useVarint = options.useVarintRowCount;
     if (values.empty()) {
       NIMBLE_INCOMPATIBLE_ENCODING(
@@ -361,18 +371,17 @@ std::string_view SimdForBitpackEncoding<T>::encode(
               static_cast<physicalType>(values[groupStart + i] - baseline);
         }
 
-        if constexpr (isFourByteIntegralType<physicalType>()) {
-          facebook::velox::fastpforlib::fastpack(
-              reinterpret_cast<const uint32_t*>(residuals.data()),
-              packedOut,
-              bitWidth);
-        } else if constexpr (isEightByteIntegralType<physicalType>()) {
+        if constexpr (isEightByteIntegralType<physicalType>()) {
           facebook::velox::fastpforlib::fastpack(
               reinterpret_cast<const uint64_t*>(residuals.data()),
               packedOut,
               bitWidth);
+        } else if constexpr (isFourByteIntegralType<physicalType>()) {
+          facebook::velox::fastpforlib::fastpack(
+              reinterpret_cast<const uint32_t*>(residuals.data()),
+              packedOut,
+              bitWidth);
         } else {
-          // Narrow types: widen to uint32 for packing.
           std::array<uint32_t, kGroupSize> widenedResiduals{};
           for (uint32_t i = 0; i < kGroupSize; ++i) {
             widenedResiduals[i] = static_cast<uint32_t>(residuals[i]);

@@ -317,6 +317,16 @@ struct TypeTraits<std::string_view> {
 };
 
 template <typename T>
+constexpr bool isOneByteIntegralType() {
+  return std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t>;
+}
+
+template <typename T>
+constexpr bool isTwoByteIntegralType() {
+  return std::is_same_v<T, int16_t> || std::is_same_v<T, uint16_t>;
+}
+
+template <typename T>
 constexpr bool isFourByteIntegralType() {
   return std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t>;
 }

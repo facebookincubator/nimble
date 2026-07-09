@@ -1,0 +1,110 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include <algorithm>
+
+#include "dwio/nimble/common/FixedBitArray.h"
+#include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/views/EncodingView.h"
+
+namespace facebook::nimble {
+
+template <typename T>
+class PFOREncodingView final : public TypedEncodingView<T> {
+ public:
+  using physicalType = typename TypedEncodingView<T>::physicalType;
+
+  PFOREncodingView(
+      std::string_view data,
+      velox::memory::MemoryPool* pool,
+      const Encoding::Options& options)
+      : TypedEncodingView<T>{data, pool, options},
+        exceptionPositions_{this->template getVectorBuffer<uint32_t>()},
+        exceptionValues_{this->template getVectorBuffer<physicalType>()} {
+    NIMBLE_CHECK_EQ(this->encodingType_, EncodingType::PFOR);
+    const char* pos = data.data() + this->dataOffset_;
+    baseline_ = encoding::read<physicalType>(pos);
+    baseBitWidth_ = static_cast<uint8_t>(encoding::readChar(pos));
+    NIMBLE_CHECK_LE(baseBitWidth_, sizeof(physicalType) * 8);
+    numExceptions_ = encoding::readUint32(pos);
+    NIMBLE_CHECK_LE(numExceptions_, this->rowCount_);
+
+    if (numExceptions_ > 0) {
+      const auto exceptionPositionsSize = encoding::readUint32(pos);
+      auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
+      auto exceptionPositions = EncodingFactory(options).create(
+          *this->pool_, {pos, exceptionPositionsSize}, noStringBufferFactory);
+      NIMBLE_CHECK_NOT_NULL(exceptionPositions);
+      exceptionPositions_.resize(numExceptions_);
+      exceptionPositions->materialize(
+          numExceptions_, exceptionPositions_.data());
+      pos += exceptionPositionsSize;
+    } else {
+      pos += sizeof(uint32_t);
+    }
+
+    if (numExceptions_ > 0) {
+      const auto exceptionValuesSize = encoding::readUint32(pos);
+      auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
+      auto exceptionValues = EncodingFactory(options).create(
+          *this->pool_, {pos, exceptionValuesSize}, noStringBufferFactory);
+      NIMBLE_CHECK_NOT_NULL(exceptionValues);
+      exceptionValues_.resize(numExceptions_);
+      exceptionValues->materialize(numExceptions_, exceptionValues_.data());
+      pos += exceptionValuesSize;
+    } else {
+      pos += sizeof(uint32_t);
+    }
+
+    if (baseBitWidth_ > 0) {
+      fixedBitArray_ = FixedBitArray{
+          {pos, FixedBitArray::bufferSize(this->rowCount_, baseBitWidth_)},
+          static_cast<int>(baseBitWidth_)};
+    }
+  }
+
+  ~PFOREncodingView() override {
+    this->releaseVectorBuffer(exceptionValues_);
+    this->releaseVectorBuffer(exceptionPositions_);
+  }
+
+ private:
+  T readTypedAt(uint32_t index) const final {
+    NIMBLE_CHECK_LT(index, this->rowCount_);
+    auto residual = baseBitWidth_ == 0
+        ? physicalType{0}
+        : static_cast<physicalType>(fixedBitArray_.get(index));
+    const auto exceptionIt = std::lower_bound(
+        exceptionPositions_.begin(), exceptionPositions_.end(), index);
+    if (exceptionIt != exceptionPositions_.end() && *exceptionIt == index) {
+      residual = exceptionValues_[exceptionIt - exceptionPositions_.begin()];
+    }
+    return detail::castFromPhysicalType<T>(
+        static_cast<physicalType>(baseline_ + residual));
+  }
+
+  physicalType baseline_{};
+  uint8_t baseBitWidth_{0};
+  uint32_t numExceptions_{0};
+  Vector<uint32_t> exceptionPositions_;
+  Vector<physicalType> exceptionValues_;
+  FixedBitArray fixedBitArray_{};
+};
+
+} // namespace facebook::nimble

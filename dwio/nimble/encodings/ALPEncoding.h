@@ -296,11 +296,12 @@ class ALPEncoding final
         exceptionValuesSize;
   }
 
- private:
   // Pre-computed powers of 10 for double precision.
   static constexpr std::array<double, 24> kPow10Double{
       1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
       1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23};
+
+ private:
   // Largest exponent and factor values backed by kPow10Double.
   static constexpr int kMaxExponent{23};
   static constexpr int kMaxFactor{23};
