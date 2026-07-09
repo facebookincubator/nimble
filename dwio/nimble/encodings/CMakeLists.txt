@@ -29,6 +29,7 @@ add_library(
   common/EncodingLayout.cpp
   selection/EncodingSelectionPolicy.cpp
   selection/Statistics.cpp
+  views/EncodingViewFactory.cpp
 )
 
 set(FSST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/fsst")

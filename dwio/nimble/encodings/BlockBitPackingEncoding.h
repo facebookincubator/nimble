@@ -49,7 +49,10 @@ class BlockBitPackingEncoding final
   using cppDataType = T;
   using physicalType = typename TypeTraits<T>::physicalType;
 
+  /// Maximum rows in one block; bounded so stack decode buffers stay fixed.
   static constexpr uint16_t kMaxBlockSize = kBlockBitPackingBlockSize;
+  /// Serialized bit-width marker for blocks stored as raw physical values.
+  static constexpr uint8_t kRawBlockBitWidth{255};
 
   BlockBitPackingEncoding(
       velox::memory::MemoryPool& pool,
@@ -60,8 +63,9 @@ class BlockBitPackingEncoding final
   ~BlockBitPackingEncoding() override {
     this->releaseBuffer(uncompressedData_);
     this->releaseVectorBuffer(buffer_);
+    this->releaseVectorBuffer(bitWidths_);
+    this->releaseVectorBuffer(baselines_);
     this->releaseVectorBuffer(blockOffsets_);
-    this->releaseVectorBuffer(blocksMetadata_);
   }
 
   void reset() final;
@@ -135,22 +139,6 @@ class BlockBitPackingEncoding final
       sizeof(uint16_t) /*numBlocks=*/ +
       3 * sizeof(uint32_t) /*subStreamSizePrefixes=*/;
 
-  // Per-block metadata, materialized from the nested baselines / bit-widths /
-  // data-offsets sub-streams: baseline (minimum) value, bit width for the
-  // packed representation, and whether this block falls back to storing raw
-  // uncompressed values.
-  struct BlockMeta {
-    // Raw block bit width indicates that the block stores raw values.
-    static constexpr uint8_t kRawBlockBitWidth = 255;
-    // Minimum value in the block; packed values are stored as
-    // (value - baseline).
-    physicalType baseline;
-    // Number of bits per packed value (0 when all values equal the baseline).
-    uint8_t bitWidth;
-    // When true, this block stores raw values (packing was not beneficial).
-    bool skipEncoding;
-  };
-
   // Per-block encoding plan used while serializing and estimating size.
   struct BlockInfo {
     physicalType baseline;
@@ -192,7 +180,8 @@ class BlockBitPackingEncoding final
 
   uint16_t blockSize_;
   uint16_t numBlocks_;
-  Vector<BlockMeta> blocksMetadata_;
+  Vector<physicalType> baselines_;
+  Vector<uint8_t> bitWidths_;
   Vector<uint32_t> blockOffsets_;
   const char* packedData_;
   uint32_t row_ = 0;
@@ -273,7 +262,8 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
     const std::function<void*(uint32_t)>& stringBufferFactory,
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
-      blocksMetadata_{this->template getVectorBuffer<BlockMeta>()},
+      baselines_{this->template getVectorBuffer<physicalType>()},
+      bitWidths_{this->template getVectorBuffer<uint8_t>()},
       blockOffsets_{this->template getVectorBuffer<uint32_t>()},
       packedData_{nullptr},
       buffer_{&pool} {
@@ -285,18 +275,14 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
   NIMBLE_CHECK(blockSize_ > 0 && blockSize_ <= kMaxBlockSize);
   NIMBLE_CHECK_EQ(numBlocks_, (this->rowCount() + blockSize_ - 1) / blockSize_);
 
-  blocksMetadata_.resize(numBlocks_);
+  baselines_.resize(numBlocks_);
+  bitWidths_.resize(numBlocks_);
   blockOffsets_.resize(numBlocks_);
 
   // BlockBitPacking stores the per-block metadata (baselines, bit widths, data
   // offsets) as self-describing nested encodings, letting Nimble's recursive
   // encoding selection pick the best encoding for each metadata stream. The
   // packed block data stays raw.
-  auto baselines = this->template getVectorBuffer<physicalType>();
-  baselines.resize(numBlocks_);
-  auto bitWidths = this->template getVectorBuffer<uint8_t>();
-  bitWidths.resize(numBlocks_);
-
   // Each metadata stream: read its 4-byte size, decode the nested sub-encoding
   // into the target, then advance past it.
   auto readMetadataStream = [&](auto& subStream) {
@@ -306,19 +292,9 @@ BlockBitPackingEncoding<T>::BlockBitPackingEncoding(
         ->materialize(numBlocks_, subStream.data());
     pos += size;
   };
-  readMetadataStream(baselines); // per-block baselines
-  readMetadataStream(bitWidths); // per-block bit widths
+  readMetadataStream(baselines_); // per-block baselines
+  readMetadataStream(bitWidths_); // per-block bit widths
   readMetadataStream(blockOffsets_); // per-block data offsets
-
-  for (uint16_t i = 0; i < numBlocks_; ++i) {
-    blocksMetadata_[i].baseline = baselines[i];
-    blocksMetadata_[i].skipEncoding =
-        (bitWidths[i] == BlockMeta::kRawBlockBitWidth);
-    blocksMetadata_[i].bitWidth =
-        blocksMetadata_[i].skipEncoding ? 0 : bitWidths[i];
-  }
-  this->releaseVectorBuffer(bitWidths);
-  this->releaseVectorBuffer(baselines);
 
   if (compressionType != CompressionType::Uncompressed) {
     uncompressedData_ = Compression::uncompress(
@@ -356,22 +332,22 @@ typename BlockBitPackingEncoding<T>::physicalType
 BlockBitPackingEncoding<T>::readSingleValue(uint32_t row) const {
   const auto blockIndex = row / blockSize_;
   const auto blockOffset = row % blockSize_;
-  const auto& blockMetadata = blocksMetadata_[blockIndex];
-  if (blockMetadata.skipEncoding) {
+  const auto bitWidth = bitWidths_[blockIndex];
+  const auto baseline = baselines_[blockIndex];
+  if (bitWidth == kRawBlockBitWidth) {
     const auto* rawValues = reinterpret_cast<const physicalType*>(
         packedData_ + blockOffsets_[blockIndex]);
     return rawValues[blockOffset];
   }
-  if (blockMetadata.bitWidth == 0) {
-    return blockMetadata.baseline;
+  if (bitWidth == 0) {
+    return baseline;
   }
   const auto numRows = blockRowCount(blockIndex);
   FixedBitArray fba{
       {packedData_ + blockOffsets_[blockIndex],
-       FixedBitArray::bufferSize(numRows, blockMetadata.bitWidth)},
-      blockMetadata.bitWidth};
-  return static_cast<physicalType>(fba.get(blockOffset)) +
-      blockMetadata.baseline;
+       FixedBitArray::bufferSize(numRows, bitWidth)},
+      bitWidth};
+  return static_cast<physicalType>(fba.get(blockOffset)) + baseline;
 }
 
 template <typename T>
@@ -380,10 +356,11 @@ void BlockBitPackingEncoding<T>::materializeBlockRange(
     uint32_t blockValueOffset,
     uint32_t blockValueCount,
     physicalType* output) const {
-  const auto& blockMetadata = blocksMetadata_[blockIndex];
+  const auto bitWidth = bitWidths_[blockIndex];
+  const auto baseline = baselines_[blockIndex];
   const auto* blockData = packedData_ + blockOffsets_[blockIndex];
 
-  if (blockMetadata.skipEncoding) {
+  if (bitWidth == kRawBlockBitWidth) {
     const auto* rawValues = reinterpret_cast<const physicalType*>(blockData);
     std::memcpy(
         output,
@@ -392,28 +369,23 @@ void BlockBitPackingEncoding<T>::materializeBlockRange(
     return;
   }
 
-  if (blockMetadata.bitWidth == 0) {
-    std::fill(output, output + blockValueCount, blockMetadata.baseline);
+  if (bitWidth == 0) {
+    std::fill(output, output + blockValueCount, baseline);
     return;
   }
 
   const auto* inputBytes = reinterpret_cast<const uint8_t*>(blockData);
 
   if (blockValueOffset == 0) {
-    fullUnpack(
-        inputBytes,
-        output,
-        blockValueCount,
-        blockMetadata.bitWidth,
-        blockMetadata.baseline);
+    fullUnpack(inputBytes, output, blockValueCount, bitWidth, baseline);
   } else {
     physicalType tmp[kMaxBlockSize];
     fullUnpack(
         inputBytes,
         tmp,
         blockValueOffset + blockValueCount,
-        blockMetadata.bitWidth,
-        blockMetadata.baseline);
+        bitWidth,
+        baseline);
     std::memcpy(
         output, tmp + blockValueOffset, blockValueCount * sizeof(physicalType));
   }
@@ -630,7 +602,8 @@ void BlockBitPackingEncoding<T>::bulkScan(
           static_cast<uint32_t>(offset);
       const auto blockIndex = absRow / blockSize_;
       const auto blockStart = static_cast<uint32_t>(blockIndex) * blockSize_;
-      const auto& meta = blocksMetadata_[blockIndex];
+      const auto bitWidth = bitWidths_[blockIndex];
+      const auto baseline = baselines_[blockIndex];
 
       // Find all selected rows belonging to this block.
       vector_size_t runEnd = i + 1;
@@ -647,7 +620,7 @@ void BlockBitPackingEncoding<T>::bulkScan(
       const auto numBlockRows = blockRowCount(blockIndex);
 
       // Raw: direct index, no decode.
-      if (meta.skipEncoding) {
+      if (bitWidth == kRawBlockBitWidth) {
         const auto* rawValues = reinterpret_cast<const physicalType*>(
             packedData_ + blockOffsets_[blockIndex]);
         for (vector_size_t j = i; j < runEnd; ++j) {
@@ -656,21 +629,21 @@ void BlockBitPackingEncoding<T>::bulkScan(
           values[j] = static_cast<OutputType>(rawValues[blockOffset]);
         }
         // Constant: every value equals baseline.
-      } else if (meta.bitWidth == 0) {
+      } else if (bitWidth == 0) {
         for (vector_size_t j = i; j < runEnd; ++j) {
-          values[j] = static_cast<OutputType>(meta.baseline);
+          values[j] = static_cast<OutputType>(baseline);
         }
       } else if (runLength * 100 < numBlockRows * kMaxFbaSelectivityPct) {
         // Low selectivity: FBA per-element decode for selected rows only.
         FixedBitArray fba{
             {packedData_ + blockOffsets_[blockIndex],
-             FixedBitArray::bufferSize(numBlockRows, meta.bitWidth)},
-            meta.bitWidth};
+             FixedBitArray::bufferSize(numBlockRows, bitWidth)},
+            bitWidth};
         for (vector_size_t j = i; j < runEnd; ++j) {
           const auto blockOffset = static_cast<uint32_t>(selectedRows[j]) +
               static_cast<uint32_t>(offset) - blockStart;
           values[j] = static_cast<OutputType>(
-              static_cast<physicalType>(fba.get(blockOffset)) + meta.baseline);
+              static_cast<physicalType>(fba.get(blockOffset)) + baseline);
         }
       } else {
         // High selectivity: full block decode, pick rows.
@@ -849,7 +822,7 @@ std::string_view BlockBitPackingEncoding<T>::encode(
   for (uint16_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
     baselines[blockIndex] = blocks[blockIndex].baseline;
     bitWidths[blockIndex] = blocks[blockIndex].skipEncoding
-        ? BlockMeta::kRawBlockBitWidth
+        ? kRawBlockBitWidth
         : blocks[blockIndex].bitWidth;
     blockOffsets[blockIndex] = runningOffset;
     runningOffset += blocks[blockIndex].packedSize;
