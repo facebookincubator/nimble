@@ -25,6 +25,8 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"

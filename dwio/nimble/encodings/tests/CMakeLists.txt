@@ -19,13 +19,19 @@ target_link_libraries(nimble_encoding_layout_test_helper nimble_encodings)
 
 add_executable(
   nimble_encodings_tests
+  ALPEncodingViewTest.cpp
   BufferedEncodingTest.cpp
+  BlockBitPackingEncodingViewTest.cpp
+  ConstantEncodingViewTest.cpp
   ConstantEncodingTest.cpp
+  DictionaryEncodingViewTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp
+  EncodingViewFactoryTest.cpp
   CompressionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  FixedBitWidthEncodingViewTest.cpp
   FsstEncodingTest.cpp
   Lz4CompressorTest.cpp
   ForEncodingTest.cpp
@@ -33,11 +39,15 @@ add_executable(
   MainlyConstantEncodingTest.cpp
   NullableEncodingTest.cpp
   OpenZLCompressorTest.cpp
+  PFOREncodingViewTest.cpp
   PFOREncodingTest.cpp
   PrefixEncodingTest.cpp
+  RLEEncodingViewTest.cpp
   RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
+  SimdForBitpackEncodingViewTest.cpp
   StatisticsTest.cpp
+  TrivialEncodingViewTest.cpp
   TrivialEncodingTest.cpp
 )
 
@@ -58,5 +68,6 @@ target_link_libraries(
   gmock
   gtest
   gtest_main
+  fmt::fmt
   Folly::folly
 )

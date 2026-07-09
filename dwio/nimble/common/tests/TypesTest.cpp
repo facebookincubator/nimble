@@ -260,6 +260,22 @@ TEST(TypesTest, IsUnsignedIntegralType) {
   EXPECT_FALSE(isUnsignedIntegralType<float>());
 }
 
+TEST(TypesTest, isOneByteIntegralType) {
+  EXPECT_TRUE(isOneByteIntegralType<int8_t>());
+  EXPECT_TRUE(isOneByteIntegralType<uint8_t>());
+  EXPECT_FALSE(isOneByteIntegralType<int16_t>());
+  EXPECT_FALSE(isOneByteIntegralType<uint16_t>());
+  EXPECT_FALSE(isOneByteIntegralType<float>());
+}
+
+TEST(TypesTest, isTwoByteIntegralType) {
+  EXPECT_TRUE(isTwoByteIntegralType<int16_t>());
+  EXPECT_TRUE(isTwoByteIntegralType<uint16_t>());
+  EXPECT_FALSE(isTwoByteIntegralType<int8_t>());
+  EXPECT_FALSE(isTwoByteIntegralType<uint8_t>());
+  EXPECT_FALSE(isTwoByteIntegralType<float>());
+}
+
 TEST(TypesTest, IsFourByteIntegralType) {
   EXPECT_TRUE(isFourByteIntegralType<int32_t>());
   EXPECT_TRUE(isFourByteIntegralType<uint32_t>());
