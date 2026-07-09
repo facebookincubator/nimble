@@ -52,7 +52,8 @@ std::shared_ptr<MetadataInput> createIndexMetadataInput(
       .maxCoalesceBytes = options.ioOptions->maxCoalesceBytes(),
       .executor = options.ioOptions->ioExecutor().get(),
       .fileHandle = options.fileHandle,
-      .cache = options.cache};
+      .cache = options.cache,
+      .fileIoContext = options.ioOptions->fileIoContext()};
   return MetadataInput::create(options.file.get(), metadataOptions);
 }
 
@@ -60,6 +61,10 @@ std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
     const IndexLookup::Options& options) {
   auto readFile = options.file;
   auto indexIoStats = options.ioOptions->indexIoStats();
+  const auto* fileIoContext = options.ioOptions->fileIoContext();
+  auto fileOpts = fileIoContext != nullptr
+      ? fileIoContext->fileOpts
+      : folly::F14FastMap<std::string, std::string>{};
   if (options.cache != nullptr) {
     return std::make_shared<velox::dwio::common::CachedBufferedInput>(
         std::move(readFile),
@@ -71,7 +76,8 @@ std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
         std::move(indexIoStats),
         nullptr,
         nullptr,
-        *options.ioOptions);
+        *options.ioOptions,
+        std::move(fileOpts));
   }
   return std::make_shared<velox::dwio::common::DirectBufferedInput>(
       std::move(readFile),
@@ -82,7 +88,8 @@ std::shared_ptr<velox::dwio::common::BufferedInput> createIndexDataInput(
       std::move(indexIoStats),
       nullptr,
       nullptr,
-      *options.ioOptions);
+      *options.ioOptions,
+      std::move(fileOpts));
 }
 
 std::string toString(IndexType indexType) {

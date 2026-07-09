@@ -54,7 +54,8 @@ MetadataInput::MetadataInput(velox::ReadFile* file, const Options& options)
       maxCoalesceDistance_{options.maxCoalesceDistance},
       maxCoalesceBytes_{options.maxCoalesceBytes},
       executor_{options.executor},
-      ioStats_{options.ioStats} {
+      ioStats_{options.ioStats},
+      fileIoContext_{options.fileIoContext} {
   NIMBLE_CHECK_NOT_NULL(pool_);
   NIMBLE_CHECK_NOT_NULL(ioStats_.get());
 }
@@ -77,7 +78,11 @@ void MetadataInput::readRaw(uint64_t offset, uint64_t size, void* dest) {
   uint64_t storageReadNs{0};
   {
     velox::NanosecondTimer timer{&storageReadNs};
-    file_->pread(offset, size, static_cast<char*>(dest));
+    if (fileIoContext_ != nullptr) {
+      file_->pread(offset, size, static_cast<char*>(dest), *fileIoContext_);
+    } else {
+      file_->pread(offset, size, static_cast<char*>(dest));
+    }
   }
   const uint64_t storageReadUs = storageReadNs / 1'000;
   ioStats_->queryThreadIoLatencyUs().increment(storageReadUs);
@@ -218,7 +223,11 @@ void MetadataInput::executeIoGroups(std::vector<IoGroup>& ioGroups) {
           uint64_t storageReadNs{0};
           {
             velox::NanosecondTimer ioTimer(&storageReadNs);
-            file_->preadv(group.offset, group.ranges);
+            if (fileIoContext_ != nullptr) {
+              file_->preadv(group.offset, group.ranges, *fileIoContext_);
+            } else {
+              file_->preadv(group.offset, group.ranges);
+            }
           }
           ioStats_->storageReadLatencyUs().increment(storageReadNs / 1'000);
           ioStats_->incTotalScanTimeNs(storageReadNs);

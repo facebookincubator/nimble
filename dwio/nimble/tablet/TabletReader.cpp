@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 #include "folly/io/Cursor.h"
@@ -66,11 +67,11 @@ void ensureBuffer(
     buffer = velox::AlignedBuffer::allocateExact<char>(size, pool);
   }
 }
-
 } // namespace
 
 TabletReader::Options TabletReader::configureOptions(
-    const velox::dwio::common::ReaderOptions& options) {
+    const velox::dwio::common::ReaderOptions& options,
+    const velox::dwio::common::BufferedInput* input) {
   Options tabletOptions;
   tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {
@@ -91,6 +92,10 @@ TabletReader::Options TabletReader::configureOptions(
   tabletOptions.fileHandle = options.fileHandle();
   tabletOptions.cache = options.cache();
   tabletOptions.ioOptions = options;
+  if (input != nullptr) {
+    tabletOptions.ioOptions->setFileIoContext(
+        &input->getInputStream()->fileIoContext());
+  }
   return tabletOptions;
 }
 
@@ -258,7 +263,8 @@ TabletReader::TabletReader(
             .ioStats = ioOptions_.metadataIoStats(),
             .maxCoalesceDistance = ioOptions_.maxCoalesceDistance(),
             .maxCoalesceBytes = ioOptions_.maxCoalesceBytes(),
-            .executor = ioOptions_.ioExecutor().get()};
+            .executor = ioOptions_.ioExecutor().get(),
+            .fileIoContext = ioOptions_.fileIoContext()};
         // cacheMetadata takes effect only when fileHandle and cache are
         // provided.
         if (options.cacheMetadata && options.fileHandle != nullptr) {
@@ -990,7 +996,13 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
   }
   if (!uniqueRegions.empty()) {
     std::vector<folly::IOBuf> iobufs(uniqueRegions.size());
-    file_->preadv(uniqueRegions, {iobufs.data(), iobufs.size()});
+    const auto* fileIoContext = ioOptions_.fileIoContext();
+    if (fileIoContext != nullptr) {
+      file_->preadv(
+          uniqueRegions, {iobufs.data(), iobufs.size()}, *fileIoContext);
+    } else {
+      file_->preadv(uniqueRegions, {iobufs.data(), iobufs.size()});
+    }
     NIMBLE_DCHECK_EQ(
         iobufs.size(), uniqueRegions.size(), "Buffer size mismatch.");
     for (uint32_t i = 0; i < uniqueRegions.size(); ++i) {
