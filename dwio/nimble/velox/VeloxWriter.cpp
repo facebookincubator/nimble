@@ -302,10 +302,19 @@ class WriterStreamContext : public StreamContext {
     encoding_ = value;
   }
 
+  EncodingSelectionPolicyBase* cachedPolicy() const {
+    return cachedPolicy_.get();
+  }
+
+  void setCachedPolicy(std::unique_ptr<EncodingSelectionPolicyBase> policy) {
+    cachedPolicy_ = std::move(policy);
+  }
+
  private:
   bool isNullStream_{false};
   bool isInMapStream_{false};
   const EncodingLayout* encoding_{nullptr};
+  std::unique_ptr<EncodingSelectionPolicyBase> cachedPolicy_;
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
@@ -318,6 +327,9 @@ class FlatmapEncodingLayoutContext : public TypeBuilderContext {
   const folly::F14FastMap<std::string_view, const EncodingLayoutTree&>
       keyEncodings;
 };
+
+WriterStreamContext& getStreamContext(
+    const StreamDescriptorBuilder& descriptor);
 
 template <typename T>
 std::string_view encode(
@@ -369,22 +381,73 @@ std::string_view encodeStreamTyped(
   const auto* streamContext =
       streamData.descriptor().context<WriterStreamContext>();
 
-  std::optional<EncodingLayout> encodingLayout;
+  // If there's an externally provided encoding layout (from
+  // EncodingLayoutTree), use the replayed path.
   if (streamContext && streamContext->encoding()) {
+    std::optional<EncodingLayout> encodingLayout;
     encodingLayout.emplace(*streamContext->encoding());
+    try {
+      return encode<T>(std::move(encodingLayout), context, buffer, streamData);
+    } catch (const NimbleUserError& e) {
+      if (e.errorCode() != error_code::IncompatibleEncoding) {
+        throw;
+      }
+      return encode<T>(std::nullopt, context, buffer, streamData);
+    }
   }
 
-  try {
-    return encode<T>(std::move(encodingLayout), context, buffer, streamData);
-  } catch (const NimbleUserError& e) {
-    if (e.errorCode() != error_code::IncompatibleEncoding ||
-        !encodingLayout.has_value()) {
-      throw;
+  if (context.options().enableCachedEncoding) {
+    // Use cached encoding selection policy for subsequent chunks/stripes.
+    // On first encode, delegates to the real policy via the factory.
+    // On subsequent encodes, replays the cached layout directly.
+    auto& mutableContext = getStreamContext(streamData.descriptor());
+    if (mutableContext.cachedPolicy() == nullptr) {
+      mutableContext.setCachedPolicy(
+          std::make_unique<CachedEncodingSelectionPolicy<T>>(
+              context.options().compressionOptions,
+              context.options().encodingSelectionPolicyFactory));
     }
 
-    // Incompatible captured encoding. Try again without a captured encoding.
-    return encode<T>(std::nullopt, context, buffer, streamData);
+    auto* cachedPolicy = dynamic_cast<CachedEncodingSelectionPolicy<T>*>(
+        mutableContext.cachedPolicy());
+    NIMBLE_CHECK_NOT_NULL(cachedPolicy);
+
+    if (cachedPolicy->hasCachedLayout()) {
+      // Replay the cached data encoding layout. The cache stores only the
+      // data encoding (not the Nullable wrapper), so it works regardless of
+      // whether the current chunk/stripe has nulls — encode<T> handles
+      // Nullable wrapping independently.
+      // TODO: Replace exception-based incompatibility detection with a
+      // non-throwing compatibility check before attempting the cached encode.
+      try {
+        return encode<T>(
+            cachedPolicy->encodingLayout(), context, buffer, streamData);
+      } catch (const NimbleUserError& e) {
+        if (e.errorCode() != error_code::IncompatibleEncoding) {
+          throw;
+        }
+      }
+    }
+
+    // First-time encoding or fallback: run full selection, then capture.
+    auto encoded = encode<T>(std::nullopt, context, buffer, streamData);
+    if (!cachedPolicy->hasCachedLayout()) {
+      // Cache only the data encoding, stripping any Nullable wrapper. Nimble
+      // handles nulls at the outermost layer, so the data encoding underneath
+      // is the same regardless of per-stripe nullability.
+      auto layout = EncodingLayoutCapture::capture(encoded);
+      if (layout.encodingType() == EncodingType::Nullable) {
+        if (auto dataChild =
+                layout.child(EncodingIdentifiers::Nullable::Data)) {
+          layout = EncodingLayout{*dataChild};
+        }
+      }
+      cachedPolicy->cacheEncodingLayout(std::move(layout));
+    }
+    return encoded;
   }
+
+  return encode<T>(std::nullopt, context, buffer, streamData);
 }
 
 std::string_view encodeStreamData(

@@ -508,6 +508,150 @@ class ReplayedEncodingSelectionPolicy
   EncodingLayout encodingLayout_;
 };
 
+/// Per-stream holder for the data-encoding layout captured from a stream's
+/// first chunk/stripe, so later chunks/stripes can replay that layout instead
+/// of re-running the full encoding-selection cascade.
+///
+/// VeloxWriter::encodeStreamTyped drives the lifecycle: the first chunk runs a
+/// fresh selection and stores the captured layout here via
+/// cacheEncodingLayout(); later chunks replay encodingLayout() through a
+/// ReplayedEncodingSelectionPolicy (falling back to a fresh selection if the
+/// cached layout is incompatible with the new data). It derives from
+/// EncodingSelectionPolicy<T> so the cache can be held as the stream's policy
+/// object; the select()/createImpl() overrides replay the cached layout for any
+/// caller that selects through it directly.
+template <typename T>
+class CachedEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
+  using physicalType = typename TypeTraits<T>::physicalType;
+
+ public:
+  CachedEncodingSelectionPolicy(
+      std::optional<CompressionOptions> compressionOptions,
+      EncodingSelectionPolicyFactory encodingSelectionPolicyFactory)
+      : compressionOptions_{std::move(compressionOptions)},
+        encodingSelectionPolicyFactory_{
+            std::move(encodingSelectionPolicyFactory)} {}
+
+  EncodingSelectionResult select(
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) override {
+    if (cachedLayout_.has_value()) {
+      return replayResult();
+    }
+    return delegateResult(values, statistics, options);
+  }
+
+  EncodingSelectionResult selectNullable(
+      std::span<const physicalType> values,
+      std::span<const bool> nulls,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) override {
+    if (cachedLayout_.has_value()) {
+      return {.encodingType = EncodingType::Nullable};
+    }
+    return delegateNullableResult(values, nulls, statistics, options);
+  }
+
+  void cacheEncodingLayout(EncodingLayout layout) {
+    cachedLayout_.emplace(std::move(layout));
+  }
+
+  bool hasCachedLayout() const {
+    return cachedLayout_.has_value();
+  }
+
+  EncodingLayout encodingLayout() const {
+    return cachedLayout_.value();
+  }
+
+ protected:
+  std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
+      EncodingType encodingType,
+      NestedEncodingIdentifier identifier,
+      DataType type) override {
+    if (cachedLayout_.has_value()) {
+      if (encodingType == EncodingType::Nullable) {
+        // selectNullable() doesn't wrap cachedLayout_, so when the encoding
+        // factory asks for Nullable's data child, return a replay policy
+        // for the entire cached layout.
+        if (identifier == EncodingIdentifiers::Nullable::Data) {
+          UNIQUE_PTR_FACTORY(
+              type,
+              ReplayedEncodingSelectionPolicy,
+              *cachedLayout_,
+              compressionOptions_,
+              encodingSelectionPolicyFactory_);
+        }
+        // Nullable's null child — fall through to factory.
+      } else {
+        NIMBLE_CHECK_LT(
+            identifier,
+            cachedLayout_->childrenCount(),
+            "Sub-encoding identifier out of range.");
+        auto child = cachedLayout_->child(identifier);
+        if (child.has_value()) {
+          UNIQUE_PTR_FACTORY(
+              type,
+              ReplayedEncodingSelectionPolicy,
+              child.value(),
+              compressionOptions_,
+              encodingSelectionPolicyFactory_);
+        }
+      }
+    }
+    return encodingSelectionPolicyFactory_(type);
+  }
+
+ private:
+  EncodingSelectionResult replayResult() {
+    if (!compressionOptions_.has_value()) {
+      return {
+          .encodingType = cachedLayout_->encodingType(),
+          .encodingConfig = cachedLayout_->config(),
+      };
+    }
+    return {
+        .encodingType = cachedLayout_->encodingType(),
+        .encodingConfig = cachedLayout_->config(),
+        .compressionPolicyFactory = [this]() {
+          return std::make_unique<ReplayedCompressionPolicy>(
+              cachedLayout_->compressionType(), compressionOptions_.value());
+        }};
+  }
+
+  EncodingSelectionResult delegateResult(
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    auto delegate = encodingSelectionPolicyFactory_(TypeTraits<T>::dataType);
+    NIMBLE_CHECK_NULL(
+        dynamic_cast<CachedEncodingSelectionPolicy<T>*>(delegate.get()),
+        "Factory must not return a CachedEncodingSelectionPolicy.");
+    auto* typed = dynamic_cast<EncodingSelectionPolicy<T>*>(delegate.get());
+    NIMBLE_CHECK_NOT_NULL(typed);
+    return typed->select(values, statistics, options);
+  }
+
+  EncodingSelectionResult delegateNullableResult(
+      std::span<const physicalType> values,
+      std::span<const bool> nulls,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    auto delegate = encodingSelectionPolicyFactory_(TypeTraits<T>::dataType);
+    NIMBLE_CHECK_NULL(
+        dynamic_cast<CachedEncodingSelectionPolicy<T>*>(delegate.get()),
+        "Factory must not return a CachedEncodingSelectionPolicy.");
+    auto* typed = dynamic_cast<EncodingSelectionPolicy<T>*>(delegate.get());
+    NIMBLE_CHECK_NOT_NULL(typed);
+    return typed->selectNullable(values, nulls, statistics, options);
+  }
+
+  const std::optional<CompressionOptions> compressionOptions_;
+  const EncodingSelectionPolicyFactory encodingSelectionPolicyFactory_;
+  std::optional<EncodingLayout> cachedLayout_;
+};
+
 #undef COMMA
 
 } // namespace facebook::nimble

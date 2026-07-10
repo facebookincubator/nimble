@@ -319,6 +319,11 @@ struct VeloxWriterOptions {
   // with the goal of eventually replacing RawSizeUtils accumulation with column
   // statistics for non-deduplicated columns.
   bool enableStatsConsistencyCheck{true};
+
+  // Cache the encoding layout from the first encoding of each stream and
+  // replay it on subsequent chunks/stripes, skipping the full encoding
+  // selection cascade.
+  bool enableCachedEncoding{false};
 };
 
 } // namespace facebook::nimble
