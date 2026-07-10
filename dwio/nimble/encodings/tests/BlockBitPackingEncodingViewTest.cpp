@@ -24,6 +24,7 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using BlockBitPackingEncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsBlockBitPackingEncoding) {
   nimble::Vector<int32_t> values{pool_.get()};
@@ -35,4 +36,14 @@ TEST_F(EncodingViewTest, readsBlockBitPackingEncoding) {
   options.blockBitPackingBlockSize = 8;
   expectReads<nimble::BlockBitPackingEncoding<int32_t>>(
       values, {17, 0, 8, 9, 19, 3}, options);
+}
+
+TEST_F(BlockBitPackingEncodingViewTest, concurrent) {
+  nimble::Encoding::Options options;
+  options.blockBitPackingBlockSize = 64;
+
+  expectConcurrentReads<nimble::BlockBitPackingEncoding<uint32_t>>(
+      randomNarrowUnsigned<uint32_t>(/*seed=*/23),
+      randomizedPositions(/*seed=*/24),
+      options);
 }

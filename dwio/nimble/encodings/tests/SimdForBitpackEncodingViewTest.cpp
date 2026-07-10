@@ -23,6 +23,7 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using SimdForBitpackEncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsSimdForBitpackEncoding) {
   nimble::Vector<int32_t> values{pool_.get()};
@@ -31,4 +32,15 @@ TEST_F(EncodingViewTest, readsSimdForBitpackEncoding) {
   }
   expectReads<nimble::SimdForBitpackEncoding<int32_t>>(
       values, {69, 0, 31, 32, 64, 7});
+}
+
+TEST_F(SimdForBitpackEncodingViewTest, concurrent) {
+  const auto positions = randomizedPositions(/*seed=*/19);
+
+  expectConcurrentReads<nimble::SimdForBitpackEncoding<uint32_t>>(
+      randomNarrowUnsigned<uint32_t>(/*seed=*/20), positions);
+  expectConcurrentReads<nimble::SimdForBitpackEncoding<uint16_t>>(
+      randomNarrowUnsigned<uint16_t>(/*seed=*/21), positions);
+  expectConcurrentReads<nimble::SimdForBitpackEncoding<uint8_t>>(
+      randomNarrowUnsigned<uint8_t>(/*seed=*/22), positions);
 }

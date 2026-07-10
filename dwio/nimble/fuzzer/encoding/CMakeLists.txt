@@ -11,6 +11,31 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+if(NOT TARGET gflags::gflags)
+  find_package(gflags CONFIG QUIET)
+endif()
+
+if(NOT TARGET gflags::gflags)
+  find_package(gflags QUIET)
+endif()
+
+if(NOT TARGET gflags::gflags)
+  foreach(_nimble_gflags_target
+          gflags
+          gflags_static
+          gflags_nothreads_static
+          gflags_shared
+          gflags_nothreads_shared
+  )
+    if(TARGET ${_nimble_gflags_target})
+      add_library(nimble_gflags INTERFACE)
+      target_link_libraries(nimble_gflags INTERFACE ${_nimble_gflags_target})
+      add_library(gflags::gflags ALIAS nimble_gflags)
+      break()
+    endif()
+  endforeach()
+endif()
+
 add_executable(nimble_encoding_fuzzer_tests EncodingFuzzerTest.cpp)
 
 target_compile_definitions(

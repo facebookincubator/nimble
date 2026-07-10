@@ -23,8 +23,15 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using FixedBitWidthEncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsFixedBitWidthEncoding) {
   expectReads<nimble::FixedBitWidthEncoding<int32_t>>(
       makeVector({10, 12, 15, 31, 33, 63}), {5, 0, 4, 2, 1});
+}
+
+TEST_F(FixedBitWidthEncodingViewTest, concurrent) {
+  expectConcurrentReads<nimble::FixedBitWidthEncoding<uint32_t>>(
+      randomNarrowUnsigned<uint32_t>(/*seed=*/6),
+      randomizedPositions(/*seed=*/7));
 }

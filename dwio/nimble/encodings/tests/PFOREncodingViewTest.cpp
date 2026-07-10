@@ -23,9 +23,15 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using PFOREncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsPforEncoding) {
   expectReads<nimble::PFOREncoding<int32_t>>(
       makeVector({100, 101, 102, 103, 104, 105, 106, 107, 100000, 108, 109}),
       {8, 0, 10, 4, 8, 2});
+}
+
+TEST_F(PFOREncodingViewTest, concurrent) {
+  expectConcurrentReads<nimble::PFOREncoding<uint32_t>>(
+      randomPforData(/*seed=*/17), randomizedPositions(/*seed=*/18));
 }
