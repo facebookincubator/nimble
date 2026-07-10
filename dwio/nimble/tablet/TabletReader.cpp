@@ -652,8 +652,6 @@ void TabletReader::initStripes(
   NIMBLE_CHECK_EQ(
       stripeCount_, stripes->offsets()->size(), "Unexpected stripe count");
   NIMBLE_CHECK_EQ(
-      stripeCount_, stripes->sizes()->size(), "Unexpected stripe count");
-  NIMBLE_CHECK_EQ(
       stripeCount_,
       stripes->group_indices()->size(),
       "Unexpected stripe count");

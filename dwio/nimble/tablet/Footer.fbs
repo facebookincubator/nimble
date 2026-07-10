@@ -26,7 +26,12 @@ enum CompressionType:uint8 {
 table Stripes {
   row_counts:[uint32];
   offsets:[uint64];
-  sizes:[uint32];
+  // Reserved for backward wire compatibility with files written before this
+  // field was retired. Marker `(deprecated)` preserves the vtable slot so
+  // pre-existing files still parse without shifting later fields. Generated
+  // accessors are suppressed; new writers no longer populate it and new
+  // readers no longer reference it.
+  sizes:[uint32] (deprecated);
   group_indices:[uint32];
 }
 
