@@ -103,21 +103,22 @@ std::string_view TrivialEncoding<std::string_view>::encode(
     lengths.push_back(value.size());
   }
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedLengths =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::Trivial::Lengths,
           {lengths},
-          tempBuffer,
+          scopedBuffer.get(),
           options);
 
   auto dataCompressionPolicy = selection.compressionPolicy();
   auto uncompressedSize = selection.statistics().totalStringsLength();
 
-  Vector<char> vector{&buffer.getMemoryPool()};
+  Vector<char> vector{pool};
 
   CompressionEncoder<std::string_view> compressionEncoder{
-      buffer.getMemoryPool(),
+      *pool,
       *dataCompressionPolicy,
       DataType::String,
       /*bitWidth=*/0,
@@ -253,11 +254,12 @@ std::string_view TrivialEncoding<bool>::encode(
   const uint32_t valueCount = values.size();
   const uint32_t bitmapBytes = FixedBitArray::bufferSize(valueCount, 1);
 
-  Vector<char> vector{&buffer.getMemoryPool()};
+  auto* pool = &buffer.getMemoryPool();
+  Vector<char> vector{pool};
 
   auto dataCompressionPolicy = selection.compressionPolicy();
   CompressionEncoder<std::string_view> compressionEncoder{
-      buffer.getMemoryPool(),
+      *pool,
       *dataCompressionPolicy,
       DataType::Undefined,
       /*bitWidth=*/1,

@@ -437,14 +437,15 @@ std::string_view DictionaryEncoding<T>::encode(
   NIMBLE_CHECK_EQ(indices.size(), valueCount, "Indices size mismatch.");
   NIMBLE_CHECK_EQ(alphabet.size(), alphabetCount, "Alphabet size mismatch.");
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{
+      &buffer.getMemoryPool(), options.encodingBufferPool};
   std::string_view serializedAlphabet =
-      encodeAlphabet(selection, alphabet, tempBuffer, options);
+      encodeAlphabet(selection, alphabet, scopedBuffer.get(), options);
   std::string_view serializedIndices =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::Dictionary::Indices,
           {indices},
-          tempBuffer,
+          scopedBuffer.get(),
           options);
 
   const uint32_t encodingSize =

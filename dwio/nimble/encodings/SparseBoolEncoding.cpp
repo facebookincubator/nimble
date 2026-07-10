@@ -151,7 +151,8 @@ std::string_view SparseBoolEncoding::encode(
     indexCount = setCount;
   }
 
-  Vector<uint32_t> indices{&buffer.getMemoryPool()};
+  auto* pool = &buffer.getMemoryPool();
+  Vector<uint32_t> indices{pool};
   indices.reserve(indexCount + 1);
   if (sparseValue) {
     for (auto i = 0; i < values.size(); ++i) {
@@ -171,12 +172,12 @@ std::string_view SparseBoolEncoding::encode(
   // in order to stop looping as this value is greater than any possible index.
   indices.push_back(valueCount);
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedIndices =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::SparseBool::Indices,
           indices,
-          tempBuffer,
+          scopedBuffer.get(),
           options);
 
   const uint32_t encodingSize =

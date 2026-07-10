@@ -71,6 +71,8 @@ struct DecodingStats;
 
 namespace facebook::nimble {
 
+class EncodingBufferPool;
+
 template <typename T, typename Filter, typename ExtractValues, bool kIsDense>
 using DecoderVisitor =
     velox::dwio::common::ColumnVisitor<T, Filter, ExtractValues, kIsDense>;
@@ -118,6 +120,10 @@ class Encoding {
     /// on destruction and grab pre-allocated buffers on construction, avoiding
     /// MemoryPool alloc/free overhead.
     velox::BufferPool* bufferPool = nullptr;
+
+    /// Optional pool for Nimble Buffer scratch arenas used while encoding
+    /// nested child streams.
+    EncodingBufferPool* encodingBufferPool = nullptr;
 
     /// When true, encodings that support dictionary mode (e.g., RLE) will
     /// use the dictionary index path when the inner encoding is

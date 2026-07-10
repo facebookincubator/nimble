@@ -960,6 +960,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
         : keyBits(0), capacity(0), dictionary(&pool) {}
   };
 
+  auto* pool = &buffer.getMemoryPool();
   std::vector<TierAssignment> tierAssignments;
   tierAssignments.reserve(6);
 
@@ -971,7 +972,7 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
       break;
     }
 
-    TierAssignment tier{buffer.getMemoryPool()};
+    TierAssignment tier{*pool};
     tier.keyBits = keyBits;
     tier.capacity = getCapacity(keyBits);
 
@@ -1015,8 +1016,8 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
   }
 
   // Partition offsets and sizes
-  Vector<uint32_t> partitionOffsets(&buffer.getMemoryPool());
-  Vector<uint32_t> partitionSizes(&buffer.getMemoryPool());
+  Vector<uint32_t> partitionOffsets(pool);
+  Vector<uint32_t> partitionSizes(pool);
   partitionOffsets.reserve(tierRows.size());
   partitionSizes.reserve(tierRows.size());
 
@@ -1027,17 +1028,18 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     offset += static_cast<uint32_t>(rows.size());
   }
 
-  // Encode partition metadata and tier data into tempBuffer
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedOffsets =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::FrequencyPartition::PartitionOffsets,
           {partitionOffsets},
-          tempBuffer);
+          scopedBuffer.get(),
+          options);
   std::string_view serializedSizes = selection.template encodeNested<uint32_t>(
       EncodingIdentifiers::FrequencyPartition::PartitionSizes,
       {partitionSizes},
-      tempBuffer);
+      scopedBuffer.get(),
+      options);
 
   std::vector<std::string_view> serializedDicts(tierAssignments.size());
   std::vector<std::string_view> serializedKeys(tierAssignments.size());
@@ -1053,9 +1055,10 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     serializedDicts[tierIdx] = selection.template encodeNested<physicalType>(
         EncodingIdentifiers::FrequencyPartition::Dict1Bit + tierIdx,
         {tier.dictionary},
-        tempBuffer);
+        scopedBuffer.get(),
+        options);
 
-    Vector<uint32_t> keys(&buffer.getMemoryPool());
+    Vector<uint32_t> keys(pool);
     keys.reserve(rows.size());
     for (uint32_t row : rows) {
       keys.push_back(tier.valueToKey.at(values[row]));
@@ -1064,12 +1067,13 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     serializedKeys[tierIdx] = selection.template encodeNested<uint32_t>(
         EncodingIdentifiers::FrequencyPartition::Keys1Bit + tierIdx,
         {keys},
-        tempBuffer);
+        scopedBuffer.get(),
+        options);
   }
 
   std::string_view serializedUnencoded;
   if (!tierRows.back().empty()) {
-    Vector<physicalType> unencodedValues(&buffer.getMemoryPool());
+    Vector<physicalType> unencodedValues(pool);
     unencodedValues.reserve(tierRows.back().size());
     for (uint32_t row : tierRows.back()) {
       unencodedValues.push_back(values[row]);
@@ -1077,7 +1081,8 @@ std::string_view FrequencyPartitionEncoding<T>::encode(
     serializedUnencoded = selection.template encodeNested<physicalType>(
         EncodingIdentifiers::FrequencyPartition::UnencodedValues,
         {unencodedValues},
-        tempBuffer);
+        scopedBuffer.get(),
+        options);
   }
 
   // Build index payload (only for non-NoIndex modes)

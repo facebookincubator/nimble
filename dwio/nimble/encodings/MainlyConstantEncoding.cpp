@@ -53,35 +53,29 @@ std::string_view MainlyConstantEncoding<std::string_view>::encode(
   }
 
   const auto& uniqueCounts = selection.statistics().uniqueCounts().value();
-  const auto commonElement = internal::mainlyConstantCommonValue(uniqueCounts);
+  const auto commonElement =
+      MainlyConstantEncodingBase<std::string_view>::mainlyConstantCommonValue(
+          uniqueCounts);
 
   const uint32_t entryCount = values.size();
-  const uint32_t uncommonCount = entryCount - commonElement->second;
 
-  Vector<bool> isCommon{&buffer.getMemoryPool(), values.size(), true};
-  Vector<physicalType> otherValues(&buffer.getMemoryPool());
-  otherValues.reserve(uncommonCount);
-
+  auto* pool = &buffer.getMemoryPool();
   physicalType commonValue = commonElement->first;
-  for (auto i = 0; i < values.size(); ++i) {
-    physicalType currentValue = values[i];
-    if (currentValue != commonValue) {
-      isCommon[i] = false;
-      otherValues.push_back(std::move(currentValue));
-    }
-  }
+  auto childStreams =
+      MainlyConstantEncodingBase<std::string_view>::prepareChildStreams(
+          pool, values, commonValue, commonElement->second);
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedIsCommon = selection.template encodeNested<bool>(
       EncodingIdentifiers::MainlyConstant::IsCommon,
-      isCommon,
-      tempBuffer,
+      childStreams.isCommon,
+      scopedBuffer.get(),
       options);
   std::string_view serializedOtherValues =
       selection.template encodeNested<physicalType>(
           EncodingIdentifiers::MainlyConstant::OtherValues,
-          otherValues,
-          tempBuffer,
+          childStreams.otherValues,
+          scopedBuffer.get(),
           options);
 
   uint32_t encodingSize = Encoding::serializePrefixSize(entryCount, useVarint) +

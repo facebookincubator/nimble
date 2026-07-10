@@ -36,6 +36,7 @@
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/common/time/Timer.h"
 #include "velox/type/Type.h"
@@ -324,6 +325,7 @@ std::string_view encode(
     std::optional<EncodingLayout> encodingLayout,
     detail::WriterContext& context,
     Buffer& buffer,
+    EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   NIMBLE_DCHECK_EQ(
       streamData.data().size() % sizeof(T),
@@ -349,7 +351,10 @@ std::string_view encode(
                 .release()));
   }
 
-  const auto encodingOptions = context.options().buildEncodingOptions();
+  auto encodingOptions = context.options().buildEncodingOptions();
+  encodingOptions.encodingBufferPool = encodingBufferPool;
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::VeloxWriter::encode", &encodingOptions);
 
   if (streamData.hasNulls()) {
     std::span<const bool> notNulls = streamData.nonNulls();
@@ -365,6 +370,7 @@ template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
+    EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   const auto* streamContext =
       streamData.descriptor().context<WriterStreamContext>();
@@ -375,7 +381,12 @@ std::string_view encodeStreamTyped(
   }
 
   try {
-    return encode<T>(std::move(encodingLayout), context, buffer, streamData);
+    return encode<T>(
+        std::move(encodingLayout),
+        context,
+        buffer,
+        encodingBufferPool,
+        streamData);
   } catch (const NimbleUserError& e) {
     if (e.errorCode() != error_code::IncompatibleEncoding ||
         !encodingLayout.has_value()) {
@@ -383,37 +394,49 @@ std::string_view encodeStreamTyped(
     }
 
     // Incompatible captured encoding. Try again without a captured encoding.
-    return encode<T>(std::nullopt, context, buffer, streamData);
+    return encode<T>(
+        std::nullopt, context, buffer, encodingBufferPool, streamData);
   }
 }
 
 std::string_view encodeStreamData(
     detail::WriterContext& context,
     Buffer& buffer,
+    EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   auto scalarKind = streamData.descriptor().scalarKind();
   switch (scalarKind) {
     case ScalarKind::Bool:
-      return encodeStreamTyped<bool>(context, buffer, streamData);
+      return encodeStreamTyped<bool>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Int8:
-      return encodeStreamTyped<int8_t>(context, buffer, streamData);
+      return encodeStreamTyped<int8_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Int16:
-      return encodeStreamTyped<int16_t>(context, buffer, streamData);
+      return encodeStreamTyped<int16_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::UInt16:
-      return encodeStreamTyped<uint16_t>(context, buffer, streamData);
+      return encodeStreamTyped<uint16_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Int32:
-      return encodeStreamTyped<int32_t>(context, buffer, streamData);
+      return encodeStreamTyped<int32_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::UInt32:
-      return encodeStreamTyped<uint32_t>(context, buffer, streamData);
+      return encodeStreamTyped<uint32_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Int64:
-      return encodeStreamTyped<int64_t>(context, buffer, streamData);
+      return encodeStreamTyped<int64_t>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Float:
-      return encodeStreamTyped<float>(context, buffer, streamData);
+      return encodeStreamTyped<float>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::Double:
-      return encodeStreamTyped<double>(context, buffer, streamData);
+      return encodeStreamTyped<double>(
+          context, buffer, encodingBufferPool, streamData);
     case ScalarKind::String:
     case ScalarKind::Binary:
-      return encodeStreamTyped<std::string_view>(context, buffer, streamData);
+      return encodeStreamTyped<std::string_view>(
+          context, buffer, encodingBufferPool, streamData);
     default:
       NIMBLE_UNREACHABLE("Unsupported scalar kind {}", toString(scalarKind));
   }
@@ -1130,8 +1153,59 @@ void VeloxWriter::ensureEncodingBuffer() {
   }
 }
 
+std::unique_ptr<EncodingBufferPool> VeloxWriter::makeEncodingBufferPool()
+    const {
+  const auto maxCachedBuffers =
+      context_->options().maxCachedNestedEncodingBuffers;
+  if (maxCachedBuffers == 0) {
+    return nullptr;
+  }
+  return std::make_unique<EncodingBufferPool>(
+      encodingMemoryPool_.get(), maxCachedBuffers);
+}
+
+uint32_t VeloxWriter::encodingConcurrency(uint32_t taskCount) const {
+  if (taskCount == 0) {
+    return 0;
+  }
+  const auto& options = context_->options();
+  if (!options.encodingExecutor || options.maxEncodeParallelism == 0) {
+    return 1;
+  }
+  return std::min(taskCount, options.maxEncodeParallelism);
+}
+
+void VeloxWriter::ensureEncodingBufferPools(uint32_t poolCount) {
+  if (context_->options().maxCachedNestedEncodingBuffers == 0) {
+    NIMBLE_CHECK(
+        encodingBufferPools_.empty(),
+        "Encoding buffer pools should not be created when caching is disabled.");
+    return;
+  }
+  while (encodingBufferPools_.size() < poolCount) {
+    encodingBufferPools_.emplace_back(makeEncodingBufferPool());
+  }
+}
+
+EncodingBufferPool* VeloxWriter::encodingBufferPool(uint32_t index) {
+  if (context_->options().maxCachedNestedEncodingBuffers == 0) {
+    return nullptr;
+  }
+  ensureEncodingBufferPools(index + 1);
+  NIMBLE_CHECK_LT(index, encodingBufferPools_.size());
+  return encodingBufferPools_[index].get();
+}
+
 void VeloxWriter::clearEncodingBuffer() {
-  encodingBuffer_.reset();
+  if (encodingBuffer_ == nullptr) {
+    return;
+  }
+  if (context_->options().lowMemoryMode) {
+    encodingBuffer_.reset();
+    encodingBufferPools_.clear();
+    return;
+  }
+  encodingBuffer_->reset();
 }
 
 void VeloxWriter::ensureWriteStreams() {
@@ -1154,33 +1228,47 @@ void VeloxWriter::writeStreams() {
 
     ensureWriteStreams();
 
-    if (context_->options().encodingExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options().encodingExecutor};
-      for (auto& [nodeId, streamData] : context_->streams()) {
-        barrier.add([&,
-                     statsCollector = context_->getStatsCollector(nodeId),
-                     _streamData = streamData.get()]() {
-          uint64_t startCpuNs = velox::process::threadCpuNanos();
-          uint64_t streamSize{0};
-          processStream(*_streamData, streamSize, chunkSize);
-          if (statsCollector) {
-            statsCollector->addPhysicalSize(streamSize);
-          }
-          encodingCpuNanos.fetch_add(
-              velox::process::threadCpuNanos() - startCpuNs,
-              std::memory_order_relaxed);
-        });
-      }
+    const auto& streams = context_->streams();
+    const auto streamCount = static_cast<uint32_t>(streams.size());
+    const auto concurrency = encodingConcurrency(streamCount);
+    ensureEncodingBufferPools(concurrency);
 
-      barrier.waitAll();
+    if (concurrency > 1) {
+      const auto& encodingExecutor = context_->options().encodingExecutor;
+      NIMBLE_CHECK(
+          encodingExecutor,
+          "Encoding executor is required for parallel encoding.");
+      for (uint32_t start = 0; start < streamCount; start += concurrency) {
+        velox::dwio::common::ExecutorBarrier barrier{encodingExecutor};
+        const auto batchSize = std::min(concurrency, streamCount - start);
+        for (uint32_t index = 0; index < batchSize; ++index) {
+          auto& [nodeId, streamData] = streams[start + index];
+          auto* encodingBufferPool = this->encodingBufferPool(index);
+          barrier.add([&,
+                       statsCollector = context_->getStatsCollector(nodeId),
+                       _streamData = streamData.get(),
+                       encodingBufferPool]() {
+            uint64_t startCpuNs = velox::process::threadCpuNanos();
+            uint64_t streamSize{0};
+            processStream(
+                *_streamData, encodingBufferPool, streamSize, chunkSize);
+            if (statsCollector) {
+              statsCollector->addPhysicalSize(streamSize);
+            }
+            encodingCpuNanos.fetch_add(
+                velox::process::threadCpuNanos() - startCpuNs,
+                std::memory_order_relaxed);
+          });
+        }
+        barrier.waitAll();
+      }
     } else {
-      const auto& streams = context_->streams();
+      auto* encodingBufferPool = this->encodingBufferPool();
       for (auto& [nodeId, streamData] : streams) {
         auto statsCollector = context_->getStatsCollector(nodeId);
         uint64_t startCpuNs = velox::process::threadCpuNanos();
         uint64_t streamSize{0};
-        processStream(*streamData, streamSize, chunkSize);
+        processStream(*streamData, encodingBufferPool, streamSize, chunkSize);
         if (statsCollector) {
           statsCollector->addPhysicalSize(streamSize);
         }
@@ -1203,6 +1291,7 @@ void VeloxWriter::writeStreams() {
 
 void VeloxWriter::encodeStream(
     StreamData& streamData,
+    EncodingBufferPool* encodingBufferPool,
     uint64_t& streamSize,
     std::atomic_uint64_t& chunkSize) {
   const auto offset = streamData.descriptor().offset();
@@ -1213,7 +1302,7 @@ void VeloxWriter::encodeStream(
   // used in non-chunked mode.
   NIMBLE_CHECK(encodedStream.chunks.empty());
   auto& chunk = encodedStream.chunks.emplace_back();
-  const auto chunkBytes = encodeChunk(streamData, chunk);
+  const auto chunkBytes = encodeChunk(streamData, chunk, encodingBufferPool);
   streamSize += chunkBytes;
   chunkSize += chunkBytes;
   streamData.reset();
@@ -1221,6 +1310,7 @@ void VeloxWriter::encodeStream(
 
 void VeloxWriter::processStream(
     StreamData& streamData,
+    EncodingBufferPool* encodingBufferPool,
     uint64_t& streamSize,
     std::atomic_uint64_t& chunkSize) {
   const auto offset = streamData.descriptor().offset();
@@ -1231,7 +1321,7 @@ void VeloxWriter::processStream(
     // boolean data.
     if (streamData.hasNullValues()) {
       NullsAsDataStreamData nullsStreamData{streamData};
-      encodeStream(nullsStreamData, streamSize, chunkSize);
+      encodeStream(nullsStreamData, encodingBufferPool, streamSize, chunkSize);
     }
   } else if (
       (context != nullptr) && context->isInMapStream() &&
@@ -1245,12 +1335,12 @@ void VeloxWriter::processStream(
     // skipConstantFlatMapInMapStreams to remain false.
     streamData.materialize();
     if (!isConstantBoolStream(streamData.data())) {
-      encodeStream(streamData, streamSize, chunkSize);
+      encodeStream(streamData, encodingBufferPool, streamSize, chunkSize);
     }
   } else {
     streamData.materialize();
     if (!streamData.data().empty()) {
-      encodeStream(streamData, streamSize, chunkSize);
+      encodeStream(streamData, encodingBufferPool, streamSize, chunkSize);
     }
   }
 }
@@ -1261,6 +1351,7 @@ bool VeloxWriter::encodeStreamChunk(
     uint64_t maxChunkSize,
     bool ensureFullChunks,
     Stream& encodedStream,
+    EncodingBufferPool* encodingBufferPool,
     uint64_t& streamBytes,
     std::atomic_uint64_t& chunkBytes,
     std::atomic_uint64_t& logicalBytes) {
@@ -1277,7 +1368,8 @@ bool VeloxWriter::encodeStreamChunk(
   uint64_t encodedChunkBytes{0};
   while (auto chunkView = chunker->next()) {
     auto& streamChunk = streamChunks.emplace_back();
-    encodedChunkBytes += encodeChunk(*chunkView, streamChunk);
+    encodedChunkBytes +=
+        encodeChunk(*chunkView, streamChunk, encodingBufferPool);
     writtenChunk = true;
   }
   streamBytes += encodedChunkBytes;
@@ -1288,9 +1380,12 @@ bool VeloxWriter::encodeStreamChunk(
   return writtenChunk;
 }
 
-uint32_t VeloxWriter::encodeChunk(const StreamData& chunkView, Chunk& chunk) {
-  std::string_view encoded =
-      encodeStreamData(*context_, *encodingBuffer_, chunkView);
+uint32_t VeloxWriter::encodeChunk(
+    const StreamData& chunkView,
+    Chunk& chunk,
+    EncodingBufferPool* encodingBufferPool) {
+  std::string_view encoded = encodeStreamData(
+      *context_, *encodingBuffer_, encodingBufferPool, chunkView);
   NIMBLE_DCHECK(!encoded.empty());
   if (encoded.empty()) {
     return 0;
@@ -1327,40 +1422,55 @@ bool VeloxWriter::writeChunks(
     ensureWriteStreams();
 
     const auto& streams = context_->streams();
-    if (context_->options().encodingExecutor) {
-      velox::dwio::common::ExecutorBarrier barrier{
-          context_->options().encodingExecutor};
-      for (auto streamIndex : streamIndices) {
-        auto& [nodeId, streamData] = streams[streamIndex];
-        const auto offset = streamData->descriptor().offset();
-        auto& encodeStream = encodedStreams_[offset];
-        barrier.add([&,
-                     streamData = streamData.get(),
-                     statsCollector = context_->getStatsCollector(nodeId)] {
-          uint64_t startCpuNs = velox::process::threadCpuNanos();
-          uint64_t streamSize = 0;
-          if (encodeStreamChunk(
-                  *streamData,
-                  minChunkSize,
-                  maxChunkSize,
-                  ensureFullChunks,
-                  encodeStream,
-                  streamSize,
-                  chunkBytes,
-                  logicalBytes)) {
-            writtenChunk = true;
-          }
-          if (statsCollector) {
-            statsCollector->addPhysicalSize(streamSize);
-          }
-          encodingCpuNanos.fetch_add(
-              velox::process::threadCpuNanos() - startCpuNs,
-              std::memory_order_relaxed);
-        });
-      }
+    const auto streamCount = static_cast<uint32_t>(streamIndices.size());
+    const auto concurrency = encodingConcurrency(streamCount);
+    ensureEncodingBufferPools(concurrency);
 
-      barrier.waitAll();
+    if (concurrency > 1) {
+      const auto& encodingExecutor = context_->options().encodingExecutor;
+      NIMBLE_CHECK(
+          encodingExecutor,
+          "Encoding executor is required for parallel encoding.");
+      for (uint32_t start = 0; start < streamCount; start += concurrency) {
+        velox::dwio::common::ExecutorBarrier barrier{encodingExecutor};
+        const auto batchSize = std::min(concurrency, streamCount - start);
+        for (uint32_t index = 0; index < batchSize; ++index) {
+          const auto streamIndex = streamIndices[start + index];
+          auto& [nodeId, streamData] = streams[streamIndex];
+          const auto offset = streamData->descriptor().offset();
+          auto* encodedStream = &encodedStreams_[offset];
+          auto* encodingBufferPool = this->encodingBufferPool(index);
+          barrier.add([&,
+                       streamData = streamData.get(),
+                       encodedStream,
+                       encodingBufferPool,
+                       statsCollector = context_->getStatsCollector(nodeId)] {
+            uint64_t startCpuNs = velox::process::threadCpuNanos();
+            uint64_t streamSize = 0;
+            if (encodeStreamChunk(
+                    *streamData,
+                    minChunkSize,
+                    maxChunkSize,
+                    ensureFullChunks,
+                    *encodedStream,
+                    encodingBufferPool,
+                    streamSize,
+                    chunkBytes,
+                    logicalBytes)) {
+              writtenChunk = true;
+            }
+            if (statsCollector) {
+              statsCollector->addPhysicalSize(streamSize);
+            }
+            encodingCpuNanos.fetch_add(
+                velox::process::threadCpuNanos() - startCpuNs,
+                std::memory_order_relaxed);
+          });
+        }
+        barrier.waitAll();
+      }
     } else {
+      auto* encodingBufferPool = this->encodingBufferPool();
       for (auto streamIndex : streamIndices) {
         auto& [nodeId, streamData] = streams[streamIndex];
         const auto offset = streamData->descriptor().offset();
@@ -1373,6 +1483,7 @@ bool VeloxWriter::writeChunks(
                 maxChunkSize,
                 ensureFullChunks,
                 encodedStreams_[offset],
+                encodingBufferPool,
                 streamSize,
                 chunkBytes,
                 logicalBytes)) {

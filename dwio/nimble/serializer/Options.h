@@ -22,6 +22,7 @@
 #include <optional>
 #include <ostream>
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -241,6 +242,11 @@ struct SerializerOptions {
   /// format-level settings (varint row count) and per-encoding config
   /// (e.g., BlockBitPacking block size).
   Encoding::Options encodingOptions{.useVarintRowCount = true};
+
+  /// Maximum number of scratch buffers retained by the serializer-owned
+  /// nested encoding buffer pool. 0 disables nested encoding buffer caching.
+  /// Disabled by default; callers can set a non-zero value to opt in.
+  uint32_t maxCachedNestedEncodingBuffers{0};
 
   /// Encoding type for the sizes array of the sparse stream-sizes trailer.
   /// Sizes are the byte sizes of non-zero streams, parallel to the indices

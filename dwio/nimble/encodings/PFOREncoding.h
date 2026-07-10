@@ -413,13 +413,14 @@ std::string_view PFOREncoding<T>::encode(
         ? physicalType{0}
         : static_cast<physicalType>(velox::bits::lowMask(selectedBaseBitWidth));
 
-    Vector<uint32_t> exceptionPositions{&buffer.getMemoryPool()};
-    Vector<physicalType> exceptionValues{&buffer.getMemoryPool()};
+    auto* pool = &buffer.getMemoryPool();
+    Vector<uint32_t> exceptionPositions{pool};
+    Vector<physicalType> exceptionValues{pool};
     // Reserve for expected exceptions based on the 90% coverage threshold.
     exceptionPositions.reserve(expectedExceptions);
     exceptionValues.reserve(expectedExceptions);
 
-    Vector<physicalType> maskedResiduals{&buffer.getMemoryPool()};
+    Vector<physicalType> maskedResiduals{pool};
     maskedResiduals.resize(rowCount);
     physicalType maxBaseResidual{0};
     for (auto i = 0; i < rowCount; ++i) {
@@ -453,19 +454,19 @@ std::string_view PFOREncoding<T>::encode(
     // PFOR encodes the exception side-channels through recursive encoding
     // selection so Nimble can pick the best sub-encoding.
     // The bulk base residuals always stay raw to preserve the fast decode path.
-    Buffer tempBuffer{buffer.getMemoryPool()};
+    ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
     std::string_view exceptionPositionsEncoded{};
     std::string_view exceptionValuesEncoded{};
     if (numExceptions > 0) {
       exceptionPositionsEncoded = selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::Pfor::ExceptionPositions,
           std::span<const uint32_t>(exceptionPositions.data(), numExceptions),
-          tempBuffer,
+          scopedBuffer.get(),
           options);
       exceptionValuesEncoded = selection.template encodeNested<physicalType>(
           EncodingIdentifiers::Pfor::ExceptionValues,
           std::span<const physicalType>(exceptionValues.data(), numExceptions),
-          tempBuffer,
+          scopedBuffer.get(),
           options);
     }
     // Two size-prefixed nested streams (positions, values) carry the exception

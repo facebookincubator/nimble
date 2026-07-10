@@ -136,21 +136,27 @@ class VeloxWriter {
       uint64_t maxChunkSize,
       bool ensureFullChunks,
       Stream& stream,
+      EncodingBufferPool* encodingBufferPool,
       uint64_t& streamBytes,
       std::atomic_uint64_t& chunkBytes,
       std::atomic_uint64_t& logicalBytes);
 
   // Encodes a single chunk view and writes it to the encoded chunk.
   // Returns the number of bytes written to the encoded chunk.
-  uint32_t encodeChunk(const StreamData& chunkView, Chunk& chunk);
+  uint32_t encodeChunk(
+      const StreamData& chunkView,
+      Chunk& chunk,
+      EncodingBufferPool* encodingBufferPool);
 
   void encodeStream(
       StreamData& streamData,
+      EncodingBufferPool* encodingBufferPool,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
 
   void processStream(
       StreamData& streamData,
+      EncodingBufferPool* encodingBufferPool,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
 
@@ -186,8 +192,17 @@ class VeloxWriter {
       const CreateMetadataSectionFn& createMetadataFn,
       const WriteOptionalSectionFn& writeMetadataFn);
 
+  // Top-level stream encoding buffer reused after encoded bytes are copied out.
   void ensureEncodingBuffer();
   void clearEncodingBuffer();
+
+  // Nested encoding scratch pools. Pool 0 is used by sequential writes;
+  // parallel writes use one pool per concurrent encode task because the pool is
+  // not thread-safe.
+  std::unique_ptr<EncodingBufferPool> makeEncodingBufferPool() const;
+  uint32_t encodingConcurrency(uint32_t taskCount) const;
+  void ensureEncodingBufferPools(uint32_t poolCount);
+  EncodingBufferPool* encodingBufferPool(uint32_t index = 0);
 
   void ensureWriteStreams();
   void resetFieldWriter();
@@ -204,6 +219,7 @@ class VeloxWriter {
 
   std::unique_ptr<FieldWriter> rootWriter_;
   std::unique_ptr<Buffer> encodingBuffer_;
+  std::vector<std::unique_ptr<EncodingBufferPool>> encodingBufferPools_;
   std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;
 };

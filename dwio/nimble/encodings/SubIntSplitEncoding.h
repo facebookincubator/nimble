@@ -763,10 +763,13 @@ std::string_view SubIntSplitEncoding<T>::encode(
       !segments.empty(), "SubIntSplitEncoding: selector returned no segments");
   const uint8_t splitCount = static_cast<uint8_t>(segments.size());
 
-  // --- Step 2: Encode each section into a temporary buffer ---
+  // Encode each section into a temporary buffer.
   // Each section is encoded as the narrowest unsigned integer type that fits
   // its bit width, so narrow sections don't pay an 8-byte-per-value penalty.
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  Buffer& sectionBuffer = scopedBuffer.get();
+  auto* sectionPool = &sectionBuffer.getMemoryPool();
   std::vector<std::string_view> sectionData;
   sectionData.reserve(splitCount);
 
@@ -782,7 +785,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
     std::string_view encoded;
     switch (sb) {
       case 1: {
-        Vector<uint8_t> sectionValues{&tempBuffer.getMemoryPool(), valueCount};
+        Vector<uint8_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
           __builtin_memcpy(&v, &values[i], sizeof(physicalType));
@@ -792,12 +795,12 @@ std::string_view SubIntSplitEncoding<T>::encode(
             static_cast<NestedEncodingIdentifier>(s),
             std::span<const uint8_t>(
                 sectionValues.data(), sectionValues.size()),
-            tempBuffer,
+            sectionBuffer,
             options);
         break;
       }
       case 2: {
-        Vector<uint16_t> sectionValues{&tempBuffer.getMemoryPool(), valueCount};
+        Vector<uint16_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
           __builtin_memcpy(&v, &values[i], sizeof(physicalType));
@@ -807,12 +810,12 @@ std::string_view SubIntSplitEncoding<T>::encode(
             static_cast<NestedEncodingIdentifier>(s),
             std::span<const uint16_t>(
                 sectionValues.data(), sectionValues.size()),
-            tempBuffer,
+            sectionBuffer,
             options);
         break;
       }
       case 4: {
-        Vector<uint32_t> sectionValues{&tempBuffer.getMemoryPool(), valueCount};
+        Vector<uint32_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
           __builtin_memcpy(&v, &values[i], sizeof(physicalType));
@@ -822,12 +825,12 @@ std::string_view SubIntSplitEncoding<T>::encode(
             static_cast<NestedEncodingIdentifier>(s),
             std::span<const uint32_t>(
                 sectionValues.data(), sectionValues.size()),
-            tempBuffer,
+            sectionBuffer,
             options);
         break;
       }
       case 8: {
-        Vector<uint64_t> sectionValues{&tempBuffer.getMemoryPool(), valueCount};
+        Vector<uint64_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
           __builtin_memcpy(&v, &values[i], sizeof(physicalType));
@@ -837,7 +840,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             static_cast<NestedEncodingIdentifier>(s),
             std::span<const uint64_t>(
                 sectionValues.data(), sectionValues.size()),
-            tempBuffer,
+            sectionBuffer,
             options);
         break;
       }
@@ -848,7 +851,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
     sectionData.push_back(encoded);
   }
 
-  // --- Step 3: Write final encoding to main buffer ---
+  // Write final encoding to main buffer.
   const uint32_t prefixSize =
       Encoding::serializePrefixSize(valueCount, useVarint);
   const uint32_t specificHeader =

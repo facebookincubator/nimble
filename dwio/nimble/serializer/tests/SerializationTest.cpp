@@ -2361,6 +2361,82 @@ TEST_F(SerializationTest, rowNullStreamOmissionRoundTrips) {
   serializeAndVerify(/*allNull=*/true, /*expectNestedNullStream=*/true);
 }
 
+TEST_F(SerializationTest, nestedEncodingBufferCacheSizeConfigured) {
+  constexpr velox::vector_size_t kRows = 16;
+  auto type = velox::ROW({{"value", velox::BIGINT()}});
+
+  auto makeInput = [&](int64_t base) -> velox::VectorPtr {
+    auto values =
+        velox::BaseVector::create(velox::BIGINT(), kRows, pool_.get());
+    auto* flatValues = values->asFlatVector<int64_t>();
+    for (velox::vector_size_t i = 0; i < kRows; ++i) {
+      flatValues->set(i, base + i);
+      if (i % 5 == 0) {
+        values->setNull(i, true);
+      }
+    }
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        kRows,
+        std::vector<velox::VectorPtr>{values});
+  };
+
+  struct TestCase {
+    const char* name;
+    bool setMaxCachedNestedEncodingBuffers;
+    uint32_t maxCachedNestedEncodingBuffers;
+  };
+
+  for (const auto& testCase : std::vector<TestCase>{
+           {
+               .name = "default",
+               .setMaxCachedNestedEncodingBuffers = false,
+               .maxCachedNestedEncodingBuffers = 0,
+           },
+           {
+               .name = "cache disabled",
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 0,
+           },
+           {
+               .name = "cache enabled",
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 1,
+           },
+       }) {
+    SCOPED_TRACE(testCase.name);
+
+    SerializerOptions options{
+        .version = SerializationVersion::kSerialization,
+    };
+    if (testCase.setMaxCachedNestedEncodingBuffers) {
+      options.maxCachedNestedEncodingBuffers =
+          testCase.maxCachedNestedEncodingBuffers;
+    }
+    Serializer serializer{options, type, pool_.get()};
+    Deserializer deserializer{
+        SchemaReader::getSchema(serializer.schemaBuilder().schemaNodes()),
+        pool_.get(),
+        DeserializerOptions{.hasHeader = true}};
+
+    for (const auto base : {0, 100}) {
+      auto input = makeInput(base);
+      const std::string serialized{
+          serializer.serialize(input, OrderedRanges::of(0, input->size()))};
+
+      velox::VectorPtr output;
+      deserializer.deserialize(serialized, output);
+
+      ASSERT_EQ(output->size(), input->size());
+      for (velox::vector_size_t i = 0; i < kRows; ++i) {
+        EXPECT_TRUE(vectorEquals(input, output, i));
+      }
+    }
+  }
+}
+
 TEST_F(SerializationTest, encodedSerializerRoundTripsTopLevelRowNulls) {
   constexpr velox::vector_size_t kRows = 6;
   auto type = velox::ROW({
@@ -2541,6 +2617,7 @@ TEST_F(SerializationTest, deserializerReadsPhysicalRootNullStream) {
 
   auto makeSerialized = [&](const std::array<bool, kRows>& rootNonNulls,
                             std::string_view valueData) -> std::string {
+    const Encoding::Options encodingOptions{.useVarintRowCount = true};
     Buffer rootBuffer{*pool_};
     const std::string_view rootData{
         reinterpret_cast<const char*>(rootNonNulls.data()),
@@ -2551,7 +2628,8 @@ TEST_F(SerializationTest, deserializerReadsPhysicalRootNullStream) {
         rootData,
         *pool_,
         rootBuffer,
-        /*encodingLayout=*/nullptr)};
+        /*encodingLayout=*/nullptr,
+        encodingOptions)};
 
     Buffer valueBuffer{*pool_};
     std::string valueEncoded{serde::detail::encodeScalar<std::string>(
@@ -2560,7 +2638,8 @@ TEST_F(SerializationTest, deserializerReadsPhysicalRootNullStream) {
         valueData,
         *pool_,
         valueBuffer,
-        /*encodingLayout=*/nullptr)};
+        /*encodingLayout=*/nullptr,
+        encodingOptions)};
 
     std::vector<std::pair<uint32_t, std::string>> streams;
     streams.emplace_back(rootNullOffset, std::move(rootEncoded));

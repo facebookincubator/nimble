@@ -165,20 +165,21 @@ class RLEEncodingBase
       const Encoding::Options& options = {}) {
     const bool useVarint = options.useVarintRowCount;
     const uint32_t valueCount = values.size();
-    Vector<uint32_t> runLengths(&buffer.getMemoryPool());
-    Vector<physicalType> runValues(&buffer.getMemoryPool());
+    auto* pool = &buffer.getMemoryPool();
+    Vector<uint32_t> runLengths(pool);
+    Vector<physicalType> runValues(pool);
     rle::computeRuns(values, &runLengths, &runValues);
 
-    Buffer tempBuffer{buffer.getMemoryPool()};
+    ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
     std::string_view serializedRunLengths =
         selection.template encodeNested<uint32_t>(
             EncodingIdentifiers::RunLength::RunLengths,
             runLengths,
-            tempBuffer,
+            scopedBuffer.get(),
             options);
 
-    std::string_view serializedRunValues =
-        getSerializedRunValues(selection, runValues, tempBuffer, options);
+    std::string_view serializedRunValues = getSerializedRunValues(
+        selection, runValues, scopedBuffer.get(), options);
 
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(valueCount, useVarint) + 4 +

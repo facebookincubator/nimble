@@ -453,14 +453,15 @@ std::string_view ForEncoding<T>::encode(
 
   const uint32_t numFrames = (rowCount + frameSize - 1) / frameSize;
 
-  Vector<uint8_t> bitWidths(&buffer.getMemoryPool(), numFrames);
-  Vector<physicalType> references(&buffer.getMemoryPool(), numFrames);
-  Vector<uint64_t> bitOffsets(&buffer.getMemoryPool());
+  auto* pool = &buffer.getMemoryPool();
+  Vector<uint8_t> bitWidths(pool, numFrames);
+  Vector<physicalType> references(pool, numFrames);
+  Vector<uint64_t> bitOffsets(pool);
   if (enableBitOffsets) {
     bitOffsets.resize(numFrames);
   }
 
-  Vector<char> packedData(&buffer.getMemoryPool());
+  Vector<char> packedData(pool);
   uint64_t bitBuffer = 0;
   size_t bitBufferLen = 0;
 
@@ -558,27 +559,28 @@ std::string_view ForEncoding<T>::encode(
     packedData.push_back(static_cast<char>(bitBuffer & 0xFF));
   }
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
 
   std::string_view serializedBitWidths =
       selection.template encodeNested<uint8_t>(
           0, // identifier - TODO: define proper identifiers
           {bitWidths},
-          tempBuffer);
+          scopedBuffer.get(),
+          options);
 
   std::string_view serializedReferences =
       selection.template encodeNested<physicalType>(
-          1, {references}, tempBuffer);
+          1, {references}, scopedBuffer.get(), options);
 
   std::string_view serializedBitOffsets;
   if (enableBitOffsets) {
-    serializedBitOffsets =
-        selection.template encodeNested<uint64_t>(2, {bitOffsets}, tempBuffer);
+    serializedBitOffsets = selection.template encodeNested<uint64_t>(
+        2, {bitOffsets}, scopedBuffer.get(), options);
   }
 
   auto dataCompressionPolicy = selection.compressionPolicy();
   CompressionEncoder<char> compressionEncoder{
-      buffer.getMemoryPool(),
+      *pool,
       *dataCompressionPolicy,
       DataType::Undefined,
       0, // bitWidth not applicable

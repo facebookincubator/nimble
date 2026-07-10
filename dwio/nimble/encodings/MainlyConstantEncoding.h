@@ -62,25 +62,6 @@
 
 namespace facebook::nimble {
 
-namespace internal {
-
-template <typename UniqueCounts>
-auto mainlyConstantCommonValue(const UniqueCounts& uniqueCounts) {
-  // Select the highest-frequency value. Break count ties by the smaller value
-  // so absl::flat_hash_map iteration order cannot affect estimates or output.
-  return std::max_element(
-      uniqueCounts.cbegin(),
-      uniqueCounts.cend(),
-      [](const auto& left, const auto& right) {
-        if (left.second != right.second) {
-          return left.second < right.second;
-        }
-        return left.first > right.first;
-      });
-}
-
-} // namespace internal
-
 // Data layout is:
 // EncodingPrefix::kFixedPrefixSize bytes: standard Encoding prefix
 // 4 bytes: num isCommon encoding bytes (X)
@@ -123,8 +104,7 @@ class MainlyConstantEncodingBase
 
     // Find most common item count.
     const auto& uniqueCounts = statistics.uniqueCounts().value();
-    const auto maxUniqueCount =
-        internal::mainlyConstantCommonValue(uniqueCounts);
+    const auto maxUniqueCount = mainlyConstantCommonValue(uniqueCounts);
     // Deduce uncommon values count
     const uint64_t uncommonCount = rowCount - maxUniqueCount->second;
     // Uncommon values (sparse bool) bitmap will have index per value,
@@ -567,6 +547,63 @@ class MainlyConstantEncodingBase
   }
 
  protected:
+  template <typename UniqueCounts>
+  static auto mainlyConstantCommonValue(const UniqueCounts& uniqueCounts) {
+    // Select the highest-frequency value. Break count ties by the smaller value
+    // so absl::flat_hash_map iteration order cannot affect estimates or output.
+    return std::max_element(
+        uniqueCounts.cbegin(),
+        uniqueCounts.cend(),
+        [](const auto& left, const auto& right) {
+          if (left.second != right.second) {
+            return left.second < right.second;
+          }
+          return left.first > right.first;
+        });
+  }
+
+  // Encode-time child streams: isCommon spans all input rows, while
+  // otherValues contains only rows that differ from the common value.
+  struct ChildStreams {
+    ChildStreams(velox::memory::MemoryPool* pool, uint32_t rowCount)
+        : isCommon{pool, rowCount}, otherValues{pool} {}
+
+    Vector<bool> isCommon;
+    Vector<physicalType> otherValues;
+  };
+
+  static ChildStreams prepareChildStreams(
+      velox::memory::MemoryPool* pool,
+      std::span<const physicalType> values,
+      const physicalType& commonValue,
+      uint32_t commonCount) {
+    const auto entryCount = static_cast<uint32_t>(values.size());
+    const uint32_t uncommonCount = entryCount - commonCount;
+    if (uncommonCount == 0) {
+      ChildStreams streams{pool, entryCount};
+      streams.isCommon.fill(true);
+      return streams;
+    }
+
+    ChildStreams streams{pool, entryCount};
+    streams.otherValues.reserve(uncommonCount);
+
+    for (uint32_t i = 0; i < entryCount; ++i) {
+      const physicalType currentValue = values[i];
+      const bool isCommon = currentValue == commonValue;
+      streams.isCommon[i] = isCommon;
+      if (FOLLY_UNLIKELY(!isCommon)) {
+        streams.otherValues.push_back(currentValue);
+      }
+    }
+
+    NIMBLE_CHECK_EQ(
+        streams.otherValues.size(),
+        uncommonCount,
+        "Unexpected uncommon value count.");
+    return streams;
+  }
+
   // Counts unset bits across all words. Caller must mask tail bits
   // before calling (set garbage tail bits to 1 in the last word).
   FOLLY_ALWAYS_INLINE static uint32_t countNonCommon(
@@ -685,35 +722,27 @@ std::string_view MainlyConstantEncoding<T>::encode(
   }
 
   const auto& uniqueCounts = selection.statistics().uniqueCounts().value();
-  const auto commonElement = internal::mainlyConstantCommonValue(uniqueCounts);
+  const auto commonElement =
+      MainlyConstantEncodingBase<T>::mainlyConstantCommonValue(uniqueCounts);
 
   const uint32_t entryCount = values.size();
-  const uint32_t uncommonCount = entryCount - commonElement->second;
 
-  Vector<bool> isCommon{&buffer.getMemoryPool(), values.size(), true};
-  Vector<physicalType> otherValues(&buffer.getMemoryPool());
-  otherValues.reserve(uncommonCount);
-
+  auto* pool = &buffer.getMemoryPool();
   physicalType commonValue = commonElement->first;
-  for (auto i = 0; i < values.size(); ++i) {
-    physicalType currentValue = values[i];
-    if (currentValue != commonValue) {
-      isCommon[i] = false;
-      otherValues.push_back(std::move(currentValue));
-    }
-  }
+  auto childStreams = MainlyConstantEncodingBase<T>::prepareChildStreams(
+      pool, values, commonValue, commonElement->second);
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedIsCommon = selection.template encodeNested<bool>(
       EncodingIdentifiers::MainlyConstant::IsCommon,
-      isCommon,
-      tempBuffer,
+      childStreams.isCommon,
+      scopedBuffer.get(),
       options);
   std::string_view serializedOtherValues =
       selection.template encodeNested<physicalType>(
           EncodingIdentifiers::MainlyConstant::OtherValues,
-          otherValues,
-          tempBuffer,
+          childStreams.otherValues,
+          scopedBuffer.get(),
           options);
 
   uint32_t encodingSize = Encoding::serializePrefixSize(entryCount, useVarint) +

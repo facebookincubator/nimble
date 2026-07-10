@@ -318,22 +318,26 @@ std::string_view DeltaEncoding<T>::encode(
 
   internal::computeDeltas(values, &deltas, &restatements, &isRestatements);
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer tempBuffer{
+      &buffer.getMemoryPool(), options.encodingBufferPool};
 
   const std::string_view serializedDeltas =
       selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Delta::Deltas, deltas, tempBuffer, options);
+          EncodingIdentifiers::Delta::Deltas,
+          deltas,
+          tempBuffer.get(),
+          options);
   const std::string_view serializedRestatements =
       selection.template encodeNested<physicalType>(
           EncodingIdentifiers::Delta::Restatements,
           restatements,
-          tempBuffer,
+          tempBuffer.get(),
           options);
   const std::string_view serializedIsRestatements =
       selection.template encodeNested<bool>(
           EncodingIdentifiers::Delta::IsRestatements,
           isRestatements,
-          tempBuffer,
+          tempBuffer.get(),
           options);
 
   const uint32_t encodingSize =
