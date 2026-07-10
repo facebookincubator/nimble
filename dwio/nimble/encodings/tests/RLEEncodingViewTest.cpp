@@ -23,8 +23,18 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using RLEEncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsRleEncoding) {
   expectReads<nimble::RLEEncoding<int32_t>>(
       makeVector({1, 1, 1, 2, 2, 3, 3, 3, 3, 4}), {9, 0, 4, 5, 8, 2});
+}
+
+TEST_F(RLEEncodingViewTest, concurrent) {
+  const auto positions = randomizedPositions(/*seed=*/11);
+
+  expectConcurrentReads<nimble::RLEEncoding<int32_t>>(
+      randomRleInt32(/*seed=*/12), positions);
+  expectConcurrentReads<nimble::RLEEncoding<bool>>(
+      randomRleBool(/*seed=*/13), positions);
 }

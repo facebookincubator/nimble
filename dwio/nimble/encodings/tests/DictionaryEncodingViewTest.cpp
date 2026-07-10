@@ -16,6 +16,9 @@
 
 #include "dwio/nimble/encodings/tests/EncodingViewTestUtils.h"
 
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
@@ -23,6 +26,7 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+using DictionaryEncodingViewTest = nimble::test::EncodingViewTest;
 
 TEST_F(EncodingViewTest, readsDictionaryEncoding) {
   expectReads<nimble::DictionaryEncoding<int32_t>>(
@@ -39,4 +43,14 @@ TEST_F(EncodingViewTest, readsDictionaryEncodingForSupportedTypeFamilies) {
   expectReads<nimble::DictionaryEncoding<std::string_view>>(
       makeVector<std::string_view>({"alpha", "beta", "alpha", "gamma", "beta"}),
       {4, 0, 3, 2, 1});
+}
+
+TEST_F(DictionaryEncodingViewTest, concurrent) {
+  const auto positions = randomizedPositions(/*seed=*/8);
+  std::vector<std::string> backing;
+
+  expectConcurrentReads<nimble::DictionaryEncoding<uint32_t>>(
+      randomDictionaryUint32(/*seed=*/9), positions);
+  expectConcurrentReads<nimble::DictionaryEncoding<std::string_view>>(
+      randomStringViews(backing, /*seed=*/10), positions);
 }

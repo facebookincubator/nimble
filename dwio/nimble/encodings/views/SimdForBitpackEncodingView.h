@@ -49,12 +49,10 @@ class SimdForBitpackEncodingView final : public TypedEncodingView<T> {
     }
 
     const auto groupIndex = index / kGroupSize;
-    if (cachedGroupIndex_ != groupIndex) {
-      unpackGroup(groupIndex, cachedGroup_.data());
-      cachedGroupIndex_ = groupIndex;
-    }
-    return detail::castFromPhysicalType<T>(static_cast<physicalType>(
-        cachedGroup_[index % kGroupSize] + baseline_));
+    std::array<physicalType, kGroupSize> group{};
+    unpackGroup(groupIndex, group.data());
+    return detail::castFromPhysicalType<T>(
+        static_cast<physicalType>(group[index % kGroupSize] + baseline_));
   }
 
   static constexpr uint32_t kGroupSize = SimdForBitpackEncoding<T>::kGroupSize;
@@ -87,8 +85,6 @@ class SimdForBitpackEncodingView final : public TypedEncodingView<T> {
   physicalType baseline_{};
   uint8_t bitWidth_{0};
   const char* packedData_{nullptr};
-  mutable uint32_t cachedGroupIndex_{~0u};
-  mutable std::array<physicalType, kGroupSize> cachedGroup_{};
 };
 
 } // namespace facebook::nimble
