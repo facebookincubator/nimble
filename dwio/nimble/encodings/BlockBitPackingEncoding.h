@@ -828,24 +828,25 @@ std::string_view BlockBitPackingEncoding<T>::encode(
     runningOffset += blocks[blockIndex].packedSize;
   }
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  ScopedEncodingBuffer tempBuffer{
+      &buffer.getMemoryPool(), options.encodingBufferPool};
   const std::string_view baselinesEncoded =
       selection.template encodeNested<physicalType>(
           EncodingIdentifiers::BlockBitPacking::Baselines,
           baselines,
-          tempBuffer,
+          tempBuffer.get(),
           options);
   const std::string_view bitWidthsEncoded =
       selection.template encodeNested<uint8_t>(
           EncodingIdentifiers::BlockBitPacking::BitWidths,
           bitWidths,
-          tempBuffer,
+          tempBuffer.get(),
           options);
   const std::string_view offsetsEncoded =
       selection.template encodeNested<uint32_t>(
           EncodingIdentifiers::BlockBitPacking::Offsets,
           blockOffsets,
-          tempBuffer,
+          tempBuffer.get(),
           options);
 
   const uint32_t metaHeaderSize = kMetadataHeaderSize +

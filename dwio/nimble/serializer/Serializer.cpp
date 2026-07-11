@@ -64,7 +64,16 @@ Serializer::Serializer(
     velox::memory::MemoryPool* pool)
     : options_{normalizeWriterVersion(std::move(options))},
       context_{*pool},
+      nestedEncodingBufferPool_{
+          options_.enableEncoding() &&
+                  options_.maxCachedNestedEncodingBuffers > 0
+              ? std::make_unique<EncodingBufferPool>(
+                    context_.bufferMemoryPool().get(),
+                    options_.maxCachedNestedEncodingBuffers)
+              : nullptr},
       buffer_{context_.bufferMemoryPool().get()} {
+  options_.encodingOptions.encodingBufferPool = nestedEncodingBufferPool_.get();
+
   const auto version = options_.serializationVersion();
   NIMBLE_CHECK(
       version == SerializationVersion::kLegacy ||

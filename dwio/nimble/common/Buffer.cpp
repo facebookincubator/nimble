@@ -15,6 +15,7 @@
  */
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Exceptions.h"
 
 namespace facebook::nimble {
 
@@ -53,12 +54,56 @@ bool Buffer::tryAdvanceToNextChunk(uint64_t bytes) {
 
 void Buffer::addChunk(uint64_t bytes) {
   const uint64_t chunkSize = std::max(bytes, kMinChunkSize);
-  auto bufferPtr = velox::AlignedBuffer::allocate<char>(chunkSize, memoryPool_);
+  auto bufferPtr = velox::AlignedBuffer::allocateExact<char>(chunkSize, pool_);
   pos_ = bufferPtr->asMutable<char>();
   chunkEnd_ = pos_ + chunkSize;
   reserveEnd_ = pos_ + bytes;
-  chunks_.push_back(std::move(bufferPtr));
+  chunks_.emplace_back(std::move(bufferPtr));
   chunkIndex_ = chunks_.size() - 1;
+}
+
+EncodingBufferPool::EncodingBufferPool(
+    MemoryPool* pool,
+    uint32_t maxCachedBuffers)
+    : pool_{pool}, maxCachedBuffers_{maxCachedBuffers} {
+  NIMBLE_CHECK_NOT_NULL(pool_, "Memory pool cannot be null");
+}
+
+std::unique_ptr<Buffer> EncodingBufferPool::acquire() {
+  if (!buffers_.empty()) {
+    auto buffer = std::move(buffers_.back());
+    buffers_.pop_back();
+    // Keep acquire() as the handoff point that guarantees a clean scratch
+    // buffer, even though release() also resets before caching.
+    buffer->reset();
+    return buffer;
+  }
+
+  return std::make_unique<Buffer>(*pool_);
+}
+
+void EncodingBufferPool::release(std::unique_ptr<Buffer> buffer) {
+  NIMBLE_CHECK_NOT_NULL(buffer, "Buffer cannot be null");
+
+  buffer->reset();
+  if (buffers_.size() < maxCachedBuffers_) {
+    buffers_.emplace_back(std::move(buffer));
+  }
+}
+
+ScopedEncodingBuffer::ScopedEncodingBuffer(
+    MemoryPool* memoryPool,
+    EncodingBufferPool* bufferPool)
+    : bufferPool_{bufferPool} {
+  NIMBLE_CHECK_NOT_NULL(memoryPool, "Memory pool cannot be null");
+  buffer_ = bufferPool_ != nullptr ? bufferPool_->acquire()
+                                   : std::make_unique<Buffer>(*memoryPool);
+}
+
+ScopedEncodingBuffer::~ScopedEncodingBuffer() {
+  if (bufferPool_ != nullptr) {
+    bufferPool_->release(std::move(buffer_));
+  }
 }
 
 } // namespace facebook::nimble

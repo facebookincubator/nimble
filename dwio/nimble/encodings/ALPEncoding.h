@@ -202,12 +202,13 @@ class ALPEncoding final
 
     const uint32_t exceptionCount = exceptionPositions.size();
 
-    Buffer tempBuffer{*pool};
+    ScopedEncodingBuffer scopedBuffer{
+        &buffer.getMemoryPool(), options.encodingBufferPool};
     std::string_view serializedEncoded =
         selection.template encodeNested<uint64_t>(
             EncodingIdentifiers::ALP::EncodedValues,
             {encodedValues},
-            tempBuffer,
+            scopedBuffer.get(),
             options);
 
     const uint32_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);

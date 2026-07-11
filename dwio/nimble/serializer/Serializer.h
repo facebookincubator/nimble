@@ -81,8 +81,10 @@ class Serializer {
       const velox::VectorPtr& vector,
       const OrderedRanges& ranges) const;
 
-  const SerializerOptions options_;
+  SerializerOptions options_;
   mutable FieldWriterContext context_;
+  // Reused across serialize() calls for nested child streams.
+  std::unique_ptr<EncodingBufferPool> nestedEncodingBufferPool_;
   // Kept alive because FlatMap field writers hold references to child nodes.
   std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId_;
   std::unique_ptr<FieldWriter> writer_;

@@ -119,7 +119,8 @@ std::string_view encodeNullableTyped(
     std::string_view data,
     std::span<const bool> nonNulls,
     nimble::Buffer& encodingBuffer,
-    const EncodingLayout* encodingLayout) {
+    const EncodingLayout* encodingLayout,
+    const Encoding::Options& encodingOptions) {
   const auto count = data.size() / sizeof(T);
   std::span<const T> values{reinterpret_cast<const T*>(data.data()), count};
 
@@ -131,7 +132,7 @@ std::string_view encodeNullableTyped(
       values,
       nonNulls,
       encodingBuffer,
-      Encoding::Options{.useVarintRowCount = true});
+      encodingOptions);
 }
 
 inline std::string_view boolsAsStringView(std::span<const bool> values) {
@@ -488,14 +489,15 @@ std::string_view encodeTyped(
     std::string_view data,
     velox::memory::MemoryPool& pool,
     nimble::Buffer& encodingBuffer,
-    const EncodingLayout* encodingLayout) {
+    const EncodingLayout* encodingLayout,
+    const Encoding::Options& encodingOptions) {
   const auto count = data.size() / sizeof(T);
   std::span<const T> values{reinterpret_cast<const T*>(data.data()), count};
   return encodeTyped<T>(
       values,
       encodingBuffer,
       options.encodingSelectionPolicyCreator,
-      options.encodingOptions,
+      encodingOptions,
       encodingLayout,
       options.compressionOptions);
 }
@@ -508,46 +510,47 @@ std::string_view encodeScalar(
     std::string_view data,
     velox::memory::MemoryPool& pool,
     nimble::Buffer& encodingBuffer,
-    const EncodingLayout* encodingLayout) {
+    const EncodingLayout* encodingLayout,
+    const Encoding::Options& encodingOptions) {
   switch (scalarKind) {
     case ScalarKind::Bool:
       return encodeTyped<bool, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Int8:
       return encodeTyped<int8_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::UInt8:
       return encodeTyped<uint8_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Int16:
       return encodeTyped<int16_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::UInt16:
       return encodeTyped<uint16_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Int32:
       return encodeTyped<int32_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::UInt32:
       return encodeTyped<uint32_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Int64:
       return encodeTyped<int64_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::UInt64:
       return encodeTyped<uint64_t, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Float:
       return encodeTyped<float, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::Double:
       return encodeTyped<double, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     case ScalarKind::String:
       [[fallthrough]];
     case ScalarKind::Binary:
       return encodeTyped<std::string_view, Buffer>(
-          options, data, pool, encodingBuffer, encodingLayout);
+          options, data, pool, encodingBuffer, encodingLayout, encodingOptions);
     default:
       NIMBLE_UNSUPPORTED(
           "Unsupported scalar kind for nimble encoding: {}", scalarKind);
@@ -561,46 +564,107 @@ std::string_view encodeNullableScalar(
     std::string_view data,
     std::span<const bool> nonNulls,
     nimble::Buffer& encodingBuffer,
-    const EncodingLayout* encodingLayout) {
+    const EncodingLayout* encodingLayout,
+    const Encoding::Options& encodingOptions) {
   switch (scalarKind) {
     case ScalarKind::Bool:
       return encodeNullableTyped<bool>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Int8:
       return encodeNullableTyped<int8_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::UInt8:
       return encodeNullableTyped<uint8_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Int16:
       return encodeNullableTyped<int16_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::UInt16:
       return encodeNullableTyped<uint16_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Int32:
       return encodeNullableTyped<int32_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::UInt32:
       return encodeNullableTyped<uint32_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Int64:
       return encodeNullableTyped<int64_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::UInt64:
       return encodeNullableTyped<uint64_t>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Float:
       return encodeNullableTyped<float>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Double:
       return encodeNullableTyped<double>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::String:
       [[fallthrough]];
     case ScalarKind::Binary:
       return encodeNullableTyped<std::string_view>(
-          options, data, nonNulls, encodingBuffer, encodingLayout);
+          options,
+          data,
+          nonNulls,
+          encodingBuffer,
+          encodingLayout,
+          encodingOptions);
     case ScalarKind::Undefined:
       NIMBLE_UNSUPPORTED(
           "Unsupported scalar kind for nullable nimble encoding: {}",
@@ -648,17 +712,19 @@ class StreamDataWriter {
 
   // --- Const members ---
   const SerializerOptions& options_;
-  // Memory pool for encoding buffer allocation.
+  // Memory pool for encoding scratch buffers.
   velox::memory::MemoryPool* const pool_;
-  // Buffer for nimble encoding output.
-  const std::unique_ptr<nimble::Buffer> encodingBuffer_;
+  // Scratch buffer holding one encoded stream before it is copied to output.
+  const std::unique_ptr<nimble::Buffer> streamEncodingBuffer_;
   // Optional map from stream offset to encoding layout for replaying captured
   // encodings. Only set when options_.encodingLayoutTree is specified.
   const std::unordered_map<uint32_t, const EncodingLayout*>* const
       streamEncodingLayouts_;
 
   // --- Mutable members ---
-  T& buffer_;
+  // Final serialized output. Encoded stream bytes and stream metadata are
+  // appended here after each stream encode completes.
+  T& outputBuffer_;
   // Track last stream offset for kLegacy format zero-filling.
   uint32_t lastStream_{0xffffffff};
   // Dense stream sizes. streamSizes_[i] = byte size of stream i (0 for
@@ -680,11 +746,11 @@ StreamDataWriter<T>::StreamDataWriter(
         streamEncodingLayouts)
     : options_{options},
       pool_{pool},
-      encodingBuffer_{
+      streamEncodingBuffer_{
           options.enableEncoding() ? std::make_unique<nimble::Buffer>(*pool)
                                    : nullptr},
       streamEncodingLayouts_{streamEncodingLayouts},
-      buffer_{buffer} {
+      outputBuffer_{buffer} {
   NIMBLE_CHECK(
       streamEncodingLayouts_ == nullptr || options_.enableEncoding(),
       "streamEncodingLayouts can only be set when encoding is enabled");
@@ -698,15 +764,17 @@ StreamDataWriter<T>::StreamDataWriter(
   writesHeaderFlags_ = usesHeaderFlags(version);
   if (writesHeaderFlags_) {
     headerFlagsOffset_ =
-        writeSerializationHeader(buffer_, version.value(), rowCount);
+        writeSerializationHeader(outputBuffer_, version.value(), rowCount);
     NIMBLE_CHECK_LT(
-        headerFlagsOffset_, buffer_.size(), "Invalid null barrier flag offset");
+        headerFlagsOffset_,
+        outputBuffer_.size(),
+        "Invalid null barrier flag offset");
     NIMBLE_CHECK_EQ(
-        static_cast<uint8_t>(buffer_.data()[headerFlagsOffset_]),
+        static_cast<uint8_t>(outputBuffer_.data()[headerFlagsOffset_]),
         0,
         "Null barrier flag should be initialized to zero");
   } else {
-    writeLegacySerializationHeader(buffer_, version, rowCount);
+    writeLegacySerializationHeader(outputBuffer_, version, rowCount);
   }
 }
 
@@ -734,7 +802,7 @@ void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
         "Use kSerialization for nullable support.");
 
     NIMBLE_CHECK_LE(lastStream_ + 1, streamOffset, "unexpected stream offset");
-    detail::writeMissingStreams(buffer_, lastStream_, streamOffset);
+    detail::writeMissingStreams(outputBuffer_, lastStream_, streamOffset);
     lastStream_ = streamOffset;
     encodeStream(scalarKind, streamOffset, data);
     return;
@@ -768,18 +836,18 @@ void StreamDataWriter<T>::encodeStream(
     if (scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
       // Legacy string encoding: [total_size:u32][len_0:u32][data_0]...
       const auto size = detail::getStringsTotalSize(data);
-      auto* pos = detail::extend(buffer_, size + sizeof(uint32_t));
+      auto* pos = detail::extend(outputBuffer_, size + sizeof(uint32_t));
       detail::encodeStrings(data, size, pos);
     } else {
       // Legacy scalar encoding:
       //   Zstd: [size:u32][compType:i8][data...]
       //   LZ4:  [size:u32][compType:i8][origSize:u32][data...]
-      const auto bufferStart = buffer_.size();
+      const auto bufferStart = outputBuffer_.size();
       const uint32_t maxSize = data.size() + 2 * sizeof(uint32_t) + 1;
-      auto* pos = detail::extend(buffer_, maxSize);
+      auto* pos = detail::extend(outputBuffer_, maxSize);
       const auto encodedSize = detail::encode(options_, data, pos);
       if (encodedSize < maxSize) {
-        buffer_.resize(bufferStart + encodedSize);
+        outputBuffer_.resize(bufferStart + encodedSize);
       }
     }
     return;
@@ -793,14 +861,25 @@ void StreamDataWriter<T>::encodeStream(
     }
   }
 
-  // Use nimble encoding framework for optimal compression.
   std::string_view encoded;
   if (!facebook::nimble::StreamData::hasNullValues(nonNulls)) {
     encoded = detail::encodeScalar<T>(
-        options_, scalarKind, data, *pool_, *encodingBuffer_, encodingLayout);
+        options_,
+        scalarKind,
+        data,
+        *pool_,
+        *streamEncodingBuffer_,
+        encodingLayout,
+        options_.encodingOptions);
   } else {
     encoded = detail::encodeNullableScalar<T>(
-        options_, scalarKind, data, nonNulls, *encodingBuffer_, encodingLayout);
+        options_,
+        scalarKind,
+        data,
+        nonNulls,
+        *streamEncodingBuffer_,
+        encodingLayout,
+        options_.encodingOptions);
   }
 
   // Track size for trailer.
@@ -808,28 +887,32 @@ void StreamDataWriter<T>::encodeStream(
     streamSizes_.resize(streamOffset + 1, 0);
   }
   streamSizes_[streamOffset] = static_cast<uint32_t>(encoded.size());
-  auto* pos = detail::extend(buffer_, static_cast<uint32_t>(encoded.size()));
+  auto* pos =
+      detail::extend(outputBuffer_, static_cast<uint32_t>(encoded.size()));
   std::memcpy(pos, encoded.data(), encoded.size());
+  streamEncodingBuffer_->reset();
 }
 
 template <typename T>
 void StreamDataWriter<T>::close(uint32_t nodeCount) {
   if (!options_.enableEncoding()) {
-    detail::writeMissingStreams(buffer_, lastStream_, nodeCount);
+    detail::writeMissingStreams(outputBuffer_, lastStream_, nodeCount);
     return;
   }
 
   if (writesHeaderFlags_) {
     NIMBLE_CHECK_LT(
-        headerFlagsOffset_, buffer_.size(), "Invalid null barrier flag offset");
-    buffer_.data()[headerFlagsOffset_] =
+        headerFlagsOffset_,
+        outputBuffer_.size(),
+        "Invalid null barrier flag offset");
+    outputBuffer_.data()[headerFlagsOffset_] =
         static_cast<char>(detail::makeFlagsByte(requiresNullBarrier_));
   }
   detail::writeTrailer(
       streamSizes_,
       options_.streamIndicesEncodingType,
       options_.streamSizesEncodingType,
-      buffer_);
+      outputBuffer_);
 }
 
 } // namespace facebook::nimble::serde

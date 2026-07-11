@@ -221,6 +221,109 @@ TEST_F(VeloxWriterTest, alpEncodingSelectionControlsWriterEncoding) {
   testAlpE2EWriterSelection<double>(*rootPool_, leafPool_.get());
 }
 
+DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingBufferPoolPassedToEncodeOptions) {
+  velox::common::testutil::TestValue::enable();
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {"a", "b", "c", "d"},
+      {vectorMaker.flatVector<int64_t>(
+           128,
+           [](auto row) { return static_cast<int64_t>(row % 8); },
+           [](auto row) { return row % 7 == 0; }),
+       vectorMaker.flatVector<int64_t>(
+           128, [](auto row) { return static_cast<int64_t>(row); }),
+       vectorMaker.flatVector<int32_t>(
+           128, [](auto row) { return static_cast<int32_t>(row % 11); }),
+       vectorMaker.flatVector<double>(
+           128, [](auto row) { return static_cast<double>(row) * 0.5; })});
+
+  struct TestCase {
+    const char* name;
+    bool setMaxCachedNestedEncodingBuffers;
+    uint32_t maxCachedNestedEncodingBuffers;
+    uint32_t maxEncodeParallelism;
+    bool expectEncodingBufferPool;
+    size_t expectedPoolCount;
+  };
+
+  for (const auto& testCase : std::vector<TestCase>{
+           {
+               .name = "default",
+               .setMaxCachedNestedEncodingBuffers = false,
+               .maxCachedNestedEncodingBuffers = 0,
+               .maxEncodeParallelism = 0,
+               .expectEncodingBufferPool = false,
+               .expectedPoolCount = 0,
+           },
+           {
+               .name = "cache disabled",
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 0,
+               .maxEncodeParallelism = 0,
+               .expectEncodingBufferPool = false,
+               .expectedPoolCount = 0,
+           },
+           {
+               .name = "cache enabled",
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 1,
+               .maxEncodeParallelism = 0,
+               .expectEncodingBufferPool = true,
+               .expectedPoolCount = 1,
+           },
+           {
+               .name = "parallel cache enabled",
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 1,
+               .maxEncodeParallelism = 2,
+               .expectEncodingBufferPool = true,
+               .expectedPoolCount = 2,
+           },
+       }) {
+    SCOPED_TRACE(testCase.name);
+
+    uint32_t encodeCount{0};
+    uint32_t pooledEncodeCount{0};
+    std::set<const void*> observedPools;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::VeloxWriter::encode",
+        std::function<void(nimble::Encoding::Options*)>(
+            [&](nimble::Encoding::Options* encodingOptions) {
+              ++encodeCount;
+              if (encodingOptions->encodingBufferPool != nullptr) {
+                ++pooledEncodeCount;
+                observedPools.insert(encodingOptions->encodingBufferPool);
+              }
+            }));
+
+    std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
+    nimble::VeloxWriterOptions options;
+    if (testCase.setMaxCachedNestedEncodingBuffers) {
+      options.maxCachedNestedEncodingBuffers =
+          testCase.maxCachedNestedEncodingBuffers;
+    }
+    if (testCase.maxEncodeParallelism > 0) {
+      executor = std::make_shared<folly::CPUThreadPoolExecutor>(
+          testCase.maxEncodeParallelism);
+      options.encodingExecutor = folly::getKeepAliveToken(*executor);
+      options.maxEncodeParallelism = testCase.maxEncodeParallelism;
+    }
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), *rootPool_, std::move(options));
+    writer.write(vector);
+    writer.close();
+
+    EXPECT_GT(encodeCount, 0);
+    EXPECT_EQ(
+        pooledEncodeCount, testCase.expectEncodingBufferPool ? encodeCount : 0);
+    EXPECT_EQ(observedPools.size(), testCase.expectedPoolCount);
+  }
+}
+
 TEST_F(VeloxWriterTest, fsstEncodingTargetControlsWriterEncoding) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   auto vector = vectorMaker.rowVector(

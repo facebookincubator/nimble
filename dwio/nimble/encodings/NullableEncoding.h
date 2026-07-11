@@ -358,12 +358,16 @@ std::string_view NullableEncoding<T>::encodeNullable(
   const bool useVarint = options.useVarintRowCount;
   const uint32_t rowCount = nulls.size();
 
-  Buffer tempBuffer{buffer.getMemoryPool()};
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
   std::string_view serializedValues =
       selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Nullable::Data, values, tempBuffer, options);
+          EncodingIdentifiers::Nullable::Data,
+          values,
+          scopedBuffer.get(),
+          options);
   std::string_view serializedNulls = selection.template encodeNested<bool>(
-      EncodingIdentifiers::Nullable::Nulls, nulls, tempBuffer, options);
+      EncodingIdentifiers::Nullable::Nulls, nulls, scopedBuffer.get(), options);
 
   const uint32_t encodingSize =
       Encoding::serializePrefixSize(rowCount, useVarint) + 4 +

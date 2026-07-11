@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/MetricsLogger.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
@@ -201,6 +202,11 @@ struct VeloxWriterOptions {
   /// encoding selection. False by default; do not enable for production until
   /// ALP is production-ready.
   bool allowNestedAlpSelection{false};
+
+  /// Maximum number of scratch buffers retained by each nested encoding buffer
+  /// pool. 0 disables nested encoding buffer caching. Disabled by default;
+  /// callers can set a non-zero value to opt in.
+  uint32_t maxCachedNestedEncodingBuffers{0};
 
   /// In low-memory mode, the writer is trying to perform smaller (and more
   /// precise) buffer allocations. This means that overall, the writer will

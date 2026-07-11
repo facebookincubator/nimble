@@ -88,19 +88,7 @@ void Statistics<T, InputType>::populateMinMax() const {
     min_ = *min;
     max_ = *max;
   } else if constexpr (nimble::isStringType<InputType>()) {
-    std::string_view minString = data_[0];
-    std::string_view maxString = data_[0];
-    for (int i = 0; i < data_.size(); ++i) {
-      const auto& value = data_[i];
-      if (value.size() > maxString.size()) {
-        maxString = value;
-      }
-      if (value.size() < minString.size()) {
-        minString = value;
-      }
-    }
-    min_ = minString;
-    max_ = maxString;
+    populateStringLength();
   }
 }
 
@@ -180,11 +168,22 @@ void Statistics<T, InputType>::populateBucketCounts() const {
 
 template <typename T, typename InputType>
 void Statistics<T, InputType>::populateStringLength() const {
-  uint64_t total = 0;
+  uint64_t totalBytes = 0;
+  std::string_view minString = data_[0];
+  std::string_view maxString = data_[0];
   for (int i = 0; i < data_.size(); ++i) {
-    total += data_[i].size();
+    const auto& value = data_[i];
+    totalBytes += value.size();
+    if (value.size() > maxString.size()) {
+      maxString = value;
+    }
+    if (value.size() < minString.size()) {
+      minString = value;
+    }
   }
-  totalStringsLength_ = total;
+  totalStringsLength_ = totalBytes;
+  min_ = minString;
+  max_ = maxString;
 }
 
 template <typename T, typename InputType>

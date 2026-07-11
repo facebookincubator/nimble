@@ -20,6 +20,7 @@
 
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string_view>
 #include <vector>
 
@@ -35,15 +36,14 @@
 namespace facebook::nimble {
 
 /// Internally manages memory in chunks. Releases memory only upon destruction.
-/// Buffer is NOT threadsafe: external locking is required.
+///
+/// NOTE: This class is not thread-safe. External locking is required.
 class Buffer {
   using MemoryPool = facebook::velox::memory::MemoryPool;
 
  public:
-  explicit Buffer(
-      MemoryPool& memoryPool,
-      uint64_t initialChunkSize = kMinChunkSize)
-      : memoryPool_(&memoryPool) {
+  explicit Buffer(MemoryPool& pool, uint64_t initialChunkSize = kMinChunkSize)
+      : pool_{&pool} {
     addChunk(initialChunkSize);
     reserveEnd_ = pos_;
   }
@@ -62,7 +62,7 @@ class Buffer {
   }
 
   MemoryPool& getMemoryPool() {
-    return *memoryPool_;
+    return *pool_;
   }
 
   std::string_view takeOwnership(velox::BufferPtr&& bufferPtr) {
@@ -97,7 +97,7 @@ class Buffer {
   void addChunk(uint64_t bytes);
 
   // --- Const members ---
-  MemoryPool* const memoryPool_;
+  MemoryPool* const pool_;
 
   // --- Mutable members (protected by mutex_) ---
 
@@ -111,6 +111,50 @@ class Buffer {
   char* reserveEnd_;
   uint32_t chunkIndex_{0};
   std::vector<velox::BufferPtr> chunks_;
+};
+
+/// Reuses Nimble encoding scratch buffers across nested encode calls.
+/// Not thread-safe: each writer thread or encode task should use its own pool.
+class EncodingBufferPool {
+ private:
+  using MemoryPool = facebook::velox::memory::MemoryPool;
+
+ public:
+  static constexpr uint32_t kDefaultMaxCachedBuffers = 8;
+
+  explicit EncodingBufferPool(
+      MemoryPool* pool,
+      uint32_t maxCachedBuffers = kDefaultMaxCachedBuffers);
+
+  std::unique_ptr<Buffer> acquire();
+
+  void release(std::unique_ptr<Buffer> buffer);
+
+ private:
+  MemoryPool* const pool_;
+  const uint32_t maxCachedBuffers_;
+
+  std::vector<std::unique_ptr<Buffer>> buffers_;
+};
+
+class ScopedEncodingBuffer {
+  using MemoryPool = facebook::velox::memory::MemoryPool;
+
+ public:
+  ScopedEncodingBuffer(MemoryPool* memoryPool, EncodingBufferPool* bufferPool);
+
+  ~ScopedEncodingBuffer();
+
+  ScopedEncodingBuffer(const ScopedEncodingBuffer&) = delete;
+  ScopedEncodingBuffer& operator=(const ScopedEncodingBuffer&) = delete;
+
+  Buffer& get() {
+    return *buffer_;
+  }
+
+ private:
+  EncodingBufferPool* const bufferPool_;
+  std::unique_ptr<Buffer> buffer_;
 };
 
 } // namespace facebook::nimble

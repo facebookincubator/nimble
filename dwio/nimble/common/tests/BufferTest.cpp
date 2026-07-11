@@ -17,8 +17,12 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <optional>
+#include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/NimbleException.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::nimble::test {
@@ -32,7 +36,7 @@ class BufferTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
 
-TEST_F(BufferTest, ReserveSmall) {
+TEST_F(BufferTest, reserveSmall) {
   Buffer buffer(*pool_);
   char* ptr = buffer.reserve(10);
   ASSERT_NE(ptr, nullptr);
@@ -42,7 +46,7 @@ TEST_F(BufferTest, ReserveSmall) {
   EXPECT_EQ(ptr[9], 'A');
 }
 
-TEST_F(BufferTest, ReserveMultipleWithinChunk) {
+TEST_F(BufferTest, reserveMultipleWithinChunk) {
   Buffer buffer(*pool_);
   char* ptr1 = buffer.reserve(100);
   char* ptr2 = buffer.reserve(200);
@@ -56,7 +60,7 @@ TEST_F(BufferTest, ReserveMultipleWithinChunk) {
   EXPECT_EQ(ptr2[0], 'B');
 }
 
-TEST_F(BufferTest, ReserveOversized) {
+TEST_F(BufferTest, reserveOversized) {
   // Request more than kMinChunkSize (1 MB) to trigger a new chunk allocation
   Buffer buffer(*pool_);
   constexpr uint64_t bigSize = 2 * 1024 * 1024; // 2 MB
@@ -68,7 +72,7 @@ TEST_F(BufferTest, ReserveOversized) {
   EXPECT_EQ(ptr[0], 'X');
   EXPECT_EQ(ptr[bigSize - 1], 'Y');
 }
-TEST_F(BufferTest, WriteStringBasic) {
+TEST_F(BufferTest, writeStringBasic) {
   // Single write
   {
     Buffer buffer(*pool_);
@@ -101,7 +105,7 @@ TEST_F(BufferTest, WriteStringBasic) {
     EXPECT_EQ(result.size(), 0);
   }
 }
-TEST_F(BufferTest, TakeOwnership) {
+TEST_F(BufferTest, takeOwnership) {
   Buffer buffer(*pool_);
 
   auto simple_view = [&]() {
@@ -115,7 +119,7 @@ TEST_F(BufferTest, TakeOwnership) {
       std::string_view(simple_view.data(), 25), "simple extended test data");
 }
 
-TEST_F(BufferTest, GetMemoryPool) {
+TEST_F(BufferTest, getMemoryPool) {
   Buffer buffer(*pool_);
   auto& poolRef = buffer.getMemoryPool();
   // Just verify we get a valid reference back
@@ -206,6 +210,101 @@ TEST_F(BufferTest, resetMultipleTimes) {
   }
   // Only the initial chunk should exist — no growth.
   EXPECT_EQ(buffer.testingChunkCount(), 1);
+}
+
+TEST_F(BufferTest, encodingBufferPool) {
+  struct TestCase {
+    const char* name;
+    uint32_t maxCachedBuffers;
+    uint32_t numReleaseBuffers;
+    std::optional<uint32_t> expectedReusedBufferIndex;
+  };
+
+  for (const auto testCase : {
+           TestCase{"no cached buffers", 0, 1, std::nullopt},
+           TestCase{"single cached buffer", 1, 1, 0},
+           TestCase{"cache limit drops extra released buffer", 1, 2, 0},
+           TestCase{"multi-buffer cache reuses last cached buffer", 2, 2, 1},
+       }) {
+    SCOPED_TRACE(testCase.name);
+
+    EncodingBufferPool bufferPool{
+        pool_.get(), /*maxCachedBuffers=*/testCase.maxCachedBuffers};
+
+    std::vector<std::unique_ptr<Buffer>> buffers;
+    buffers.reserve(testCase.numReleaseBuffers);
+    std::vector<Buffer*> bufferAddresses;
+    bufferAddresses.reserve(testCase.numReleaseBuffers);
+
+    constexpr uint64_t bigSize = 2 * 1024 * 1024;
+    for (uint32_t i = 0; i < testCase.numReleaseBuffers; ++i) {
+      buffers.push_back(bufferPool.acquire());
+      bufferAddresses.push_back(buffers.back().get());
+
+      buffers.back()->reserve(bigSize);
+      EXPECT_EQ(buffers.back()->testingChunkCount(), 2);
+      EXPECT_EQ(buffers.back()->testingCurrentChunkIndex(), 1);
+    }
+
+    for (auto& buffer : buffers) {
+      bufferPool.release(std::move(buffer));
+    }
+
+    auto reusedBuffer = bufferPool.acquire();
+    if (testCase.expectedReusedBufferIndex.has_value()) {
+      EXPECT_EQ(
+          reusedBuffer.get(),
+          bufferAddresses[*testCase.expectedReusedBufferIndex]);
+      EXPECT_EQ(reusedBuffer->testingChunkCount(), 2);
+    } else {
+      EXPECT_EQ(reusedBuffer->testingChunkCount(), 1);
+    }
+    EXPECT_EQ(reusedBuffer->testingCurrentChunkIndex(), 0);
+
+    reusedBuffer->reserve(128);
+    EXPECT_EQ(reusedBuffer->testingCurrentChunkIndex(), 0);
+  }
+}
+
+TEST_F(BufferTest, encodingBufferPoolRejectsNullBufferRelease) {
+  EncodingBufferPool bufferPool{pool_.get()};
+
+  NIMBLE_ASSERT_THROW(bufferPool.release(nullptr), "Buffer cannot be null");
+}
+
+TEST_F(BufferTest, scopedEncodingBuffer) {
+  {
+    SCOPED_TRACE("returns buffer to pool");
+    EncodingBufferPool bufferPool{pool_.get(), /*maxCachedBuffers=*/1};
+    Buffer* scopedBufferAddress;
+
+    {
+      ScopedEncodingBuffer scopedBuffer{pool_.get(), &bufferPool};
+      scopedBufferAddress = &scopedBuffer.get();
+      scopedBuffer.get().reserve(128);
+    }
+
+    auto reusedBuffer = bufferPool.acquire();
+    EXPECT_EQ(reusedBuffer.get(), scopedBufferAddress);
+  }
+
+  {
+    SCOPED_TRACE("rejects null memory pool");
+    EncodingBufferPool bufferPool{pool_.get()};
+
+    NIMBLE_ASSERT_THROW(
+        ScopedEncodingBuffer(nullptr, &bufferPool),
+        "Memory pool cannot be null");
+  }
+
+  {
+    SCOPED_TRACE("uses memory pool without buffer pool");
+    ScopedEncodingBuffer scopedBuffer{pool_.get(), nullptr};
+
+    auto* ptr = scopedBuffer.get().reserve(128);
+    ASSERT_NE(ptr, nullptr);
+    EXPECT_EQ(&scopedBuffer.get().getMemoryPool(), pool_.get());
+  }
 }
 
 } // namespace facebook::nimble::test
