@@ -1008,8 +1008,8 @@ void DeduplicatedArrayColumnReader::makeNestedRowSet(
     // Nulls-only read (IS NULL): skip building the deduplicated states,
     // matching the map reader. This avoids advancing the deduplicated decoders
     // through the desynced skipNulls() seek path. Skipping is safe because the
-    // selected rows are all null, so the normal getValues() path returns
-    // correct all-null output.
+    // selected rows are all null; getValues() emits the null output directly
+    // (its readsNullsOnly() branch) without touching this unbuilt state.
     nestedRows_ = {};
     return;
   }
@@ -1038,7 +1038,7 @@ void DeduplicatedArrayColumnReader::read(
     int64_t offset,
     const velox::RowSet& rows,
     const uint64_t* incomingNulls) {
-  if (deduplicatedReadHelper_.loadLastRun_ &&
+  if (!readsNullsOnly() && deduplicatedReadHelper_.loadLastRun_ &&
       !deduplicatedReadHelper_.lastRunLoaded_) {
     velox::VectorPtr result;
     getValues({}, &result);
@@ -1056,6 +1056,16 @@ void DeduplicatedArrayColumnReader::getValues(
   if (scanSpec_->extractionType() ==
       velox::common::ScanSpec::ExtractionType::kSize) {
     getExtractionSizeValues(rows, result);
+    return;
+  }
+
+  if (readsNullsOnly()) {
+    // Nulls-only read: makeNestedRowSet left the deduplicated state unbuilt, so
+    // emit a null-structured array directly instead of materializing and
+    // masking a dictionary vector. The selected rows are all null (IS NULL), so
+    // no element content is needed.
+    *result = velox::BaseVector::create(requestedType_, rows.size(), pool_);
+    setComplexNulls(rows, *result);
     return;
   }
 
@@ -1174,7 +1184,8 @@ void DeduplicatedMapColumnReader::makeNestedRowSet(
     // construction (prepareDeduplicatedStates) decodes the per-row lengths,
     // which desync from the offsets after a skipNulls() seek and trip the
     // shared-prefix check. Skipping is safe because the selected rows are all
-    // null, so the normal getValues() path returns correct all-null output.
+    // null; getValues() emits the null output directly (its readsNullsOnly()
+    // branch) without touching this unbuilt state.
     nestedRows_ = {};
     return;
   }
@@ -1208,7 +1219,7 @@ void DeduplicatedMapColumnReader::read(
     int64_t offset,
     const velox::RowSet& rows,
     const uint64_t* incomingNulls) {
-  if (deduplicatedReadHelper_.loadLastRun_ &&
+  if (!readsNullsOnly() && deduplicatedReadHelper_.loadLastRun_ &&
       !deduplicatedReadHelper_.lastRunLoaded_) {
     velox::VectorPtr result;
     getValues({}, &result);
@@ -1226,6 +1237,16 @@ void DeduplicatedMapColumnReader::getValues(
 
   if (extractionType != velox::common::ScanSpec::ExtractionType::kNone) {
     getExtractionValues(rows, result);
+    return;
+  }
+
+  if (readsNullsOnly()) {
+    // Nulls-only read: makeNestedRowSet left the deduplicated state unbuilt, so
+    // emit a null-structured map directly instead of materializing and masking
+    // a dictionary vector. The selected rows are all null (IS NULL), so no
+    // element content is needed.
+    *result = velox::BaseVector::create(requestedType_, rows.size(), pool_);
+    setComplexNulls(rows, *result);
     return;
   }
 
