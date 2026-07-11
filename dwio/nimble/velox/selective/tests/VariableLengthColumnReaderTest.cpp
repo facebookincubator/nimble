@@ -468,5 +468,180 @@ TEST_F(VariableLengthColumnReaderTest, listAllNullsWithFilter) {
       *input, *readers.rowReader, 10, [](auto) { return false; });
 }
 
+// Nulls-only read (IS NULL) of a deduplicated map. Regression for the seekTo
+// desync (companion to the seed-pinned fuzz test
+// E2EFilterTest.deduplicatedMapRunLengthDictSeekToDesync). The data shape below
+// is a frozen, minimized reproduction; it does not depend on any random seed.
+//
+// The desync it guards against:
+//   * c1 (map) is deduplicated: offsets are deduplicated into same-offset runs
+//     of identical maps, while lengths are stored per row. Map sizes vary
+//     across runs (1..4 entries) so the per-row lengths stream is non-constant.
+//   * c0 is a sibling filter column. It is filtered first, so it trims the tail
+//     rows of a batch; the map reader then ends a batch behind the batch end
+//     and is seeked forward at the start of the next batch.
+//   * The IS NULL filter on c1 makes the map reads nulls-only, so that forward
+//     seek routes through skipNulls(). Pre-fix, skipNulls advanced the offsets
+//     stream but froze the separate per-row lengths decoder; a later
+//     same-offset run then read stale, mismatched lengths, tripping "None empty
+//     shared prefix is not allowed" in prepareDeduplicatedStates.
+//   * The multi-chunk layout (minStreamChunkRawSize=0 + frequent chunk flushes)
+//     is required to expose the cross-chunk decoder desync.
+TEST_F(VariableLengthColumnReaderTest, deduplicatedMapReadNullsOnly) {
+  // Same-offset dedup runs of varying size, interleaved with nulls. Each
+  // comment marks one run of identical maps (all rows in a run share a dedup
+  // offset); the varying sizes make the per-row lengths stream non-constant.
+  const std::vector<NullableMap<int64_t>> maps = {
+      // {0:0} x4
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      std::nullopt,
+      // {0:0, 1:1} x2
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}}),
+      // {0:0, 1:1, 2:2, 3:3} x2
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      // {0:0} x3
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      // {0:0, 1:1} x2
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}}),
+      // {0:0} x2
+      makeNullableMap<int64_t>({{0, 0}}),
+      makeNullableMap<int64_t>({{0, 0}}),
+      // {0:0, 1:1, 2:2, 3:3} x1
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      // {0:0, 1:1, 2:2} x1
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      std::nullopt,
+      // {0:0, 1:1, 2:2} x5
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+      // {0:0, 1:1} x1
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}}),
+      // {0:0, 1:1, 2:2, 3:3} x1
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      std::nullopt,
+      // {0:0, 1:1, 2:2, 3:3} x3
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}, {3, 3}}),
+      std::nullopt,
+      // {0:0, 1:1, 2:2} x1
+      makeNullableMap<int64_t>({{0, 0}, {1, 1}, {2, 2}}),
+  };
+  const std::vector<int64_t> siblingValues = {4, 3, 9, 9, 0, 6, 6, 4, 4, 3, 3,
+                                              0, 3, 9, 5, 1, 7, 9, 3, 2, 3, 8,
+                                              9, 2, 0, 9, 7, 7, 7, 3, 6, 5};
+  ASSERT_EQ(maps.size(), siblingValues.size());
+  const int numRows = maps.size();
+
+  // Write as two batches within a stripe, forcing frequent chunk boundaries so
+  // the offsets and lengths streams are chunked (multi-chunk is required).
+  const int numBatches = 2;
+  std::vector<VectorPtr> batches;
+  for (int b = 0; b < numBatches; ++b) {
+    int start = b * numRows / numBatches;
+    int end = (b + 1) * numRows / numBatches;
+    std::vector<NullableMap<int64_t>> batchMaps(
+        maps.begin() + start, maps.begin() + end);
+    std::vector<int64_t> batchSiblings(
+        siblingValues.begin() + start, siblingValues.begin() + end);
+    batches.push_back(makeRowVector(
+        {"c0", "c1"},
+        {makeFlatVector<int64_t>(batchSiblings),
+         makeNullableMapVector<int64_t, int64_t>(batchMaps)}));
+  }
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.deduplicatedMapColumns = {"c1"};
+  int flushCounter = 0;
+  writerOptions.flushPolicyFactory = [&flushCounter]() {
+    return std::make_unique<LambdaFlushPolicy>(
+        [&flushCounter](const StripeProgress&) {
+          return flushCounter++ % 3 == 2;
+        },
+        [&flushCounter](const StripeProgress&) {
+          return flushCounter++ % 3 == 2;
+        });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      batches,
+      std::move(writerOptions),
+      /*flushAfterWrite=*/false);
+
+  auto fullInput = makeRowVector(
+      {"c0", "c1"},
+      {makeFlatVector<int64_t>(siblingValues),
+       makeNullableMapVector<int64_t, int64_t>(maps)});
+  auto fullType = asRowType(fullInput->type());
+
+  // The desync surfaces only once the per-row lengths buffer has been populated
+  // by earlier reads (a fresh buffer reads as zeros, which the "shared prefix
+  // of length 0" carve-out tolerates). This mirrors the fuzz test, which
+  // reaches the faulty state through a sequence of reads. Exercising several c0
+  // filter selectivities and batch sizes reproduces it: pre-fix, one of these
+  // reads trips "None empty shared prefix is not allowed"; post-fix, all return
+  // the rows whose sibling is in range and whose map is null.
+  const std::vector<std::pair<int64_t, int64_t>> siblingRanges = {
+      {0, 6}, {0, 3}, {2, 8}, {0, 7}, {1, 5}};
+  for (const auto& range : siblingRanges) {
+    for (int batchSize : {8, 16, 32}) {
+      auto scanSpec = std::make_shared<common::ScanSpec>("root");
+      scanSpec->addAllChildFields(*fullType);
+      // c0 is filtered first and trims batch tails; c1 IS NULL makes the map
+      // reader nulls-only so its forward seeks use skipNulls().
+      scanSpec->childByName("c1")->setFilter(
+          std::make_unique<common::IsNull>());
+      scanSpec->childByName("c0")->setFilter(
+          std::make_unique<common::BigintRange>(
+              range.first, range.second, false));
+      auto readers = makeReaders(fullInput, file, scanSpec);
+      validateWithFilter(*fullInput, *readers.rowReader, batchSize, [&](int i) {
+        return siblingValues[i] >= range.first &&
+            siblingValues[i] <= range.second && !maps[i].has_value();
+      });
+    }
+  }
+}
+
+// Regression for the rows.empty() guard in DeduplicatedReadHelper::
+// makeNestedRowSet. An all-non-null deduplicated map read under an IS NULL
+// filter leaves every read batch fully filtered (activeRows empty) while the
+// deduplicated alphabet is non-empty (alphabetSize > 0). The nulls-only read
+// path short-circuits this today, but if that early-return is ever removed the
+// reader reaches makeNestedRowSet with empty rows, where the rows.empty() guard
+// prevents an out-of-bounds rows.back() on the empty RowSet. (Verified: with
+// the early-return disabled and the guard removed, this reads rows.back() on an
+// empty RowSet.)
+TEST_F(VariableLengthColumnReaderTest, deduplicatedMapAllNonNullWithIsNull) {
+  auto c0 = makeMapVector<int64_t, int64_t>(
+      12,
+      [](auto i) { return 1 + (i % 3); },
+      [](auto j) { return j % 4; },
+      [](auto j) { return j % 4; });
+  auto input = makeRowVector({c0});
+  VeloxWriterOptions options;
+  options.deduplicatedMapColumns = {"c0"};
+  auto file = test::createNimbleFile(*rootPool(), input, std::move(options));
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(std::make_unique<common::IsNull>());
+  auto readers = makeReaders(input, file, scanSpec);
+  // IS NULL matches nothing (all rows non-null): output is empty, no crash.
+  validateWithFilter(*input, *readers.rowReader, 4, [](auto) { return false; });
+}
+
 } // namespace
 } // namespace facebook::nimble

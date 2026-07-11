@@ -1758,6 +1758,48 @@ TEST_P(E2EFilterTest, deduplicatedMap) {
       folly::Random::rand64(gen));
 }
 
+// Regression for the deduplicated-map seekTo desync. Reproducing it requires
+// the run-length-dictionary path: wrapping the batch so consecutive rows are
+// true duplicates produces long same-offset dedup runs. Under an IS NULL /
+// IS NOT NULL filter on map_val (-> readsNullsOnly), seekTo() uses skipNulls(),
+// which advances the nulls stream but freezes the deduplicated lengths decoder;
+// read over a long same-offset run, the stale length mismatches the real one,
+// tripping "None empty shared prefix is not allowed" in
+// prepareDeduplicatedStates. (Plain testWithTypes generates runs too short to
+// expose this -- hence the run-length-dictionary wrapping here.)
+TEST_P(E2EFilterTest, deduplicatedMapRunLengthDictSeekToDesync) {
+  if (common::testutil::useRandomSeed()) {
+    return;
+  }
+  seed_ = 2237282808;
+
+  deduplicatedMapColumns_ = {"map_val"};
+  // The base data comes from a persistent RNG that advances per makeDataset()
+  // call, so the testWithTypes() calls below must run first to reach the same
+  // data state that the run-length-dictionary path then desyncs on. Keep this
+  // sequence identical to the deduplicatedMap fuzz test.
+  testWithTypes(
+      "long_val:bigint,"
+      "int_val:int,"
+      "map_val:map<int, int>",
+      [&]() {},
+      true,
+      {"long_val", "int_val", "map_val"},
+      20,
+      /*withRecursiveNulls=*/true);
+  std::mt19937 gen{seed_};
+  testRunLengthDictionaryWithTypes(
+      "long_val:bigint,"
+      "int_val:int,"
+      "map_val:map<int, int>",
+      [&]() {},
+      true,
+      {"long_val", "int_val", "map_val"},
+      20,
+      /*withRecursiveNulls=*/true,
+      /*dictionaryGenSeed=*/folly::Random::rand64(gen));
+}
+
 // Pruning is only generated in struct_val.map_val in the normal case if filter
 // is present on top level map_val, but struct_val.map_val is not deduplicated,
 // so pruning is untested in normal case.

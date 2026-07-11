@@ -830,7 +830,12 @@ void DeduplicatedReadHelper::makeNestedRowSet(
   lastRunLoaded_ = false;
   if (alphabetSize > 0) {
     lastRunLength_ = lengthAt(alphabetSize - 1);
-    if (runStartRows_[alphabetSize - 1] > rows.back()) {
+    // The last run is not selected when the batch was fully filtered (empty
+    // rows) or the run starts past the last selected row. The rows.empty() term
+    // also guards rows.back(), which is out-of-bounds on an empty RowSet.
+    const bool lastRunNotSelected =
+        rows.empty() || runStartRows_[alphabetSize - 1] > rows.back();
+    if (lastRunNotSelected) {
       // Leave the last run unread in child, in case we need it for the next
       // read. This is as if we skipped the last section manually. Alternatively
       // would be to always read the last run and populate the cache (but have
@@ -999,6 +1004,15 @@ void DeduplicatedArrayColumnReader::readLengths(
 void DeduplicatedArrayColumnReader::makeNestedRowSet(
     const velox::RowSet& rows,
     int32_t maxRow) {
+  if (readsNullsOnly()) {
+    // Nulls-only read (IS NULL): skip building the deduplicated states,
+    // matching the map reader. This avoids advancing the deduplicated decoders
+    // through the desynced skipNulls() seek path. Skipping is safe because the
+    // selected rows are all null, so the normal getValues() path returns
+    // correct all-null output.
+    nestedRows_ = {};
+    return;
+  }
   deduplicatedReadHelper_.makeNestedRowSet(
       rows,
       nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr,
@@ -1155,6 +1169,15 @@ void DeduplicatedMapColumnReader::readLengths(
 void DeduplicatedMapColumnReader::makeNestedRowSet(
     const velox::RowSet& rows,
     int32_t maxRow) {
+  if (readsNullsOnly()) {
+    // Nulls-only read (IS NULL): skip building the deduplicated states. Their
+    // construction (prepareDeduplicatedStates) decodes the per-row lengths,
+    // which desync from the offsets after a skipNulls() seek and trip the
+    // shared-prefix check. Skipping is safe because the selected rows are all
+    // null, so the normal getValues() path returns correct all-null output.
+    nestedRows_ = {};
+    return;
+  }
   deduplicatedReadHelper_.makeNestedRowSet(
       rows,
       nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr,
