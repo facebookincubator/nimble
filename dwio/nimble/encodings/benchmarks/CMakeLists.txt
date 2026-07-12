@@ -61,10 +61,7 @@ target_link_libraries(
   fmt::fmt
 )
 
-add_executable(
-  nimble_simd_for_bitpack_benchmark
-  SimdForBitpackBenchmark.cpp
-)
+add_executable(nimble_simd_for_bitpack_benchmark SimdForBitpackBenchmark.cpp)
 
 target_link_libraries(
   nimble_simd_for_bitpack_benchmark

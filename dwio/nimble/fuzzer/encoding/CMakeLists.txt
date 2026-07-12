@@ -20,12 +20,13 @@ if(NOT TARGET gflags::gflags)
 endif()
 
 if(NOT TARGET gflags::gflags)
-  foreach(_nimble_gflags_target
-          gflags
-          gflags_static
-          gflags_nothreads_static
-          gflags_shared
-          gflags_nothreads_shared
+  foreach(
+    _nimble_gflags_target
+    gflags
+    gflags_static
+    gflags_nothreads_static
+    gflags_shared
+    gflags_nothreads_shared
   )
     if(TARGET ${_nimble_gflags_target})
       add_library(nimble_gflags INTERFACE)
@@ -64,10 +65,7 @@ add_test(
   --nofuzzer_compression
 )
 
-add_executable(
-  nimble_encoding_view_fuzzer_tests
-  EncodingViewFuzzerTest.cpp
-)
+add_executable(nimble_encoding_view_fuzzer_tests EncodingViewFuzzerTest.cpp)
 
 target_link_libraries(
   nimble_encoding_view_fuzzer_tests
