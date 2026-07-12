@@ -13,12 +13,84 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <cmath>
+
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 
 using namespace facebook;
 using namespace facebook::nimble;
+
+namespace {
+
+template <typename T>
+void testIntegralMinMaxAcrossBatches() {
+  IntegralStatisticsCollector collector;
+
+  std::vector<T> firstValues = {
+      static_cast<T>(5),
+      static_cast<T>(-3),
+      static_cast<T>(12),
+      static_cast<T>(7),
+  };
+  collector.addValues(std::span<T>(firstValues));
+
+  auto* stats = collector.getStatsView()->as<IntegralStatistics>();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->getMin(), -3);
+  EXPECT_EQ(stats->getMax(), 12);
+
+  std::vector<T> secondValues = {
+      std::numeric_limits<T>::max(),
+      static_cast<T>(0),
+      std::numeric_limits<T>::min(),
+  };
+  collector.addValues(std::span<T>(secondValues));
+
+  EXPECT_EQ(
+      stats->getMin(), static_cast<int64_t>(std::numeric_limits<T>::min()));
+  EXPECT_EQ(
+      stats->getMax(), static_cast<int64_t>(std::numeric_limits<T>::max()));
+}
+
+template <typename T>
+void testFloatingPointMinMaxAcrossBatches() {
+  FloatingPointStatisticsCollector collector;
+
+  std::vector<T> firstValues = {
+      static_cast<T>(5.5),
+      static_cast<T>(-3.25),
+      static_cast<T>(12.75),
+      static_cast<T>(7.0),
+  };
+  collector.addValues(std::span<T>(firstValues));
+
+  auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+  ASSERT_NE(stats, nullptr);
+  ASSERT_TRUE(stats->getMin().has_value());
+  EXPECT_DOUBLE_EQ(stats->getMin().value(), -3.25);
+  ASSERT_TRUE(stats->getMax().has_value());
+  EXPECT_DOUBLE_EQ(stats->getMax().value(), 12.75);
+
+  std::vector<T> secondValues = {
+      std::numeric_limits<T>::max(),
+      static_cast<T>(0),
+      std::numeric_limits<T>::lowest(),
+  };
+  collector.addValues(std::span<T>(secondValues));
+
+  ASSERT_TRUE(stats->getMin().has_value());
+  EXPECT_DOUBLE_EQ(
+      stats->getMin().value(),
+      static_cast<double>(std::numeric_limits<T>::lowest()));
+  ASSERT_TRUE(stats->getMax().has_value());
+  EXPECT_DOUBLE_EQ(
+      stats->getMax().value(),
+      static_cast<double>(std::numeric_limits<T>::max()));
+}
+
+} // namespace
 
 class ColumnStatisticsTests : public ::testing::Test {};
 
@@ -526,6 +598,36 @@ TEST_F(StatisticsCollectorTests, IntegralMinMaxAfterAddCounts) {
   EXPECT_EQ(stats->getMax().value(), 12);
 }
 
+TEST_F(StatisticsCollectorTests, integralMinMaxAcrossBatches) {
+  {
+    SCOPED_TRACE("int8_t");
+    testIntegralMinMaxAcrossBatches<int8_t>();
+  }
+  {
+    SCOPED_TRACE("int16_t");
+    testIntegralMinMaxAcrossBatches<int16_t>();
+  }
+  {
+    SCOPED_TRACE("int32_t");
+    testIntegralMinMaxAcrossBatches<int32_t>();
+  }
+  {
+    SCOPED_TRACE("int64_t");
+    testIntegralMinMaxAcrossBatches<int64_t>();
+  }
+}
+
+TEST_F(StatisticsCollectorTests, floatingPointMinMaxAcrossBatches) {
+  {
+    SCOPED_TRACE("float");
+    testFloatingPointMinMaxAcrossBatches<float>();
+  }
+  {
+    SCOPED_TRACE("double");
+    testFloatingPointMinMaxAcrossBatches<double>();
+  }
+}
+
 TEST_F(StatisticsCollectorTests, FloatingPointStatisticsCollectorCtor) {
   FloatingPointStatisticsCollector collector;
   auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
@@ -586,6 +688,48 @@ TEST_F(StatisticsCollectorTests, FloatingPointMinMaxAfterAddCounts) {
   EXPECT_DOUBLE_EQ(stats->getMin().value(), -2.7);
   ASSERT_TRUE(stats->getMax().has_value());
   EXPECT_DOUBLE_EQ(stats->getMax().value(), 99.9);
+}
+
+TEST_F(StatisticsCollectorTests, FloatingPointNanBehavior) {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  {
+    FloatingPointStatisticsCollector collector;
+    std::vector<double> values = {1.0, nan, -2.0, 3.0};
+    collector.addValues(std::span<double>(values));
+
+    auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+    ASSERT_NE(stats, nullptr);
+    ASSERT_TRUE(stats->getMin().has_value());
+    EXPECT_DOUBLE_EQ(stats->getMin().value(), -2.0);
+    ASSERT_TRUE(stats->getMax().has_value());
+    EXPECT_DOUBLE_EQ(stats->getMax().value(), 3.0);
+  }
+  {
+    FloatingPointStatisticsCollector collector;
+    std::vector<double> values = {nan, -2.0, 3.0};
+    collector.addValues(std::span<double>(values));
+
+    auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+    ASSERT_NE(stats, nullptr);
+    ASSERT_TRUE(stats->getMin().has_value());
+    EXPECT_TRUE(std::isnan(stats->getMin().value()));
+    ASSERT_TRUE(stats->getMax().has_value());
+    EXPECT_TRUE(std::isnan(stats->getMax().value()));
+  }
+  {
+    FloatingPointStatisticsCollector collector;
+    std::vector<double> firstValues = {0.0, 10.0};
+    collector.addValues(std::span<double>(firstValues));
+    std::vector<double> secondValues = {nan, -5.0, 15.0};
+    collector.addValues(std::span<double>(secondValues));
+
+    auto* stats = collector.getStatsView()->as<FloatingPointStatistics>();
+    ASSERT_NE(stats, nullptr);
+    ASSERT_TRUE(stats->getMin().has_value());
+    EXPECT_DOUBLE_EQ(stats->getMin().value(), -5.0);
+    ASSERT_TRUE(stats->getMax().has_value());
+    EXPECT_DOUBLE_EQ(stats->getMax().value(), 15.0);
+  }
 }
 
 // StringStatisticsCollector Tests

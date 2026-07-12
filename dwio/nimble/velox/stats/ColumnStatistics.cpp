@@ -15,9 +15,126 @@
  */
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 
+#include <algorithm>
+#include <cmath>
+#include <optional>
+#include <utility>
+
 #include "dwio/nimble/common/Exceptions.h"
+#include "velox/common/base/SimdUtil.h"
 
 namespace facebook::nimble {
+
+namespace {
+
+template <typename T>
+struct MinMax {
+  T min;
+  T max;
+};
+
+template <typename T>
+MinMax<int64_t> findIntegralMinMax(std::span<T> values) {
+  static_assert(std::is_integral_v<T>);
+  using Batch = xsimd::batch<T>;
+
+  auto* rawValues = values.data();
+  size_t index{0};
+  T minValue{values.front()};
+  T maxValue{values.front()};
+
+  if (values.size() >= Batch::size) {
+    auto minBatch = Batch::load_unaligned(rawValues);
+    auto maxBatch = minBatch;
+    index = Batch::size;
+    for (; index + Batch::size <= values.size(); index += Batch::size) {
+      const auto batch = Batch::load_unaligned(rawValues + index);
+      minBatch = xsimd::min(minBatch, batch);
+      maxBatch = xsimd::max(maxBatch, batch);
+    }
+    minValue = xsimd::reduce_min(minBatch);
+    maxValue = xsimd::reduce_max(maxBatch);
+  }
+
+  for (; index < values.size(); ++index) {
+    minValue = std::min(minValue, values[index]);
+    maxValue = std::max(maxValue, values[index]);
+  }
+
+  return {
+      .min = static_cast<int64_t>(minValue),
+      .max = static_cast<int64_t>(maxValue),
+  };
+}
+
+template <typename T>
+std::optional<MinMax<double>> findFloatingPointMinMax(std::span<T> values) {
+  static_assert(std::is_floating_point_v<T>);
+  using Batch = xsimd::batch<T>;
+
+  auto* rawValues = values.data();
+  size_t index{0};
+  T minValue{values.front()};
+  T maxValue{values.front()};
+
+  if (std::isnan(minValue)) {
+    return std::nullopt;
+  }
+
+  if (values.size() >= Batch::size) {
+    auto minBatch = Batch::load_unaligned(rawValues);
+    if (xsimd::any(minBatch != minBatch)) {
+      return std::nullopt;
+    }
+    auto maxBatch = minBatch;
+    index = Batch::size;
+    for (; index + Batch::size <= values.size(); index += Batch::size) {
+      const auto batch = Batch::load_unaligned(rawValues + index);
+      if (xsimd::any(batch != batch)) {
+        return std::nullopt;
+      }
+      minBatch = xsimd::min(minBatch, batch);
+      maxBatch = xsimd::max(maxBatch, batch);
+    }
+    minValue = xsimd::reduce_min(minBatch);
+    maxValue = xsimd::reduce_max(maxBatch);
+  }
+
+  for (; index < values.size(); ++index) {
+    const auto value = values[index];
+    if (std::isnan(value)) {
+      return std::nullopt;
+    }
+    minValue = std::min(minValue, value);
+    maxValue = std::max(maxValue, value);
+  }
+
+  return MinMax<double>{
+      .min = static_cast<double>(minValue),
+      .max = static_cast<double>(maxValue),
+  };
+}
+
+template <typename T>
+void addFloatingPointValuesScalar(
+    std::optional<double>& min,
+    std::optional<double>& max,
+    std::span<T> values) {
+  if (UNLIKELY(!min.has_value())) {
+    min = static_cast<double>(values.front());
+  }
+  if (UNLIKELY(!max.has_value())) {
+    max = static_cast<double>(values.front());
+  }
+
+  for (const auto& value : values) {
+    auto current = static_cast<double>(value);
+    min = min > current ? std::make_optional(current) : min;
+    max = max < current ? std::make_optional(current) : max;
+  }
+}
+
+} // namespace
 
 ColumnStatistics::ColumnStatistics(
     uint64_t valueCount,
@@ -314,20 +431,17 @@ void IntegralStatisticsCollector::addValues(std::span<T> values) {
   static_assert(std::is_integral_v<T>);
   addLogicalSize(values.size() * sizeof(T));
 
-  if (!values.empty()) {
-    auto* stats = integralStats();
-    if (UNLIKELY(!stats->min_.has_value())) {
-      stats->min_ = static_cast<int64_t>(values.front());
-    }
-    if (UNLIKELY(!stats->max_.has_value())) {
-      stats->max_ = static_cast<int64_t>(values.front());
-    }
+  if (values.empty()) {
+    return;
+  }
 
-    for (const auto& value : values) {
-      auto v = static_cast<int64_t>(value);
-      stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
-      stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
-    }
+  auto* stats = integralStats();
+  const auto minMax = findIntegralMinMax(values);
+  if (!stats->min_.has_value() || minMax.min < *stats->min_) {
+    stats->min_ = minMax.min;
+  }
+  if (!stats->max_.has_value() || minMax.max > *stats->max_) {
+    stats->max_ = minMax.max;
   }
 }
 
@@ -379,20 +493,21 @@ void FloatingPointStatisticsCollector::addValues(std::span<T> values) {
   static_assert(std::is_floating_point_v<T>);
   addLogicalSize(values.size() * sizeof(T));
 
-  if (!values.empty()) {
-    auto* stats = floatingPointStats();
-    if (UNLIKELY(!stats->min_.has_value())) {
-      stats->min_ = static_cast<double>(values.front());
-    }
-    if (UNLIKELY(!stats->max_.has_value())) {
-      stats->max_ = static_cast<double>(values.front());
-    }
+  if (values.empty()) {
+    return;
+  }
 
-    for (const auto& value : values) {
-      auto v = static_cast<double>(value);
-      stats->min_ = stats->min_ > v ? std::make_optional(v) : stats->min_;
-      stats->max_ = stats->max_ < v ? std::make_optional(v) : stats->max_;
-    }
+  auto* stats = floatingPointStats();
+  const auto minMax = findFloatingPointMinMax(values);
+  if (!minMax.has_value()) {
+    addFloatingPointValuesScalar(stats->min_, stats->max_, values);
+    return;
+  }
+  if (!stats->min_.has_value() || minMax->min < *stats->min_) {
+    stats->min_ = minMax->min;
+  }
+  if (!stats->max_.has_value() || minMax->max > *stats->max_) {
+    stats->max_ = minMax->max;
   }
 }
 
