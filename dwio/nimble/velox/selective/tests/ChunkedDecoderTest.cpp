@@ -19,6 +19,8 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/compression/CompressionPolicy.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -375,6 +377,62 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
       currentOffset = streamData.size();
     }
 
+    return {streamData, chunkInfos};
+  }
+
+  // Encodes chunks compressed with an arbitrary codec, bypassing
+  // ChunkedStreamWriter (whose allowlist only emits Zstd/Lz4). This mirrors
+  // files written with codecs the reader must still decode, such as OpenZL.
+  template <typename T>
+  std::pair<std::string, std::vector<ChunkInfo>> encodeForcedCompressionStream(
+      const std::vector<std::vector<T>>& chunks,
+      CompressionType compressionType) {
+    // Compression policy that requests the given codec and keeps the result
+    // unconditionally.
+    class ForcedCompressionPolicy : public CompressionPolicy {
+     public:
+      explicit ForcedCompressionPolicy(CompressionType type) : type_{type} {}
+
+      CompressionConfig config() const override {
+        return {.compressionType = type_};
+      }
+
+      bool shouldAccept(CompressionType, uint64_t, uint64_t) const override {
+        return true;
+      }
+
+     private:
+      const CompressionType type_;
+    };
+
+    Buffer buffer{*pool_};
+    std::string streamData;
+    std::vector<ChunkInfo> chunkInfos;
+    uint32_t currentOffset = 0;
+    for (const auto& chunk : chunks) {
+      auto encodedChunk = encodeValues<T>(chunk, buffer);
+      ForcedCompressionPolicy policy{compressionType};
+      auto result = Compression::compress(
+          *pool_, encodedChunk, DataType::String, /*bitWidth=*/0, policy);
+      NIMBLE_CHECK(
+          result.compressionType == compressionType &&
+              result.buffer.has_value(),
+          "Failed to compress test chunk with {}",
+          toString(compressionType));
+
+      const size_t headerPos = streamData.size();
+      streamData.resize(headerPos + kChunkHeaderSize);
+      char* pos = streamData.data() + headerPos;
+      writeChunkHeader(
+          static_cast<uint32_t>(result.buffer->size()), compressionType, pos);
+      streamData.append(result.buffer->data(), result.buffer->size());
+
+      chunkInfos.push_back({
+          .rowCount = static_cast<uint32_t>(chunk.size()),
+          .streamOffset = currentOffset,
+      });
+      currentOffset = streamData.size();
+    }
     return {streamData, chunkInfos};
   }
 
@@ -816,6 +874,40 @@ TEST_P(ChunkedDecoderDataTest, readsCompressedChunks) {
     expected.insert(expected.end(), chunks[1].size(), kSecondChunkValue);
     EXPECT_EQ(result, expected);
   }
+}
+
+// Regression test: chunks may be written with OpenZL compression, which the
+// selective reader previously rejected with "Unsupported compression type:
+// OpenZL". ChunkedStreamWriter's allowlist does not emit OpenZL, so the chunk
+// is synthesized directly to mirror the files produced by the writer that does.
+TEST_P(ChunkedDecoderDataTest, readsOpenZLCompressedChunks) {
+  constexpr uint32_t kFirstChunkValue = 42;
+  constexpr uint32_t kSecondChunkValue = 7;
+  const std::vector<std::vector<uint32_t>> chunks{
+      std::vector<uint32_t>(512, kFirstChunkValue),
+      std::vector<uint32_t>(384, kSecondChunkValue),
+  };
+
+  auto [streamData, chunkInfos] =
+      encodeForcedCompressionStream<uint32_t>(chunks, CompressionType::OpenZL);
+  verifyChunkCompressionTypes(
+      streamData, chunkInfos.size(), CompressionType::OpenZL);
+
+  ChunkedDecoder decoder(
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          streamData.data(), streamData.size()),
+      createTestStreamIndex(chunkInfos),
+      false,
+      &encodingFactory(),
+      pool_.get());
+
+  std::vector<int32_t> result(chunks[0].size() + chunks[1].size());
+  decoder.nextIndices(result.data(), result.size(), nullptr);
+
+  std::vector<int32_t> expected;
+  expected.insert(expected.end(), chunks[0].size(), kFirstChunkValue);
+  expected.insert(expected.end(), chunks[1].size(), kSecondChunkValue);
+  EXPECT_EQ(result, expected);
 }
 
 TEST_P(ChunkedDecoderDataTest, skipMultipleChunks) {

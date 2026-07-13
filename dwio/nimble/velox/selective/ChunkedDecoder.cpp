@@ -42,24 +42,20 @@ bool ChunkedDecoder::loadNextChunk(
   const char* chunkData;
   int64_t chunkSize;
   velox::BufferPtr uncompressedBuffer;
-  switch (compressionType) {
-    case CompressionType::Uncompressed:
-      chunkData = inputData_;
-      chunkSize = length;
-      break;
-    case CompressionType::Zstd:
-    case CompressionType::Lz4:
-      uncompressedBuffer = Compression::uncompress(
-          *pool_,
-          compressionType,
-          DataType::String,
-          std::string_view(inputData_, length),
-          /*decompressCounter=*/nullptr);
-      chunkData = uncompressedBuffer->as<char>();
-      chunkSize = uncompressedBuffer->size();
-      break;
-    default:
-      NIMBLE_UNSUPPORTED("Unsupported compression type: {}", compressionType);
+  if (compressionType == CompressionType::Uncompressed) {
+    chunkData = inputData_;
+    chunkSize = length;
+  } else {
+    // Any registered codec decodes through the registry; getCompressor()
+    // rejects types that are not registered.
+    uncompressedBuffer = Compression::uncompress(
+        *pool_,
+        compressionType,
+        DataType::String,
+        std::string_view(inputData_, length),
+        /*decompressCounter=*/nullptr);
+    chunkData = uncompressedBuffer->as<char>();
+    chunkSize = uncompressedBuffer->size();
   }
   inputData_ += length;
   inputSize_ -= length;

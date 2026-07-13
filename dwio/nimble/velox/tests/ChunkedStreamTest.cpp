@@ -15,6 +15,10 @@
  */
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/common/ChunkHeader.h"
+#include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/compression/Compression.h"
+#include "dwio/nimble/compression/CompressionPolicy.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 
@@ -80,6 +84,49 @@ createChunkedStream(
   }
 
   return {data, std::make_unique<TestStreamLoader>(result)};
+}
+
+// Builds a single-chunk stream compressed with an arbitrary codec, bypassing
+// ChunkedStreamWriter (whose allowlist only emits Zstd/Lz4). Mirrors production
+// files written with codecs the reader must still decode, e.g. OpenZL.
+std::unique_ptr<nimble::StreamLoader> createForcedCompressionChunk(
+    velox::memory::MemoryPool& pool,
+    std::string_view data,
+    nimble::CompressionType compressionType) {
+  // Compression policy that requests the given codec and keeps the result
+  // unconditionally.
+  class ForcedCompressionPolicy : public nimble::CompressionPolicy {
+   public:
+    explicit ForcedCompressionPolicy(nimble::CompressionType type)
+        : type_{type} {}
+
+    nimble::CompressionConfig config() const override {
+      return {.compressionType = type_};
+    }
+
+    bool shouldAccept(nimble::CompressionType, uint64_t, uint64_t)
+        const override {
+      return true;
+    }
+
+   private:
+    const nimble::CompressionType type_;
+  };
+
+  ForcedCompressionPolicy policy{compressionType};
+  auto result = nimble::Compression::compress(
+      pool, data, nimble::DataType::String, /*bitWidth=*/0, policy);
+  NIMBLE_CHECK(
+      result.compressionType == compressionType && result.buffer.has_value(),
+      "Failed to compress test chunk with the requested codec");
+
+  std::string stream;
+  stream.resize(nimble::kChunkHeaderSize);
+  char* pos = stream.data();
+  nimble::writeChunkHeader(
+      static_cast<uint32_t>(result.buffer->size()), compressionType, pos);
+  stream.append(result.buffer->data(), result.buffer->size());
+  return std::make_unique<TestStreamLoader>(std::move(stream));
 }
 
 } // namespace
@@ -246,6 +293,33 @@ TEST_P(ChunkedStreamCompressionTest, roundTripMultiChunk) {
       auto chunk = reader.nextChunk();
       EXPECT_EQ(data[j], chunk);
     }
+    EXPECT_FALSE(reader.hasNext());
+    reader.reset();
+  }
+}
+
+// Regression test: chunks may be written with OpenZL compression, which the
+// reader previously rejected with NIMBLE_UNREACHABLE ("Unexpected stream
+// compression type"). ChunkedStreamWriter does not emit OpenZL, so the chunk is
+// synthesized directly to mirror the files produced by the writer that does.
+TEST(ChunkedStreamTests, ReadsOpenZLCompressedChunk) {
+  uint32_t seed = folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+  std::mt19937 rng{seed};
+
+  auto memoryPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  const std::string data = randomString(rng, 100) + std::string(400, 'a');
+  auto result = createForcedCompressionChunk(
+      *memoryPool, data, nimble::CompressionType::OpenZL);
+  ASSERT_GT(result->getStream().size(), 0);
+
+  nimble::InMemoryChunkedStream reader{*memoryPool, std::move(result)};
+  // Run multiple times to verify that reset() is working.
+  for (auto i = 0; i < 3; ++i) {
+    ASSERT_TRUE(reader.hasNext());
+    EXPECT_EQ(nimble::CompressionType::OpenZL, reader.peekCompressionType());
+    auto chunk = reader.nextChunk();
+    EXPECT_EQ(data, chunk);
     EXPECT_FALSE(reader.hasNext());
     reader.reset();
   }

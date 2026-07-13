@@ -46,26 +46,18 @@ std::string_view InMemoryChunkedStream::nextChunk() {
       stream_.size() - (pos_ - stream_.data()),
       "Read beyond end of stream");
   std::string_view chunk;
-  switch (compressionType) {
-    case CompressionType::Uncompressed: {
-      chunk = {pos_, length};
-      break;
-    }
-    case CompressionType::Zstd:
-    case CompressionType::Lz4: {
-      uncompressed_ = Compression::uncompress(
-          memoryPool_,
-          compressionType,
-          DataType::String,
-          {pos_, length},
-          /*decompressCounter=*/nullptr);
-      chunk = {uncompressed_->as<char>(), uncompressed_->size()};
-      break;
-    }
-    default: {
-      NIMBLE_UNREACHABLE(
-          "Unexpected stream compression type: ", toString(compressionType));
-    }
+  if (compressionType == CompressionType::Uncompressed) {
+    chunk = {pos_, length};
+  } else {
+    // Any registered codec decodes through the registry; getCompressor()
+    // rejects types that are not registered.
+    uncompressed_ = Compression::uncompress(
+        memoryPool_,
+        compressionType,
+        DataType::String,
+        {pos_, length},
+        /*decompressCounter=*/nullptr);
+    chunk = {uncompressed_->as<char>(), uncompressed_->size()};
   }
   pos_ += length;
   return chunk;
