@@ -4087,6 +4087,19 @@ std::unique_ptr<FieldReaderFactory> createFieldReaderFactory(
                .selectedKeys = selectedChildren.size()});
         }
 
+        const auto& flatMapFeatureProjectionCallback =
+            parameters.flatMapFeatureProjectionCallback;
+        if (flatMapFeatureProjectionCallback != nullptr) {
+          std::vector<std::string> selectedFeatureNames;
+          selectedFeatureNames.reserve(selectedChildren.size());
+          for (auto childIdx : selectedChildren) {
+            selectedFeatureNames.emplace_back(nimbleFlatMap.nameAt(childIdx));
+          }
+          flatMapFeatureProjectionCallback(
+              {.columnName = (name != nullptr ? *name : std::string{}),
+               .selectedFeatureNames = std::move(selectedFeatureNames)});
+        }
+
         return createFlatMapReaderFactory(
             pool,
             veloxType->childAt(0)->type()->kind(),
