@@ -20,20 +20,22 @@
 #include <string_view>
 #include <vector>
 
-#include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/serializer/Options.h"
-#include "dwio/nimble/velox/SchemaUtils.h"
-#include "folly/io/Cursor.h"
+#include "dwio/nimble/serializer/StreamSelector.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble::serde {
 
-using Subfield = velox::common::Subfield;
-
 /// Projects columns and subfields from serialized Nimble data without decoding.
+///
+/// A Projector wraps a StreamSelector (step 1: select the byte ranges for the
+/// requested columns/subfields, zero-copy) and additionally frames the selected
+/// streams into a standalone projected blob (step 2: serialization header +
+/// stream-sizes trailer). Consumers that only need the selection step (e.g. the
+/// Deserializer, which decodes the selected streams directly) use a
+/// StreamSelector instead.
 ///
 /// Copies only the byte ranges for selected columns/subfields, preserving
 /// compression and avoiding decode-encode overhead.
@@ -71,7 +73,8 @@ class Projector {
   struct Options {
     /// Output serialization format version. Defaults to kProjection (the
     /// Projector-specific version byte for the two-array sparse trailer).
-    /// kLegacyCompact is read-only and rejected at construction.
+    /// kLegacyCompact is read-only and silently upgraded to kProjection at
+    /// construction.
     SerializationVersion projectVersion{SerializationVersion::kProjection};
 
     /// Encoding type for the indices array of the sparse stream-sizes
@@ -129,130 +132,35 @@ class Projector {
   std::vector<folly::IOBuf> project(
       const std::vector<folly::IOBuf>& inputs) const;
 
-  /// Returns the projected schema.
-  /// The schema has compact stream indices starting from 0.
+  /// Returns the projected schema (compact stream indices starting from 0).
   std::shared_ptr<const Type> projectedSchema() const {
-    return projectedSchema_;
+    return selector_.projectedSchema();
   }
 
   /// Returns the input stream indices that will be copied.
   /// Only for testing.
   const std::vector<uint32_t>& testingInputStreamIndices() const {
-    return inputStreamIndices_;
+    return selector_.testingInputStreamIndices();
   }
 
   /// Returns whether input stream indices are sorted (fast path eligible).
   /// Only for testing.
   bool testingInputStreamsSorted() const {
-    return inputStreamsSorted_;
+    return selector_.testingInputStreamsSorted();
   }
 
  private:
-  // Maps an input stream index to its output stream index.
-  struct StreamMapping {
-    uint32_t inputStreamIdx;
-    size_t outputStreamIdx;
-  };
-
-  // Projects a contiguous (non-chained) IOBuf using raw pointer arithmetic.
-  folly::IOBuf projectContiguous(
-      const folly::IOBuf& input,
-      SerializationVersion inputVersion) const;
-
-  // Projects a chained IOBuf using folly::io::Cursor.
-  folly::IOBuf projectChained(
-      const folly::IOBuf& input,
-      SerializationVersion inputVersion) const;
-
-  // The stream projection helpers return output stream sizes. Size-zero
-  // streams remain zero slots in the returned vector and are omitted by the
-  // trailer writer. outputRequiresNullBarrier is set only when a copied stream
-  // has bytes, inputRequiresNullBarrier is true, and its corresponding
-  // rowOrFlatMapNullStreams entry is true. rowOrFlatMapNullStreams is parallel
-  // to output stream indices.
-
-  // Projects selected streams from a contiguous IOBuf in unsorted order.
-  // Walks selectedStreamIndices in output order; for each, binary-searches the
-  // sparse (streamIndices, streamSizes) trailer for the corresponding bytes.
-  // Output IOBufs are emitted in output order with run merging across
-  // contiguous-in-input selected streams.
-  static std::vector<uint32_t> projectStreamsContiguousUnsorted(
-      const folly::IOBuf& input,
-      size_t dataOffset,
-      const std::vector<uint32_t>& streamIndices,
-      const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedStreamIndices,
-      bool inputRequiresNullBarrier,
-      const std::vector<bool>& rowOrFlatMapNullStreams,
-      bool& outputRequiresNullBarrier,
-      std::unique_ptr<folly::IOBuf>& output);
-
-  // Projects selected streams from a contiguous IOBuf in sorted order.
-  // Two-pointer merge over the sparse (streamIndices, streamSizes) trailer and
-  // the already-sorted selectedStreamIndices.
-  static std::vector<uint32_t> projectStreamsContiguousSorted(
-      const folly::IOBuf& input,
-      size_t dataOffset,
-      const std::vector<uint32_t>& streamIndices,
-      const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedStreamIndices,
-      bool inputRequiresNullBarrier,
-      const std::vector<bool>& rowOrFlatMapNullStreams,
-      bool& outputRequiresNullBarrier,
-      std::unique_ptr<folly::IOBuf>& output);
-
-  // Projects selected streams from a chained IOBuf in sorted order.
-  // Two-pointer merge; cursor advances stay aligned to the sparse stream
-  // bytes only.
-  static std::vector<uint32_t> projectStreamsChainedSorted(
-      folly::io::Cursor& cursor,
-      const std::vector<uint32_t>& streamIndices,
-      const std::vector<uint32_t>& streamSizes,
-      const std::vector<uint32_t>& selectedStreamIndices,
-      bool inputRequiresNullBarrier,
-      const std::vector<bool>& rowOrFlatMapNullStreams,
-      bool& outputRequiresNullBarrier,
-      std::unique_ptr<folly::IOBuf>& output);
-
-  // Projects selected streams from a chained IOBuf in unsorted order.
-  // Same merge-walk shape as the contiguous unsorted variant; output buffers
-  // are sorted by output stream index before chaining.
-  static std::vector<uint32_t> projectStreamsChainedUnsorted(
-      folly::io::Cursor& cursor,
-      const std::vector<uint32_t>& streamIndices,
-      const std::vector<uint32_t>& streamSizes,
-      const std::vector<StreamMapping>& sortedStreamMappings,
-      bool inputRequiresNullBarrier,
-      const std::vector<bool>& rowOrFlatMapNullStreams,
-      bool& outputRequiresNullBarrier,
-      std::unique_ptr<folly::IOBuf>& output);
-
-  // Appends the trailer to the output IOBuf chain and returns it.
+  // Frames selected streams into a projected blob by appending the trailer to
+  // the output IOBuf chain (which already carries the header and stream data).
   folly::IOBuf buildProjectedOutput(
       const std::vector<uint32_t>& outputStreamSizes,
+      SerializationVersion version,
       std::unique_ptr<folly::IOBuf> output) const;
 
-  velox::memory::MemoryPool* const pool_;
-  const Options options_;
-
-  std::shared_ptr<const Type> inputSchema_;
-  // Built during construction.
-  std::shared_ptr<const Type> projectedSchema_;
-  std::vector<uint32_t> inputStreamIndices_;
-  // Parallel to inputStreamIndices_ and output stream indices. A true entry
-  // means the projected stream is a Row or FlatMap null stream.
-  std::vector<bool> rowOrFlatMapNullStreams_;
-
-  // True when inputStreamIndices_ is already sorted (no FlatMap key
-  // reordering). Enables fast-path projection that avoids sorting and
-  // reordering overhead.
-  bool inputStreamsSorted_{false};
-
-  // Cached mapping from input stream index to output stream index, sorted by
-  // input stream index. Built once in the constructor when
-  // !inputStreamsSorted_. Empty when inputStreamsSorted_ is true.
-  // Used by projectStreamsChainedUnsorted() for forward pass extraction.
-  std::vector<StreamMapping> sortedStreamMappings_;
+  // Step 1: selects the projected streams (zero-copy).
+  StreamSelector selector_;
+  const EncodingType streamIndicesEncodingType_;
+  const EncodingType streamSizesEncodingType_;
 };
 
 } // namespace facebook::nimble::serde

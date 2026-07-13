@@ -4339,4 +4339,222 @@ TEST_F(ProjectorTest, fuzzMixedVersionProjection) {
   }
 }
 
+// The projecting Deserializer constructor decodes a full blob down to the
+// projected columns in one call; it must match manually chaining a Projector
+// and a Deserializer.
+TEST_F(ProjectorTestBase, deserializeWithProjectionMatchesManual) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+      {"c", VARCHAR()},
+  });
+  auto vec = makeSimpleRowVector(
+      {"a", "b", "c"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+          makeStringVector({"x", "y", "z"}),
+      });
+
+  const SerializerOptions serializerOptions{
+      .version = SerializationVersion::kSerialization};
+  const auto serialized = serialize(vec, type, serializerOptions);
+  const auto inputSchema = getNimbleSchema(type, serializerOptions);
+  const auto subfields = makeSubfields({"a", "c"});
+  const DeserializerOptions deserializerOptions{.hasHeader = true};
+
+  // Expected: manual project -> deserialize.
+  Projector projector(
+      inputSchema, subfields, pool_.get(), Projector::Options{});
+  const auto projected = toString(projector.project(serialized));
+  const auto expected =
+      deserialize(projected, projector.projectedSchema(), deserializerOptions);
+
+  // Actual: the projecting deserializer selects and decodes the projected
+  // streams directly from the full blob, in a single call.
+  Deserializer deserializer(
+      inputSchema,
+      pool_.get(),
+      subfields,
+      StreamSelector::Options{},
+      deserializerOptions);
+  VectorPtr actual;
+  deserializer.deserialize(serialized, actual);
+
+  ASSERT_EQ(actual->size(), expected->size());
+  ASSERT_EQ(actual->as<RowVector>()->childrenSize(), 2);
+  for (vector_size_t i = 0; i < expected->size(); ++i) {
+    EXPECT_TRUE(expected->equalValueAt(actual.get(), i, i))
+        << "Mismatch at row " << i;
+  }
+}
+
+// The projecting Deserializer also projects each batch of the multi-batch
+// deserialize() overload.
+TEST_F(ProjectorTestBase, deserializeWithProjectionMultipleBatches) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+      {"c", VARCHAR()},
+  });
+  auto vec = makeSimpleRowVector(
+      {"a", "b", "c"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+          makeStringVector({"x", "y", "z"}),
+      });
+
+  const SerializerOptions serializerOptions{
+      .version = SerializationVersion::kSerialization};
+  const auto serialized = serialize(vec, type, serializerOptions);
+  const auto inputSchema = getNimbleSchema(type, serializerOptions);
+  const auto subfields = makeSubfields({"a", "c"});
+
+  Deserializer deserializer(
+      inputSchema,
+      pool_.get(),
+      subfields,
+      StreamSelector::Options{},
+      DeserializerOptions{.hasHeader = true});
+  VectorPtr actual;
+  deserializer.deserialize(
+      std::vector<std::string_view>{serialized, serialized}, actual);
+
+  // Two identical batches decoded together -> 6 rows, projected to (a, c).
+  ASSERT_EQ(actual->size(), 6);
+  ASSERT_EQ(actual->as<RowVector>()->childrenSize(), 2);
+}
+
+// Builds a RowVector<id, features> where every row carries FlatMap keys 1,
+// 2, 3. Because each key is present in every row, the writer omits the per-key
+// in-map streams, so the read path must reconstruct them.
+RowVectorPtr makeAllPresentFlatMapRows(
+    memory::MemoryPool* pool,
+    const TypePtr& type,
+    vector_size_t numRows) {
+  const int entriesPerRow = 3;
+  const int totalEntries = numRows * entriesPerRow;
+  auto mapOffsets = allocateOffsets(numRows, pool);
+  auto mapSizes = allocateSizes(numRows, pool);
+  auto* rawOffsets = mapOffsets->asMutable<vector_size_t>();
+  auto* rawSizes = mapSizes->asMutable<vector_size_t>();
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    rawOffsets[i] = i * entriesPerRow;
+    rawSizes[i] = entriesPerRow;
+  }
+  auto mapKeys =
+      BaseVector::create<FlatVector<int32_t>>(INTEGER(), totalEntries, pool);
+  auto mapValues =
+      BaseVector::create<FlatVector<double>>(DOUBLE(), totalEntries, pool);
+  for (int i = 0; i < totalEntries; ++i) {
+    mapKeys->set(i, (i % entriesPerRow) + 1); // Keys: 1, 2, 3
+    mapValues->set(i, i * 1.5);
+  }
+  auto mapVector = std::make_shared<MapVector>(
+      pool,
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      mapKeys,
+      mapValues);
+  auto ids = BaseVector::create<FlatVector<int64_t>>(BIGINT(), numRows, pool);
+  for (vector_size_t i = 0; i < numRows; ++i) {
+    ids->set(i, 100 * (i + 1));
+  }
+  return std::make_shared<RowVector>(
+      pool, type, nullptr, numRows, std::vector<VectorPtr>{ids, mapVector});
+}
+
+// The fused projecting Deserializer must reproduce a FlatMap key projection —
+// including reconstructing the all-present key's omitted in-map stream —
+// identically to a manual Projector + Deserializer.
+TEST_F(ProjectorTestBase, deserializeWithProjectionFlatMapKeyMatchesManual) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+  auto vec = makeAllPresentFlatMapRows(pool_.get(), type, /*numRows=*/3);
+
+  const SerializerOptions serializerOptions{
+      .version = SerializationVersion::kSerialization,
+      .flatMapColumns = {{"features", {}}},
+  };
+  const auto [serialized, inputSchema] =
+      serializeWithSchema(vec, type, serializerOptions);
+  const auto subfields = makeSubfields({"features[\"2\"]"});
+  const DeserializerOptions deserializerOptions{.hasHeader = true};
+
+  // Expected: manual project -> deserialize.
+  Projector projector(
+      inputSchema, subfields, pool_.get(), Projector::Options{});
+  const auto expected = deserialize(
+      toString(projector.project(serialized)),
+      projector.projectedSchema(),
+      deserializerOptions);
+
+  // Actual: fused projecting deserialize in one call.
+  Deserializer deserializer(
+      inputSchema,
+      pool_.get(),
+      subfields,
+      StreamSelector::Options{},
+      deserializerOptions);
+  VectorPtr actual;
+  deserializer.deserialize(serialized, actual);
+
+  ASSERT_EQ(actual->size(), expected->size());
+  for (vector_size_t i = 0; i < expected->size(); ++i) {
+    EXPECT_TRUE(expected->equalValueAt(actual.get(), i, i))
+        << "Mismatch at row " << i << "\nExpected: " << expected->toString(i)
+        << "\nActual: " << actual->toString(i);
+  }
+}
+
+// Projecting a FlatMap key absent from the source must decode to null through
+// the fused path exactly as through a manual Projector + Deserializer.
+TEST_F(
+    ProjectorTestBase,
+    deserializeWithProjectionMissingFlatMapKeyMatchesManual) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+  auto vec = makeAllPresentFlatMapRows(pool_.get(), type, /*numRows=*/2);
+
+  const SerializerOptions serializerOptions{
+      .version = SerializationVersion::kSerialization,
+      .flatMapColumns = {{"features", {}}},
+  };
+  const auto [serialized, inputSchema] =
+      serializeWithSchema(vec, type, serializerOptions);
+  // Key "999" does not exist in the source FlatMap.
+  const auto subfields = makeSubfields({"features[\"999\"]"});
+  const DeserializerOptions deserializerOptions{.hasHeader = true};
+
+  Projector projector(
+      inputSchema, subfields, pool_.get(), Projector::Options{});
+  const auto expected = deserialize(
+      toString(projector.project(serialized)),
+      projector.projectedSchema(),
+      deserializerOptions);
+
+  Deserializer deserializer(
+      inputSchema,
+      pool_.get(),
+      subfields,
+      StreamSelector::Options{},
+      deserializerOptions);
+  VectorPtr actual;
+  deserializer.deserialize(serialized, actual);
+
+  ASSERT_EQ(actual->size(), expected->size());
+  for (vector_size_t i = 0; i < expected->size(); ++i) {
+    EXPECT_TRUE(expected->equalValueAt(actual.get(), i, i))
+        << "Mismatch at row " << i;
+  }
+}
+
 } // namespace facebook::nimble::serde

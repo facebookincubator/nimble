@@ -20,6 +20,7 @@
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/Likely.h"
+#include "folly/io/Cursor.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/TypeWithId.h"
 
@@ -708,8 +709,32 @@ Deserializer::Deserializer(
     velox::memory::MemoryPool* pool,
     DeserializerOptions options)
     : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
+  initReaders();
+}
+
+Deserializer::Deserializer(
+    std::shared_ptr<const Type> inputSchema,
+    velox::memory::MemoryPool* pool,
+    const std::vector<serde::Subfield>& projectSubfields,
+    const serde::StreamSelector::Options& selectorOptions,
+    DeserializerOptions options)
+    : selector_{std::make_unique<const serde::StreamSelector>(
+          std::move(inputSchema),
+          projectSubfields,
+          selectorOptions)},
+      schema_{selector_->projectedSchema()},
+      pool_{pool},
+      options_{std::move(options)} {
+  initReaders();
+}
+
+void Deserializer::initReaders() {
   const auto params = createFieldReaderParams();
-  parser_ = std::make_unique<serde::StreamDataParser>(pool_, options_);
+  // The projecting path drives decoding from the injected StreamSelector and
+  // never parses a blob, so it needs no StreamDataParser.
+  if (selector_ == nullptr) {
+    parser_ = std::make_unique<serde::StreamDataParser>(pool_, options_);
+  }
 
   std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
       velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
@@ -736,7 +761,8 @@ Deserializer::Deserializer(
   // descriptor offset already in deserializerMap_. Sizing here (rather than
   // grow-on-demand inside createDeserializersForType) avoids repeated
   // reallocations and lets the per-batch hot path skip a bounds check.
-  if (!inMapChildTypes_.empty()) {
+  hasInMapChildren_ = !inMapChildTypes_.empty();
+  if (hasInMapChildren_) {
     streamPresentFlags_.resize(maxOffset + 1, false);
     valueOffsetToInMap_.resize(maxOffset + 1, kInvalidInMapOffset);
     // Populate the reverse-lookup table: for each top-level FlatMap child,
@@ -794,14 +820,132 @@ void Deserializer::createDeserializersForType(
 
 void Deserializer::deserialize(std::string_view data, velox::VectorPtr& output)
     const {
+  if (selector_ != nullptr) {
+    deserializeProjected(
+        folly::Range<const std::string_view*>(&data, 1), output);
+    return;
+  }
   deserialize(folly::Range<const std::string_view*>(&data, 1), output);
 }
 
 void Deserializer::deserialize(
     const std::vector<std::string_view>& data,
     velox::VectorPtr& output) const {
+  if (selector_ != nullptr) {
+    deserializeProjected(
+        folly::Range<const std::string_view*>(data.data(), data.size()),
+        output);
+    return;
+  }
   deserialize(
       folly::Range<const std::string_view*>(data.data(), data.size()), output);
+}
+
+void Deserializer::deserializeProjected(
+    folly::Range<const std::string_view*> data,
+    velox::VectorPtr& output) const {
+  NIMBLE_CHECK(!data.empty(), "Expected at least one serialized batch");
+
+  output = nullptr;
+  DecodeRun run;
+  std::vector<serde::ProjectedStreams> heldStreams;
+  heldStreams.reserve(data.size());
+  std::vector<velox::BufferPtr> coalescedStreamBuffers;
+  for (const auto batch : data) {
+    const auto input =
+        folly::IOBuf::wrapBufferAsValue(batch.data(), batch.size());
+    const auto& streams =
+        heldStreams.emplace_back(selector_->selectStreams(input));
+    appendProjectedBatch(streams, coalescedStreamBuffers, run, output);
+  }
+  decodeRun(run, output);
+}
+
+void Deserializer::resetInMapPresenceTracking() const {
+  if (!hasInMapChildren_) {
+    return;
+  }
+  std::fill(streamPresentFlags_.begin(), streamPresentFlags_.end(), false);
+  presentStreamOffsets_.clear();
+}
+
+void Deserializer::recordStreamSegment(
+    uint32_t offset,
+    std::string_view streamData,
+    SerializationVersion version,
+    uint32_t startRow) const {
+  if (FOLLY_UNLIKELY(offset >= deserializers_.size())) {
+    return;
+  }
+
+  if (hasInMapChildren_ && !streamPresentFlags_[offset]) {
+    streamPresentFlags_[offset] = true;
+    presentStreamOffsets_.emplace_back(offset);
+  }
+  auto* decoder = deserializers_[offset];
+  NIMBLE_CHECK_NOT_NULL(decoder, "Missing decoder for stream");
+  SegmentedStreamDecoder::as(decoder)->addBatch(startRow, streamData, version);
+}
+
+void Deserializer::reconstructOmittedInMapStreams(
+    uint32_t startRow,
+    uint32_t rowCount,
+    bool requiresBarrier) const {
+  for (const uint32_t valueOffset : presentStreamOffsets_) {
+    const auto inMapOffset = valueOffsetToInMap_[valueOffset];
+    if (inMapOffset == kInvalidInMapOffset ||
+        streamPresentFlags_[inMapOffset]) {
+      continue;
+    }
+    auto* decoder = deserializers_[inMapOffset];
+    NIMBLE_CHECK_NOT_NULL(decoder, "Missing FlatMap in-map decoder");
+    auto* segmentedDecoder = SegmentedStreamDecoder::as(decoder);
+    if (requiresBarrier) {
+      segmentedDecoder->addPresentInMapBatch();
+    } else {
+      segmentedDecoder->addPresentInMapBatch(startRow, rowCount);
+    }
+    streamPresentFlags_[inMapOffset] = true;
+  }
+}
+
+void Deserializer::appendProjectedStreamSegments(
+    const serde::ProjectedStreams& streams,
+    std::vector<velox::BufferPtr>& coalescedStreamBuffers,
+    uint32_t startRow) const {
+  resetInMapPresenceTracking();
+
+  folly::io::Cursor cursor(&streams.streamData);
+  const auto numSlots = streams.streamSizes.size();
+  for (uint32_t offset = 0; offset < numSlots; ++offset) {
+    const auto streamSize = streams.streamSizes[offset];
+    if (streamSize == 0) {
+      continue;
+    }
+    // Hot path: when the projected streams came from single-node
+    // input — which every current Deserializer entry passes, each stream lies
+    // within one IOBuf node, so take a zero-copy view.
+    // Cold path: the ProjectedStreams contract also permits streams derived
+    // from chained input whose bytes span IOBuf nodes; those are coalesced into
+    // a retained pool-backed buffer. Advance the cursor before recording so it
+    // stays aligned even for streams beyond the schema.
+    std::string_view streamData;
+    const auto peek = cursor.peekBytes();
+    if (FOLLY_LIKELY(peek.size() >= streamSize)) {
+      streamData = std::string_view(
+          reinterpret_cast<const char*>(peek.data()), streamSize);
+      cursor.skip(streamSize);
+    } else {
+      auto buffer = velox::AlignedBuffer::allocate<char>(streamSize, pool_);
+      cursor.pull(buffer->asMutable<char>(), streamSize);
+      streamData = std::string_view(buffer->as<char>(), streamSize);
+      coalescedStreamBuffers.emplace_back(std::move(buffer));
+    }
+    recordStreamSegment(offset, streamData, streams.version, startRow);
+  }
+
+  reconstructOmittedInMapStreams(
+      startRow, streams.rowCount, streams.requiresNullBarrier);
 }
 
 void Deserializer::appendToOutput(
@@ -830,49 +974,12 @@ void Deserializer::appendStreamSegments(
     uint32_t rowCount,
     uint32_t startRow,
     bool requiresBarrier) const {
-  const auto maxStreamOffset = deserializers_.size() - 1;
+  resetInMapPresenceTracking();
   const auto version = parser_->version();
-  const bool hasInMapChildren = !inMapChildTypes_.empty();
-  if (hasInMapChildren) {
-    std::fill(streamPresentFlags_.begin(), streamPresentFlags_.end(), false);
-    presentStreamOffsets_.clear();
-  }
   parser_->iterateStreams([&](uint32_t offset, std::string_view streamData) {
-    if (FOLLY_UNLIKELY(offset > maxStreamOffset)) {
-      return;
-    }
-    if (hasInMapChildren) {
-      if (!streamPresentFlags_[offset]) {
-        streamPresentFlags_[offset] = true;
-        presentStreamOffsets_.emplace_back(offset);
-      }
-    }
-    auto* decoder = deserializers_[offset];
-    NIMBLE_CHECK_NOT_NULL(decoder, "Missing decoder for stream");
-    SegmentedStreamDecoder::as(decoder)->addBatch(
-        startRow, streamData, version);
+    recordStreamSegment(offset, streamData, version, startRow);
   });
-
-  if (!hasInMapChildren) {
-    return;
-  }
-  const auto presentStreamCount = presentStreamOffsets_.size();
-  for (size_t i = 0; i < presentStreamCount; ++i) {
-    const auto inMapOffset = valueOffsetToInMap_[presentStreamOffsets_[i]];
-    if (inMapOffset == kInvalidInMapOffset ||
-        streamPresentFlags_[inMapOffset]) {
-      continue;
-    }
-    auto* decoder = deserializers_[inMapOffset];
-    NIMBLE_CHECK_NOT_NULL(decoder, "Missing FlatMap in-map decoder");
-    auto* segmentedDecoder = SegmentedStreamDecoder::as(decoder);
-    if (requiresBarrier) {
-      segmentedDecoder->addPresentInMapBatch();
-    } else {
-      segmentedDecoder->addPresentInMapBatch(startRow, rowCount);
-    }
-    streamPresentFlags_[inMapOffset] = true;
-  }
+  reconstructOmittedInMapStreams(startRow, rowCount, requiresBarrier);
 }
 
 void Deserializer::appendBatch(
@@ -891,6 +998,23 @@ void Deserializer::appendBatch(
   if (FOLLY_UNLIKELY(requiresBarrier)) {
     decodeRun(run, output);
     parser_->reset();
+  }
+}
+
+void Deserializer::appendProjectedBatch(
+    const serde::ProjectedStreams& streams,
+    std::vector<velox::BufferPtr>& coalescedStreamBuffers,
+    DecodeRun& run,
+    velox::VectorPtr& output) const {
+  if (FOLLY_UNLIKELY(streams.requiresNullBarrier)) {
+    decodeRun(run, output);
+  }
+  appendProjectedStreamSegments(
+      streams, coalescedStreamBuffers, /*startRow=*/run.rows);
+  run.rows += streams.rowCount;
+  ++run.batches;
+  if (FOLLY_UNLIKELY(streams.requiresNullBarrier)) {
+    decodeRun(run, output);
   }
 }
 

@@ -19,9 +19,11 @@
 #include <limits>
 
 #include "dwio/nimble/serializer/Options.h"
+#include "dwio/nimble/serializer/StreamSelector.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "folly/Range.h"
 #include "folly/container/F14Map.h"
+#include "velox/buffer/Buffer.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::nimble {
@@ -49,6 +51,19 @@ class Deserializer {
       velox::memory::MemoryPool* pool,
       DeserializerOptions options);
 
+  /// Constructs a deserializer that selects (projects) `projectSubfields` out
+  /// of each input via an internal StreamSelector, then decodes only the
+  /// selected streams directly, in a single call, without materializing or
+  /// re-parsing an intermediate projected blob. The decode path depends only on
+  /// StreamSelector, not on the blob-assembling Projector. The output schema is
+  /// the selector's projected schema; any `options.outputType` must match it.
+  Deserializer(
+      std::shared_ptr<const Type> inputSchema,
+      velox::memory::MemoryPool* pool,
+      const std::vector<serde::Subfield>& projectSubfields,
+      const serde::StreamSelector::Options& selectorOptions,
+      DeserializerOptions options);
+
   ~Deserializer();
 
   Deserializer(Deserializer&&) = delete;
@@ -63,6 +78,10 @@ class Deserializer {
       velox::VectorPtr& output) const;
 
  private:
+  // Builds the field-reader tree and per-stream decoder lookup from schema_.
+  // Shared by all constructors after schema_ is set.
+  void initReaders();
+
   // Creates deserializers for a type and its FlatMap inMap streams.
   void createDeserializersForType(const Type& type, uint32_t depth);
 
@@ -73,6 +92,23 @@ class Deserializer {
   void deserialize(
       folly::Range<const std::string_view*> data,
       velox::VectorPtr& output) const;
+
+  // Projecting decode (selector_ != nullptr): reuses the StreamSelector's
+  // stream selection (selectStreams) and decodes the selected streams
+  // directly, without materializing or re-parsing an intermediate projected
+  // blob.
+  void deserializeProjected(
+      folly::Range<const std::string_view*> data,
+      velox::VectorPtr& output) const;
+
+  // Feeds one batch's projected streams (from StreamSelector::selectStreams)
+  // to the per-stream decoders, including FlatMap in-map reconstruction.
+  // `coalescedStreamBuffers` retains pool-backed coalesced copies of streams
+  // that span IOBuf nodes until the decode run consumes them.
+  void appendProjectedStreamSegments(
+      const serde::ProjectedStreams& streams,
+      std::vector<velox::BufferPtr>& coalescedStreamBuffers,
+      uint32_t startRow) const;
 
   // Open run of non-barrier batches that can be decoded together.
   struct DecodeRun {
@@ -87,11 +123,44 @@ class Deserializer {
       DecodeRun& run,
       velox::VectorPtr& output) const;
 
-  // Registers this batch's physical stream segments and synthesizes omitted
-  // FlatMap in-map segments when older serializers leave them implicit.
+  // Adds one batch's selected streams to the current decode run, decoding
+  // before and after batches that require a null barrier.
+  void appendProjectedBatch(
+      const serde::ProjectedStreams& streams,
+      std::vector<velox::BufferPtr>& coalescedStreamBuffers,
+      DecodeRun& run,
+      velox::VectorPtr& output) const;
+
+  // Registers this batch's physical stream segments and reconstructs omitted
+  // FlatMap in-map streams when older serializers leave them implicit.
   void appendStreamSegments(
       uint32_t rowCount,
       uint32_t startRow,
+      bool requiresBarrier) const;
+
+  // The following three helpers are the shared body of appendStreamSegments and
+  // appendProjectedStreamSegments; the two paths differ only in how they
+  // enumerate the batch's streams.
+
+  // Clears per-batch stream-presence tracking. No-op when the schema has no
+  // FlatMap children (presence tracking only feeds in-map reconstruction).
+  void resetInMapPresenceTracking() const;
+
+  // Records one physical stream segment on the decoder at `offset`, skipping
+  // indices beyond the projected schema, and marks the stream present for
+  // in-map inference.
+  void recordStreamSegment(
+      uint32_t offset,
+      std::string_view streamData,
+      SerializationVersion version,
+      uint32_t startRow) const;
+
+  // Reconstructs in-map streams the writer omitted: for each FlatMap key whose
+  // value stream appeared this batch but whose in-map stream did not, records
+  // an all-present in-map segment.
+  void reconstructOmittedInMapStreams(
+      uint32_t startRow,
+      uint32_t rowCount,
       bool requiresBarrier) const;
 
   // Appends a decoded run to the accumulated output vector.
@@ -103,6 +172,12 @@ class Deserializer {
   void decodeRun(DecodeRun& run, velox::VectorPtr& output) const;
 
   // --- Const members (set at construction, never modified) ---
+  // Optional stream selector built from the projected subfields (projecting
+  // constructor). When set, deserialize() projects each input via selector_ and
+  // decodes the selected streams directly; null for the non-projecting
+  // constructors. Declared before schema_ so schema_ can be initialized from
+  // its projected schema.
+  const std::unique_ptr<const serde::StreamSelector> selector_;
   const std::shared_ptr<const Type> schema_;
   velox::memory::MemoryPool* const pool_;
   const DeserializerOptions options_;
@@ -123,6 +198,10 @@ class Deserializer {
   // Maps FlatMap in-map stream offsets to their child value types. Used to
   // reconstruct in-map streams omitted by older serializers.
   folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
+
+  // Cached !inMapChildTypes_.empty(), computed once in initReaders(). The
+  // per-stream decode path skips all in-map presence tracking when false.
+  bool hasInMapChildren_{false};
 
   static constexpr uint32_t kInvalidInMapOffset =
       std::numeric_limits<uint32_t>::max();
