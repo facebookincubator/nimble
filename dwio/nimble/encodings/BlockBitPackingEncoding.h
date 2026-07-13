@@ -16,6 +16,8 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
+#include <optional>
 #include <span>
 #include <type_traits>
 
@@ -53,6 +55,11 @@ class BlockBitPackingEncoding final
   static constexpr uint16_t kMaxBlockSize = kBlockBitPackingBlockSize;
   /// Serialized bit-width marker for blocks stored as raw physical values.
   static constexpr uint8_t kRawBlockBitWidth{255};
+  /// The per-block metadata is indexed by a uint16_t, so a single stream can
+  /// hold at most this many blocks. encode() enforces this, and estimateSize()
+  /// returns nullopt past it so encoding selection skips this encoding.
+  static constexpr uint32_t kMaxBlockCount =
+      std::numeric_limits<uint16_t>::max();
 
   BlockBitPackingEncoding(
       velox::memory::MemoryPool& pool,
@@ -92,16 +99,21 @@ class BlockBitPackingEncoding final
   /// Estimates the uncompressed encoded size using the same per-block packing
   /// decisions as encode(). The per-block metadata is routed through nested
   /// encoding selection (data-dependent size), so it is estimated as Trivial
-  /// sub-encodings; the estimate is approximate, not exact.
-  static uint64_t estimateSize(
+  /// sub-encodings; the estimate is approximate, not exact. Returns nullopt
+  /// when the stream has more blocks than the uint16_t block index can address,
+  /// so encoding selection skips it instead of hard-failing in encode().
+  static std::optional<uint64_t> estimateSize(
       std::span<const physicalType> values,
       uint16_t blockSize = kBlockBitPackingBlockSize);
 
-  static uint64_t estimateSize(
+  static std::optional<uint64_t> estimateSize(
       const Statistics<physicalType>& statistics,
       uint16_t blockSize = kBlockBitPackingBlockSize) {
     const auto& blocks = statistics.minMaxBlocks(blockSize);
     const auto numBlocks = static_cast<uint32_t>(blocks.size());
+    if (numBlocks > kMaxBlockCount) {
+      return std::nullopt;
+    }
 
     uint64_t packedSize = 0;
     for (const auto& block : blocks) {
@@ -194,11 +206,14 @@ class BlockBitPackingEncoding final
 //
 
 template <typename T>
-uint64_t BlockBitPackingEncoding<T>::estimateSize(
+std::optional<uint64_t> BlockBitPackingEncoding<T>::estimateSize(
     std::span<const physicalType> values,
     uint16_t blockSize) {
   const auto rowCount = static_cast<uint32_t>(values.size());
   const uint32_t numBlocks = velox::bits::divRoundUp(rowCount, blockSize);
+  if (numBlocks > kMaxBlockCount) {
+    return std::nullopt;
+  }
   uint64_t packedSize = 0;
   for (uint32_t blockIndex = 0; blockIndex < numBlocks; ++blockIndex) {
     const auto start = blockIndex * blockSize;
@@ -719,7 +734,7 @@ std::string_view BlockBitPackingEncoding<T>::encode(
   const uint32_t numBlocks = velox::bits::divRoundUp(rowCount, blockSize);
   NIMBLE_CHECK_LE(
       numBlocks,
-      std::numeric_limits<uint16_t>::max(),
+      kMaxBlockCount,
       "Row count too large for BlockBitPacking encoding.");
 
   Vector<BlockInfo> blocks{&buffer.getMemoryPool()};

@@ -141,6 +141,9 @@ struct EncodingSizeEstimation {
         }
       }
       case EncodingType::BlockBitPacking: {
+        // estimateSize() returns nullopt when the stream has more blocks than
+        // the uint16_t block index can address, so selection skips this
+        // encoding instead of picking it and hard-failing in encode().
         return BlockBitPackingEncoding<physicalType>::estimateSize(
             statistics, options.blockBitPackingBlockSize);
       }
