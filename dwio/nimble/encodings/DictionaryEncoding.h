@@ -91,7 +91,7 @@ class DictionaryEncoding
       const Statistics<physicalType>& statistics,
       const Encoding::Options& options = {}) {
     // Assumptions:
-    // Alphabet stored trivially.
+    // Alphabet estimated as min of Trival and bit-packed.
     // Indices are stored bit-packed, with bit width needed to store max
     // dictionary index.
     const auto& uniqueCounts = statistics.uniqueCounts().value();
@@ -113,8 +113,10 @@ class DictionaryEncoding
           statistics.max().size(),
           options);
     } else {
-      alphabetEncodingSize =
-          TrivialEncoding<physicalType>::estimateSize(uniqueCount);
+      alphabetEncodingSize = std::min(
+          TrivialEncoding<physicalType>::estimateSize(uniqueCount),
+          FixedBitWidthEncoding<physicalType>::estimateSize(
+              uniqueCount, statistics.min(), statistics.max(), options));
     }
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);

@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -103,7 +104,8 @@ class PFOREncoding final
 
   static uint64_t estimateSize(
       uint64_t rowCount,
-      const Statistics<physicalType>& statistics) {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options = {}) {
     const auto fullRange =
         static_cast<physicalType>(statistics.max() - statistics.min());
     const uint8_t maxBitWidth =
@@ -115,16 +117,17 @@ class PFOREncoding final
     const uint64_t baseValuesSize = baseBitWidth == 0
         ? 0
         : FixedBitArray::bufferSize(rowCount, baseBitWidth);
-    // The exception side-channels are stored as nested encodings. Dumping real
-    // files shows selection picks Trivial for both (the streams are small, so
-    // Trivial's raw layout beats bit-packing), so we estimate them as Trivial
-    // sub-encodings -- mirroring how Dictionary estimates its alphabet child.
-    // This is an approximation (the actual nested encoding is data-dependent);
-    // the estimate-vs-actual test allows a 2x band.
-    const uint64_t positionsSize =
-        TrivialEncoding<uint32_t>::estimateSize(numExceptions);
-    const uint64_t valuesSize =
-        TrivialEncoding<physicalType>::estimateSize(numExceptions);
+    const uint64_t positionsSize = std::min(
+        TrivialEncoding<uint32_t>::estimateSize(numExceptions),
+        FixedBitWidthEncoding<uint32_t>::estimateSize(
+            numExceptions,
+            /*minValue=*/0,
+            /*maxValue=*/rowCount == 0 ? 0 : rowCount - 1,
+            options));
+    const uint64_t valuesSize = std::min(
+        TrivialEncoding<physicalType>::estimateSize(numExceptions),
+        FixedBitWidthEncoding<physicalType>::estimateSize(
+            numExceptions, statistics, options));
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + kPrefixSize;
     return outerEncodingSize + baseValuesSize + positionsSize + valuesSize;

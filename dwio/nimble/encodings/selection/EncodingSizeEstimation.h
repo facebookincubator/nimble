@@ -127,7 +127,7 @@ struct EncodingSizeEstimation {
       case EncodingType::PFOR: {
         if constexpr (isIntegralType<physicalType>()) {
           return PFOREncoding<physicalType>::estimateSize(
-              entryCount, statistics);
+              entryCount, statistics, options);
         } else {
           return std::nullopt;
         }
