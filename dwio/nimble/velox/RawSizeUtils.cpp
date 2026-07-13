@@ -627,57 +627,70 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   const auto& schemaValueType = type.childAt(1);
   auto keyTypeSize = getTypeSize(*schemaKeyType->type());
 
-  // For VARCHAR keys, compute the total string key size from ROW field names
-  size_t stringKeySize = 0;
-  if (!keyTypeSize.has_value() &&
-      (schemaKeyType->type()->kind() == velox::TypeKind::VARCHAR ||
-       schemaKeyType->type()->kind() == velox::TypeKind::VARBINARY)) {
-    const velox::RowVector* passthroughRow = nullptr;
-    if (encoding == velox::VectorEncoding::Simple::ROW) {
-      passthroughRow = vector->as<velox::RowVector>();
-    } else if (encoding == velox::VectorEncoding::Simple::DICTIONARY) {
-      auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
-          context.getDecodedVectorManager());
-      velox::DecodedVector& decodedVector = localDecodedVector.get();
-      decodedVector.decode(*vector);
-      passthroughRow = decodedVector.base()->as<velox::RowVector>();
-    }
-    if (passthroughRow) {
-      const auto& rowType = passthroughRow->type()->asRow();
-      for (size_t i = 0; i < rowType.size(); ++i) {
-        stringKeySize += rowType.nameOf(i).size();
-      }
-    }
+  // Validate the key type up front. For string keys, per-child name sizes are
+  // looked up below from the ROW type.
+  const bool stringKey = !keyTypeSize.has_value();
+  if (stringKey) {
+    NIMBLE_CHECK(
+        schemaKeyType->type()->kind() == velox::TypeKind::VARCHAR ||
+            schemaKeyType->type()->kind() == velox::TypeKind::VARBINARY,
+        "Encountered non-supported variable flatmap key type.");
   }
 
   uint64_t rawSize = 0;
   const auto nonNullCount = childRanges.size();
 
   if (nonNullCount > 0) {
-    // ROW children represent the "values" in the passthrough flatmap
-    // Each field in the ROW is a key-value pair
+    // ROW children represent the "values" in the passthrough flatmap.
+    // Each field in the ROW is a key-value pair.
+    //
+    // For passthrough flatmap ingestion, a NULL value in a child column means
+    // "this key is NOT present in the map" (inMap=0). Only present entries
+    // contribute to keys and values (matches writer-side ingestRow and the
+    // Velox MapVector contract). See T272275493.
     const auto childrenSize = rowVector->childrenSize();
-
-    // For passthrough flatmaps, keys are counted for ALL non-null flatmap rows,
-    // regardless of whether the individual value is null or not.
-    // This matches DWRF behavior where key sizes are counted per key per row.
-    // Key count = numKeys * numNonNullFlatmapRows
-    if (keyTypeSize.has_value()) {
-      rawSize += *keyTypeSize * childrenSize * nonNullCount;
-    } else {
-      NIMBLE_CHECK_GT(
-          stringKeySize,
-          0,
-          "Encountered non-supported variable flatmap key type.");
-      rawSize += stringKeySize * nonNullCount;
-    }
+    const auto& rowType = rowVector->type()->asRow();
 
     for (size_t i = 0; i < childrenSize; ++i) {
       const auto& child = rowVector->childAt(i);
 
-      // Compute value sizes using schema's value type
+      // Decode the child once to determine which offsets are present
+      // (inMap=true) over childRanges. Build a per-child filtered range so
+      // the recursive value-size call only counts present entries (no nulls
+      // get inflated into the value stream's null contribution).
+      velox::common::Ranges childPresentRanges;
+      uint64_t presentCount = 0;
+      {
+        auto localDecodedVector = DecodedVectorManager::LocalDecodedVector(
+            context.getDecodedVectorManager());
+        velox::DecodedVector& decodedChild = localDecodedVector.get();
+        decodedChild.decode(*child);
+        if (decodedChild.mayHaveNulls()) {
+          for (const auto& row : childRanges) {
+            if (!decodedChild.isNullAt(row)) {
+              childPresentRanges.add(row, row + 1);
+              ++presentCount;
+            }
+          }
+        } else {
+          for (const auto& row : childRanges) {
+            childPresentRanges.add(row, row + 1);
+          }
+          presentCount = childRanges.size();
+        }
+      }
+
+      // Key bytes for this child = key-type size (numeric) or per-key name
+      // size (string) times the number of rows in which this key is present.
+      if (stringKey) {
+        rawSize += rowType.nameOf(i).size() * presentCount;
+      } else {
+        rawSize += *keyTypeSize * presentCount;
+      }
+
+      // Value bytes for this child, recursed only over the present offsets.
       uint64_t childRawSize = getRawSizeFromVectorInternal(
-          child, childRanges, context, schemaValueType.get(), {});
+          child, childPresentRanges, context, schemaValueType.get(), {});
       rawSize += childRawSize;
 
       if (topLevel) {
