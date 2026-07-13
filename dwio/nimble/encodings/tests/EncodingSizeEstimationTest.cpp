@@ -137,6 +137,7 @@ class EncodingSizeEstimationTest : public ::testing::Test {
 
     const auto values = std::span<const T>{data.data(), data.size()};
     const auto estimated = BlockBitPackingEncoding<T>::estimateSize(values);
+    ASSERT_TRUE(estimated.has_value());
 
     nimble::Buffer buffer{*pool_};
     auto encoded =
@@ -148,10 +149,11 @@ class EncodingSizeEstimationTest : public ::testing::Test {
     // selection (whose size is data-dependent), so the estimate is an
     // approximation rather than exact. Allow a 2x band, matching the other
     // estimate checks.
-    EXPECT_GT(estimated, encoded.size() / 2)
-        << "estimate too low: " << estimated << " vs actual " << encoded.size();
-    EXPECT_LT(estimated, encoded.size() * 2)
-        << "estimate too high: " << estimated << " vs actual "
+    EXPECT_GT(estimated.value(), encoded.size() / 2)
+        << "estimate too low: " << estimated.value() << " vs actual "
+        << encoded.size();
+    EXPECT_LT(estimated.value(), encoded.size() * 2)
+        << "estimate too high: " << estimated.value() << " vs actual "
         << encoded.size();
   }
 
@@ -813,7 +815,9 @@ TEST_F(
   const auto statsEstimate =
       BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
 
-  EXPECT_EQ(spanEstimate, statsEstimate);
+  ASSERT_TRUE(spanEstimate.has_value());
+  ASSERT_TRUE(statsEstimate.has_value());
+  EXPECT_EQ(spanEstimate.value(), statsEstimate.value());
 }
 
 TEST_F(
@@ -832,13 +836,14 @@ TEST_F(
 
   auto stats = Statistics<uint32_t>::create(data);
   const auto estimate = BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  ASSERT_TRUE(estimate.has_value());
 
   // Block 1 should fall back to raw: 1024 * 4 = 4096 bytes.
   // Block 0 packs at 2 bits: much smaller.
   // Total should be less than 2 * 1024 * 4 (if both were raw).
   const auto bothRaw = 2 * 1024 * sizeof(uint32_t);
-  EXPECT_LT(estimate, bothRaw + 200);
-  EXPECT_GT(estimate, 4096);
+  EXPECT_LT(estimate.value(), bothRaw + 200);
+  EXPECT_GT(estimate.value(), 4096);
 }
 
 // TODO: Add perBlockTighteningReducesMainlyConstantEstimate and
@@ -860,23 +865,26 @@ TEST_F(EncodingSizeEstimationTest, customBlockSizeAffectsEstimate) {
       BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
   const auto smallBlockEstimate =
       BlockBitPackingEncoding<uint32_t>::estimateSize(stats, /*blockSize=*/512);
+  ASSERT_TRUE(defaultBlockEstimate.has_value());
+  ASSERT_TRUE(smallBlockEstimate.has_value());
 
   // Smaller blocks → tighter per-block ranges → smaller packed data.
   // But more blocks → more metadata overhead.
   // The estimates should differ.
-  EXPECT_NE(defaultBlockEstimate, smallBlockEstimate);
+  EXPECT_NE(defaultBlockEstimate.value(), smallBlockEstimate.value());
 
   // With sequential data [0..2047], smaller blocks have tighter ranges.
   // Block size 512: 4 blocks, each spanning 512 values (9 bits).
   // Block size 1024: 2 blocks, each spanning 1024 values (10 bits).
   // Smaller blocks should pack tighter despite more metadata.
-  EXPECT_LT(smallBlockEstimate, defaultBlockEstimate);
+  EXPECT_LT(smallBlockEstimate.value(), defaultBlockEstimate.value());
 
   // Calling with the original block size again should return the same result
   // (verifies cache invalidation round-trips correctly).
   const auto defaultBlockEstimateAgain =
       BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
-  EXPECT_EQ(defaultBlockEstimate, defaultBlockEstimateAgain);
+  ASSERT_TRUE(defaultBlockEstimateAgain.has_value());
+  EXPECT_EQ(defaultBlockEstimate.value(), defaultBlockEstimateAgain.value());
 }
 
 TEST_F(
@@ -897,7 +905,9 @@ TEST_F(
     auto stats = Statistics<T>::create(data);
     const auto statsEstimate = BlockBitPackingEncoding<T>::estimateSize(stats);
 
-    EXPECT_EQ(spanEstimate, statsEstimate)
+    ASSERT_TRUE(spanEstimate.has_value());
+    ASSERT_TRUE(statsEstimate.has_value());
+    EXPECT_EQ(spanEstimate.value(), statsEstimate.value())
         << "Mismatch for type size " << sizeof(T);
   };
 
@@ -914,10 +924,11 @@ TEST_F(EncodingSizeEstimationTest, blockBitPackingConstantData) {
 
   auto stats = Statistics<uint32_t>::create(data);
   const auto estimate = BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
+  ASSERT_TRUE(estimate.has_value());
 
   const auto rawSize = 2048 * sizeof(uint32_t);
-  EXPECT_LT(estimate, rawSize / 2);
-  EXPECT_GT(estimate, 0);
+  EXPECT_LT(estimate.value(), rawSize / 2);
+  EXPECT_GT(estimate.value(), 0);
 }
 
 TEST_F(EncodingSizeEstimationTest, blockBitPackingPartialLastBlock) {
@@ -935,8 +946,10 @@ TEST_F(EncodingSizeEstimationTest, blockBitPackingPartialLastBlock) {
   const auto spanEstimate = BlockBitPackingEncoding<uint32_t>::estimateSize(
       std::span<const uint32_t>{data.data(), data.size()});
 
-  EXPECT_EQ(spanEstimate, statsEstimate);
-  EXPECT_GT(statsEstimate, 0);
+  ASSERT_TRUE(statsEstimate.has_value());
+  ASSERT_TRUE(spanEstimate.has_value());
+  EXPECT_EQ(spanEstimate.value(), statsEstimate.value());
+  EXPECT_GT(statsEstimate.value(), 0);
 }
 
 TEST_F(EncodingSizeEstimationTest, blockBitPackingSingleValue) {
@@ -949,7 +962,9 @@ TEST_F(EncodingSizeEstimationTest, blockBitPackingSingleValue) {
   const auto spanEstimate = BlockBitPackingEncoding<uint32_t>::estimateSize(
       std::span<const uint32_t>{data.data(), data.size()});
 
-  EXPECT_EQ(spanEstimate, statsEstimate);
+  ASSERT_TRUE(statsEstimate.has_value());
+  ASSERT_TRUE(spanEstimate.has_value());
+  EXPECT_EQ(spanEstimate.value(), statsEstimate.value());
 }
 
 TEST_F(
@@ -973,7 +988,8 @@ TEST_F(
   // Verify it matches the direct call with default block size.
   const auto directEstimate =
       BlockBitPackingEncoding<uint32_t>::estimateSize(stats);
-  EXPECT_EQ(estimate.value(), directEstimate);
+  ASSERT_TRUE(directEstimate.has_value());
+  EXPECT_EQ(estimate.value(), directEstimate.value());
 
   // Verify options.blockBitPackingBlockSize is threaded through.
   Encoding::Options options;
@@ -982,4 +998,60 @@ TEST_F(
       Est::estimateSize(EncodingType::BlockBitPacking, 2048, stats, options);
   ASSERT_TRUE(estimateSmallBlock.has_value());
   EXPECT_NE(estimateSmallBlock.value(), estimate.value());
+}
+
+TEST_F(
+    EncodingSizeEstimationTest,
+    blockBitPackingEstimateSkippedWhenBlockCountExceedsIndexLimit) {
+  // BlockBitPacking indexes its blocks with a uint16_t, so encode() rejects a
+  // stream with more than kMaxBlockCount blocks. estimateSize() must return
+  // nullopt in that case so encoding selection skips it rather than picking it
+  // and letting encode() hard-fail. blockSize = 1 makes numBlocks == rowCount,
+  // so the boundary is reachable without a huge stream.
+  constexpr uint16_t kBlockSize = 1;
+  constexpr uint32_t kMaxBlocks =
+      BlockBitPackingEncoding<uint32_t>::kMaxBlockCount;
+
+  auto makeData = [](uint32_t rowCount) {
+    std::vector<uint32_t> data(rowCount);
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      data[i] = i % 100;
+    }
+    return data;
+  };
+
+  // At the limit: exactly kMaxBlocks blocks still fit the uint16_t index.
+  const auto atLimit = makeData(kMaxBlocks);
+  const auto atLimitStats = Statistics<uint32_t>::create(atLimit);
+  EXPECT_TRUE(
+      BlockBitPackingEncoding<uint32_t>::estimateSize(
+          std::span<const uint32_t>{atLimit.data(), atLimit.size()}, kBlockSize)
+          .has_value());
+  EXPECT_TRUE(
+      BlockBitPackingEncoding<uint32_t>::estimateSize(atLimitStats, kBlockSize)
+          .has_value());
+
+  // One block past the limit overflows the index: both overloads and the
+  // selection dispatcher must skip the encoding.
+  const auto overLimit = makeData(kMaxBlocks + 1);
+  const auto overLimitStats = Statistics<uint32_t>::create(overLimit);
+  EXPECT_FALSE(
+      BlockBitPackingEncoding<uint32_t>::estimateSize(
+          std::span<const uint32_t>{overLimit.data(), overLimit.size()},
+          kBlockSize)
+          .has_value());
+  EXPECT_FALSE(
+      BlockBitPackingEncoding<uint32_t>::estimateSize(
+          overLimitStats, kBlockSize)
+          .has_value());
+
+  Encoding::Options options;
+  options.blockBitPackingBlockSize = kBlockSize;
+  EXPECT_FALSE(
+      detail::EncodingSizeEstimation<uint32_t>::estimateSize(
+          EncodingType::BlockBitPacking,
+          static_cast<size_t>(overLimit.size()),
+          overLimitStats,
+          options)
+          .has_value());
 }
