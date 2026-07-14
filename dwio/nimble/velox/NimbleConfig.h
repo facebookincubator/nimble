@@ -125,6 +125,23 @@ class Config : public velox::config::ConfigBase {
   static constexpr const char* kNimbleWriteTargetRawStripeSize =
       "nimble_write_target_raw_stripe_size";
 
+  static constexpr const char* kNimbleChunkingEnabled =
+      "nimble_chunking_enabled";
+  static constexpr const char* kNimbleChunkingMemoryHighThreshold =
+      "nimble_chunking_memory_high_threshold";
+  static constexpr const char* kNimbleChunkingMemoryLowThreshold =
+      "nimble_chunking_memory_low_threshold";
+  static constexpr const char* kNimbleChunkingTargetStripeStorageSize =
+      "nimble_chunking_target_stripe_storage_size";
+  static constexpr const char* kNimbleChunkingEstimatedCompressionFactor =
+      "nimble_chunking_estimated_compression_factor";
+  static constexpr const char* kNimbleChunkingMinChunkSize =
+      "nimble_chunking_min_chunk_size";
+  static constexpr const char* kNimbleChunkingMaxChunkSize =
+      "nimble_chunking_max_chunk_size";
+  static constexpr const char* kNimbleChunkingWideSchemaMaxChunkSize =
+      "nimble_chunking_wide_schema_max_chunk_size";
+
   static std::shared_ptr<Config> fromMap(
       const std::map<std::string, std::string>& map) {
     auto config = std::make_shared<Config>();
