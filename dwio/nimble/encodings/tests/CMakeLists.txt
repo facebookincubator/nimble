@@ -25,6 +25,7 @@ add_executable(
   ConstantEncodingViewTest.cpp
   ConstantEncodingTest.cpp
   DictionaryEncodingViewTest.cpp
+  EncodingGetTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp
   EncodingViewFactoryTest.cpp

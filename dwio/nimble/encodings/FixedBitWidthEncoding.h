@@ -70,6 +70,8 @@ class FixedBitWidthEncoding final
   void skip(uint32_t rowCount) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
+  void getImpl(uint32_t row, void* buffer) final;
+
   template <typename DecoderVisitor>
   void readWithVisitor(DecoderVisitor& visitor, ReadWithVisitorParams& params);
 
@@ -174,6 +176,16 @@ void FixedBitWidthEncoding<T>::reset() {
 template <typename T>
 void FixedBitWidthEncoding<T>::skip(uint32_t rowCount) {
   row_ += rowCount;
+}
+
+template <typename T>
+void FixedBitWidthEncoding<T>::getImpl(uint32_t row, void* buffer) {
+  // Stateless O(1) point read backing get<T>(). `FixedBitArray::get(index)`
+  // is a pure bit extraction (const, no internal state) and `baseline_` is
+  // fixed at construction, so concurrent get() calls from different threads
+  // on the same encoding instance are safe.
+  *static_cast<physicalType*>(buffer) =
+      static_cast<physicalType>(fixedBitArray_.get(row)) + baseline_;
 }
 
 template <typename T>

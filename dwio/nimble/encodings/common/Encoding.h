@@ -206,6 +206,21 @@ class Encoding {
   /// iterator; if you need to move your row pointer back, reset() and skip().
   virtual void skip(uint32_t rowCount) = 0;
 
+  /// Random-access read of the value at |row|, returned by value as
+  /// |physicalType|. Does NOT advance the internal row cursor. Intended for
+  /// white-box point access into encoded buffers without materializing a
+  /// slice or constructing a fresh Encoding instance per call.
+  ///
+  /// Dispatches through the virtual getImpl(); encoding implementations opt
+  /// in by overriding that. Stateless, so concurrent get() calls from
+  /// multiple threads on a shared instance are safe.
+  template <typename T>
+  T get(uint32_t row) {
+    T value;
+    getImpl(row, &value);
+    return value;
+  }
+
   /// Materializes the next |rowCount| rows into buffer. Advances
   /// the row pointer |rowCount|.
   ///
@@ -305,6 +320,14 @@ class Encoding {
   virtual std::string debugString(int offset = 0) const;
 
  protected:
+  /// Type-erased backend for get<T>(): writes the value at |row| into
+  /// |buffer| (interpreted as physicalType*). Encodings opt in by overriding;
+  /// the default is unsupported. Must be stateless (no cursor advance) so that
+  /// get<T>() is safe for concurrent calls on a shared instance.
+  virtual void getImpl(uint32_t /*row*/, void* /*buffer*/) {
+    NIMBLE_NOT_IMPLEMENTED(typeid(*this).name());
+  }
+
   static void serializePrefix(
       EncodingType encodingType,
       DataType dataType,

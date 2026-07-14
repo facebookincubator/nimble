@@ -65,6 +65,7 @@ class DictionaryEncoding
 
   void reset() final;
   void skip(uint32_t rowCount) final;
+  void getImpl(uint32_t row, void* buffer) final;
   void materialize(uint32_t rowCount, void* buffer) final;
 
   template <typename DecoderVisitor>
@@ -200,6 +201,19 @@ void DictionaryEncoding<T>::reset() {
 template <typename T>
 void DictionaryEncoding<T>::skip(uint32_t rowCount) {
   indicesEncoding_->skip(rowCount);
+}
+
+template <typename T>
+void DictionaryEncoding<T>::getImpl(uint32_t row, void* buffer) {
+  // Recursive O(1) point read backing get<T>(): fetch the row's dictionary
+  // index via the child indices encoding (typically FixedBitWidth -> O(1) bit
+  // extract), then look up the value in the in-memory alphabet. The alphabet
+  // is already fully decoded into `alphabet_` at construction time, so no
+  // extra per-call decode is needed beyond the indices get() call. Stateless
+  // and safe for concurrent calls on a shared instance, provided the
+  // underlying indices encoding's get() is also stateless.
+  const auto index = indicesEncoding_->get<uint32_t>(row);
+  *static_cast<physicalType*>(buffer) = alphabet_[index];
 }
 
 template <typename T>

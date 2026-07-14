@@ -148,6 +148,8 @@ target_link_libraries(
     nimble_cluster_index_fb
     nimble_chunk_index_fb
     nimble_hash_index_fb
+  PRIVATE
+    nimble_encodings
 )
 
 add_library(nimble_tablet_reader_cache TabletReaderCache.cpp)
@@ -173,6 +175,7 @@ target_link_libraries(
   nimble_tablet_common
   nimble_cluster_index_fb
   nimble_chunk_index_fb
+  nimble_encodings
 )
 
 add_subdirectory(tests)
