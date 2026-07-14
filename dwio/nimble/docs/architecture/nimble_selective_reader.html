@@ -236,6 +236,32 @@ code {
   margin-top:1.5rem; padding-top:0.6rem; border-top:1px solid var(--border);
 }
 
+/* Part containers */
+.part-box {
+  border:2.5px solid var(--border);
+  border-radius:16px;
+  padding:1.2rem 1.5rem 1.5rem;
+  margin:2.5rem 0;
+  position:relative;
+}
+.part-header {
+  display:flex; align-items:center; gap:0.8rem;
+  margin-bottom:1.2rem;
+}
+.part-ring {
+  width:42px; height:42px; border-radius:50%; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:700;
+  color:#fff;
+}
+.part-label {
+  font-family:'Space Grotesk',sans-serif; font-size:1.05rem; font-weight:700;
+  letter-spacing:-0.01em;
+}
+.part-desc {
+  font-size:0.75rem; color:var(--text-secondary); margin-top:0.05rem;
+}
+
 /* Animate */
 .ani { opacity:0; animation: fadeUp 0.5s ease forwards; }
 @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
@@ -418,6 +444,75 @@ code {
   </div>
 </div>
 
+<!-- Selective & Batch Reader Call Stacks -->
+<div class="part-box ani d3" style="border-color:var(--border-strong)">
+<div class="part-header">
+  <div class="part-ring" style="background:var(--text-muted)">&#9650;</div>
+  <div>
+    <div class="part-label">Selective &amp; Batch Reader</div>
+    <div class="part-desc">Two read paths from the same Velox operator &mdash; both end at TabletReader, but the middle layers differ</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
+
+  <!-- Left: Selective path -->
+  <div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.72rem;font-weight:700;color:var(--layer-query);margin-bottom:0.5rem;text-align:center;letter-spacing:0.02em">Selective Path</div>
+    <div style="font-size:0.6rem;color:var(--text-muted);text-align:center;margin-bottom:0.6rem">Predicate pushdown into column readers &mdash; filter during decode<br><code style="font-size:0.55rem;color:var(--pass)">selective_nimble_reader_enabled = true</code> <span style="font-size:0.5rem">(default)</span></div>
+    <div style="border:1.5px solid var(--border);border-radius:8px;padding:0.8rem 1rem;background:var(--surface);">
+      <pre style="font-family:'JetBrains Mono',monospace;font-size:0.62rem;line-height:1.7;margin:0;white-space:pre;overflow-x:auto;"><span style="color:var(--text-secondary)">TableScan</span>
+<span style="color:var(--border-strong)">&boxvr;&boxh;&boxh;</span> <span style="color:var(--text-secondary)">HiveDataSource</span>
+<span style="color:var(--border-strong)">    &boxvr;&boxh;&boxh;</span> <span style="color:var(--text-secondary)">FileSplitReader</span>
+<span style="color:var(--border-strong)">        &boxvr;&boxh;&boxh;</span> <span style="color:var(--layer-query);font-weight:600">SelectiveNimbleReader</span> <span style="color:var(--text-muted);font-size:0.52rem">(dwio::common::Reader)</span>
+<span style="color:var(--border-strong)">        &boxv;</span>
+<span style="color:var(--border-strong)">        &boxv;</span>   <span style="color:var(--text-muted);font-size:0.52rem">createReader(): uses VeloxReader temporarily to extract schema/type</span>
+<span style="color:var(--border-strong)">        &boxv;</span>   <span style="color:var(--text-muted);font-size:0.52rem">createRowReader(): builds SelectiveNimbleRowReader</span>
+<span style="color:var(--border-strong)">        &boxv;</span>
+<span style="color:var(--border-strong)">        &boxur;&boxh;&boxh;</span> <span style="color:var(--layer-query);font-weight:600">SelectiveNimbleRowReader</span> <span style="color:var(--text-muted);font-size:0.52rem">(dwio::common::RowReader)</span>
+<span style="color:var(--border-strong)">              &boxv;</span>   <span style="color:var(--text-muted);font-size:0.52rem">next() &rarr; own column reader tree</span>
+<span style="color:var(--border-strong)">              &boxur;&boxh;&boxh;</span> <span style="color:var(--layer-data);font-weight:600">TabletReader</span> <span style="color:var(--text-muted);font-size:0.52rem">(direct, no VeloxReader in the loop)</span></pre>
+    </div>
+  </div>
+
+  <!-- Right: Batch path -->
+  <div>
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:0.72rem;font-weight:700;color:var(--layer-encoding);margin-bottom:0.5rem;text-align:center;letter-spacing:0.02em">Batch Path</div>
+    <div style="font-size:0.6rem;color:var(--text-muted);text-align:center;margin-bottom:0.6rem">Decode full batches via VeloxReader &mdash; no predicate pushdown<br><code style="font-size:0.55rem;color:var(--kill)">selective_nimble_reader_enabled = false</code></div>
+    <div style="border:1.5px solid var(--border);border-radius:8px;padding:0.8rem 1rem;background:var(--surface);">
+      <pre style="font-family:'JetBrains Mono',monospace;font-size:0.62rem;line-height:1.7;margin:0;white-space:pre;overflow-x:auto;"><span style="color:var(--text-secondary)">TableScan</span>
+<span style="color:var(--border-strong)">&boxvr;&boxh;&boxh;</span> <span style="color:var(--text-secondary)">HiveDataSource</span>
+<span style="color:var(--border-strong)">    &boxvr;&boxh;&boxh;</span> <span style="color:var(--text-secondary)">FileSplitReader</span>
+<span style="color:var(--border-strong)">        &boxvr;&boxh;&boxh;</span> <span style="color:var(--layer-encoding);font-weight:600">NimbleReader</span> <span style="color:var(--text-muted);font-size:0.52rem">(dwio::common::Reader)</span>
+<span style="color:var(--border-strong)">        &boxv;</span>
+<span style="color:var(--border-strong)">        &boxv;</span>   <span style="color:var(--text-muted);font-size:0.52rem">createRowReader(): builds NimbleRowReader</span>
+<span style="color:var(--border-strong)">        &boxv;</span>
+<span style="color:var(--border-strong)">        &boxur;&boxh;&boxh;</span> <span style="color:var(--layer-encoding);font-weight:600">NimbleRowReader</span> <span style="color:var(--text-muted);font-size:0.52rem">(dwio::common::RowReader)</span>
+<span style="color:var(--border-strong)">              &boxvr;&boxh;&boxh;</span> <span style="color:var(--layer-reader);font-weight:600">VeloxReader</span><span style="color:var(--text-muted);font-size:0.52rem">.next()</span>
+<span style="color:var(--border-strong)">              &boxv;     &boxvr;&boxh;&boxh;</span> <span style="color:var(--layer-decoder)">FieldReader tree</span>
+<span style="color:var(--border-strong)">              &boxv;     &boxur;&boxh;&boxh;</span> <span style="color:var(--layer-data);font-weight:600">TabletReader</span></pre>
+    </div>
+  </div>
+
+</div>
+
+<div class="callout" style="margin-top:1rem">
+  <span style="flex-shrink:0">&#9432;</span>
+  <div>Both paths are created by <code>NimbleReaderFactory::createReader()</code> &mdash; the <code>selectiveNimbleReaderEnabled()</code> option on <code>ReaderOptions</code> determines which path is used. The shared layers (TableScan &rarr; FileSplitReader) are identical; the divergence starts at the Reader/RowReader level.</div>
+</div>
+
+</div><!-- /Selective & Batch Reader -->
+
+<!-- Part A -->
+<div class="part-box ani d3" style="border-color:var(--layer-query)">
+<div class="part-header">
+  <div class="part-ring" style="background:var(--layer-query)">A</div>
+  <div>
+    <div class="part-label">Orchestration</div>
+    <div class="part-desc">Velox &rarr; Nimble reader &rarr; stripe &rarr; batch &rarr; struct reader &rarr; column readers</div>
+  </div>
+</div>
+
 <!-- Section 0: Top-level Read Flow -->
 <div class="section ani d4" style="max-width:1800px;margin-left:auto;margin-right:auto;">
   <div class="section-head"><span class="section-num" style="background:var(--text-muted)">0</span> Top-Level Read Flow</div>
@@ -532,8 +627,8 @@ code {
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
                 <div class="flow-node" style="border-color:var(--col0);width:65%;border-style:dashed">
-                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: col1 &gt; 50, rows: [0..10K])</div>
-                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor&lt;int32, <span style="color:var(--accent);font-weight:600">BigintRange</span>, ExtractToReader, dense&gt;(filter: col1 &gt; 50, rows: [0..10K])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">BigintRange</span>&gt;)</span></div>
                   <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[3,17,42,...] rawValues_=[51,99,73,...] numValues_=1K</div>
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
@@ -543,8 +638,8 @@ code {
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
                 <div class="flow-node" style="border-color:var(--col2);width:65%;border-style:dashed">
-                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: col3 &lt; 3.14, rows: [3,17,42,...])</div>
-                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor&lt;double, <span style="color:var(--accent);font-weight:600">DoubleRange</span>, ExtractToReader, sparse&gt;(filter: col3 &lt; 3.14, rows: [3,17,42,...])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">DoubleRange</span>&gt;)</span></div>
                   <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[17,42,...] rawValues_=[1.2,2.7,...] numValues_=200</div>
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
@@ -554,8 +649,8 @@ code {
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
                 <div class="flow-node" style="border-color:var(--col3);width:65%;border-style:dashed">
-                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor(filter from ScanSpec: AlwaysTrue, rows: [17,42,...])</div>
-                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor)</span></div>
+                  <div class="fd"><span style="color:var(--text-primary)">visitor captures:</span> new DecoderVisitor&lt;string_view, <span style="color:var(--accent);font-weight:600">AlwaysTrue</span>, ExtractToReader, sparse&gt;(filter: AlwaysTrue, rows: [17,42,...])</div>
+                  <div class="fd">&rarr; <span style="background:color-mix(in srgb, var(--layer-decoder) 12%, transparent);padding:0.05rem 0.25rem;border-radius:3px;color:var(--layer-decoder);font-weight:500">decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">AlwaysTrue</span>&gt;)</span></div>
                   <div class="fd"><span style="color:var(--text-primary)">visitor populates:</span> outputRows_=[17,42,...] rawValues_=["foo","bar",...] numValues_=200</div>
                 </div>
                 <div class="pipe-arrow"><div class="arr"></div></div>
@@ -791,6 +886,119 @@ window.addEventListener('load', function() { setTimeout(drawConnectors, 600); })
 window.addEventListener('resize', drawConnectors);
 </script>
 
+<!-- StringColumnReader Dictionary Path callout -->
+<div class="section ani d6">
+  <div class="section-head"><span class="section-num" style="background:var(--col3)">★</span> StringColumnReader &mdash; Dictionary Optimization</div>
+  <div class="step">
+    <h3>col4(StringColumnReader).read(0, [17,42,...]) &mdash; read() tries the dictionary path before the flat path</h3>
+    <p style="font-size:0.72rem;color:var(--text-secondary);margin-bottom:0.5rem">
+      For string columns with <code>nimble_preserve_dictionary_encoding=true</code>, <code>readWithDictionary()</code> intercepts the read
+      <strong>above the decoder</strong>. Instead of the visitor applying the filter per-row during decode, it bulk-reads raw dictionary indices
+      and applies the filter post-hoc on the alphabet via SIMD <code>filterDictionaryIndices()</code>.
+    </p>
+
+    <div style="display:flex;gap:1rem;margin-top:0.5rem;">
+
+      <!-- Flat path -->
+      <div style="flex:0.6;border:1.5px solid var(--text-muted);border-radius:8px;padding:0.6rem 0.7rem;">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.3rem">Flat path (default)</h4>
+        <div style="font-size:0.55rem;color:var(--text-secondary);line-height:1.6;font-family:'JetBrains Mono',monospace;">
+          StringColumnReader::read()<br>
+          &nbsp;&nbsp;&rarr; readWithDictionary() returns <span style="color:var(--kill);font-weight:600">false</span> <span style="color:var(--text-muted);font-size:0.48rem">(valueHook active &middot; zeroCopy off &middot; preserveDict off &middot; not dict-convertible at start or mid-read chunk boundary)</span><br>
+          &nbsp;&nbsp;&rarr; decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">Filter</span>&gt;)<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&rarr; encoding decodes values<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&rarr; visitor.process(value) applies filter inline<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&rarr; populates outputRows_, rawValues_<br>
+          &nbsp;&nbsp;&rarr; getValues() &rarr; FlatVector&lt;StringView&gt;
+        </div>
+      </div>
+
+      <!-- Dictionary path -->
+      <div style="flex:1;border:1.5px solid var(--pass);border-radius:8px;padding:0.6rem 0.7rem;background:color-mix(in srgb, var(--pass) 5%, var(--surface));">
+        <h4 style="font-family:'Space Grotesk',sans-serif;font-size:0.75rem;color:var(--pass);margin-bottom:0.3rem">Dictionary path (optimization)</h4>
+        <div style="display:flex;gap:0.5rem;">
+
+          <!-- Left: steps -->
+          <div style="flex:1.2;font-size:0.55rem;color:var(--text-secondary);line-height:1.6;font-family:'JetBrains Mono',monospace;">
+            StringColumnReader::read()<br>
+            &nbsp;&nbsp;&rarr; readWithDictionary() returns <span style="color:var(--pass);font-weight:600">true</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;1. save &amp; suppress filter from scanSpec_ <span style="color:var(--text-muted)">(so step 2 reads ALL rows, not filtered)</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;2. decoder_.readDictionaryIndices()<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; raw int indices into rawValues_<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&rarr; null bitmap into nullsInReadRange_ <span style="color:var(--text-muted)">(side effect)</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;3. restore filter <span style="color:var(--text-muted)">(so step 5 can use it)</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;4. reconcile null state<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--text-muted)">set anyNulls_ + returnReaderNulls_ flags</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--text-muted)">so resultNulls() returns nullsInReadRange_</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:var(--text-muted)">(bitmap written by step 2, flags not set yet)</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;5. filterDictionaryIndices() <span style="color:var(--text-muted)">&rarr;</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(a) test alphabet against filter &rarr; cache PASS/FAIL per index (SIMD)<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(b) scan indices, keep rows where cache says PASS<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(c) compact rawValues_ + outputRows_ to passing rows<br>
+            &nbsp;&nbsp;&rarr; getValues():<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;DictionaryVector(<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alphabet <span style="color:var(--text-muted)">&larr; unchanged</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;indices <span style="color:var(--text-muted)">&larr; filtered by 5</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nulls <span style="color:var(--text-muted)">&larr; from step 4</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;size <span style="color:var(--text-muted)">&larr; set by step 5</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;)
+          </div>
+
+          <!-- Right: filterDictionaryIndices example -->
+          <div style="flex:0.8;border:1.5px solid var(--col3);border-radius:6px;padding:0.4rem 0.5rem;background:color-mix(in srgb, var(--col3) 8%, var(--surface));font-size:0.45rem;color:var(--text-secondary);line-height:1.6;font-family:'JetBrains Mono',monospace;">
+            <div style="font-size:0.55rem;font-weight:600;color:var(--col3);margin-bottom:0.2rem">filterDictionaryIndices() example</div>
+            alphabet = ["apple", "banana", "cherry"]<br>
+            filter = BytesValues{"cherry"}<br>
+            rawValues_ = [0,2,0,0,1,2,0,2]<br>
+            <br>
+            <span style="color:var(--col3);font-weight:600">(a) Test &amp; cache:</span><br>
+            &nbsp;&nbsp;cache[0] = test("apple") &rarr; <span style="color:var(--kill)">FAIL</span><br>
+            &nbsp;&nbsp;cache[1] = test("banana") &rarr; <span style="color:var(--kill)">FAIL</span><br>
+            &nbsp;&nbsp;cache[2] = test("cherry") &rarr; <span style="color:var(--pass)">PASS&#10003;</span><br>
+            <br>
+            <span style="color:var(--col3);font-weight:600">(b) Scan indices:</span><br>
+            &nbsp;&nbsp;row 0: idx=0 &rarr; <span style="color:var(--kill)">FAIL</span> discard<br>
+            &nbsp;&nbsp;row 1: idx=2 &rarr; <span style="color:var(--pass)">PASS</span> keep&#10003;<br>
+            &nbsp;&nbsp;row 2: idx=0 &rarr; <span style="color:var(--kill)">FAIL</span> discard<br>
+            &nbsp;&nbsp;row 3: idx=0 &rarr; <span style="color:var(--kill)">FAIL</span> discard<br>
+            &nbsp;&nbsp;row 4: idx=1 &rarr; <span style="color:var(--kill)">FAIL</span> discard<br>
+            &nbsp;&nbsp;row 5: idx=2 &rarr; <span style="color:var(--pass)">PASS</span> keep&#10003;<br>
+            &nbsp;&nbsp;row 6: idx=0 &rarr; <span style="color:var(--kill)">FAIL</span> discard<br>
+            &nbsp;&nbsp;row 7: idx=2 &rarr; <span style="color:var(--pass)">PASS</span> keep&#10003;<br>
+            <br>
+            <span style="color:var(--col3);font-weight:600">(c) Compact:</span><br>
+            &nbsp;&nbsp;rawValues_ = [2, 2, 2]<br>
+            &nbsp;&nbsp;outputRows_ = [1, 5, 7]<br>
+            &nbsp;&nbsp;numValues_ = 3
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout" style="margin-top:0.5rem">
+      <span style="flex-shrink:0">&#9889;</span>
+      <div><strong>Performance win:</strong> the filter is evaluated once per unique dictionary entry (cached in <code>filterCache</code>), not once per row. For low-cardinality string columns with millions of rows, this is orders of magnitude faster.</div>
+    </div>
+
+    <div class="fp">StringColumnReader.cpp:330-504 (readWithDictionary) &middot; StringColumnReader.cpp:506-560 (read)</div>
+  </div>
+</div>
+
+
+</div><!-- /Part A -->
+
+<!-- Part B -->
+<div class="part-box ani d7" style="border-color:var(--layer-decoder)">
+<div class="part-header">
+  <div class="part-ring" style="background:var(--layer-decoder)">B</div>
+  <div>
+    <div class="part-label">ChunkedDecoder</div>
+    <div class="part-desc">Chunk management, I/O, state machine &mdash; the bridge between column readers and encodings</div>
+  </div>
+</div>
+
 <!-- Section 1a: ChunkedDecoder API — Selective vs Batch -->
 <div class="section ani d7">
   <div class="section-head"><span class="section-num" style="background:var(--layer-decoder)">1</span> ChunkedDecoder &mdash; Two Read Paths</div>
@@ -850,9 +1058,9 @@ window.addEventListener('resize', drawConnectors);
 
     <div style="display:flex;gap:0;margin-top:0.3rem;">
 
-      <!-- Left: decoder_.readWithVisitor(visitor) -->
+      <!-- Left: decoder_.readWithVisitor(visitor<Filter>) -->
       <div style="flex:1;padding-right:1rem;">
-        <h3 style="color:var(--layer-decoder)">decoder_.readWithVisitor(visitor)</h3>
+        <h3 style="color:var(--layer-decoder)">decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">Filter</span>&gt;)</h3>
         <p style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:0.4rem">Decodes values, applies filter via visitor. Loads chunks transparently.</p>
 
         <div class="loop-box" style="border-color:var(--layer-decoder)">
@@ -1071,6 +1279,19 @@ window.addEventListener('resize', drawConnectors);
   </div>
 </div>
 
+
+</div><!-- /Part B -->
+
+<!-- Part C -->
+<div class="part-box ani d8" style="border-color:var(--layer-encoding)">
+<div class="part-header">
+  <div class="part-ring" style="background:var(--layer-encoding)">C</div>
+  <div>
+    <div class="part-label">Encoding</div>
+    <div class="part-desc">Data layout, recursive encoding trees, decode algorithms, visitor protocol</div>
+  </div>
+</div>
+
 <!-- Section 3: encoding_ internals -->
 <div class="section ani d8">
   <div class="section-head"><span class="section-num" style="background:var(--layer-encoding)">3</span> Internal: encoding_ &mdash; Encoding Object</div>
@@ -1157,7 +1378,7 @@ window.addEventListener('resize', drawConnectors);
         &nbsp;&nbsp;.filter_ = scanSpec filter <span style="color:var(--text-muted)">// e.g. col1 &gt; 50</span><br>
         &nbsp;&nbsp;.rows_ = row indices <span style="color:var(--text-muted)">// [0..N] dense or [3,17,42,...] sparse</span><br>
         &nbsp;&nbsp;.outputRows_, rawValues_ <span style="color:var(--text-muted)">// references to column reader's buffers</span><br>
-        decoder_.readWithVisitor(visitor) <span style="color:var(--text-muted)">// pass to ChunkedDecoder &rarr; encoding</span>
+        decoder_.readWithVisitor(visitor&lt;<span style="color:var(--accent)">Filter</span>&gt;) <span style="color:var(--text-muted)">// pass to ChunkedDecoder &rarr; encoding (filter baked into visitor type)</span>
       </div>
     </div>
 
@@ -1196,14 +1417,26 @@ window.addEventListener('resize', drawConnectors);
         <div style="font-size:0.8rem;color:#e65100;font-weight:600">
           value<br>&rarr;
         </div>
-        <div style="flex:1;border:1.5px solid var(--border-strong);border-radius:8px;padding:0.4rem 0.6rem;background:var(--surface);text-align:center;">
-          <div style="font-size:0.62rem;font-weight:600;color:var(--text-primary);margin-bottom:0.2rem">visitor.process(value, atEnd)</div>
-          <div style="font-size:0.5rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;text-align:left;">
-            if filter_.testValue(value):<br>
-            &nbsp;&nbsp;rawValues_[numValues_] = value<br>
-            &nbsp;&nbsp;outputRows_[numValues_] = currentRow<br>
-            &nbsp;&nbsp;numValues_++<br>
-            else: discard
+        <div style="flex:1.2;border:1.5px solid var(--border-strong);border-radius:8px;padding:0.4rem 0.6rem;background:var(--surface);">
+          <div style="font-size:0.48rem;color:var(--layer-query);font-family:'JetBrains Mono',monospace;margin-bottom:0.2rem;text-align:left">
+            &larr; created by ColumnReader::read() with filter from scanSpec_<br>
+            DecoderVisitor&lt;T, <span style="color:var(--accent);font-weight:600">Filter</span>, ExtractToReader, isDense&gt; <span style="color:var(--text-muted)">&mdash; filter is a compile-time type parameter</span>
+          </div>
+          <div style="font-size:0.62rem;font-weight:600;color:var(--text-primary);margin-bottom:0.15rem;text-align:center">visitor.process(value, atEnd)</div>
+          <div style="display:flex;gap:0.5rem;">
+            <div style="flex:1;font-size:0.48rem;color:var(--text-muted);line-height:1.5;font-family:'JetBrains Mono',monospace;border-right:1px solid var(--border);padding-right:0.4rem;">
+              <div style="font-weight:600;color:var(--text-secondary);margin-bottom:0.1rem">holds:</div>
+              filter_ <span style="color:var(--accent)">(from scanSpec)</span><br>
+              rows_ <span style="color:var(--text-muted)">(dense or sparse)</span><br>
+              reader_ <span style="color:var(--text-muted)">(ref to column reader)</span>
+            </div>
+            <div style="flex:1.5;font-size:0.5rem;color:var(--text-secondary);line-height:1.5;font-family:'JetBrains Mono',monospace;">
+              if filter_.testValue(value):<br>
+              &nbsp;&nbsp;rawValues_[numValues_] = value<br>
+              &nbsp;&nbsp;outputRows_[numValues_] = currentRow<br>
+              &nbsp;&nbsp;numValues_++<br>
+              else: discard
+            </div>
           </div>
         </div>
         <div style="font-size:0.8rem;color:var(--pass);font-weight:600">
@@ -1515,6 +1748,9 @@ void BlockBitPackingEncoding&lt;T&gt;::readWithVisitor(V&amp; visitor, ReadWithV
   </div>
 </div>
 
+
+</div><!-- /Part C -->
+
 <!-- Section: Lazy Column Loading -->
 <div class="section ani d11">
   <div class="section-head"><span class="section-num" style="background:var(--text-muted)">4</span> Lazy Column Loading</div>
@@ -1648,13 +1884,15 @@ void BlockBitPackingEncoding&lt;T&gt;::readWithVisitor(V&amp; visitor, ReadWithV
 
 <!-- Legend -->
 <div class="legend ani d11">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--layer-query);border-radius:50%"></div> Part A: Orchestration</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--layer-decoder);border-radius:50%"></div> Part B: ChunkedDecoder</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--layer-encoding);border-radius:50%"></div> Part C: Encoding</div>
+  <div style="width:1px;height:14px;background:var(--border)"></div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--col0)"></div> col1 (int32)</div>
-  <div class="legend-item"><div class="legend-dot" style="background:var(--col1)"></div> col2 (int64, skipped)</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--col2)"></div> col3 (double)</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--col3)"></div> col4 (string)</div>
-  <div class="legend-item"><div class="legend-dot" style="background:var(--col4)"></div> col5 (float, skipped)</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> Data flow</div>
-  <div class="legend-item"><div class="legend-dot" style="background:var(--pass)"></div> Fast path</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--pass)"></div> Fast / dict path</div>
   <div class="legend-item"><div class="legend-dot" style="background:var(--text-muted)"></div> Slow / lazy</div>
 </div>
 
