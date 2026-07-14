@@ -14,16 +14,123 @@
  * limitations under the License.
  */
 #pragma once
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <optional>
+#include <span>
+#include <type_traits>
 #include <unordered_map>
 
 #include "dwio/nimble/velox/OrderedRanges.h"
 #include "dwio/nimble/velox/RawSizeContext.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
+#include "velox/common/base/SimdUtil.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::nimble {
+
+template <typename T>
+struct MinMax {
+  T min;
+  T max;
+};
+
+template <typename T>
+constexpr bool kIntegralMinMaxType = std::is_integral_v<std::remove_cv_t<T>> &&
+    !std::is_same_v<std::remove_cv_t<T>, bool>;
+
+template <typename T>
+constexpr bool kFloatingPointMinMaxType =
+    std::is_floating_point_v<std::remove_cv_t<T>>;
+
+template <typename T>
+std::enable_if_t<kIntegralMinMaxType<T>, MinMax<std::remove_cv_t<T>>>
+findMinMax(std::span<T> values) {
+  using Value = std::remove_cv_t<T>;
+  using Batch = xsimd::batch<Value>;
+
+  const auto* rawValues = values.data();
+  size_t index{0};
+  Value minValue{values.front()};
+  Value maxValue{values.front()};
+
+  if (values.size() >= Batch::size) {
+    auto minBatch = Batch::load_unaligned(rawValues);
+    auto maxBatch = minBatch;
+    index = Batch::size;
+    for (; index + Batch::size <= values.size(); index += Batch::size) {
+      const auto batch = Batch::load_unaligned(rawValues + index);
+      minBatch = xsimd::min(minBatch, batch);
+      maxBatch = xsimd::max(maxBatch, batch);
+    }
+    minValue = xsimd::reduce_min(minBatch);
+    maxValue = xsimd::reduce_max(maxBatch);
+  }
+
+  for (; index < values.size(); ++index) {
+    minValue = std::min(minValue, values[index]);
+    maxValue = std::max(maxValue, values[index]);
+  }
+
+  return {
+      .min = minValue,
+      .max = maxValue,
+  };
+}
+
+template <typename T>
+std::enable_if_t<
+    kFloatingPointMinMaxType<T>,
+    std::optional<MinMax<std::remove_cv_t<T>>>>
+findMinMax(std::span<T> values) {
+  using Value = std::remove_cv_t<T>;
+  using Batch = xsimd::batch<Value>;
+
+  const auto* rawValues = values.data();
+  size_t index{0};
+  Value minValue{values.front()};
+  Value maxValue{values.front()};
+
+  if (std::isnan(minValue)) {
+    return std::nullopt;
+  }
+
+  if (values.size() >= Batch::size) {
+    auto minBatch = Batch::load_unaligned(rawValues);
+    if (xsimd::any(minBatch != minBatch)) {
+      return std::nullopt;
+    }
+    auto maxBatch = minBatch;
+    index = Batch::size;
+    for (; index + Batch::size <= values.size(); index += Batch::size) {
+      const auto batch = Batch::load_unaligned(rawValues + index);
+      if (xsimd::any(batch != batch)) {
+        return std::nullopt;
+      }
+      minBatch = xsimd::min(minBatch, batch);
+      maxBatch = xsimd::max(maxBatch, batch);
+    }
+    minValue = xsimd::reduce_min(minBatch);
+    maxValue = xsimd::reduce_max(maxBatch);
+  }
+
+  for (; index < values.size(); ++index) {
+    const auto value = values[index];
+    if (std::isnan(value)) {
+      return std::nullopt;
+    }
+    minValue = std::min(minValue, value);
+    maxValue = std::max(maxValue, value);
+  }
+
+  return MinMax<Value>{
+      .min = minValue,
+      .max = maxValue,
+  };
+}
+
 struct ColumnStats {
   uint64_t logicalSize{0};
   std::optional<uint64_t> dedupedLogicalSize{std::nullopt};

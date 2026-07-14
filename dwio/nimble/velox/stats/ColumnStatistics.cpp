@@ -15,105 +15,15 @@
  */
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 
-#include <algorithm>
-#include <cmath>
 #include <optional>
 #include <utility>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "velox/common/base/SimdUtil.h"
+#include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 
 namespace facebook::nimble {
 
 namespace {
-
-template <typename T>
-struct MinMax {
-  T min;
-  T max;
-};
-
-template <typename T>
-MinMax<int64_t> findIntegralMinMax(std::span<T> values) {
-  static_assert(std::is_integral_v<T>);
-  using Batch = xsimd::batch<T>;
-
-  auto* rawValues = values.data();
-  size_t index{0};
-  T minValue{values.front()};
-  T maxValue{values.front()};
-
-  if (values.size() >= Batch::size) {
-    auto minBatch = Batch::load_unaligned(rawValues);
-    auto maxBatch = minBatch;
-    index = Batch::size;
-    for (; index + Batch::size <= values.size(); index += Batch::size) {
-      const auto batch = Batch::load_unaligned(rawValues + index);
-      minBatch = xsimd::min(minBatch, batch);
-      maxBatch = xsimd::max(maxBatch, batch);
-    }
-    minValue = xsimd::reduce_min(minBatch);
-    maxValue = xsimd::reduce_max(maxBatch);
-  }
-
-  for (; index < values.size(); ++index) {
-    minValue = std::min(minValue, values[index]);
-    maxValue = std::max(maxValue, values[index]);
-  }
-
-  return {
-      .min = static_cast<int64_t>(minValue),
-      .max = static_cast<int64_t>(maxValue),
-  };
-}
-
-template <typename T>
-std::optional<MinMax<double>> findFloatingPointMinMax(std::span<T> values) {
-  static_assert(std::is_floating_point_v<T>);
-  using Batch = xsimd::batch<T>;
-
-  auto* rawValues = values.data();
-  size_t index{0};
-  T minValue{values.front()};
-  T maxValue{values.front()};
-
-  if (std::isnan(minValue)) {
-    return std::nullopt;
-  }
-
-  if (values.size() >= Batch::size) {
-    auto minBatch = Batch::load_unaligned(rawValues);
-    if (xsimd::any(minBatch != minBatch)) {
-      return std::nullopt;
-    }
-    auto maxBatch = minBatch;
-    index = Batch::size;
-    for (; index + Batch::size <= values.size(); index += Batch::size) {
-      const auto batch = Batch::load_unaligned(rawValues + index);
-      if (xsimd::any(batch != batch)) {
-        return std::nullopt;
-      }
-      minBatch = xsimd::min(minBatch, batch);
-      maxBatch = xsimd::max(maxBatch, batch);
-    }
-    minValue = xsimd::reduce_min(minBatch);
-    maxValue = xsimd::reduce_max(maxBatch);
-  }
-
-  for (; index < values.size(); ++index) {
-    const auto value = values[index];
-    if (std::isnan(value)) {
-      return std::nullopt;
-    }
-    minValue = std::min(minValue, value);
-    maxValue = std::max(maxValue, value);
-  }
-
-  return MinMax<double>{
-      .min = static_cast<double>(minValue),
-      .max = static_cast<double>(maxValue),
-  };
-}
 
 template <typename T>
 void addFloatingPointValuesScalar(
@@ -436,12 +346,14 @@ void IntegralStatisticsCollector::addValues(std::span<T> values) {
   }
 
   auto* stats = integralStats();
-  const auto minMax = findIntegralMinMax(values);
-  if (!stats->min_.has_value() || minMax.min < *stats->min_) {
-    stats->min_ = minMax.min;
+  const auto minMax = findMinMax(values);
+  const auto min = static_cast<int64_t>(minMax.min);
+  const auto max = static_cast<int64_t>(minMax.max);
+  if (!stats->min_.has_value() || min < *stats->min_) {
+    stats->min_ = min;
   }
-  if (!stats->max_.has_value() || minMax.max > *stats->max_) {
-    stats->max_ = minMax.max;
+  if (!stats->max_.has_value() || max > *stats->max_) {
+    stats->max_ = max;
   }
 }
 
@@ -498,16 +410,18 @@ void FloatingPointStatisticsCollector::addValues(std::span<T> values) {
   }
 
   auto* stats = floatingPointStats();
-  const auto minMax = findFloatingPointMinMax(values);
+  const auto minMax = findMinMax(values);
   if (!minMax.has_value()) {
     addFloatingPointValuesScalar(stats->min_, stats->max_, values);
     return;
   }
-  if (!stats->min_.has_value() || minMax->min < *stats->min_) {
-    stats->min_ = minMax->min;
+  const auto min = static_cast<double>(minMax->min);
+  const auto max = static_cast<double>(minMax->max);
+  if (!stats->min_.has_value() || min < *stats->min_) {
+    stats->min_ = min;
   }
-  if (!stats->max_.has_value() || minMax->max > *stats->max_) {
-    stats->max_ = minMax->max;
+  if (!stats->max_.has_value() || max > *stats->max_) {
+    stats->max_ = max;
   }
 }
 
