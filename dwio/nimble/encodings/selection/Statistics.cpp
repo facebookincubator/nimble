@@ -17,8 +17,11 @@
 #include "dwio/nimble/common/Types.h"
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <limits>
 #include <type_traits>
+#include "velox/common/base/SimdUtil.h"
 
 namespace facebook::nimble {
 
@@ -26,6 +29,26 @@ namespace {
 
 template <typename T, typename InputType>
 using MapType = typename UniqueValueCounts<T, InputType>::MapType;
+
+uint64_t countTrueValues(std::span<const bool> values) {
+  static_assert(sizeof(bool) == sizeof(uint8_t));
+  constexpr auto kBatchSize = xsimd::batch<uint8_t>::size;
+  const auto* rawValues = reinterpret_cast<const uint8_t*>(values.data());
+  const auto zero = xsimd::batch<uint8_t>::broadcast(0);
+
+  uint64_t trueCount{0};
+  size_t offset{0};
+  for (; offset + kBatchSize <= values.size(); offset += kBatchSize) {
+    const auto batch =
+        xsimd::batch<uint8_t>::load_unaligned(rawValues + offset);
+    trueCount += std::popcount(
+        static_cast<uint32_t>(facebook::velox::simd::toBitMask(batch != zero)));
+  }
+  for (; offset < values.size(); ++offset) {
+    trueCount += static_cast<uint8_t>(values[offset]);
+  }
+  return trueCount;
+}
 
 } // namespace
 
@@ -96,16 +119,14 @@ template <typename T, typename InputType>
 void Statistics<T, InputType>::populateUniques() const {
   MapType<T, InputType> uniqueCounts;
   if constexpr (nimble::isBoolType<T>()) {
-    std::array<uint64_t, 2> counts{};
-    for (int i = 0; i < data_.size(); ++i) {
-      ++counts[static_cast<uint8_t>(data_[i])];
-    }
+    const uint64_t trueCount = countTrueValues(data_);
+    const uint64_t falseCount = static_cast<uint64_t>(data_.size()) - trueCount;
     uniqueCounts.reserve(2);
-    if (counts[0] > 0) {
-      uniqueCounts[false] = counts[0];
+    if (falseCount > 0) {
+      uniqueCounts.emplace(false, falseCount);
     }
-    if (counts[1] > 0) {
-      uniqueCounts[true] = counts[1];
+    if (trueCount > 0) {
+      uniqueCounts.emplace(true, trueCount);
     }
   } else {
     // Note: There is no science behind the reservation size. Just trying to
