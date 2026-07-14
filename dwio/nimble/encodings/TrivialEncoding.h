@@ -60,6 +60,13 @@ class TrivialEncoding final
 
   void reset() final;
   void skip(uint32_t rowCount) final;
+
+  /// O(1) point read backing get<T>(): direct array index into the
+  /// contiguous values buffer. Stateless and safe for concurrent calls.
+  void getImpl(uint32_t row, void* buffer) final {
+    *static_cast<physicalType*>(buffer) = values_[row];
+  }
+
   void materialize(uint32_t rowCount, void* buffer) final;
 
   template <typename DecoderVisitor>

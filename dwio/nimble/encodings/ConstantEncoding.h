@@ -64,6 +64,12 @@ class ConstantEncodingBase
 
   void skip(uint32_t /* rowCount */) final {}
 
+  /// O(1) point read backing get<T>(): returns the single constant value,
+  /// ignoring `row`. Stateless and safe for concurrent calls.
+  void getImpl(uint32_t /* row */, void* buffer) final {
+    *static_cast<physicalType*>(buffer) = value_;
+  }
+
   void materialize(uint32_t rowCount, void* buffer) final {
     physicalType* castBuffer = static_cast<physicalType*>(buffer);
     for (uint32_t i = 0; i < rowCount; ++i) {
