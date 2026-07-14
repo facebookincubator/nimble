@@ -2083,6 +2083,31 @@ TEST_F(ZstdDCtxReuseTest, streamDataLegacyDecodeFails) {
       "Legacy StreamData must be decoded through copyTo() or decodeStrings()");
 }
 
+TEST_F(ZstdDCtxReuseTest, streamDataZeroCountDecodeIsNoOp) {
+  const std::vector<int32_t> expected = {10, 20, 30, 40};
+  std::string_view payload(
+      reinterpret_cast<const char*>(expected.data()),
+      expected.size() * sizeof(int32_t));
+  auto compressed = buildLegacyCompressedData(payload);
+
+  std::vector<BufferPtr> stringBuffers;
+  serde::StreamData sd(
+      ScalarKind::Int32,
+      compressed,
+      stringBuffers,
+      pool_.get(),
+      serde::StreamData::Options{
+          .version = SerializationVersion::kLegacy,
+          .decompressionBuffer = &decompressionBuffer_});
+
+  // A zero-count decode must be a no-op even for a stream with no encoding
+  // (legacy/empty stream), rather than throwing.
+  const auto result =
+      sd.decode(/*output=*/nullptr, /*offset=*/0, /*count=*/0, sizeof(int32_t));
+  EXPECT_EQ(result.numOutputRows, 0);
+  EXPECT_EQ(result.nonNullOutputRows, 0);
+}
+
 TEST_F(ZstdDCtxReuseTest, streamDataDCtxReusedAcrossReset) {
   const std::vector<int32_t> values1 = {1, 2, 3};
   std::string_view payload1(

@@ -217,6 +217,15 @@ StreamData::DecodeResult StreamData::decode(
     uint32_t width,
     const std::function<void*()>& getOutputNulls,
     const velox::bits::Bitmap* scatterOutputBitmap) {
+  // Decoding zero rows is a no-op. Empty streams are omitted from the
+  // serialized payload (see StreamDataWriter::writeData) and so are never
+  // reset() with an encoding; a zero-count decode of such a stream must not
+  // require one. Mirrors the count == 0 guards in decodeLegacy() and
+  // materialize().
+  if (count == 0) {
+    return {};
+  }
+
   // Nimble encoding path: use materialize() to decode.
   NIMBLE_CHECK_NOT_NULL(
       encoding_,
