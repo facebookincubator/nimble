@@ -6750,11 +6750,17 @@ TEST_P(ParallelEncodeWriterTest, flatMapParallelEncode) {
       leafPool_.get(),
       seed);
 
+  // The fuzzer emits random INTEGER keys, so the number of distinct flat-map
+  // keys varies per seed and can exceed the default limit. This test compares
+  // parallel vs sequential encoding, so lift the limit (0 = unlimited) to keep
+  // the run independent of the seed's key cardinality.
   auto writerOptions = parallelWriterOptions();
   writerOptions.flatMapColumns = {{"flatmap", {}}};
+  writerOptions.maxFlatMapKeys = 0;
 
   nimble::VeloxWriterOptions seqOptions;
   seqOptions.flatMapColumns = {{"flatmap", {}}};
+  seqOptions.maxFlatMapKeys = 0;
 
   std::string seqFile;
   std::string parFile;
