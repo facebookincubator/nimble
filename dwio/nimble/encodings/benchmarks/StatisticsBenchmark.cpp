@@ -32,6 +32,7 @@ constexpr uint32_t kValueCount{1 << 20};
 constexpr uint32_t kDenseRangeSize{4096};
 
 std::vector<int64_t> int64DenseRange{};
+std::vector<int64_t> int64SingleValue{};
 std::vector<int64_t> int64DenseRangeAtMin{};
 std::vector<int64_t> int64SparseRange{};
 std::vector<int64_t> int64FullSpan{};
@@ -50,6 +51,7 @@ void updateUniqueStats(uint32_t iters, const std::vector<T>& data) {
 
 void prepareData() {
   int64DenseRange.resize(kValueCount);
+  int64SingleValue.resize(kValueCount);
   int64DenseRangeAtMin.resize(kValueCount);
   int64SparseRange.resize(kValueCount);
   int64FullSpan.resize(kValueCount);
@@ -63,6 +65,7 @@ void prepareData() {
   for (uint32_t i = 0; i < kValueCount; ++i) {
     const uint32_t denseOffset{i % kDenseRangeSize};
     int64DenseRange[i] = static_cast<int64_t>(denseOffset);
+    int64SingleValue[i] = 42;
     int64DenseRangeAtMin[i] = int64Min + static_cast<int64_t>(denseOffset);
     int64SparseRange[i] = static_cast<int64_t>(denseOffset * 2);
     uint64DenseRangeAtMax[i] = uint64HighBase + denseOffset;
@@ -78,6 +81,10 @@ void prepareData() {
 
 BENCHMARK(UniqueStats_Int64DenseRange, iters) {
   updateUniqueStats(iters, int64DenseRange);
+}
+
+BENCHMARK_RELATIVE(UniqueStats_Int64SingleValue, iters) {
+  updateUniqueStats(iters, int64SingleValue);
 }
 
 BENCHMARK_RELATIVE(UniqueStats_Int64DenseRangeAtMin, iters) {

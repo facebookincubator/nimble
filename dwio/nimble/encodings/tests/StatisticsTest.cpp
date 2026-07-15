@@ -207,6 +207,14 @@ TYPED_TEST(StatisticsIntegerTests, uniqueCountsDenseRange) {
   std::vector<Test> tests;
   if constexpr (std::is_signed_v<ValueType>) {
     tests = {
+        {"single value",
+         {std::numeric_limits<ValueType>::lowest(),
+          std::numeric_limits<ValueType>::lowest(),
+          std::numeric_limits<ValueType>::lowest(),
+          std::numeric_limits<ValueType>::lowest()},
+         {{std::numeric_limits<ValueType>::lowest(), 4}},
+         std::numeric_limits<ValueType>::lowest(),
+         std::numeric_limits<ValueType>::lowest()},
         {"crosses zero",
          {static_cast<ValueType>(-2),
           static_cast<ValueType>(-1),
@@ -232,6 +240,14 @@ TYPED_TEST(StatisticsIntegerTests, uniqueCountsDenseRange) {
     };
   } else {
     tests = {
+        {"single value",
+         {std::numeric_limits<ValueType>::max(),
+          std::numeric_limits<ValueType>::max(),
+          std::numeric_limits<ValueType>::max(),
+          std::numeric_limits<ValueType>::max()},
+         {{std::numeric_limits<ValueType>::max(), 4}},
+         std::numeric_limits<ValueType>::max(),
+         std::numeric_limits<ValueType>::max()},
         {"near max",
          {static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 2),
           static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 1),
