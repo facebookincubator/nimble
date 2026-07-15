@@ -21,6 +21,20 @@ target_link_libraries(
   gtest_main
 )
 
+add_library(nimble_velox_writer_test_utils VeloxWriterTestUtils.cpp)
+target_link_libraries(
+  nimble_velox_writer_test_utils
+  nimble_velox_reader
+  nimble_velox_schema_reader
+  nimble_common
+  nimble_encodings_tests_utils
+  velox_type
+  velox_vector
+  velox_vector_fuzzer
+  gtest
+  gtest_main
+)
+
 add_executable(
   nimble_velox_tests
   BufferGrowthPolicyTest.cpp
@@ -48,6 +62,7 @@ target_link_libraries(
   nimble_velox_tests
   nimble_velox_common
   nimble_velox_schema_utils
+  nimble_velox_writer_test_utils
   nimble_velox_reader
   nimble_velox_writer
   nimble_velox_layout_planner
@@ -67,6 +82,24 @@ target_link_libraries(
   Folly::folly
   raw_size_utils
   nimble_column_stats_utils
+)
+
+add_executable(nimble_velox_writer_fuzz_tests VeloxWriterFuzzTest.cpp)
+add_test(nimble_velox_writer_fuzz_tests nimble_velox_writer_fuzz_tests)
+
+target_link_libraries(
+  nimble_velox_writer_fuzz_tests
+  nimble_velox_writer_test_utils
+  nimble_velox_reader
+  nimble_velox_writer
+  nimble_velox_schema_reader
+  nimble_common
+  nimble_encodings_tests_utils
+  velox_vector
+  velox_vector_fuzzer
+  gtest
+  gtest_main
+  Folly::folly
 )
 
 add_executable(raw_size_benchmark RawSizeBenchmark.cpp)
