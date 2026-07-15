@@ -82,6 +82,13 @@ MapType<T, T> populateRangeUniqueCounts(
     std::span<const T> values,
     T minValue,
     uint32_t rangeSize) {
+  if (rangeSize == 1) {
+    MapType<T, T> uniqueCounts;
+    uniqueCounts.reserve(1);
+    uniqueCounts.emplace(minValue, static_cast<uint64_t>(values.size()));
+    return uniqueCounts;
+  }
+
   std::vector<uint64_t> counts(rangeSize);
   for (const auto value : values) {
     ++counts[denseRangeOffset(value, minValue)];
