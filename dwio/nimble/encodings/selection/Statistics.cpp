@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/selection/Statistics.h"
+#include "dwio/nimble/common/StatsUtil.h"
 #include "dwio/nimble/common/Types.h"
 
 #include <algorithm>
@@ -27,8 +28,75 @@ namespace facebook::nimble {
 
 namespace {
 
+constexpr uint32_t kMaxDenseRangeSize{4096};
+
 template <typename T, typename InputType>
 using MapType = typename UniqueValueCounts<T, InputType>::MapType;
+
+template <typename T>
+uint64_t integralRangeDistance(T value, T rangeBase) {
+  return static_cast<uint64_t>(value) - static_cast<uint64_t>(rangeBase);
+}
+
+template <typename T>
+uint32_t denseRangeOffset(T value, T rangeBase) {
+  return static_cast<uint32_t>(integralRangeDistance(value, rangeBase));
+}
+
+template <typename T>
+T integralValueAtOffset(T rangeBase, uint32_t offset) {
+  if constexpr (std::is_signed_v<T>) {
+    return static_cast<T>(
+        static_cast<int64_t>(rangeBase) + static_cast<int64_t>(offset));
+  } else {
+    return static_cast<T>(static_cast<uint64_t>(rangeBase) + offset);
+  }
+}
+
+template <typename T>
+std::optional<uint32_t>
+denseRangeSize(T minValue, T maxValue, size_t valueCount) {
+  const auto rangeDistance = integralRangeDistance(maxValue, minValue);
+  const auto maxRangeSize = std::min<uint64_t>(kMaxDenseRangeSize, valueCount);
+  if (rangeDistance >= maxRangeSize) {
+    return std::nullopt;
+  }
+  return static_cast<uint32_t>(rangeDistance) + 1;
+}
+
+template <typename T, typename InputType>
+MapType<T, InputType> populateHashUniqueCounts(
+    std::span<const InputType> values) {
+  MapType<T, InputType> uniqueCounts;
+  // NOTE: There is no science behind the reservation size. Just trying to
+  // minimize internal allocations...
+  uniqueCounts.reserve(values.size() / 3);
+  for (auto i = 0; i < values.size(); ++i) {
+    ++uniqueCounts[values[i]];
+  }
+  return uniqueCounts;
+}
+
+template <typename T>
+MapType<T, T> populateRangeUniqueCounts(
+    std::span<const T> values,
+    T minValue,
+    uint32_t rangeSize) {
+  std::vector<uint64_t> counts(rangeSize);
+  for (const auto value : values) {
+    ++counts[denseRangeOffset(value, minValue)];
+  }
+
+  MapType<T, T> uniqueCounts;
+  uniqueCounts.reserve(std::min<size_t>(rangeSize, values.size()));
+  for (uint32_t offset = 0; offset < rangeSize; ++offset) {
+    if (counts[offset] > 0) {
+      uniqueCounts.emplace(
+          integralValueAtOffset(minValue, offset), counts[offset]);
+    }
+  }
+  return uniqueCounts;
+}
 
 uint64_t countTrueValues(std::span<const bool> values) {
   static_assert(sizeof(bool) == sizeof(uint8_t));
@@ -128,13 +196,20 @@ void Statistics<T, InputType>::populateUniques() const {
     if (trueCount > 0) {
       uniqueCounts.emplace(true, trueCount);
     }
-  } else {
-    // Note: There is no science behind the reservation size. Just trying to
-    // minimize internal allocations...
-    uniqueCounts.reserve(data_.size() / 3);
-    for (auto i = 0; i < data_.size(); ++i) {
-      ++uniqueCounts[data_[i]];
+  } else if constexpr (
+      nimble::isIntegralType<T>() && std::is_same_v<T, InputType>) {
+    const auto minMax = findMinMax(data_);
+    min_ = minMax.min;
+    max_ = minMax.max;
+    if (const auto rangeSize =
+            denseRangeSize(minMax.min, minMax.max, data_.size())) {
+      uniqueCounts =
+          populateRangeUniqueCounts<T>(data_, minMax.min, rangeSize.value());
+    } else {
+      uniqueCounts = populateHashUniqueCounts<T, InputType>(data_);
     }
+  } else {
+    uniqueCounts = populateHashUniqueCounts<T, InputType>(data_);
   }
   uniqueCounts_.emplace(std::make_optional(std::move(uniqueCounts)));
 }

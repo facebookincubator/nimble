@@ -18,6 +18,7 @@
 #include <limits>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/selection/Statistics.h"
@@ -189,6 +190,85 @@ TYPED_TEST(StatisticsBoolTests, Create) {
       expectedDistinctValuesCount, statistics.uniqueCounts().value().size());
   EXPECT_EQ(trueCount, statistics.uniqueCounts().value().at(true));
   EXPECT_EQ(falseCount, statistics.uniqueCounts().value().at(false));
+}
+
+TYPED_TEST(StatisticsIntegerTests, uniqueCountsDenseRange) {
+  using T = TypeParam;
+  using ValueType = typename T::valueType;
+
+  struct Test {
+    std::string_view name;
+    std::vector<ValueType> data;
+    std::vector<std::pair<ValueType, uint64_t>> expectedCounts;
+    ValueType expectedMin;
+    ValueType expectedMax;
+  };
+
+  std::vector<Test> tests;
+  if constexpr (std::is_signed_v<ValueType>) {
+    tests = {
+        {"crosses zero",
+         {static_cast<ValueType>(-2),
+          static_cast<ValueType>(-1),
+          static_cast<ValueType>(-2),
+          static_cast<ValueType>(0),
+          static_cast<ValueType>(1),
+          static_cast<ValueType>(1)},
+         {{static_cast<ValueType>(-2), 2},
+          {static_cast<ValueType>(-1), 1},
+          {static_cast<ValueType>(0), 1},
+          {static_cast<ValueType>(1), 2}},
+         static_cast<ValueType>(-2),
+         static_cast<ValueType>(1)},
+        {"near lowest",
+         {std::numeric_limits<ValueType>::lowest(),
+          static_cast<ValueType>(std::numeric_limits<ValueType>::lowest() + 1),
+          std::numeric_limits<ValueType>::lowest()},
+         {{std::numeric_limits<ValueType>::lowest(), 2},
+          {static_cast<ValueType>(std::numeric_limits<ValueType>::lowest() + 1),
+           1}},
+         std::numeric_limits<ValueType>::lowest(),
+         static_cast<ValueType>(std::numeric_limits<ValueType>::lowest() + 1)},
+    };
+  } else {
+    tests = {
+        {"near max",
+         {static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 2),
+          static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 1),
+          std::numeric_limits<ValueType>::max(),
+          static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 2),
+          std::numeric_limits<ValueType>::max()},
+         {{static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 2),
+           2},
+          {static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 1),
+           1},
+          {std::numeric_limits<ValueType>::max(), 2}},
+         static_cast<ValueType>(std::numeric_limits<ValueType>::max() - 2),
+         std::numeric_limits<ValueType>::max()},
+        {"starts at zero",
+         {static_cast<ValueType>(0),
+          static_cast<ValueType>(1),
+          static_cast<ValueType>(0),
+          static_cast<ValueType>(2)},
+         {{static_cast<ValueType>(0), 2},
+          {static_cast<ValueType>(1), 1},
+          {static_cast<ValueType>(2), 1}},
+         static_cast<ValueType>(0),
+         static_cast<ValueType>(2)},
+    };
+  }
+
+  for (const auto& test : tests) {
+    SCOPED_TRACE(test.name);
+    const auto statistics = T::create({test.data});
+    const auto& uniqueCounts = statistics.uniqueCounts().value();
+    EXPECT_EQ(test.expectedCounts.size(), uniqueCounts.size());
+    for (const auto& [value, count] : test.expectedCounts) {
+      EXPECT_EQ(count, uniqueCounts.at(value));
+    }
+    EXPECT_EQ(test.expectedMin, statistics.min());
+    EXPECT_EQ(test.expectedMax, statistics.max());
+  }
 }
 
 template <typename T>
