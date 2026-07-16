@@ -485,7 +485,7 @@ template <typename V>
 void readDenseMaterializedIndices(
     Encoding& encoding,
     V& visitor,
-    const ReadWithVisitorParams& params,
+    ReadWithVisitorParams& params,
     const uint64_t* rawNulls,
     uint32_t numReadRows,
     uint32_t numNonNulls) {
@@ -496,6 +496,7 @@ void readDenseMaterializedIndices(
   encoding.materializeIndices(
       numNonNulls,
       reinterpret_cast<uint32_t*>(rawOutputValues + valueOutputOffset));
+  params.prepareResultNulls();
   if (numNonNulls == numReadRows) {
     visitor.addNumValues(numReadRows);
     visitor.setRowIndex(visitor.numRows());
