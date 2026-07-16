@@ -129,14 +129,14 @@ class SelectiveNimbleReaderTest
   }
 
  protected:
-  static void SetUpTestCase() {
+  static void SetUpTestSuite() {
     if (!memory::MemoryManager::testInstance()) {
       memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
     }
     registerSelectiveNimbleReaderFactory();
   }
 
-  static void TearDownTestCase() {
+  static void TearDownTestSuite() {
     unregisterSelectiveNimbleReaderFactory();
   }
 
@@ -3397,6 +3397,94 @@ TEST_P(SelectiveNimbleReaderTest, deltaSawtoothSmallBatches) {
   validate(*input, *readers.rowReader, 7, [](auto) { return true; });
 }
 
+TEST_P(SelectiveNimbleReaderTest, stripeStatsPruneIntegralFilter) {
+  auto firstStripe = makeRowVector({
+      makeFlatVector<int64_t>(100, folly::identity),
+  });
+  auto secondStripe = makeRowVector({
+      makeFlatVector<int64_t>(100, [](auto row) { return 1000 + row; }),
+  });
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(
+          200, [](auto row) { return row < 100 ? row : 900 + row; }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto fileContent = test::createNimbleFile(
+      *rootPool(), {firstStripe, secondStripe}, writerOptions, false);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(10, 20, false));
+  auto readers =
+      makeReaders(input, fileContent, scanSpec, this->stringDecoderZeroCopy());
+
+  validate(*input, *readers.rowReader, 7, [](auto row) {
+    return row >= 10 && row <= 20;
+  });
+
+  dwio::common::RuntimeStatistics stats;
+  readers.rowReader->updateRuntimeStats(stats);
+  EXPECT_GT(stats.skippedStrides, 0);
+}
+
+// File-level stats for a deduplicated column are reconstructed by merging the
+// per-stripe snapshots. Writing identical data as two stripes exercises that
+// merge (including the per-stripe ancestor unwrapping), while writing it as a
+// single stripe needs no merge and serves as the oracle: the resulting
+// file-level column statistics must match.
+TEST_P(SelectiveNimbleReaderTest, stripeStatsMergeDeduplicatedArray) {
+  const std::vector<std::vector<int64_t>> firstRows{{1, 2}, {3, 4}, {1, 2}};
+  const std::vector<std::vector<int64_t>> secondRows{
+      {5, 6}, {5, 6}, {7, 8}, {9}};
+  std::vector<std::vector<int64_t>> allRows = firstRows;
+  allRows.insert(allRows.end(), secondRows.begin(), secondRows.end());
+
+  auto batch1 = makeRowVector({makeArrayVector<int64_t>(firstRows)});
+  auto batch2 = makeRowVector({makeArrayVector<int64_t>(secondRows)});
+  auto combined = makeRowVector({makeArrayVector<int64_t>(allRows)});
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableVectorizedStats = true;
+  writerOptions.dictionaryArrayColumns = {"c0"};
+
+  auto multiStripeFile = test::createNimbleFile(
+      *rootPool(), {batch1, batch2}, writerOptions, /*flushAfterWrite=*/true);
+  auto singleStripeFile = test::createNimbleFile(
+      *rootPool(), combined, writerOptions, /*flushAfterWrite=*/false);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*combined->type());
+  auto multiReaders = makeReaders(
+      combined, multiStripeFile, scanSpec, this->stringDecoderZeroCopy());
+  auto singleReaders = makeReaders(
+      combined, singleStripeFile, scanSpec, this->stringDecoderZeroCopy());
+
+  // Column 1 is the deduplicated array; column 2 is its integral element.
+  for (uint32_t column : {1u, 2u}) {
+    auto multiStats = multiReaders.reader->columnStatistics(column);
+    auto singleStats = singleReaders.reader->columnStatistics(column);
+    ASSERT_NE(multiStats, nullptr);
+    ASSERT_NE(singleStats, nullptr);
+    ASSERT_TRUE(singleStats->getNumberOfValues().has_value());
+    ASSERT_TRUE(multiStats->getNumberOfValues().has_value());
+    EXPECT_EQ(
+        multiStats->getNumberOfValues().value(),
+        singleStats->getNumberOfValues().value())
+        << "column " << column;
+  }
+
+  // Independent oracle: the array column has one entry per row, no nulls.
+  auto arrayStats = multiReaders.reader->columnStatistics(1);
+  EXPECT_EQ(arrayStats->getNumberOfValues().value(), allRows.size());
+}
+
 // Verifies columnStatistics returns IntegerColumnStatistics for BIGINT columns
 // with correct value count and null status.
 TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
@@ -3947,14 +4035,14 @@ INSTANTIATE_TEST_CASE_P(
 class SmallFilePreloadTest : public ::testing::Test,
                              public velox::test::VectorTestBase {
  protected:
-  static void SetUpTestCase() {
+  static void SetUpTestSuite() {
     if (!memory::MemoryManager::testInstance()) {
       memory::initializeMemoryManager(velox::memory::MemoryManager::Options{});
     }
     registerSelectiveNimbleReaderFactory();
   }
 
-  static void TearDownTestCase() {
+  static void TearDownTestSuite() {
     unregisterSelectiveNimbleReaderFactory();
   }
 };

@@ -118,6 +118,11 @@ class ReaderBase {
     return fileColumnStats_;
   }
 
+  const std::vector<std::vector<std::unique_ptr<ColumnStatistics>>>&
+  stripeColumnStats() const {
+    return stripeColumnStats_;
+  }
+
  private:
   ReaderBase(
       std::unique_ptr<velox::dwio::common::BufferedInput> input,
@@ -138,6 +143,8 @@ class ReaderBase {
   // File-level column statistics deserialized from the vectorized stats
   // optional section at construction.
   const std::vector<std::unique_ptr<ColumnStatistics>> fileColumnStats_;
+  const std::vector<std::vector<std::unique_ptr<ColumnStatistics>>>
+      stripeColumnStats_;
   mutable std::shared_ptr<const velox::dwio::common::TypeWithId>
       fileSchemaWithId_;
 };
