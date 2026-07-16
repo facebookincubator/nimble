@@ -74,7 +74,9 @@ TabletReader::Options TabletReader::configureOptions(
   Options tabletOptions;
   tabletOptions.maxFooterIoBytes = options.footerSpeculativeIoSize();
   tabletOptions.preloadOptionalSections = {
-      std::string(kSchemaSection), std::string(kVectorizedStatsSection)};
+      std::string(kSchemaSection),
+      std::string(kVectorizedStatsSection),
+      std::string(kStripeStatsSection)};
   tabletOptions.loadClusterIndex = options.loadClusterIndex();
   if (tabletOptions.loadClusterIndex) {
     tabletOptions.preloadOptionalSections.emplace_back(kClusterIndexSection);

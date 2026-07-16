@@ -954,6 +954,7 @@ void VeloxWriter::writeMetadata() {
 }
 
 void VeloxWriter::writeColumnStats() {
+  context_->finalizeFileStatsFromStripes();
   // When enableStatsConsistencyCheck is true, verify that fileRawSize
   // (accumulated via RawSizeUtils) matches the root column statistics.
   if (context_->options().enableStatsConsistencyCheck) {
@@ -969,6 +970,12 @@ void VeloxWriter::writeColumnStats() {
     Buffer buffer{*encodingMemoryPool_};
     tabletWriter_->writeOptionalSection(
         std::string(kVectorizedStatsSection), fileStats.serialize(buffer));
+    VectorizedStripeStats stripeStats{
+        context_->stripeStats(), encodingMemoryPool_.get()};
+    Buffer stripeStatsBuffer{*encodingMemoryPool_};
+    tabletWriter_->writeOptionalSection(
+        std::string(kStripeStatsSection),
+        stripeStats.serialize(stripeStatsBuffer));
   } else {
     flatbuffers::FlatBufferBuilder builder;
     builder.Finish(
@@ -1086,9 +1093,6 @@ void VeloxWriter::close() {
     try {
       writeStripe();
       rootWriter_->close();
-      if (context_->options().enableStatsCollection) {
-        context_->finalizeStatsCollectors();
-      }
 
       writeMetadata();
       if (context_->options().enableStatsCollection) {
@@ -1552,6 +1556,9 @@ bool VeloxWriter::writeStripe() {
     writeChunks(streamIndices, /*ensureFullChunks=*/false, /*lastChunk=*/true);
   } else {
     writeStreams();
+  }
+  if (context_->options().enableStatsCollection) {
+    context_->finalizeStripeStatsCollectors();
   }
 
   uint64_t stripeSize{0};

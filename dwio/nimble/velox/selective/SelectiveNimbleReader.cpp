@@ -204,6 +204,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
   // if stats are available.
   void computeStatsBasedRowSize() const;
 
+  bool shouldSkipStripe(uint32_t stripe) const;
+
   // Computes which top-level columns should use lazy I/O based on the scan
   // spec and remaining filter columns. Returns a const set used for the
   // lifetime of this reader.
@@ -272,7 +274,14 @@ int64_t SelectiveNimbleRowReader::nextRowNumber() {
           readerBase_->randomSkip()->nextSkip() >= numStripeRows) {
         readerBase_->randomSkip()->consume(numStripeRows);
         ++skippedStripes_;
-        goto advanceToNextStripe;
+        advanceToNextStripe();
+        continue;
+      }
+      if (shouldSkipStripe(currentStripe_)) {
+        maybeUpdateRandomSkip(numStripeRows);
+        ++skippedStripes_;
+        advanceToNextStripe();
+        continue;
       }
       loadCurrentStripe();
     }
@@ -284,7 +293,6 @@ int64_t SelectiveNimbleRowReader::nextRowNumber() {
       nextRowNumber_ = stripeRowOffsets_[currentStripe_] + rowInCurrentStripe_;
       return *nextRowNumber_;
     }
-  advanceToNextStripe:
     advanceToNextStripe();
   }
   // Update random skip tracker for trailing rows that were skipped due to upper
@@ -368,6 +376,60 @@ void SelectiveNimbleRowReader::computeStatsBasedRowSize() const {
   if (totalRows > 0) {
     statsBasedRowSize_ = std::max<size_t>(1, totalLogicalSize / totalRows);
   }
+}
+
+bool SelectiveNimbleRowReader::shouldSkipStripe(uint32_t stripe) const {
+  const auto& stripeStats = readerBase_->stripeColumnStats();
+  if (stripe >= stripeStats.size() || stripeStats[stripe].empty()) {
+    return false;
+  }
+  const auto& rootType = *readerBase_->fileSchemaWithId();
+  const auto& rowType = rootType.type()->asRow();
+  for (auto* childSpec : options_.scanSpec()->stableChildren()) {
+    if (!childSpec->hasFilter() || childSpec->filter() == nullptr ||
+        childSpec->isConstant() || !childSpec->readFromFile()) {
+      continue;
+    }
+    const auto columnIndex =
+        rowType.getChildIdxIfExists(childSpec->fieldName());
+    if (!columnIndex.has_value()) {
+      continue;
+    }
+    const auto& childType = rootType.childAt(columnIndex.value());
+    if (childType == nullptr) {
+      continue;
+    }
+    // Only top-level integral columns are pruned here. Use an explicit
+    // comparison rather than a switch over TypeKind to avoid -Wswitch-enum
+    // requiring every enumerator to be listed.
+    const auto kind = childType->type()->kind();
+    if (kind != TypeKind::TINYINT && kind != TypeKind::SMALLINT &&
+        kind != TypeKind::INTEGER && kind != TypeKind::BIGINT) {
+      continue;
+    }
+    // Per-stripe stats are laid out by schema type id: the writer snapshots
+    // statsCollectors_ (indexed by TypeWithId::id()) in order, so
+    // stripeStats[stripe][id] matches childType->id() just like the file-level
+    // column stats. The bound check below guards against a stats section that
+    // covers fewer columns than the current schema.
+    const auto columnId = childType->id();
+    if (columnId >= stripeStats[stripe].size() ||
+        !stripeStats[stripe][columnId]) {
+      continue;
+    }
+    const auto* integralStats =
+        stripeStats[stripe][columnId]->as<IntegralStatistics>();
+    if (integralStats == nullptr || !integralStats->getMin().has_value() ||
+        !integralStats->getMax().has_value()) {
+      continue;
+    }
+    const auto hasNull = integralStats->getNullCount() > 0;
+    if (!childSpec->filter()->testInt64Range(
+            *integralStats->getMin(), *integralStats->getMax(), hasNull)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::optional<size_t> SelectiveNimbleRowReader::estimatedRowSize() const {
