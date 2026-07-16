@@ -3475,6 +3475,7 @@ class MergedFlatMapFieldReader final
       auto* sourceArray =
           nodeValues_[i]->wrappedVector()->asUnchecked<velox::ArrayVector>();
       velox::vector_size_t sourceIndex = 0;
+      copyRanges_.clear();
 
       auto copyValue = [&](velox::vector_size_t j) {
         const auto targetIndex = offsetsPtr[j];
@@ -3485,11 +3486,8 @@ class MergedFlatMapFieldReader final
         valuesOffsets[targetIndex] = elementOffset;
         valuesSizes[targetIndex] = copySize;
         if (copySize > 0) {
-          elements->copy(
-              sourceArray->elements().get(),
-              elementOffset,
-              sourceArray->offsetAt(wrappedIndex),
-              copySize);
+          copyRanges_.push_back(
+              {sourceArray->offsetAt(wrappedIndex), elementOffset, copySize});
           elementOffset += copySize;
         }
         ++sourceIndex;
@@ -3527,6 +3525,7 @@ class MergedFlatMapFieldReader final
           copyValue(j);
         }
       }
+      elements->copyRanges(sourceArray->elements().get(), copyRanges_);
     }
     NIMBLE_CHECK_EQ(elementOffset, totalElements, "Element count mismatch");
   }
@@ -3569,7 +3568,8 @@ class MergedFlatMapFieldReader final
   // In-map mask (1 bit per value), organized in row first layout.
   std::vector<uint64_t> rowWiseInMap_;
 
-  // Copy ranges from one node values into the merged values.
+  // Copy ranges from one node values into the merged values. Memory buffer
+  // purpose only, no values stored between calls.
   std::vector<velox::BaseVector::CopyRange> copyRanges_;
 };
 
