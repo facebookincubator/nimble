@@ -4111,6 +4111,7 @@ TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesNoNulls) {
 
   // Call the helper with no nulls.
   ReadWithVisitorParams params{.numScanned = 0};
+  params.prepareResultNulls = [] {};
   detail::readDenseMaterializedIndices(
       *encoding,
       visitor,
@@ -4215,6 +4216,7 @@ TEST_P(ReadWithVisitorTest, readDenseMaterializedIndicesWithNulls) {
 
   // Call the helper with nulls.
   ReadWithVisitorParams params{.numScanned = 0};
+  params.prepareResultNulls = [] {};
   detail::readDenseMaterializedIndices(
       *encoding,
       visitor,
