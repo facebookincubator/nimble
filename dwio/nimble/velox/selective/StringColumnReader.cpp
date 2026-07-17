@@ -445,50 +445,55 @@ bool StringColumnReader::readWithDictionary(
     scanSpec_->setFilter(std::move(savedFilter));
   }
 
+  // Reconcile the reader's null state after the bulk dictionary read, for
+  // DENSE reads only. A dense read records its nulls in nullsInReadRange_
+  // (fresh per read, output==file), but the bulk index path (unlike the
+  // per-row processNull path) does not set anyNulls_/returnReaderNulls_;
+  // without this, resultNulls() reports no nulls and
+  // filterDictionaryIndices/getValues read the uninitialized index slots at
+  // null positions. Set returnReaderNulls_ directly rather than via
+  // resolveReturnNullBuffer(), which forces it false for filtered reads.
+  //
+  // Non-dense reads are intentionally NOT reconciled here: they set anyNulls_
+  // via their own per-row processNull path, and their resultNulls_ must not
+  // be inspected — it is populated lazily (only when a null is hit), so a
+  // no-null non-dense read leaves it stale from a prior read and would
+  // falsely report nulls, marking non-null rows null.
+  //
+  // Contract this couples to (keep in sync with SelectiveColumnReader): a
+  // dense read is exactly rows == [0, rows.size()), the same test the
+  // framework's useBulkPath()/resolveReturnNullBuffer() apply; and for a
+  // dense bulk read with nulls, resultNulls() must return nullsInReadRange_
+  // (returnReaderNulls_ == true). resolveReturnNullBuffer() would establish
+  // that, but it forces the flag false whenever a filter is present, so we
+  // set it directly here. Revisit if the framework changes how
+  // returnReaderNulls_ is derived for dense reads.
+  //
+  // Applied regardless of abandonDictionary: the dict portion's indices
+  // must be filtered before either getValues() (normal path) or
+  // abandonDictionaryEncoding() (abandon path).
+  const bool isDense = !rows.empty() && rows.back() == rows.size() - 1;
+  if (!anyNulls_ && numValues_ > 0 && isDense &&
+      nullsInReadRange() != nullptr &&
+      !velox::bits::isAllSet(
+          nullsInReadRange()->as<uint64_t>(),
+          0,
+          numValues_,
+          velox::bits::kNotNull)) {
+    anyNulls_ = true;
+    returnReaderNulls_ = true;
+  }
+  if (scanSpec_->hasFilter()) {
+    filterDictionaryIndices(rows, scanSpec_->filter());
+  }
+
   if (!abandonDictionary) {
-    // Reconcile the reader's null state after the bulk dictionary read, for
-    // DENSE reads only. A dense read records its nulls in nullsInReadRange_
-    // (fresh per read, output==file), but the bulk index path (unlike the
-    // per-row processNull path) does not set anyNulls_/returnReaderNulls_;
-    // without this, resultNulls() reports no nulls and
-    // filterDictionaryIndices/getValues read the uninitialized index slots at
-    // null positions. Set returnReaderNulls_ directly rather than via
-    // resolveReturnNullBuffer(), which forces it false for filtered reads.
-    //
-    // Non-dense reads are intentionally NOT reconciled here: they set anyNulls_
-    // via their own per-row processNull path, and their resultNulls_ must not
-    // be inspected — it is populated lazily (only when a null is hit), so a
-    // no-null non-dense read leaves it stale from a prior read and would
-    // falsely report nulls, marking non-null rows null.
-    //
-    // Contract this couples to (keep in sync with SelectiveColumnReader): a
-    // dense read is exactly rows == [0, rows.size()), the same test the
-    // framework's useBulkPath()/resolveReturnNullBuffer() apply; and for a
-    // dense bulk read with nulls, resultNulls() must return nullsInReadRange_
-    // (returnReaderNulls_ == true). resolveReturnNullBuffer() would establish
-    // that, but it forces the flag false whenever a filter is present, so we
-    // set it directly here. Revisit if the framework changes how
-    // returnReaderNulls_ is derived for dense reads.
-    const bool isDense = !rows.empty() && rows.back() == rows.size() - 1;
-    if (!anyNulls_ && numValues_ > 0 && isDense &&
-        nullsInReadRange() != nullptr &&
-        !velox::bits::isAllSet(
-            nullsInReadRange()->as<uint64_t>(),
-            0,
-            numValues_,
-            velox::bits::kNotNull)) {
-      anyNulls_ = true;
-      returnReaderNulls_ = true;
-    }
-    if (scanSpec_->hasFilter()) {
-      filterDictionaryIndices(rows, scanSpec_->filter());
-    }
     readOffset_ += endReadRow;
     return true;
   }
 
   // Partial dict read: a non-dict chunk was encountered mid-read. Convert
-  // the already-read dict indices to flat StringViews. readOffset_ already
+  // the already-filtered dict indices to flat StringViews. readOffset_ already
   // points at the chunk boundary (set by readDictionaryIndices), so read()
   // resumes the flat read there and slices the remaining rows past it.
   abandonDictionaryEncoding(endReadRow);
