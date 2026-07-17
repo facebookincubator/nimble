@@ -21,6 +21,7 @@
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/Likely.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/dwio/common/ColumnSelector.h"
 #include "velox/dwio/common/TypeWithId.h"
 
 #include <algorithm>
@@ -650,6 +651,46 @@ const StreamDescriptor& getMainDescriptor(const Type& type) {
   }
 }
 
+void checkColumnProjectionSubfield(
+    const RowType& row,
+    const Deserializer::Subfield& subfield) {
+  const auto& path = subfield.path();
+  NIMBLE_USER_CHECK(
+      subfield.valid(),
+      "Column projection deserialize requires a named subfield path: {}",
+      subfield);
+  auto childIndex = row.findChild(subfield.baseName());
+  NIMBLE_USER_CHECK(
+      childIndex.has_value(),
+      "Column projection subfield does not exist in schema: {}",
+      subfield);
+  const auto* nestedType = row.childAt(childIndex.value()).get();
+  for (size_t i = 1; i < path.size(); ++i) {
+    NIMBLE_USER_CHECK(
+        !nestedType->isFlatMap(),
+        "Column projection deserialize does not support FlatMap feature projection: {}",
+        subfield);
+    NIMBLE_USER_CHECK(
+        path[i]->is(velox::common::SubfieldKind::kNestedField),
+        "Column projection deserialize only supports named fields. Path: {}, element: {}",
+        subfield,
+        path[i]->toString());
+    NIMBLE_USER_CHECK(
+        nestedType->isRow(),
+        "Column projection deserialize only supports nested Row fields. Path: {}, type: {}",
+        subfield,
+        nestedType->kind());
+    const auto& nestedName =
+        path[i]->asChecked<velox::common::Subfield::NestedField>()->name();
+    childIndex = nestedType->asRow().findChild(nestedName);
+    NIMBLE_USER_CHECK(
+        childIndex.has_value(),
+        "Column projection subfield does not exist in schema: {}",
+        subfield);
+    nestedType = nestedType->asRow().childAt(childIndex.value()).get();
+  }
+}
+
 } // namespace
 
 FieldReaderParams Deserializer::createFieldReaderParams() const {
@@ -707,15 +748,54 @@ Deserializer::Deserializer(
     std::shared_ptr<const Type> schema,
     velox::memory::MemoryPool* pool,
     DeserializerOptions options)
-    : schema_{std::move(schema)}, pool_{pool}, options_{std::move(options)} {
+    : Deserializer{
+          std::move(schema),
+          /*selectedSubfields=*/{},
+          pool,
+          std::move(options)} {}
+
+Deserializer::Deserializer(
+    std::shared_ptr<const Type> schema,
+    const std::vector<Deserializer::Subfield>& selectedSubfields,
+    velox::memory::MemoryPool* pool,
+    DeserializerOptions options)
+    : schema_{std::move(schema)},
+      pool_{pool},
+      options_{std::move(options)},
+      columnProjectionEnabled_{!selectedSubfields.empty()} {
+  auto veloxType = convertToVeloxType(*schema_);
+  if (selectedSubfields.empty()) {
+    initialize(velox::dwio::common::TypeWithId::create(veloxType), [](auto) {
+      return true;
+    });
+    return;
+  }
+
+  auto rowType = velox::checkedPointerCast<const velox::RowType>(veloxType);
+  std::vector<std::string> projectedColumnPaths;
+  projectedColumnPaths.reserve(selectedSubfields.size());
+  for (const auto& subfield : selectedSubfields) {
+    checkColumnProjectionSubfield(schema_->asRow(), subfield);
+    projectedColumnPaths.emplace_back(subfield.toString());
+  }
+
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
+      rowType, projectedColumnPaths);
+  auto schemaWithId = selector->getSchemaWithId();
+  initialize(schemaWithId, [selector](auto nodeId) {
+    return selector->shouldReadNode(nodeId);
+  });
+}
+
+void Deserializer::initialize(
+    const std::shared_ptr<const velox::dwio::common::TypeWithId>& schemaWithId,
+    const std::function<bool(uint32_t)>& isSelected) {
   const auto params = createFieldReaderParams();
   parser_ = std::make_unique<serde::StreamDataParser>(pool_, options_);
 
-  std::shared_ptr<const velox::dwio::common::TypeWithId> schemaWithId =
-      velox::dwio::common::TypeWithId::create(convertToVeloxType(*schema_));
   std::vector<uint32_t> offsets;
   rootFactory_ = FieldReaderFactory::create(
-      params, schema_, schemaWithId, offsets, [](auto) { return true; }, pool_);
+      params, schema_, schemaWithId, offsets, isSelected, pool_);
   SchemaReader::traverseSchema(schema_, [this](auto depth, auto& type, auto&) {
     createDeserializersForType(type, depth);
   });
@@ -730,6 +810,14 @@ Deserializer::Deserializer(
   deserializers_.resize(maxOffset + 1, nullptr);
   for (auto& [offset, decoder] : deserializerMap_) {
     deserializers_[offset] = decoder.get();
+  }
+
+  if (columnProjectionEnabled_) {
+    selectedStreamOffsetFlags_.resize(maxOffset + 1, false);
+    for (const auto offset : offsets) {
+      NIMBLE_CHECK_LE(offset, maxOffset, "Unexpected selected stream offset");
+      selectedStreamOffsetFlags_[offset] = true;
+    }
   }
   // Pre-size stream presence-tracking state once. Both vectors are bounded
   // by maxOffset because every value-stream anchor offset is a Type main
@@ -839,6 +927,10 @@ void Deserializer::appendStreamSegments(
   }
   parser_->iterateStreams([&](uint32_t offset, std::string_view streamData) {
     if (FOLLY_UNLIKELY(offset > maxStreamOffset)) {
+      return;
+    }
+    if (FOLLY_UNLIKELY(
+            columnProjectionEnabled_ && !selectedStreamOffsetFlags_[offset])) {
       return;
     }
     if (hasInMapChildren) {
