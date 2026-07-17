@@ -3826,8 +3826,9 @@ TEST_P(E2EFilterTest, filterOnlyDictionaryStringColumn) {
   // Compute expected row count.
   size_t expectedRows = 0;
   for (size_t i = 0; i < kTotalRows; ++i) {
-    if (i % 7 == 0)
+    if (i % 7 == 0) {
       continue;
+    }
     auto val = fmt::format("FILTER_{}", i % 20);
     if (val == "FILTER_3" || val == "FILTER_7") {
       ++expectedRows;
