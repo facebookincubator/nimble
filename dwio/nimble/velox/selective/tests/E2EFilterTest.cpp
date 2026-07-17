@@ -4185,6 +4185,129 @@ TEST_P(E2EFilterTest, dictionaryStringInSparseNullableStructMultiChild) {
   EXPECT_EQ(totalNonNull, kStructNonNullCount);
 }
 
+// Regression: when a filter-only dictionary read spans a dict chunk followed
+// by a non-dict chunk (abandon path), the dict portion's rows are read with
+// the filter suppressed but never filtered post-hoc — filterDictionaryIndices
+// is skipped because abandonDictionary=true. The flat continuation only
+// filters the remaining rows, so the dict portion passes unfiltered.
+TEST_P(E2EFilterTest, filterOnlyDictAbandonDropsFilter) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  auto type = ROW({"filter_col", "select_col"}, {VARCHAR(), VARCHAR()});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  // Chunk 1: low cardinality → dictionary encoding.
+  constexpr size_t kChunk1Rows = 500;
+  std::vector<std::string> filter1(kChunk1Rows);
+  std::vector<std::string> select1(kChunk1Rows);
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    filter1[i] = fmt::format("EVENT_{}", i % 10);
+    select1[i] = fmt::format("VAL_{}", i % 5);
+  }
+  auto chunk1 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk1Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk1Rows,
+              [&](auto row) { return velox::StringView(filter1[row]); }),
+          maker.flatVector<velox::StringView>(kChunk1Rows, [&](auto row) {
+            return velox::StringView(select1[row]);
+          })});
+
+  // Chunk 2: all unique → trivial encoding (non-dict, forces abandon).
+  constexpr size_t kChunk2Rows = 300;
+  std::vector<std::string> filter2(kChunk2Rows);
+  std::vector<std::string> select2(kChunk2Rows);
+  for (size_t i = 0; i < kChunk2Rows; ++i) {
+    filter2[i] =
+        fmt::format("UNIQUE_EVENT_{}_padding_to_avoid_inline_string", i);
+    select2[i] = fmt::format("UNIQUE_VAL_{}", i);
+  }
+  auto chunk2 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk2Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk2Rows,
+              [&](auto row) { return velox::StringView(filter2[row]); }),
+          maker.flatVector<velox::StringView>(kChunk2Rows, [&](auto row) {
+            return velox::StringView(select2[row]);
+          })});
+
+  // Write with chunking: each write = one chunk.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(chunk1);
+    writer.write(chunk2);
+    writer.close();
+  }
+
+  // Filter that matches some dict entries but no trivial entries.
+  std::vector<std::string> accepted = {"EVENT_3", "EVENT_7"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+
+  // Expected: only matching rows from chunk 1 (chunk 2 has unique values,
+  // none match).
+  size_t expectedRows = 0;
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    if (acceptedSet.count(filter1[i])) {
+      ++expectedRows;
+    }
+  }
+
+  // Read with filter-only column, batch size that spans both chunks.
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto outputType = ROW({"select_col"}, {VARCHAR()});
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outputType);
+  scanSpec->getOrCreateChild(velox::common::Subfield("filter_col"))
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Batch size 800 spans chunk 1 (500 rows, dict) + chunk 2 (300 rows,
+  // non-dict), forcing the abandon path mid-batch.
+  VectorPtr result = velox::BaseVector::create(outputType, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(800, result)) {
+    totalRows += result->as<RowVector>()->size();
+  }
+
+  EXPECT_EQ(totalRows, expectedRows)
+      << "Dict abandon path dropped filter on dict portion";
+}
+
 // Exercises the reactive fallback path (dictionary → flat mid-batch) with an
 // active filter on the string column. The test creates alternating dictionary
 // and trivial chunks. When the reader encounters a trivial chunk mid-read, it
