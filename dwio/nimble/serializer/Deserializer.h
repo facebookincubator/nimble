@@ -16,13 +16,20 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <vector>
 
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/FieldReader.h"
 #include "folly/Range.h"
 #include "folly/container/F14Map.h"
+#include "velox/type/Subfield.h"
 #include "velox/vector/BaseVector.h"
+
+namespace facebook::velox::dwio::common {
+class TypeWithId;
+} // namespace facebook::velox::dwio::common
 
 namespace facebook::nimble {
 
@@ -39,6 +46,7 @@ class StreamDataParser;
 class Deserializer {
  public:
   using Options = DeserializerOptions;
+  using Subfield = velox::common::Subfield;
 
   Deserializer(
       std::shared_ptr<const Type> schema,
@@ -46,6 +54,17 @@ class Deserializer {
 
   Deserializer(
       std::shared_ptr<const Type> schema,
+      velox::memory::MemoryPool* pool,
+      DeserializerOptions options);
+
+  /// Builds a deserializer that reads selected subfields from a Row schema.
+  /// Empty selectedSubfields reads all fields.
+  /// Output keeps the original Row type, but fields not reached by
+  /// selectedSubfields are left unset. This does not support FlatMap feature
+  /// projection, schema compaction, or stream offset remapping.
+  Deserializer(
+      std::shared_ptr<const Type> schema,
+      const std::vector<Subfield>& selectedSubfields,
       velox::memory::MemoryPool* pool,
       DeserializerOptions options);
 
@@ -63,6 +82,13 @@ class Deserializer {
       velox::VectorPtr& output) const;
 
  private:
+  // Invoked by constructors to build parser, reader factory, reader, and stream
+  // decoders. `isSelected` is keyed by schemaWithId node id.
+  void initialize(
+      const std::shared_ptr<const velox::dwio::common::TypeWithId>&
+          schemaWithId,
+      const std::function<bool(uint32_t)>& isSelected);
+
   // Creates deserializers for a type and its FlatMap inMap streams.
   void createDeserializersForType(const Type& type, uint32_t depth);
 
@@ -107,6 +133,10 @@ class Deserializer {
   velox::memory::MemoryPool* const pool_;
   const DeserializerOptions options_;
 
+  // If column projection is enabled, only selected fields in the schema will be
+  // deserialized.
+  const bool columnProjectionEnabled_;
+
   // --- Non-const members (assigned in constructor body) ---
   std::unique_ptr<FieldReaderFactory> rootFactory_;
   std::unique_ptr<FieldReader> reader_;
@@ -120,8 +150,12 @@ class Deserializer {
   // Non-owning pointers; ownership stays in deserializerMap_.
   mutable std::vector<Decoder*> deserializers_;
 
-  // Maps FlatMap in-map stream offsets to their child value types. Used to
-  // reconstruct in-map streams omitted by older serializers.
+  // Stream offsets selected by the reader tree. Empty when column projection is
+  // disabled.
+  std::vector<bool> selectedStreamOffsetFlags_;
+
+  // --- FlatMap omitted in-map stream reconstruction ---
+  // Maps FlatMap in-map stream offsets to their child value types.
   folly::F14FastMap<uint32_t, const Type*> inMapChildTypes_;
 
   static constexpr uint32_t kInvalidInMapOffset =

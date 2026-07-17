@@ -649,6 +649,297 @@ INSTANTIATE_TEST_SUITE_P(
 // Non-parameterized tests for special cases.
 class ProjectorTest : public ProjectorTestBase {};
 
+TEST_F(ProjectorTest, columnProjectionDeserializerKeepsOriginalShape) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+      {"c", VARCHAR()},
+  });
+
+  auto vec = makeSimpleRowVector(
+      {"a", "b", "c"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+          makeStringVector({"x", "y", "z"}),
+      });
+
+  auto serialized =
+      serialize(vec, type, {.version = SerializationVersion::kSerialization});
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+
+  Deserializer deserializer{
+      inputSchema, makeSubfields({"b"}), pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), 3);
+  auto* row = output->as<RowVector>();
+  ASSERT_NE(row, nullptr);
+  ASSERT_EQ(row->children().size(), 3);
+
+  EXPECT_EQ(row->childAt(0), nullptr);
+
+  auto* b = row->childAt(1)->as<FlatVector<int64_t>>();
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->valueAt(0), 100);
+  EXPECT_EQ(b->valueAt(1), 200);
+  EXPECT_EQ(b->valueAt(2), 300);
+
+  EXPECT_EQ(row->childAt(2), nullptr);
+}
+
+TEST_F(ProjectorTest, columnProjectionDeserializerCanBeReused) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+  });
+
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+  Deserializer deserializer{
+      inputSchema, makeSubfields({"b"}), pool_.get(), {.hasHeader = true}};
+
+  auto makeInput = [&](const std::vector<int32_t>& aValues,
+                       const std::vector<int64_t>& bValues) {
+    return serialize(
+        makeSimpleRowVector(
+            {"a", "b"},
+            {
+                makeIntVector<int32_t>(aValues),
+                makeIntVector<int64_t>(bValues),
+            }),
+        type,
+        {.version = SerializationVersion::kSerialization});
+  };
+
+  VectorPtr firstOutput;
+  deserializer.deserialize(makeInput({1, 2}, {100, 200}), firstOutput);
+  auto* firstRow = firstOutput->as<RowVector>();
+  ASSERT_NE(firstRow, nullptr);
+  EXPECT_EQ(firstRow->childAt(0), nullptr);
+  auto* firstB = firstRow->childAt(1)->as<FlatVector<int64_t>>();
+  ASSERT_NE(firstB, nullptr);
+  EXPECT_EQ(firstB->valueAt(0), 100);
+  EXPECT_EQ(firstB->valueAt(1), 200);
+
+  VectorPtr secondOutput;
+  deserializer.deserialize(makeInput({3, 4, 5}, {300, 400, 500}), secondOutput);
+  auto* secondRow = secondOutput->as<RowVector>();
+  ASSERT_NE(secondRow, nullptr);
+  EXPECT_EQ(secondRow->childAt(0), nullptr);
+  auto* secondB = secondRow->childAt(1)->as<FlatVector<int64_t>>();
+  ASSERT_NE(secondB, nullptr);
+  EXPECT_EQ(secondB->valueAt(0), 300);
+  EXPECT_EQ(secondB->valueAt(1), 400);
+  EXPECT_EQ(secondB->valueAt(2), 500);
+}
+
+TEST_F(ProjectorTest, columnProjectionDeserializerProjectsNestedFields) {
+  auto type = ROW({
+      {"outer",
+       ROW({
+           {"inner1", INTEGER()},
+           {"inner2", VARCHAR()},
+       })},
+      {"other", BIGINT()},
+  });
+
+  auto outer = makeSimpleRowVector(
+      {"inner1", "inner2"},
+      {
+          makeIntVector<int32_t>({10, 20}),
+          makeStringVector({"a", "b"}),
+      });
+  auto vec = makeSimpleRowVector(
+      {"outer", "other"},
+      {
+          outer,
+          makeIntVector<int64_t>({100, 200}),
+      });
+
+  auto serialized =
+      serialize(vec, type, {.version = SerializationVersion::kSerialization});
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+
+  Deserializer deserializer{
+      inputSchema,
+      makeSubfields({"outer.inner1"}),
+      pool_.get(),
+      {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), 2);
+  auto* row = output->as<RowVector>();
+  ASSERT_NE(row, nullptr);
+  ASSERT_EQ(row->children().size(), 2);
+
+  auto* outerRow = row->childAt(0)->as<RowVector>();
+  ASSERT_NE(outerRow, nullptr);
+  ASSERT_EQ(outerRow->children().size(), 2);
+
+  auto* inner1 = outerRow->childAt(0)->as<FlatVector<int32_t>>();
+  ASSERT_NE(inner1, nullptr);
+  EXPECT_EQ(inner1->valueAt(0), 10);
+  EXPECT_EQ(inner1->valueAt(1), 20);
+
+  EXPECT_EQ(outerRow->childAt(1), nullptr);
+
+  EXPECT_EQ(row->childAt(1), nullptr);
+}
+
+TEST_F(
+    ProjectorTest,
+    columnProjectionDeserializerEmptySelectionReadsAllFields) {
+  auto type = ROW({
+      {"a", INTEGER()},
+      {"b", BIGINT()},
+  });
+
+  auto vec = makeSimpleRowVector(
+      {"a", "b"},
+      {
+          makeIntVector<int32_t>({1, 2, 3}),
+          makeIntVector<int64_t>({100, 200, 300}),
+      });
+
+  auto serialized =
+      serialize(vec, type, {.version = SerializationVersion::kSerialization});
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+
+  Deserializer deserializer{inputSchema, {}, pool_.get(), {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), 3);
+  auto* row = output->as<RowVector>();
+  ASSERT_NE(row, nullptr);
+  ASSERT_EQ(row->children().size(), 2);
+
+  auto* a = row->childAt(0)->as<FlatVector<int32_t>>();
+  ASSERT_NE(a, nullptr);
+  EXPECT_EQ(a->valueAt(0), 1);
+  EXPECT_EQ(a->valueAt(1), 2);
+  EXPECT_EQ(a->valueAt(2), 3);
+
+  auto* b = row->childAt(1)->as<FlatVector<int64_t>>();
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->valueAt(0), 100);
+  EXPECT_EQ(b->valueAt(1), 200);
+  EXPECT_EQ(b->valueAt(2), 300);
+}
+
+TEST_F(ProjectorTest, columnProjectionDeserializerReadsTopLevelFlatMap) {
+  auto type = ROW({
+      {"id", BIGINT()},
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+
+  const vector_size_t numRows = 1;
+  auto ids = makeIntVector<int64_t>({100});
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  mapOffsets->asMutable<vector_size_t>()[0] = 0;
+  mapSizes->asMutable<vector_size_t>()[0] = 1;
+
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      makeIntVector<int32_t>({1}),
+      BaseVector::create<FlatVector<double>>(DOUBLE(), 1, pool_.get()));
+  mapVector->mapValues()->as<FlatVector<double>>()->set(0, 1.5);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      numRows,
+      std::vector<VectorPtr>{ids, mapVector});
+
+  auto [serialized, inputSchema] = serializeWithSchema(
+      vec,
+      type,
+      {
+          .version = SerializationVersion::kSerialization,
+          .flatMapColumns = {{"features", {}}},
+      });
+
+  Deserializer deserializer{
+      inputSchema,
+      makeSubfields({"features"}),
+      pool_.get(),
+      {.hasHeader = true}};
+  VectorPtr output;
+  deserializer.deserialize(serialized, output);
+
+  ASSERT_EQ(output->size(), numRows);
+  auto* row = output->as<RowVector>();
+  ASSERT_NE(row, nullptr);
+  ASSERT_EQ(row->children().size(), 2);
+  EXPECT_EQ(row->childAt(0), nullptr);
+
+  auto* features = row->childAt(1)->as<MapVector>();
+  ASSERT_NE(features, nullptr);
+  ASSERT_EQ(features->sizeAt(0), 1);
+  const auto offset = features->offsetAt(0);
+  auto* keys = features->mapKeys()->as<FlatVector<int32_t>>();
+  auto* values = features->mapValues()->as<FlatVector<double>>();
+  ASSERT_NE(keys, nullptr);
+  ASSERT_NE(values, nullptr);
+  EXPECT_EQ(keys->valueAt(offset), 1);
+  EXPECT_DOUBLE_EQ(values->valueAt(offset), 1.5);
+}
+
+TEST_F(ProjectorTest, columnProjectionDeserializerRejectsFlatMapFeature) {
+  auto type = ROW({
+      {"features", MAP(INTEGER(), DOUBLE())},
+  });
+
+  const vector_size_t numRows = 1;
+  auto mapOffsets = allocateOffsets(numRows, pool_.get());
+  auto mapSizes = allocateSizes(numRows, pool_.get());
+  mapOffsets->asMutable<vector_size_t>()[0] = 0;
+  mapSizes->asMutable<vector_size_t>()[0] = 1;
+
+  auto mapVector = std::make_shared<MapVector>(
+      pool_.get(),
+      MAP(INTEGER(), DOUBLE()),
+      nullptr,
+      numRows,
+      mapOffsets,
+      mapSizes,
+      makeIntVector<int32_t>({1}),
+      BaseVector::create<FlatVector<double>>(DOUBLE(), 1, pool_.get()));
+  mapVector->mapValues()->as<FlatVector<double>>()->set(0, 1.5);
+
+  auto vec = std::make_shared<RowVector>(
+      pool_.get(), type, nullptr, numRows, std::vector<VectorPtr>{mapVector});
+
+  auto [_, inputSchema] = serializeWithSchema(
+      vec,
+      type,
+      {
+          .version = SerializationVersion::kSerialization,
+          .flatMapColumns = {{"features", {}}},
+      });
+
+  NIMBLE_ASSERT_USER_THROW(
+      Deserializer(
+          inputSchema,
+          makeSubfields({"features[\"1\"]"}),
+          pool_.get(),
+          {.hasHeader = true}),
+      "Column projection deserialize does not support FlatMap feature projection");
+}
+
 // Test that incompatible format combinations are rejected at projection time.
 TEST_F(ProjectorTest, incompatibleFormatsRejected) {
   auto type = ROW({

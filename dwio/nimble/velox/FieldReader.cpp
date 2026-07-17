@@ -2381,7 +2381,6 @@ class RowFieldReader final : public FieldReader {
     }
 
     for (auto& reader : childrenReaders_) {
-      // Non selected fields are set to null.
       if (reader == nullptr) {
         continue;
       }
