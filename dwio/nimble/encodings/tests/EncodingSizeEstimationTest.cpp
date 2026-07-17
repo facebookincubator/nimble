@@ -633,7 +633,7 @@ TEST_F(EncodingSizeEstimationTest, trivialSmallerThanDictionaryForUnique) {
 
   std::vector<uint32_t> data;
   for (uint32_t i = 0; i < 100; ++i) {
-    data.push_back(i);
+    data.push_back(i * 43'000'000u);
   }
   auto stats = Statistics<uint32_t>::create(data);
 
