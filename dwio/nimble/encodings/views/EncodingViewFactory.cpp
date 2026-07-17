@@ -19,10 +19,13 @@
 #include "dwio/nimble/encodings/views/BlockBitPackingEncodingView.h"
 #include "dwio/nimble/encodings/views/ConstantEncodingView.h"
 #include "dwio/nimble/encodings/views/DictionaryEncodingView.h"
+#include "dwio/nimble/encodings/views/FOREncodingView.h"
 #include "dwio/nimble/encodings/views/FixedBitWidthEncodingView.h"
+#include "dwio/nimble/encodings/views/MainlyConstantEncodingView.h"
 #include "dwio/nimble/encodings/views/PFOREncodingView.h"
 #include "dwio/nimble/encodings/views/RLEEncodingView.h"
 #include "dwio/nimble/encodings/views/SimdForBitpackEncodingView.h"
+#include "dwio/nimble/encodings/views/SparseBoolEncodingView.h"
 #include "dwio/nimble/encodings/views/TrivialEncodingView.h"
 
 namespace facebook::nimble {
@@ -41,6 +44,14 @@ std::unique_ptr<TypedEncodingView<T>> createTypedEncodingView(
       return std::make_unique<ConstantEncodingView<T>>(data, pool, options);
     case EncodingType::Trivial:
       return std::make_unique<TrivialEncodingView<T>>(data, pool, options);
+    case EncodingType::MainlyConstant:
+      // MainlyConstant supports all leaf types except bool.
+      if constexpr (!std::is_same_v<T, bool>) {
+        return std::make_unique<MainlyConstantEncodingView<T>>(
+            data, pool, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "MainlyConstant encoding cannot be used for boolean data.");
     case EncodingType::ALP:
       if constexpr (isFloatingPointType<T>()) {
         return std::make_unique<ALPEncodingView<T>>(data, pool, options);
@@ -61,8 +72,21 @@ std::unique_ptr<TypedEncodingView<T>> createTypedEncodingView(
       }
       NIMBLE_INCOMPATIBLE_ENCODING(
           "Dictionary encoding cannot be used for boolean data.");
+    case EncodingType::SparseBool:
+      if constexpr (std::is_same_v<T, bool>) {
+        return std::make_unique<SparseBoolEncodingView>(data, pool, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "SparseBool encoding only supports boolean data.");
     case EncodingType::RLE:
       return std::make_unique<RLEEncodingView<T>>(data, pool, options);
+    case EncodingType::FOR:
+      if constexpr (isIntegralType<physicalType>()) {
+        return std::make_unique<FOREncodingView<T>>(data, pool, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "FOR encoding should not be selected for non-integral data type: {}.",
+          TypeTraits<T>::dataType);
     case EncodingType::PFOR:
       if constexpr (isIntegralType<physicalType>()) {
         return std::make_unique<PFOREncodingView<T>>(data, pool, options);
