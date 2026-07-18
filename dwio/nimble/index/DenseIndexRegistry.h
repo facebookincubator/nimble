@@ -31,8 +31,8 @@ class SortedIndex;
 
 /// Unified registry for dense indices (hash and sorted) on a Nimble file.
 ///
-/// Loads from both "columnar.hash.index" and "columnar.sorted.index" optional
-/// sections. Validates no duplicate column sets across index types.
+/// Loads dense index payloads referenced by the common index manifest and
+/// validates no duplicate column sets across index types.
 class DenseIndexRegistry {
  public:
   /// Creates a registry from optional hash and sorted index sections.

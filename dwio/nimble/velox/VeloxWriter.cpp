@@ -16,12 +16,17 @@
 #include "dwio/nimble/velox/VeloxWriter.h"
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
+#include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/IndexSerialization.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
@@ -223,6 +228,51 @@ class WriterContext : public FieldWriterContext {
 } // namespace detail
 
 namespace {
+
+std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
+    const std::optional<index::ClusterIndexConfig>& config,
+    const velox::TypePtr& type,
+    velox::memory::MemoryPool* pool) {
+  if (!config.has_value()) {
+    return nullptr;
+  }
+  return index::clusterIndexFactory(config->indexName)
+      .createWriter(config.value(), type, pool);
+}
+
+std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
+  return {
+      reinterpret_cast<const char*>(builder.GetBufferPointer()),
+      builder.GetSize()};
+}
+
+void writeIndexSection(
+    const std::vector<index::IndexDescriptor>& descriptors,
+    const WriteOptionalSectionFn& writeMetadataFn) {
+  if (descriptors.empty()) {
+    return;
+  }
+
+  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+  auto indexes =
+      builder.CreateVector<flatbuffers::Offset<serialization::IndexDescriptor>>(
+          descriptors.size(), [&builder, &descriptors](size_t i) {
+            const auto& descriptor = descriptors[i];
+            auto name = builder.CreateString(descriptor.name);
+            auto root = serialization::CreateMetadataSection(
+                builder,
+                descriptor.root.offset(),
+                descriptor.root.size(),
+                static_cast<serialization::CompressionType>(
+                    descriptor.root.compressionType()),
+                descriptor.root.uncompressedSize().value_or(
+                    descriptor.root.size()));
+            return serialization::CreateIndexDescriptor(
+                builder, index::toIndexFamily(descriptor.family), name, root);
+          });
+  builder.Finish(serialization::CreateIndexRoot(builder, indexes));
+  writeMetadataFn(std::string(kIndexSection), asView(builder));
+}
 
 velox::RuntimeMetric toRuntimeMetric(const std::vector<uint64_t>& values) {
   velox::RuntimeMetric metric;
@@ -789,7 +839,7 @@ VeloxWriter::VeloxWriter(
           *writerMemoryPool_,
           std::move(options))},
       file_{std::move(file)},
-      clusterIndexWriter_{index::ClusterIndexWriter::create(
+      clusterIndexWriter_{createClusterIndexWriter(
           context_->options().clusterIndexConfig,
           type,
           &(*context_->bufferMemoryPool()))},
@@ -1050,15 +1100,26 @@ void VeloxWriter::writeIndexes(
     const WriteDataFn& writeDataFn,
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
+  std::vector<index::IndexDescriptor> descriptors;
   if (hasHashIndex()) {
-    hashIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
+    if (auto descriptor =
+            hashIndexWriter_->close(writeDataFn, createMetadataFn)) {
+      descriptors.emplace_back(std::move(descriptor.value()));
+    }
   }
   if (hasSortedIndex()) {
-    sortedIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
+    if (auto descriptor =
+            sortedIndexWriter_->close(writeDataFn, createMetadataFn)) {
+      descriptors.emplace_back(std::move(descriptor.value()));
+    }
   }
   if (hasClusterIndex()) {
-    clusterIndexWriter_->close(writeDataFn, createMetadataFn, writeMetadataFn);
+    if (auto descriptor =
+            clusterIndexWriter_->close(writeDataFn, createMetadataFn)) {
+      descriptors.emplace_back(std::move(descriptor.value()));
+    }
   }
+  writeIndexSection(descriptors, writeMetadataFn);
 }
 
 bool VeloxWriter::shouldFlush(FlushPolicy* policy) const {

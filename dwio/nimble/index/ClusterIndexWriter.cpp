@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 
+#include "dwio/nimble/index/ClusterIndexFactory.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -47,41 +48,6 @@ const InputBufferGrowthPolicy& keyStreamGrowthPolicy() {
   static const auto policy =
       DefaultInputBufferGrowthPolicy::withDefaultRanges();
   return *policy;
-}
-
-// Converts nimble SortOrders to velox::core::SortOrders.
-// If sortOrders is empty, returns default ascending sort orders.
-std::vector<velox::core::SortOrder> toVeloxSortOrders(
-    const std::vector<SortOrder>& sortOrders,
-    size_t columnCount) {
-  if (sortOrders.empty()) {
-    return std::vector<velox::core::SortOrder>(
-        columnCount, velox::core::SortOrder{true, false});
-  }
-  std::vector<velox::core::SortOrder> result;
-  result.reserve(sortOrders.size());
-  for (const auto& sortOrder : sortOrders) {
-    result.push_back(sortOrder.toVeloxSortOrder());
-  }
-  return result;
-}
-
-std::unique_ptr<velox::serializer::KeyEncoder> createClusterKeyEncoder(
-    const ClusterIndexConfig& config,
-    const velox::RowTypePtr& inputType,
-    velox::memory::MemoryPool* pool) {
-  NIMBLE_CHECK(
-      config.sortOrders.empty() ||
-          config.sortOrders.size() == config.columns.size(),
-      "sortOrders size ({}) must be empty or match columns size ({})",
-      config.sortOrders.size(),
-      config.columns.size());
-
-  return velox::serializer::KeyEncoder::create(
-      config.columns,
-      inputType,
-      toVeloxSortOrders(config.sortOrders, config.columns.size()),
-      pool);
 }
 
 std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
@@ -127,7 +93,9 @@ ClusterIndexWriter::ClusterIndexWriter(
                                           config.columns.size(),
                                           SortOrder{.ascending = true})
                                     : config.sortOrders},
-      keyEncoder_{createClusterKeyEncoder(config, inputType, pool)},
+      keyEncoder_{
+          clusterIndexFactory(config.indexName)
+              .createKeyEncoder(config.columns, inputType, sortOrders_, pool)},
       encodingLayout_{config.encodingLayout},
       enforceKeyOrder_{config.enforceKeyOrder},
       keyColumnIndices_{getKeyColumnIndices({config.columns}, inputType)},
@@ -168,9 +136,14 @@ void ClusterIndexWriter::write(const velox::VectorPtr& input) {
   const auto newKeyStart = keyStream_->mutableData().size();
   keyStream_->ensureMutableDataCapacity(newKeyStart + input->size());
 
-  keyEncoder_->encode(input, keyStream_->mutableData(), [this](size_t size) {
+  encodedKeys_.clear();
+  encodedKeys_.reserve(input->size());
+  keyEncoder_->encode(input, encodedKeys_, [this](size_t size) {
     return keyBuffer_->reserve(size);
   });
+  for (const auto key : encodedKeys_) {
+    keyStream_->mutableData().emplace_back(key);
+  }
 
   validateKeyOrder(newKeyStart);
 
@@ -299,10 +272,9 @@ void ClusterIndexWriter::encodeKeyChunk(
   }
 }
 
-void ClusterIndexWriter::close(
+std::optional<IndexDescriptor> ClusterIndexWriter::close(
     const WriteDataFn& /*writeDataFn*/,
-    const CreateMetadataSectionFn& createMetadataFn,
-    const WriteOptionalSectionFn& writeMetadataFn) {
+    const CreateMetadataSectionFn& createMetadataFn) {
   setClosed();
 
   SCOPE_EXIT {
@@ -313,7 +285,7 @@ void ClusterIndexWriter::close(
   };
 
   if (indexRoot_ == nullptr) {
-    return;
+    return std::nullopt;
   }
 
   NIMBLE_CHECK(
@@ -369,7 +341,10 @@ void ClusterIndexWriter::close(
           partitionKeysVector,
           partitionRowCountsVector));
 
-  writeMetadataFn(std::string(kClusterIndexSection), asView(builder));
+  return IndexDescriptor{
+      .family = IndexFamily::Cluster,
+      .name = std::string{kClusterIndexName},
+      .root = createMetadataFn(asView(builder))};
 }
 
 void ClusterIndexWriter::ensureIndexRoot() {

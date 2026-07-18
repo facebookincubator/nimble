@@ -15,15 +15,39 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/index/SortOrder.h"
+#include "dwio/nimble/tablet/MetadataBuffer.h"
 
-namespace facebook::nimble {
+namespace facebook::velox::config {
+class ConfigBase;
+}
+
+namespace facebook::nimble::index {
+
+enum class IndexFamily : uint8_t {
+  Cluster,
+  Dense,
+};
+
+struct IndexDescriptor {
+  IndexFamily family;
+  std::string name;
+  MetadataSection root;
+};
+
+inline constexpr std::string_view kClusterIndexName{"nimble.cluster.v1"};
+inline constexpr std::string_view kDenseHashIndexName{"nimble.dense.hash.v1"};
+inline constexpr std::string_view kDenseSortedIndexName{
+    "nimble.dense.sorted.v1"};
 
 /// Configuration for index generation.
 /// The index allows efficient filtering and pruning of data based on
@@ -31,6 +55,8 @@ namespace facebook::nimble {
 // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
 // production tables without consulting the Nimble team (oncall: dwios).
 struct ClusterIndexConfig {
+  /// Named cluster index implementation.
+  std::string indexName{std::string(kClusterIndexName)};
   /// Columns to be indexed for data pruning.
   /// These columns will be encoded using KeyWriter to generate index keys
   /// that enable efficient data skipping during reads.
@@ -65,6 +91,8 @@ struct ClusterIndexConfig {
   /// granularity — chunks have start/end keys for binary search. Smaller values
   /// give finer-grained lookups at the cost of more metadata.
   uint64_t maxRowsPerKeyChunk{10'000};
+  /// Configuration options for a custom cluster index implementation.
+  std::shared_ptr<const velox::config::ConfigBase> customOptions;
 };
 
 /// Configuration for bloom filter.
@@ -83,6 +111,8 @@ struct BloomFilterConfig {
 // EXPERIMENTAL: Hash index is not production-ready. Do not enable for
 // production tables without consulting the Nimble team (oncall: dwios).
 struct HashIndexConfig {
+  /// Named dense index implementation.
+  std::string indexName{std::string(kDenseHashIndexName)};
   /// Columns forming the composite key for point lookups.
   std::vector<std::string> columns;
 
@@ -109,6 +139,8 @@ struct HashIndexConfig {
 // EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
 // production tables without consulting the Nimble team (oncall: dwios).
 struct SortedIndexConfig {
+  /// Named dense index implementation.
+  std::string indexName{std::string(kDenseSortedIndexName)};
   /// Columns forming the composite key.
   std::vector<std::string> columns;
   /// The encoding layout for the key stream.
@@ -123,4 +155,4 @@ struct SortedIndexConfig {
   uint64_t maxRowsPerKeyChunk{0};
 };
 
-} // namespace facebook::nimble
+} // namespace facebook::nimble::index

@@ -26,6 +26,7 @@
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/DenseIndexRegistry.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
@@ -138,7 +139,6 @@ class StripeIdentifier {
 };
 
 using index::ClusterIndex;
-using index::DenseIndexRegistry;
 
 /// Provides read access to a tablet written by a TabletWriter.
 /// Example usage to read all streams from stripe 0 in a file:
@@ -161,6 +161,9 @@ class TabletReader {
 
     /// Whether to load the cluster index during initialization. Default false.
     bool loadClusterIndex{false};
+
+    /// Cluster index implementation to load.
+    std::string clusterIndexName{index::kClusterIndexName};
 
     /// Whether to eagerly preload all per-partition metadata and decode all
     /// per-partition key streams during ClusterIndex construction. Only
@@ -267,8 +270,8 @@ class TabletReader {
   // Returns true if the file has a chunk index optional section.
   bool hasChunkIndexSection() const;
 
-  // Returns true if the file has a cluster index optional section.
-  bool hasClusterIndexSection() const;
+  // Returns true if the file has an index optional section.
+  bool hasIndexSection() const;
 
   // Returns true if the cluster index is loaded.
   inline bool hasClusterIndex() const {
@@ -477,8 +480,15 @@ class TabletReader {
 
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
 
-  // Index.
-  //
+  // Parses the shared index section and caches its runtime descriptors.
+  void initIndexes();
+
+  // Finds the unique descriptor matching the family and name.
+  // Returns nullptr when no descriptor matches.
+  const index::IndexDescriptor* findIndexDescriptor(
+      index::IndexFamily family,
+      std::string_view indexName) const;
+
   void initClusterIndex();
 
   // Holds the result of a coalesced metadata load for a stripe group.
@@ -528,6 +538,7 @@ class TabletReader {
   MemoryPool* const pool_;
   const std::shared_ptr<velox::ReadFile> file_;
   const bool loadClusterIndex_;
+  const std::string clusterIndexName_;
   const bool loadChunkIndex_;
   const bool loadDenseIndexes_;
   // IO options copied from Options.ioOptions (required, with non-null
@@ -559,10 +570,10 @@ class TabletReader {
   std::vector<uint64_t> stripeRows_;
 
   // Index related fields.
+  std::vector<index::IndexDescriptor> indexDescriptors_;
   std::unique_ptr<ClusterIndex> clusterIndex_;
 
-  // Unified dense index registry for hash and sorted indices.
-  std::unique_ptr<DenseIndexRegistry> denseIndexRegistry_;
+  std::unique_ptr<index::DenseIndexRegistry> denseIndexRegistry_;
 
   // Chunk index root, loaded from "chunk_index" optional section.
   std::unique_ptr<ChunkIndex> chunkIndex_;

@@ -49,6 +49,22 @@ target_include_directories(
 add_dependencies(nimble_cluster_index_fb nimble_cluster_index_schema_fb)
 
 build_flatbuffers(
+  "${CMAKE_CURRENT_SOURCE_DIR}/Index.fbs"
+  ""
+  nimble_index_schema_fb
+  ""
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  ""
+  ""
+)
+add_library(nimble_index_fb INTERFACE)
+target_include_directories(
+  nimble_index_fb
+  INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
+)
+add_dependencies(nimble_index_fb nimble_index_schema_fb)
+
+build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/ChunkIndex.fbs"
   ""
   nimble_chunk_index_schema_fb

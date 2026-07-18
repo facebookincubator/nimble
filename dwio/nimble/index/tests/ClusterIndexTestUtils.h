@@ -315,7 +315,9 @@ class TestClusterIndexMetadataWriter {
     uint32_t keyStreamFileSize{0};
   };
 
-  void writeRoot(const WriteOptionalSectionFn& writeOptionalSection);
+  void writeRoot(
+      const CreateMetadataSectionFn& createMetadataSection,
+      const WriteOptionalSectionFn& writeOptionalSection);
 
   void flushKeyStream(const WriteDataFn& writeData);
 

@@ -27,7 +27,6 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::nimble::index {
@@ -86,10 +85,9 @@ class ClusterIndexWriter : public IndexWriter {
       const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn) override;
 
-  void close(
+  std::optional<IndexDescriptor> close(
       const WriteDataFn& writeDataFn,
-      const CreateMetadataSectionFn& createMetadataFn,
-      const WriteOptionalSectionFn& writeMetadataFn) override;
+      const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
   ClusterIndexWriter(
@@ -172,7 +170,7 @@ class ClusterIndexWriter : public IndexWriter {
   velox::memory::MemoryPool* const pool_;
   const std::vector<std::string> columns_;
   const std::vector<SortOrder> sortOrders_;
-  const std::unique_ptr<velox::serializer::KeyEncoder> keyEncoder_;
+  const std::unique_ptr<IndexKeyEncoder> keyEncoder_;
   const EncodingLayout encodingLayout_;
   const bool enforceKeyOrder_;
   const std::vector<velox::column_index_t> keyColumnIndices_;
@@ -189,6 +187,8 @@ class ClusterIndexWriter : public IndexWriter {
   // in keyStream_ point into this buffer. Reset after encodeKeyChunks()
   // processes the keys into encoded chunks.
   std::unique_ptr<Buffer> keyBuffer_;
+  // Reused batch output before appending views to keyStream_.
+  std::vector<std::string_view> encodedKeys_;
 
   // Partition-level state accumulator.
   std::unique_ptr<IndexPartition> indexPartition_;

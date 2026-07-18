@@ -37,8 +37,8 @@ table ClusterIndexPartition {
   chunk_keys:[string];
 }
 
-/// Root index table for the entire file.
-/// Stored in the optional sections of the footer.
+/// Root index table for the built-in Nimble cluster index implementation.
+/// Referenced by IndexDescriptor name "nimble.cluster.v1".
 table ClusterIndex {
   /// Names of columns used for indexing.
   index_columns:[string];

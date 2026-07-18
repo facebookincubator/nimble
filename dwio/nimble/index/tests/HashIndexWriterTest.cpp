@@ -77,36 +77,44 @@ class HashIndexWriterTestBase : public velox::test::VectorTestBase {
   // in memory and returns MetadataSection with sequential offsets.
   struct MockSectionStore {
     std::vector<std::string> sections;
+    std::vector<MetadataSection> metadataSections;
     uint64_t nextOffset{0};
 
     CreateMetadataSectionFn createFn() {
       return [this](std::string_view content) -> MetadataSection {
         const auto offset = nextOffset;
         const auto size = content.size();
-        sections.emplace_back(content);
         nextOffset += size;
-        return MetadataSection{
+        auto section = MetadataSection{
             offset, static_cast<uint32_t>(size), CompressionType::Uncompressed};
+        sections.emplace_back(content);
+        metadataSections.emplace_back(section);
+        return section;
       };
     }
+
+    const std::string& sectionContent(const MetadataSection& section) const {
+      for (size_t i = 0; i < metadataSections.size(); ++i) {
+        if (metadataSections[i].offset() == section.offset()) {
+          return sections[i];
+        }
+      }
+      NIMBLE_UNREACHABLE("Missing metadata section");
+    }
   };
-
-  // Captures the directory written by close().
-  static WriteOptionalSectionFn writeFn(std::string& output) {
-    return [&output](const std::string& /*name*/, std::string_view content) {
-      output = std::string(content);
-    };
-  }
-
-  // No-op write function for tests that don't inspect the output.
-  static WriteOptionalSectionFn noopWriteFn() {
-    return [](const std::string&, std::string_view) {};
-  }
 
   // No-op data write function for tests.
   static WriteDataFn noopWriteDataFn() {
     return [](const std::vector<std::string_view>&)
                -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
+  }
+
+  static std::string closeAndReadDirectory(
+      HashIndexWriter& writer,
+      MockSectionStore& store) {
+    auto descriptor = writer.close(noopWriteDataFn(), store.createFn());
+    NIMBLE_CHECK(descriptor.has_value(), "Expected hash index descriptor");
+    return store.sectionContent(descriptor->root);
   }
 
   // Validates the HashIndexDirectory has the expected indices with the
@@ -132,6 +140,27 @@ class HashIndexWriterTestBase : public velox::test::VectorTestBase {
         EXPECT_EQ(columns->Get(i)->string_view(), expectedColumns[idx][i]);
       }
     }
+  }
+
+  static const std::string& indexSectionContent(
+      const std::string& directory,
+      size_t index,
+      const MockSectionStore& store) {
+    const auto* root = flatbuffers::GetRoot<serialization::HashIndexDirectory>(
+        directory.data());
+    NIMBLE_CHECK_NOT_NULL(root);
+    const auto* indices = root->indices();
+    NIMBLE_CHECK_NOT_NULL(indices);
+    NIMBLE_CHECK_LT(index, indices->size());
+    const auto* indexDescriptor = indices->Get(index);
+    NIMBLE_CHECK_NOT_NULL(indexDescriptor);
+    const auto* section = indexDescriptor->section();
+    NIMBLE_CHECK_NOT_NULL(section);
+    return store.sectionContent(
+        MetadataSection{
+            section->offset(),
+            section->size(),
+            static_cast<CompressionType>(section->compression_type())});
   }
 
   // Validates the HashIndex FlatBuffer has the expected row/key counts
@@ -316,12 +345,7 @@ TEST_P(HashIndexWriterParamTest, writeEmptyVector) {
   EXPECT_EQ(helper.numEntries(0), 0);
 
   MockSectionStore store;
-  bool writeCalled = false;
-  writer->close(
-      noopWriteDataFn(),
-      store.createFn(),
-      [&](const std::string&, std::string_view) { writeCalled = true; });
-  EXPECT_FALSE(writeCalled);
+  EXPECT_FALSE(writer->close(noopWriteDataFn(), store.createFn()).has_value());
   EXPECT_TRUE(store.sections.empty());
 }
 
@@ -336,12 +360,14 @@ TEST_P(HashIndexWriterParamTest, writeSingleBatch) {
   EXPECT_EQ(helper.numEntries(0), 5);
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   const auto& columns = GetParam().columns;
   validateDirectory(directory, {columns});
-  validateIndex(store.sections.back(), 5, /*expectedNumPartitions=*/1);
+  validateIndex(
+      indexSectionContent(directory, /*index=*/0, store),
+      5,
+      /*expectedNumPartitions=*/1);
 }
 
 TEST_P(HashIndexWriterParamTest, writeMultipleBatches) {
@@ -357,12 +383,14 @@ TEST_P(HashIndexWriterParamTest, writeMultipleBatches) {
   EXPECT_EQ(helper.numEntries(0), 9);
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   const auto& columns = GetParam().columns;
   validateDirectory(directory, {columns});
-  validateIndex(store.sections.back(), 9, /*expectedNumPartitions=*/1);
+  validateIndex(
+      indexSectionContent(directory, /*index=*/0, store),
+      9,
+      /*expectedNumPartitions=*/1);
 }
 
 TEST_P(HashIndexWriterParamTest, writeWithEmptyBatchesMixed) {
@@ -380,12 +408,14 @@ TEST_P(HashIndexWriterParamTest, writeWithEmptyBatchesMixed) {
   EXPECT_EQ(helper.numEntries(0), 3);
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   const auto& columns = GetParam().columns;
   validateDirectory(directory, {columns});
-  validateIndex(store.sections.back(), 3, /*expectedNumPartitions=*/1);
+  validateIndex(
+      indexSectionContent(directory, /*index=*/0, store),
+      3,
+      /*expectedNumPartitions=*/1);
 }
 
 TEST_F(HashIndexWriterTest, rejectNullKeys) {
@@ -463,7 +493,7 @@ TEST_P(HashIndexWriterParamTest, writeAfterCloseThrows) {
   writer->write(makeInput({1}));
 
   MockSectionStore store;
-  writer->close(noopWriteDataFn(), store.createFn(), noopWriteFn());
+  EXPECT_TRUE(writer->close(noopWriteDataFn(), store.createFn()).has_value());
 
   NIMBLE_ASSERT_THROW(
       writer->write(makeInput({2})), "IndexWriter has been closed");
@@ -474,10 +504,10 @@ TEST_P(HashIndexWriterParamTest, doubleCloseThrows) {
   writer->write(makeInput({1}));
 
   MockSectionStore store;
-  writer->close(noopWriteDataFn(), store.createFn(), noopWriteFn());
+  EXPECT_TRUE(writer->close(noopWriteDataFn(), store.createFn()).has_value());
 
   NIMBLE_ASSERT_THROW(
-      writer->close(noopWriteDataFn(), store.createFn(), noopWriteFn()),
+      writer->close(noopWriteDataFn(), store.createFn()),
       "close() already called");
 }
 
@@ -499,8 +529,7 @@ TEST_F(HashIndexWriterTest, multipleIndices) {
   writer->write(makeInput({1, 2, 3}));
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   validateDirectory(directory, {{"col1"}, {"col0"}});
   // store has: partition for index 0, index 0, partition for index 1, index 1.
@@ -536,11 +565,10 @@ TEST_F(HashIndexWriterTest, withBloomFilter) {
     writer->write(makeInput({1, 2, 3, 4, 5}));
 
     MockSectionStore store;
-    std::string directory;
-    writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+    auto directory = closeAndReadDirectory(*writer, store);
 
     const auto* hashIndex = flatbuffers::GetRoot<serialization::HashIndex>(
-        store.sections.back().data());
+        indexSectionContent(directory, /*index=*/0, store).data());
     ASSERT_NE(hashIndex, nullptr);
     if (tc.expectBloomFilter) {
       EXPECT_NE(hashIndex->bloom_filter(), nullptr);
@@ -566,18 +594,16 @@ TEST_F(HashIndexWriterTest, withPartitioning) {
   writer->write(makeInput(values));
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   validateDirectory(directory, {{"col1"}});
-  // The last section is the HashIndex; preceding sections are partitions.
   // With 100 keys and 32-byte partition limit, expect multiple partitions.
   const auto* hashIndex = flatbuffers::GetRoot<serialization::HashIndex>(
-      store.sections.back().data());
+      indexSectionContent(directory, /*index=*/0, store).data());
   ASSERT_NE(hashIndex, nullptr);
   ASSERT_NE(hashIndex->partition_sections(), nullptr);
   EXPECT_GT(hashIndex->partition_sections()->size(), 1u);
-  validateIndex(store.sections.back(), 100);
+  validateIndex(indexSectionContent(directory, /*index=*/0, store), 100);
 }
 
 TEST_F(HashIndexWriterTest, loadFactorVariations) {
@@ -605,11 +631,13 @@ TEST_F(HashIndexWriterTest, loadFactorVariations) {
     writer->write(makeInput(values));
 
     MockSectionStore store;
-    std::string directory;
-    writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+    auto directory = closeAndReadDirectory(*writer, store);
 
     validateDirectory(directory, {{"col1"}});
-    validateIndex(store.sections.back(), 50, /*expectedNumPartitions=*/1);
+    validateIndex(
+        indexSectionContent(directory, /*index=*/0, store),
+        50,
+        /*expectedNumPartitions=*/1);
   }
 }
 
@@ -623,11 +651,13 @@ TEST_P(HashIndexWriterParamTest, duplicateKeysAllowed) {
   EXPECT_EQ(helper.numEntries(0), 5);
 
   MockSectionStore store;
-  std::string directory;
-  writer->close(noopWriteDataFn(), store.createFn(), writeFn(directory));
+  auto directory = closeAndReadDirectory(*writer, store);
 
   validateDirectory(directory, {GetParam().columns});
-  validateIndex(store.sections.back(), 5, /*expectedNumPartitions=*/1);
+  validateIndex(
+      indexSectionContent(directory, /*index=*/0, store),
+      5,
+      /*expectedNumPartitions=*/1);
 }
 
 } // namespace

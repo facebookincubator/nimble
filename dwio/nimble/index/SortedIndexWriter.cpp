@@ -142,6 +142,11 @@ SortedIndexWriter::SortedIndexWriter(
   for (const auto& config : configs) {
     NIMBLE_CHECK(
         !config.columns.empty(), "Sorted index must have at least one column");
+    NIMBLE_CHECK_EQ(
+        config.indexName,
+        kDenseSortedIndexName,
+        "Unsupported sorted index implementation: {}",
+        config.indexName);
     for (size_t i = 0; i < accumulators_.size(); ++i) {
       NIMBLE_CHECK(
           accumulators_[i].config.columns != config.columns,
@@ -151,7 +156,12 @@ SortedIndexWriter::SortedIndexWriter(
     accumulators_.emplace_back(
         IndexAccumulator{
             .config = config,
-            .encoder = createKeyEncoder(config.columns, inputType, pool),
+            .encoder = createNimbleIndexKeyEncoder(
+                config.columns,
+                inputType,
+                std::vector<SortOrder>(
+                    config.columns.size(), SortOrder{.ascending = true}),
+                pool),
         });
   }
 }
@@ -324,14 +334,13 @@ void SortedIndexWriter::buildDirectoryFlatBuffer(
       serialization::CreateSortedIndexDirectory(builder, indicesVec));
 }
 
-void SortedIndexWriter::close(
+std::optional<IndexDescriptor> SortedIndexWriter::close(
     const WriteDataFn& writeDataFn,
-    const CreateMetadataSectionFn& createMetadataFn,
-    const WriteOptionalSectionFn& writeMetadataFn) {
+    const CreateMetadataSectionFn& createMetadataFn) {
   setClosed();
 
   if (numRows_ == 0) {
-    return;
+    return std::nullopt;
   }
 
   std::vector<MetadataSection> indexSections;
@@ -344,8 +353,10 @@ void SortedIndexWriter::close(
 
   flatbuffers::FlatBufferBuilder directoryBuilder;
   buildDirectoryFlatBuffer(directoryBuilder, indexSections);
-  writeMetadataFn(
-      std::string(kSortedIndexSection), asStringView(directoryBuilder));
+  return IndexDescriptor{
+      .family = IndexFamily::Dense,
+      .name = std::string{kDenseSortedIndexName},
+      .root = createMetadataFn(asStringView(directoryBuilder))};
 }
 
 } // namespace facebook::nimble::index

@@ -17,9 +17,12 @@
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/IndexSerialization.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 #include "folly/io/Cursor.h"
@@ -76,9 +79,6 @@ TabletReader::Options TabletReader::configureOptions(
   tabletOptions.preloadOptionalSections = {
       std::string(kSchemaSection), std::string(kVectorizedStatsSection)};
   tabletOptions.loadClusterIndex = options.loadClusterIndex();
-  if (tabletOptions.loadClusterIndex) {
-    tabletOptions.preloadOptionalSections.emplace_back(kClusterIndexSection);
-  }
   tabletOptions.preloadIndex = options.preloadIndex();
   tabletOptions.loadChunkIndex = options.loadChunkIndex();
   if (tabletOptions.loadChunkIndex) {
@@ -227,6 +227,7 @@ TabletReader::TabletReader(
     : pool_{&pool},
       file_{std::move(readFile)},
       loadClusterIndex_{options.loadClusterIndex},
+      clusterIndexName_{options.clusterIndexName},
       loadChunkIndex_{options.loadChunkIndex},
       loadDenseIndexes_{options.loadDenseIndexes},
       ioOptions_{[&]() {
@@ -321,6 +322,7 @@ void TabletReader::init(const Options& options) {
   loadSections(sections);
 
   initStripes(footerView, footerOffset);
+  initIndexes();
   initClusterIndex();
   initChunkIndex(footerView, footerOffset);
   initDenseIndexes();
@@ -445,6 +447,7 @@ bool TabletReader::initFromCache(const Options& options) {
   loadSections(sections);
 
   initStripes();
+  initIndexes();
   initClusterIndex();
   initChunkIndex();
   initDenseIndexes();
@@ -500,11 +503,10 @@ void TabletReader::cacheMetadata(
     cacheSection(toMetadataSection(stripeGroups->Get(0)));
   }
 
-  if (clusterIndex_ != nullptr) {
-    auto clusterIndexIt =
-        optionalSections_.find(std::string{kClusterIndexSection});
-    NIMBLE_CHECK(clusterIndexIt != optionalSections_.end());
-    cacheSection(clusterIndexIt->second);
+  if (clusterIndex_ != nullptr || denseIndexRegistry_ != nullptr) {
+    auto indexIt = optionalSections_.find(std::string{kIndexSection});
+    NIMBLE_CHECK(indexIt != optionalSections_.end());
+    cacheSection(indexIt->second);
   }
 
   if (chunkIndex_ != nullptr) {
@@ -542,8 +544,8 @@ void TabletReader::loadStripes(
       requiredOffset = std::min(requiredOffset, it->second.offset());
     }
   };
-  if (options.loadClusterIndex) {
-    updateOffset(kClusterIndexSection);
+  if (options.loadClusterIndex || options.loadDenseIndexes) {
+    updateOffset(kIndexSection);
   }
   if (options.loadChunkIndex) {
     updateOffset(kChunkIndexSection);
@@ -718,10 +720,18 @@ void TabletReader::initOptionalSections() {
 
 std::vector<std::string> TabletReader::preloadSectionNames(
     const Options& options) const {
-  auto names = options.preloadOptionalSections;
-  if (options.loadDenseIndexes) {
-    names.emplace_back(kHashIndexSection);
-    names.emplace_back(kSortedIndexSection);
+  std::vector<std::string> names;
+  names.reserve(options.preloadOptionalSections.size() + 1);
+  auto addName = [&names](std::string name) {
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      names.emplace_back(std::move(name));
+    }
+  };
+  for (const auto& name : options.preloadOptionalSections) {
+    addName(name);
+  }
+  if (options.loadClusterIndex || options.loadDenseIndexes) {
+    addName(std::string{kIndexSection});
   }
   return names;
 }
@@ -1089,8 +1099,59 @@ bool TabletReader::hasChunkIndexSection() const {
   return hasOptionalSection(std::string{kChunkIndexSection});
 }
 
-bool TabletReader::hasClusterIndexSection() const {
-  return hasOptionalSection(std::string{kClusterIndexSection});
+bool TabletReader::hasIndexSection() const {
+  return hasOptionalSection(std::string{kIndexSection});
+}
+
+const index::IndexDescriptor* TabletReader::findIndexDescriptor(
+    index::IndexFamily family,
+    std::string_view indexName) const {
+  NIMBLE_CHECK(!indexName.empty(), "Index name cannot be empty");
+  const index::IndexDescriptor* result = nullptr;
+  for (const auto& descriptor : indexDescriptors_) {
+    if (descriptor.family != family || descriptor.name != indexName) {
+      continue;
+    }
+    NIMBLE_CHECK(
+        result == nullptr,
+        "Nimble file contains multiple indexes for family {} and name '{}'",
+        static_cast<int>(family),
+        indexName);
+    result = &descriptor;
+  }
+  return result;
+}
+
+void TabletReader::initIndexes() {
+  if (!loadClusterIndex_ && !loadDenseIndexes_) {
+    return;
+  }
+  NIMBLE_CHECK(indexDescriptors_.empty(), "Indexes already initialized");
+
+  auto indexSection =
+      loadOptionalSection(std::string{kIndexSection}, /*keepCache=*/true);
+  if (!indexSection.has_value()) {
+    return;
+  }
+
+  const auto* root = flatbuffers::GetRoot<serialization::IndexRoot>(
+      indexSection->content().data());
+  NIMBLE_CHECK_NOT_NULL(root);
+  const auto* indexes = root->indexes();
+  NIMBLE_CHECK_NOT_NULL(indexes);
+
+  for (const auto* descriptor : *indexes) {
+    NIMBLE_CHECK_NOT_NULL(descriptor);
+    const auto* name = descriptor->name();
+    NIMBLE_CHECK_NOT_NULL(name, "Index descriptor name is missing");
+    const auto* indexRoot = descriptor->root();
+    NIMBLE_CHECK_NOT_NULL(indexRoot, "Index descriptor root is missing");
+    indexDescriptors_.emplace_back(
+        index::IndexDescriptor{
+            .family = index::toIndexFamily(descriptor->family()),
+            .name = name->str(),
+            .root = toMetadataSection(indexRoot)});
+  }
 }
 
 void TabletReader::initClusterIndex() {
@@ -1099,16 +1160,21 @@ void TabletReader::initClusterIndex() {
   }
   NIMBLE_CHECK_NULL(clusterIndex_, "Index already initialized.");
 
-  if (!hasClusterIndexSection()) {
+  if (!hasIndexSection()) {
     return;
   }
 
-  auto indexSection = loadOptionalSection(
-      std::string{kClusterIndexSection}, /*keepCache=*/false);
-  NIMBLE_CHECK(indexSection.has_value(), "Failed to load index section.");
+  const auto* clusterIndex =
+      findIndexDescriptor(index::IndexFamily::Cluster, clusterIndexName_);
+  if (clusterIndex == nullptr) {
+    return;
+  }
 
-  clusterIndex_ = ClusterIndex::create(
-      std::move(indexSection.value()), pool_, indexOptions_);
+  clusterIndex_ = index::clusterIndexFactory(clusterIndex->name)
+                      .createReader(
+                          Section{std::move(*readMetadata(clusterIndex->root))},
+                          pool_,
+                          indexOptions_);
 }
 
 const index::IndexLookup* TabletReader::denseIndex(
@@ -1123,10 +1189,17 @@ void TabletReader::initDenseIndexes() {
   if (!loadDenseIndexes_) {
     return;
   }
-  denseIndexRegistry_ = DenseIndexRegistry::create(
-      loadOptionalSection(std::string{kHashIndexSection}, /*keepCache=*/false),
-      loadOptionalSection(
-          std::string{kSortedIndexSection}, /*keepCache=*/false),
+  const auto* hashIndex = findIndexDescriptor(
+      index::IndexFamily::Dense, index::kDenseHashIndexName);
+  const auto* sortedIndex = findIndexDescriptor(
+      index::IndexFamily::Dense, index::kDenseSortedIndexName);
+  denseIndexRegistry_ = index::DenseIndexRegistry::create(
+      hashIndex == nullptr ? std::nullopt
+                           : std::optional<Section>{Section{
+                                 std::move(*readMetadata(hashIndex->root))}},
+      sortedIndex == nullptr ? std::nullopt
+                             : std::optional<Section>{Section{std::move(
+                                   *readMetadata(sortedIndex->root))}},
       indexOptions_,
       pool_);
 }

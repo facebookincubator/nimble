@@ -16,16 +16,17 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexKeyEncoder.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "flatbuffers/flatbuffers.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::nimble::serialization {
@@ -96,10 +97,9 @@ class HashIndexWriter : public IndexWriter {
   /// Encodes keys from the input batch and records row mappings.
   void write(const velox::VectorPtr& input) override;
 
-  void close(
+  std::optional<IndexDescriptor> close(
       const WriteDataFn& writeDataFn,
-      const CreateMetadataSectionFn& createMetadataFn,
-      const WriteOptionalSectionFn& writeMetadataFn) override;
+      const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
   HashIndexWriter(
@@ -118,7 +118,7 @@ class HashIndexWriter : public IndexWriter {
   // Per-index accumulator that collects keys and builds the hash table.
   struct IndexAccumulator {
     HashIndexConfig config;
-    std::unique_ptr<velox::serializer::KeyEncoder> encoder;
+    std::unique_ptr<IndexKeyEncoder> encoder;
     // Accumulated index entries with encoded keys pointing into
     // encodingBuffer_.
     std::vector<IndexEntry> entries;

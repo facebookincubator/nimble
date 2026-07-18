@@ -283,6 +283,11 @@ HashIndexWriter::HashIndexWriter(
   for (const auto& config : configs) {
     NIMBLE_CHECK(
         !config.columns.empty(), "Hash index must have at least one column");
+    NIMBLE_CHECK_EQ(
+        config.indexName,
+        kDenseHashIndexName,
+        "Unsupported hash index implementation: {}",
+        config.indexName);
     // Check for duplicate index columns.
     for (size_t i = 0; i < accumulators_.size(); ++i) {
       NIMBLE_CHECK(
@@ -295,7 +300,12 @@ HashIndexWriter::HashIndexWriter(
     accumulators_.emplace_back(
         IndexAccumulator{
             .config = config,
-            .encoder = createKeyEncoder(config.columns, inputType, pool),
+            .encoder = createNimbleIndexKeyEncoder(
+                config.columns,
+                inputType,
+                std::vector<SortOrder>(
+                    config.columns.size(), SortOrder{.ascending = true}),
+                pool),
         });
   }
 }
@@ -336,14 +346,13 @@ void HashIndexWriter::write(const velox::VectorPtr& input) {
   numRows_ += input->size();
 }
 
-void HashIndexWriter::close(
+std::optional<IndexDescriptor> HashIndexWriter::close(
     const WriteDataFn& /*writeDataFn*/,
-    const CreateMetadataSectionFn& createMetadataFn,
-    const WriteOptionalSectionFn& writeMetadataFn) {
+    const CreateMetadataSectionFn& createMetadataFn) {
   setClosed();
 
   if (numRows_ == 0) {
-    return;
+    return std::nullopt;
   }
 
   // Write each hash index as a separate section.
@@ -360,12 +369,15 @@ void HashIndexWriter::close(
 
   flatbuffers::FlatBufferBuilder directoryBuilder;
   buildIndexDirectoryFlatBuffer(directoryBuilder, indexSections);
-  writeMetadataFn(
-      std::string(kHashIndexSection), asStringView(directoryBuilder));
 
   for (auto& accumulator : accumulators_) {
     accumulator.clear();
   }
+
+  return IndexDescriptor{
+      .family = IndexFamily::Dense,
+      .name = std::string{kDenseHashIndexName},
+      .root = createMetadataFn(asStringView(directoryBuilder))};
 }
 
 } // namespace facebook::nimble::index

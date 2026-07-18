@@ -44,6 +44,7 @@ namespace facebook::nimble::test {
 using namespace velox;
 using namespace velox::common;
 using namespace velox::dwio::common;
+using index::ClusterIndexConfig;
 
 namespace {
 

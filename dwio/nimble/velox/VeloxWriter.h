@@ -212,9 +212,9 @@ class VeloxWriter {
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
-  const std::unique_ptr<index::ClusterIndexWriter> clusterIndexWriter_;
-  const std::unique_ptr<index::HashIndexWriter> hashIndexWriter_;
-  const std::unique_ptr<index::SortedIndexWriter> sortedIndexWriter_;
+  const std::unique_ptr<index::IndexWriter> clusterIndexWriter_;
+  const std::unique_ptr<index::IndexWriter> hashIndexWriter_;
+  const std::unique_ptr<index::IndexWriter> sortedIndexWriter_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
   std::unique_ptr<FieldWriter> rootWriter_;
