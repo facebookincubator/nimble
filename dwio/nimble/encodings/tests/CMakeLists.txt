@@ -33,10 +33,12 @@ add_executable(
   EncodingLegacyTest.cpp
   FixedBitWidthEncodingViewTest.cpp
   FsstEncodingTest.cpp
+  FOREncodingViewTest.cpp
   Lz4CompressorTest.cpp
   ForEncodingTest.cpp
   FrequencyPartitionEncodingTest.cpp
   MainlyConstantEncodingTest.cpp
+  MainlyConstantEncodingViewTest.cpp
   NullableEncodingTest.cpp
   OpenZLCompressorTest.cpp
   PFOREncodingViewTest.cpp
@@ -46,6 +48,7 @@ add_executable(
   RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
   SimdForBitpackEncodingViewTest.cpp
+  SparseBoolEncodingViewTest.cpp
   StatisticsTest.cpp
   TrivialEncodingViewTest.cpp
   TrivialEncodingTest.cpp

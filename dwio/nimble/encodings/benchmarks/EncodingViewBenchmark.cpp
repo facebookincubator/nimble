@@ -33,9 +33,12 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
+#include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/benchmarks/BenchmarkUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -355,6 +358,15 @@ Vector<uint32_t> pforData() {
   return data;
 }
 
+Vector<uint32_t> mainlyConstantData() {
+  Vector<uint32_t> data{benchmarkPool().get()};
+  data.resize(kRows, 7);
+  for (uint32_t i = 0; i < kRows; i += 17) {
+    data[i] = i;
+  }
+  return data;
+}
+
 Vector<bool> boolData() {
   Vector<bool> data{benchmarkPool().get()};
   data.resize(kRows);
@@ -442,6 +454,20 @@ MATERIALIZE_BENCHMARK(
     bool,
     encodeWithSelection<TrivialEncoding<bool>>(
         EncodingType::Trivial,
+        boolData()),
+    randomPositions(kRows))
+VIEW_BENCHMARK(
+    View_SparseBool_Random130,
+    bool,
+    encodeWithSelection<SparseBoolEncoding>(
+        EncodingType::SparseBool,
+        boolData()),
+    randomPositions(kRows))
+MATERIALIZE_BENCHMARK(
+    Materialize_SparseBool_Random130,
+    bool,
+    encodeWithSelection<SparseBoolEncoding>(
+        EncodingType::SparseBool,
         boolData()),
     randomPositions(kRows))
 
@@ -552,6 +578,20 @@ MATERIALIZE_BENCHMARK(
     encodeWithSelection<FixedBitWidthEncoding<uint32_t>>(
         EncodingType::FixedBitWidth,
         makeNarrow<uint32_t>(10, kRows)),
+    randomPositions(kRows))
+VIEW_BENCHMARK(
+    View_MainlyConstantUint32_Random130,
+    uint32_t,
+    encodeWithSelection<MainlyConstantEncoding<uint32_t>>(
+        EncodingType::MainlyConstant,
+        mainlyConstantData()),
+    randomPositions(kRows))
+MATERIALIZE_BENCHMARK(
+    Materialize_MainlyConstantUint32_Random130,
+    uint32_t,
+    encodeWithSelection<MainlyConstantEncoding<uint32_t>>(
+        EncodingType::MainlyConstant,
+        mainlyConstantData()),
     randomPositions(kRows))
 VIEW_BENCHMARK(
     View_DictionaryUint32_Random130,
@@ -685,6 +725,24 @@ MATERIALIZE_BENCHMARK(
         EncodingType::ALP,
         alpData<double>()),
     randomPositions(kRows))
+VIEW_BENCHMARK(
+    View_FORUint32_Random130,
+    uint32_t,
+    encodeWithSelection<ForEncoding<uint32_t>>(EncodingType::FOR, pforData()),
+    randomPositions(kRows))
+BENCHMARK(Materialize_FORUint32_Random130, iters) {
+  std::string encoded;
+  std::vector<uint32_t> positions;
+  std::unique_ptr<ForEncoding<uint32_t>> encoding;
+  BENCHMARK_SUSPEND {
+    encoded = encodeWithSelection<ForEncoding<uint32_t>>(
+        EncodingType::FOR, pforData());
+    positions = randomPositions(kRows);
+    encoding = std::make_unique<ForEncoding<uint32_t>>(
+        *benchmarkPool(), encoded, nullptr, Encoding::Options{});
+  }
+  readPositionsWithMaterialization<uint32_t>(*encoding, positions, iters);
+}
 VIEW_BENCHMARK(
     View_PFORUint32_Random130,
     uint32_t,

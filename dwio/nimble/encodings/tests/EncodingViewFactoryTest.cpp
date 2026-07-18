@@ -61,13 +61,10 @@ TEST_F(EncodingViewTest, rejectsUnsupportedEncodingTypes) {
       unsupportedEncodings{
           {nimble::EncodingType::Sentinel, nimble::DataType::Int32},
           {nimble::EncodingType::Nullable, nimble::DataType::Int32},
-          {nimble::EncodingType::SparseBool, nimble::DataType::Bool},
           {nimble::EncodingType::Delta, nimble::DataType::Int32},
-          {nimble::EncodingType::MainlyConstant, nimble::DataType::Int32},
           {nimble::EncodingType::Prefix, nimble::DataType::String},
           {nimble::EncodingType::SubIntSplit, nimble::DataType::Uint32},
           {nimble::EncodingType::FrequencyPartition, nimble::DataType::Uint32},
-          {nimble::EncodingType::FOR, nimble::DataType::Uint32},
           {nimble::EncodingType::Fsst, nimble::DataType::String},
       };
 
