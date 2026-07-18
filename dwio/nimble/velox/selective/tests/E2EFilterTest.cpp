@@ -40,6 +40,7 @@ namespace facebook::nimble {
 namespace {
 
 using namespace facebook::velox;
+using index::ClusterIndexConfig;
 
 using E2EFilterTestParams =
     std::tuple<bool, bool, bool, bool, bool, bool, bool>;

@@ -632,7 +632,7 @@ ensureInput() copies across boundary.
 │   Metadata       "columnar.metadata"        — key-value pairs           │
 │   Stats          "columnar.vectorized_stats"— per-column stats          │
 │   ChunkIndex     "columnar.chunk.index"     — root → per-group blobs   │
-│   ClusterIndex   "columnar.cluster.index"   — root → per-group blobs   │
+│   FileIndexes    "columnar.indexes"         — named index manifest     │
 │   StrideIndex    "columnar.stride.index"    — root → per-group blobs   │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ <strong>FOOTER</strong> (FlatBuffers, possibly Zstd compressed)                         │
@@ -684,14 +684,14 @@ ensureInput() copies across boundary.
                    │                              optional_sections:
                    │                                "columnar.schema"        → {0xB000, ...}
                    │                                "columnar.chunk.index"   → {0xC000, ...}
-                   │                                "columnar.cluster.index" → {0xD000, ...}
+                   │                                "columnar.indexes"       → {0xD000, ...}
                    │
                    ├─ 0x8000: StripeGroup 0 blob
                    ├─ 0x9000: StripeGroup 1 blob
                    ├─ 0xA000: Stripes blob
                    ├─ 0xB000: Schema blob
                    ├─ 0xC000: ChunkIndex root blob
-                   └─ 0xD000: ClusterIndex root blob
+                   └─ 0xD000: File index manifest blob
 
 One field (row_count) gives the answer directly.
 Everything else says "go read that blob if you need it."</div>
@@ -763,7 +763,7 @@ Together with StripeGroup, you can read any column.</div>
   <tr><td><code>columnar.stats</code></td><td>Legacy (replaced by vectorized_stats)</td></tr>
   <tr><td><code>columnar.vectorized_stats</code></td><td>Active</td></tr>
   <tr><td><code>columnar.chunk.index</code></td><td>Active</td></tr>
-  <tr><td><code>columnar.cluster.index</code></td><td>Active</td></tr>
+  <tr><td><code>columnar.indexes</code></td><td>Active file index manifest</td></tr>
   <tr><td><code>columnar.stride.index</code></td><td>New</td></tr>
   <tr><td><code>columnar.dense.index</code></td><td>Defined, not implemented</td></tr>
 </table>

@@ -64,9 +64,8 @@ namespace facebook::nimble {
 /// +===================================================================+
 /// |  Stripes Metadata (row_counts, offsets, sizes, group_indices)     |
 /// +-------------------------------------------------------------------+
-/// |  Optional: "columnar.cluster.index" (root ClusterIndex flatbuffer |
-/// |            with stripe_keys, index_columns, sort_orders,          |
-/// |            stripe_indexes)                                        |
+/// |  Optional: "columnar.indexes" (root index manifest with named     |
+/// |            cluster and dense index payloads)                      |
 /// +-------------------------------------------------------------------+
 /// |  Optional: "columnar.chunk.index" (root ChunkIndex flatbuffer     |
 /// |            with stripe_indexes)                                   |
@@ -94,8 +93,10 @@ namespace facebook::nimble {
 /// co-location enables efficient single IO to load both stripe and
 /// index metadata.
 ///
-/// Cluster Index ("columnar.cluster.index"):
-///   Root ClusterIndex flatbuffer (see ClusterIndex.fbs) containing:
+/// Index Manifest ("columnar.indexes"):
+///   Root IndexRoot flatbuffer (see Index.fbs) containing named index payloads.
+///
+/// Cluster index payload (see ClusterIndex.fbs) contains:
 ///   - stripe_keys: key boundaries per stripe (size = stripe_count + 1)
 ///   - index_columns: names of indexed columns
 ///   - sort_orders: sort order per column ("ASC NULLS FIRST", etc.)

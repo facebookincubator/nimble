@@ -51,8 +51,7 @@ table SortedIndexSection {
   section:MetadataSection;
 }
 
-/// Root table for the sorted index optional section.
-/// Stored in optional section "columnar.sorted.index".
+/// Root table for the sorted index payload referenced by the index manifest.
 table SortedIndexDirectory {
   /// One descriptor per sorted index defined on the file.
   indices:[SortedIndexSection];

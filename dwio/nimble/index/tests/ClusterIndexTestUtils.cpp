@@ -18,10 +18,12 @@
 
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/ChunkIndexGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
@@ -360,13 +362,14 @@ TabletWriter::CloseCallback
 TestClusterIndexMetadataWriter::createCloseCallback() {
   return [this](
              const WriteDataFn& /*writeDataFn*/,
-             const CreateMetadataSectionFn& /*createMetadataFn*/,
+             const CreateMetadataSectionFn& createMetadataFn,
              const WriteOptionalSectionFn& writeMetadataFn) {
-    writeRoot(writeMetadataFn);
+    writeRoot(createMetadataFn, writeMetadataFn);
   };
 }
 
 void TestClusterIndexMetadataWriter::writeRoot(
+    const CreateMetadataSectionFn& createMetadataSection,
     const WriteOptionalSectionFn& writeOptionalSection) {
   if (indexPartitions_.empty()) {
     return;
@@ -432,7 +435,25 @@ void TestClusterIndexMetadataWriter::writeRoot(
   std::string_view view{
       reinterpret_cast<const char*>(builder.GetBufferPointer()),
       builder.GetSize()};
-  writeOptionalSection(std::string(kClusterIndexSection), view);
+  const auto payloadSection = createMetadataSection(view);
+
+  flatbuffers::FlatBufferBuilder rootBuilder(kInitialFooterSize);
+  auto name = rootBuilder.CreateString(kClusterIndexName);
+  auto payload = serialization::CreateMetadataSection(
+      rootBuilder,
+      payloadSection.offset(),
+      payloadSection.size(),
+      static_cast<serialization::CompressionType>(
+          payloadSection.compressionType()),
+      payloadSection.uncompressedSize().value_or(payloadSection.size()));
+  auto descriptor = serialization::CreateIndexDescriptor(
+      rootBuilder, serialization::IndexFamily_Cluster, name, payload);
+  auto indexes = rootBuilder.CreateVector(&descriptor, 1);
+  rootBuilder.Finish(serialization::CreateIndexRoot(rootBuilder, indexes));
+  std::string_view rootView{
+      reinterpret_cast<const char*>(rootBuilder.GetBufferPointer()),
+      rootBuilder.GetSize()};
+  writeOptionalSection(std::string(kIndexSection), rootView);
 }
 
 } // namespace facebook::nimble::index::test

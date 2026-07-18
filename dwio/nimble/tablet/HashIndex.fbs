@@ -88,10 +88,9 @@ table HashIndexSection {
   section:MetadataSection;
 }
 
-/// Root table for the hash index optional section.
+/// Root table for the hash index payload referenced by the index manifest.
 /// Supports multiple independent hash indices per file,
 /// each on a different set of composite key columns.
-/// Stored in optional section "columnar.hash.index".
 table HashIndexDirectory {
   /// One descriptor per hash index defined on the file.
   indices:[HashIndexSection];

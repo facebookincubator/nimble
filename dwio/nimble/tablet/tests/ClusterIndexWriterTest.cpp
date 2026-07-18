@@ -88,7 +88,7 @@ class ClusterIndexWriterTest : public ::testing::Test {
   // Returns a callback that stores root index data in TestFileIndex.
   static auto writeRootIndexCallback(TestFileIndex& fileIndex) {
     return [&fileIndex](const std::string& name, std::string_view content) {
-      EXPECT_EQ(name, nimble::kClusterIndexSection);
+      EXPECT_EQ(name, nimble::kIndexSection);
       fileIndex.rootIndexData = std::string(content);
     };
   }

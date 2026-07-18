@@ -240,7 +240,7 @@ TEST_F(ClusterIndexWriterTest, multiColumnWithDifferentSortOrders) {
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
         ClusterIndexWriter::create(config, type, pool_.get()),
-        "sortOrders size (2) must be empty or match columns size (3)");
+        "sortOrders and columns must have the same size");
   }
 
   {
@@ -255,7 +255,7 @@ TEST_F(ClusterIndexWriterTest, multiColumnWithDifferentSortOrders) {
             EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
     NIMBLE_ASSERT_THROW(
         ClusterIndexWriter::create(config, type, pool_.get()),
-        "sortOrders size (3) must be empty or match columns size (2)");
+        "sortOrders and columns must have the same size");
   }
 
   // Data test: write data with multiple columns and different sort orders,
@@ -922,11 +922,9 @@ TEST_P(ClusterIndexWriterDataTest, close) {
   CreateMetadataSectionFn createMetadataFn = [&](std::string_view) {
     return MetadataSection{nextSectionId++, 0, CompressionType::Uncompressed};
   };
-  WriteOptionalSectionFn noopWriteFn = [](const std::string&,
-                                          std::string_view) {};
   WriteDataFn noopWriteDataFn = [](const std::vector<std::string_view>&)
       -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
-  writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn);
+  EXPECT_FALSE(writer->close(noopWriteDataFn, createMetadataFn).has_value());
 }
 
 TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
@@ -939,16 +937,14 @@ TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
   CreateMetadataSectionFn createMetadataFn = [&](std::string_view) {
     return MetadataSection{nextSectionId++, 0, CompressionType::Uncompressed};
   };
-  WriteOptionalSectionFn noopWriteFn = [](const std::string&,
-                                          std::string_view) {};
   WriteDataFn noopWriteDataFn = [](const std::vector<std::string_view>&)
       -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
-  writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn);
+  EXPECT_FALSE(writer->close(noopWriteDataFn, createMetadataFn).has_value());
 
   NIMBLE_ASSERT_THROW(
       writer->write(makeInput({4, 5, 6})), "IndexWriter has been closed");
   NIMBLE_ASSERT_THROW(
-      writer->close(noopWriteDataFn, createMetadataFn, noopWriteFn),
+      writer->close(noopWriteDataFn, createMetadataFn),
       "close() already called");
 }
 
@@ -1103,19 +1099,15 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   };
   writer->flush(writeDataFn, createMetadataFn);
 
-  // Close the writer and capture the root index data.
-  std::string rootIndexData;
+  // Close the writer and capture the root index payload.
   WriteDataFn noopWriteDataFn2 = [](const std::vector<std::string_view>&)
       -> std::pair<uint64_t, uint32_t> { return {0, 0}; };
-  writer->close(
-      noopWriteDataFn2,
-      createMetadataFn,
-      [&rootIndexData](const std::string&, std::string_view content) {
-        rootIndexData = std::string(content);
-      });
+  auto descriptor = writer->close(noopWriteDataFn2, createMetadataFn);
+  ASSERT_TRUE(descriptor.has_value());
+  const auto& rootIndexData = partitionMetadata.back();
 
   ASSERT_FALSE(rootIndexData.empty());
-  ASSERT_EQ(partitionMetadata.size(), 1);
+  ASSERT_EQ(partitionMetadata.size(), 2);
 
   // Load ClusterIndex from serialized data and verify layout.
   Section rootSection{MetadataBuffer(

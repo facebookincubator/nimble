@@ -48,17 +48,6 @@ void IndexWriter::validateNoNullKeys(
 }
 
 // static
-std::unique_ptr<velox::serializer::KeyEncoder> IndexWriter::createKeyEncoder(
-    const std::vector<std::string>& columns,
-    const velox::RowTypePtr& inputType,
-    velox::memory::MemoryPool* pool) {
-  std::vector<velox::core::SortOrder> sortOrders(
-      columns.size(), velox::core::SortOrder{true, false});
-  return velox::serializer::KeyEncoder::create(
-      columns, inputType, std::move(sortOrders), pool);
-}
-
-// static
 std::vector<velox::column_index_t> IndexWriter::getKeyColumnIndices(
     const std::vector<std::vector<std::string>>& columnSets,
     const velox::RowTypePtr& inputType) {

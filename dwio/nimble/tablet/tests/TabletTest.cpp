@@ -1026,8 +1026,7 @@ TEST_P(TabletTest, hasOptionalSection) {
   EXPECT_FALSE(tablet->hasOptionalSection("section4"));
   EXPECT_FALSE(tablet->hasOptionalSection("nonexistent"));
   EXPECT_FALSE(tablet->hasOptionalSection(""));
-  EXPECT_FALSE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 }
 
 TEST_P(TabletTest, hasOptionalSectionEmpty) {
@@ -1762,8 +1761,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   EXPECT_EQ(tablet->stripeRowCount(2), 150);
 
   // Verify index section exists
-  EXPECT_TRUE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 
   // Verify the index is available
   const nimble::ClusterIndex* index = tablet->clusterIndex();
@@ -2157,8 +2155,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   EXPECT_EQ(tablet->stripeRowCount(2), 120);
 
   // Verify index section exists
-  EXPECT_TRUE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 
   // Verify the index is available
   const nimble::ClusterIndex* index = tablet->clusterIndex();
@@ -2592,8 +2589,7 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
   EXPECT_EQ(tablet->stripeRowCount(3), 100);
 
   // Verify index section exists
-  EXPECT_TRUE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 
   // Verify the index is available
   const nimble::ClusterIndex* index = tablet->clusterIndex();
@@ -3018,8 +3014,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   EXPECT_EQ(tablet->stripeRowCount(3), 100);
 
   // Verify index section exists
-  EXPECT_TRUE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 
   // Verify the index is available
   const nimble::ClusterIndex* index = tablet->clusterIndex();
@@ -3424,8 +3419,7 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
   EXPECT_EQ(tablet->stripeRowCount(0), 100);
 
   // Verify index section exists
-  EXPECT_TRUE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_TRUE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
 
   // Verify the index is available
   const nimble::ClusterIndex* index = tablet->clusterIndex();
@@ -3593,8 +3587,8 @@ TEST_P(TabletWithIndexTest, keyOrderEnforcement) {
                 file, false);
         auto tablet = createTabletReader(readFile);
         EXPECT_EQ(tablet->stripeCount(), 2);
-        EXPECT_TRUE(tablet->hasOptionalSection(
-            std::string(nimble::kClusterIndexSection)));
+        EXPECT_TRUE(
+            tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
       }
     }
   }
@@ -3629,8 +3623,7 @@ TEST_P(TabletWithIndexTest, noIndex) {
       std::make_shared<nimble::testing::InMemoryTrackableReadFile>(file, false);
   auto tablet = createTabletReader(readFile);
   EXPECT_EQ(tablet->stripeCount(), 1);
-  EXPECT_FALSE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
   EXPECT_FALSE(
       tablet->hasOptionalSection(std::string(nimble::kChunkIndexSection)));
 }
@@ -3829,9 +3822,9 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.hashIndexConfigs.push_back(
-      nimble::HashIndexConfig{.columns = {"id"}});
+      nimble::index::HashIndexConfig{.columns = {"id"}});
   writerOptions.sortedIndexConfigs.push_back(
-      nimble::SortedIndexConfig{.columns = {"value"}});
+      nimble::index::SortedIndexConfig{.columns = {"value"}});
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
@@ -3877,7 +3870,7 @@ TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.hashIndexConfigs.push_back(
-      nimble::HashIndexConfig{.columns = {"id"}});
+      nimble::index::HashIndexConfig{.columns = {"id"}});
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
@@ -4008,7 +4001,7 @@ TEST_F(TabletWithIndexTest, configCombinations) {
         tablet->hasOptionalSection(std::string(nimble::kChunkIndexSection)),
         config.expectChunkIndex);
     EXPECT_EQ(
-        tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)),
+        tablet->hasOptionalSection(std::string(nimble::kIndexSection)),
         config.expectClusterIndex);
 
     // Verify chunk index functionality
@@ -4099,8 +4092,7 @@ TEST_P(TabletWithIndexTest, emptyFileWithIndexConfig) {
   EXPECT_EQ(tablet->stripeCount(), 0);
 
   // Empty file: no data was written, so no cluster index section is produced.
-  EXPECT_FALSE(
-      tablet->hasOptionalSection(std::string(nimble::kClusterIndexSection)));
+  EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
   EXPECT_FALSE(tablet->hasClusterIndex());
 }
 
@@ -4220,7 +4212,7 @@ TEST_P(TabletWithIndexTest, fileLayoutOrdering) {
 
   // Optional sections (cluster index, chunk index) come after index partitions.
   const auto clusterIndexIt =
-      layout.optionalSections.find(std::string(nimble::kClusterIndexSection));
+      layout.optionalSections.find(std::string(nimble::kIndexSection));
   ASSERT_NE(clusterIndexIt, layout.optionalSections.end());
   EXPECT_GT(clusterIndexIt->second.offset(), layout.indexPartitions[0].offset())
       << "Cluster index should come after index partition metadata";
@@ -4304,7 +4296,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
   // Preload index sections so the cache warm path can serve them from cache.
   nimble::TabletReader::Options options;
   options.preloadOptionalSections = {
-      std::string(nimble::kClusterIndexSection),
+      std::string(nimble::kIndexSection),
       std::string(nimble::kChunkIndexSection)};
 
   // Cold path: first reader populates the cache.
@@ -4636,8 +4628,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_TRUE(opts.loadChunkIndex);
     EXPECT_TRUE(
         containsSection(opts.preloadOptionalSections, nimble::kSchemaSection));
-    EXPECT_FALSE(containsSection(
-        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(
+        containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_TRUE(containsSection(
         opts.preloadOptionalSections, nimble::kChunkIndexSection));
   }
@@ -4651,8 +4643,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_FALSE(opts.loadChunkIndex);
     EXPECT_TRUE(
         containsSection(opts.preloadOptionalSections, nimble::kSchemaSection));
-    EXPECT_FALSE(containsSection(
-        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(
+        containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_FALSE(containsSection(
         opts.preloadOptionalSections, nimble::kChunkIndexSection));
   }
@@ -4664,8 +4656,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     auto opts = nimble::TabletReader::configureOptions(readerOptions);
     EXPECT_TRUE(opts.loadClusterIndex);
     EXPECT_FALSE(opts.loadChunkIndex);
-    EXPECT_TRUE(containsSection(
-        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(
+        containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_FALSE(containsSection(
         opts.preloadOptionalSections, nimble::kChunkIndexSection));
   }
@@ -4677,8 +4669,8 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     auto opts = nimble::TabletReader::configureOptions(readerOptions);
     EXPECT_FALSE(opts.loadClusterIndex);
     EXPECT_TRUE(opts.loadChunkIndex);
-    EXPECT_FALSE(containsSection(
-        opts.preloadOptionalSections, nimble::kClusterIndexSection));
+    EXPECT_FALSE(
+        containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_TRUE(containsSection(
         opts.preloadOptionalSections, nimble::kChunkIndexSection));
   }
@@ -6650,7 +6642,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPathCompressedChunkIndex) {
 
   nimble::TabletReader::Options options;
   options.preloadOptionalSections = {
-      std::string(nimble::kClusterIndexSection),
+      std::string(nimble::kIndexSection),
       std::string(nimble::kChunkIndexSection)};
 
   // Cold path.

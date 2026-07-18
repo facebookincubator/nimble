@@ -48,6 +48,7 @@ namespace facebook::nimble::test {
 
 using namespace velox;
 using namespace velox::dwio::common;
+using index::ClusterIndexConfig;
 using Subfield = velox::common::Subfield;
 
 namespace {

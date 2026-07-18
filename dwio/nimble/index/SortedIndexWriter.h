@@ -16,17 +16,18 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexKeyEncoder.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "flatbuffers/flatbuffers.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/common/memory/Memory.h"
-#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::nimble::serialization {
@@ -66,10 +67,9 @@ class SortedIndexWriter : public IndexWriter {
 
   void write(const velox::VectorPtr& input) override;
 
-  void close(
+  std::optional<IndexDescriptor> close(
       const WriteDataFn& writeDataFn,
-      const CreateMetadataSectionFn& createMetadataFn,
-      const WriteOptionalSectionFn& writeMetadataFn) override;
+      const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
   SortedIndexWriter(
@@ -84,7 +84,7 @@ class SortedIndexWriter : public IndexWriter {
 
   struct IndexAccumulator {
     SortedIndexConfig config;
-    std::unique_ptr<velox::serializer::KeyEncoder> encoder;
+    std::unique_ptr<IndexKeyEncoder> encoder;
     std::vector<IndexEntry> entries;
     // Backs encoded key string_views in entries. Each accumulator owns its
     // buffer so it can be freed independently after composite entries are
