@@ -30,6 +30,13 @@ namespace facebook::nimble {
 
 using namespace facebook::velox;
 
+bool StringColumnReader::dictionaryPreservable() {
+  return scanSpec_->valueHook() == nullptr &&
+      formatData().stringDecoderZeroCopy() &&
+      static_cast<const NimbleData&>(formatData())
+          .nimblePreserveDictionaryEncoding();
+}
+
 uint64_t StringColumnReader::skip(uint64_t numValues) {
   numValues = SelectiveColumnReader::skip(numValues);
   // Clear cached dictionary state when skip crosses a chunk boundary,
@@ -331,20 +338,14 @@ bool StringColumnReader::readWithDictionary(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
-  // Dictionary path requires: no value hook, non-legacy encoding path
-  // (zero-copy), session property enabled, and dictionary-convertible
-  // encoding. Filters are supported via post-materialization filtering
-  // on the bulk-read dictionary indices.
-  // TODO: Value hooks (aggregation pushdown) could be supported by
-  // resolving alphabet[index] and calling hook->addValue() post-read,
-  // similar to filterDictionaryIndices. Neither Nimble nor DWRF
-  // currently support filter+hook combined for dict string columns.
-  if (scanSpec_->valueHook() || !formatData().stringDecoderZeroCopy() ||
-      !static_cast<const NimbleData&>(formatData())
-           .nimblePreserveDictionaryEncoding()) {
-    clearDictionaryState();
-    return false;
-  }
+  // Contract: read() only enters the dictionary path when the dictionary
+  // encoding is preservable — no value hook, the zero-copy (non-legacy)
+  // encoding path, and preserve-dictionary enabled. Check it here so a caller
+  // that forgets the gate fails loudly instead of silently mis-reading a
+  // legacy/hook column through the (zero-copy) dictionary machinery.
+  NIMBLE_CHECK(
+      dictionaryPreservable(),
+      "readWithDictionary entered when the dictionary is not preservable");
 
   // When the previous batch's readDictionaryIndices consumed the last row of
   // a chunk (remainingValues_ == 0), ensureLoaded loads the next chunk. The
@@ -355,10 +356,6 @@ bool StringColumnReader::readWithDictionary(
         clearDictionaryState();
         return true;
       });
-  if (!decoder_.dictionaryConvertible()) {
-    clearDictionaryState();
-    return false;
-  }
 
   // A cross-chunk merged alphabet is per-read: getValues() clears it (and snaps
   // its backing into the output DictionaryVector) once the read is consumed.
@@ -374,11 +371,26 @@ bool StringColumnReader::readWithDictionary(
   }
 
   prepareRead<int32_t>(offset, rows, incomingNulls);
+  const auto endReadRow = rows.back() + 1;
+  // prepareRead runs seekTo -> skip, which can advance the decoder across a
+  // chunk boundary and load the landed chunk with preserveDictionaryEncoding
+  // false (skipWithoutIndex/seekToChunk hardcode it), so a Dictionary-encoded
+  // landed chunk is created non-dict and reports not convertible. Check
+  // convertibility once here, on the chunk that will actually be read — this
+  // single post-prepareRead check covers both the no-skip and cross-chunk-skip
+  // cases. When it is not convertible, no dictionary indices were materialized;
+  // re-type the value buffer to StringView (abandonDictionaryEncoding handles
+  // numValues_ == 0) so read()'s flat continuation fills it. Crucially, read()
+  // must NOT run a second prepareRead in this case — that would advance the
+  // null/in-map decoders a second time and corrupt flatmap reads.
+  if (!decoder_.dictionaryConvertible()) {
+    abandonDictionaryEncoding(endReadRow);
+    return false;
+  }
   ensureDictionaryState();
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::StringColumnReader::readWithDictionary",
       &dictionaryState_.alphabet);
-  const auto endReadRow = rows.back() + 1;
   // Set to true when the dictionary read is abandoned at a non-dict chunk;
   // false when the whole range is read in dictionary mode. On abandon,
   // readDictionaryIndices has already advanced readOffset_ to the decoder's
@@ -504,21 +516,35 @@ void StringColumnReader::read(
     int64_t offset,
     const RowSet& rows,
     const uint64_t* incomingNulls) {
-  if (readWithDictionary(offset, rows, incomingNulls)) {
-    return;
+  // numReadRows is how many rows the dictionary portion produced before
+  // abandoning: 0 when the dictionary is not preservable or the landed chunk
+  // was non-convertible, or the chunk boundary when the dict path was abandoned
+  // mid-read. It selects a fresh flat read vs a flat continuation below.
+  velox::vector_size_t numReadRows = 0;
+  // The dictionary encoding is preservable only without a value hook, on the
+  // zero-copy (non-legacy) encoding path, and with preserve-dictionary enabled.
+  // Deciding here (rather than inside readWithDictionary) lets
+  // readWithDictionary own the single prepareRead: when it abandons it re-types
+  // the value buffer via abandonDictionaryEncoding, so read() never issues a
+  // second prepareRead — which would advance the null/in-map decoders twice and
+  // corrupt flatmap reads.
+  if (dictionaryPreservable()) {
+    if (readWithDictionary(offset, rows, incomingNulls)) {
+      return;
+    }
+    numReadRows = readOffset_ > offset
+        ? static_cast<velox::vector_size_t>(readOffset_ - offset)
+        : 0;
+  } else {
+    // Dictionary not preservable: full flat read. Clearing the dictionary state
+    // converts the reader back to flat read mode, dropping anything a
+    // dictionary-mode read (readWithDictionary) may have prepared, so this read
+    // materializes plain StringViews.
+    clearDictionaryState();
+    prepareRead<std::string_view>(offset, rows, incomingNulls);
   }
 
   const auto endReadRow = rows.back() + 1;
-  // readWithDictionary returns false for two reasons:
-  // 1. Preconditions not met (e.g., zeroCopy disabled) — readOffset_
-  //    unchanged, numReadRows == 0. Full flat read via prepareRead below.
-  // 2. Dict abandoned mid-read — readOffset_ advanced to the chunk boundary,
-  //    numReadRows > 0. Flat encoding fallback for the remaining rows only.
-  // Both the return value (false) and numReadRows > 0 are needed to
-  // distinguish abandoned dict (case 2) from dict path not taken (case 1).
-  const auto numReadRows = readOffset_ > offset
-      ? static_cast<velox::vector_size_t>(readOffset_ - offset)
-      : 0;
   NIMBLE_CHECK_LE(numReadRows, endReadRow);
 
   // Always read against the complete original rows so the visitor — and hence
@@ -528,9 +554,7 @@ void StringColumnReader::read(
   // resumes there (the dict portion was already produced) instead of re-reading
   // the prefix.
   velox::vector_size_t startRowIndex = 0;
-  if (numReadRows == 0) {
-    prepareRead<std::string_view>(offset, rows, incomingNulls);
-  } else {
+  if (numReadRows > 0) {
     startRowIndex = static_cast<velox::vector_size_t>(
         std::lower_bound(rows.data(), rows.data() + rows.size(), numReadRows) -
         rows.data());
@@ -585,7 +609,12 @@ void StringColumnReader::ensureAlphabetVector() {
 }
 
 void StringColumnReader::abandonDictionaryEncoding(vector_size_t endReadRow) {
-  NIMBLE_CHECK(!dictionaryState_.alphabet.empty());
+  // numValues_ == 0 means the dictionary path was abandoned before
+  // materializing any indices (the landed chunk was not convertible at the
+  // read's start), so there is no alphabet and nothing to resolve — the loop
+  // below is a no-op and this only re-types the value buffer to StringView for
+  // the flat continuation.
+  NIMBLE_CHECK(numValues_ == 0 || !dictionaryState_.alphabet.empty());
 
   // Resolve dictionary indices to flat StringViews. The underlying string
   // data lives in the encoding's string buffers, which the reader already
