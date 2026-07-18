@@ -309,6 +309,17 @@ class ChunkedDecoder {
   /// Caller must call ensureLoaded() first.
   bool dictionaryConvertible() const;
 
+  /// Controls whether the skip paths (skipWithoutIndex, seekToChunk) load the
+  /// chunk they advance into (the chunk after the skip) with dictionary
+  /// encoding preserved. The string dictionary reader sets this so a
+  /// between-batch skip that lands in a preserve-gated encoding (e.g.
+  /// RLE<Dictionary>) loads that chunk in dictionary mode instead of flattening
+  /// it. All other readers leave it at the default (false), so their skips are
+  /// unaffected.
+  void setPreserveDictionaryEncoding(bool preserve) {
+    preserveDictionaryEncoding_ = preserve;
+  }
+
   int64_t remainingValues() const {
     return remainingValues_;
   }
@@ -845,6 +856,11 @@ class ChunkedDecoder {
   const bool decodeValuesWithNulls_;
   const EncodingFactory* const encodingFactory_;
   const bool stringDecoderZeroCopy_{false};
+  // When true, the skip paths (skipWithoutIndex, seekToChunk) load the chunk
+  // they advance into (the chunk after the skip) with dictionary encoding
+  // preserved. Set by the string dictionary reader; all other decoders keep the
+  // default so their skips load chunks in flat mode.
+  bool preserveDictionaryEncoding_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;
   // Total row count in the stream, set from stream index if available.
