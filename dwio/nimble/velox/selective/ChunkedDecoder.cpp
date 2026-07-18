@@ -275,7 +275,7 @@ void ChunkedDecoder::skipWithoutIndex(
     const ChunkBoundaryCallback& onChunkBoundary) {
   while (numValues > 0) {
     if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-      loadNextChunk(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+      loadNextChunk(preserveDictionaryEncoding_, onChunkBoundary);
     }
     if (numValues < remainingValues_) {
       encoding_->skip(numValues);
@@ -302,7 +302,7 @@ void ChunkedDecoder::seekToChunk(
   remainingValues_ = 0;
 
   // Load the chunk at this position
-  loadNextChunk(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+  loadNextChunk(preserveDictionaryEncoding_, onChunkBoundary);
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
