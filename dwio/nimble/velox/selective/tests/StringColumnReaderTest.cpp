@@ -1012,6 +1012,433 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryDictRecovery) {
   }
 }
 
+// Regression for T278234148: a between-batch skip in prepareRead crosses a
+// chunk boundary and lands on a chunk whose encoding is NOT dictionary-enabled.
+//
+// readWithDictionary checks dictionaryConvertible() on the chunk that is
+// current at entry (chunk1, Dictionary → passes), but then prepareRead<int32_t>
+// runs seekTo → skip, which loads the landed chunk with
+// preserveDictionaryEncoding=false. When that chunk is a non-dict encoding
+// (here Trivial, forced by high-cardinality unique strings), the stale guard no
+// longer matches the current encoding, and ensureDictionaryState() calls
+// buildEncodingDictionaryAlphabet() on it → NIMBLE_CHECK(dictionaryEnabled())
+// fires. This mirrors the production crash on
+// ad_delivery.ads_ai_eval_judge_results.original_request_id (all-varchar table,
+// per-chunk encoding varies between Dictionary and Trivial). The fix re-checks
+// dictionaryConvertible() after prepareRead and falls back to the flat path
+// (FLAT output encoding).
+TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkip) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 400;
+  // Chunk 1: low-cardinality strings → Dictionary (dictionary-enabled).
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(kChunkRows, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          kChunkRows,
+          [](auto i) {
+            return std::vector<std::string>{"aaa", "bbb", "ccc"}[i % 3];
+          }),
+  });
+  // Chunk 2: all-unique strings → Trivial (NOT dictionary-enabled).
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(
+          kChunkRows, [](auto i) { return kChunkRows + i; }),
+      makeFlatVector<std::string>(
+          kChunkRows,
+          [](auto i) { return fmt::format("unique_string_value_{}", i); }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  // Filter on c0: accept [0,349] then [600,799]. Rejecting [350,599] forces a
+  // between-batch skip (350 → 600) that crosses the chunk boundary at 400 and
+  // lands inside chunk 2 (Trivial), while the decoder is still parked mid
+  // chunk 1 at entry (so the dictionaryConvertible() guard sees chunk 1).
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  std::vector<std::unique_ptr<common::BigintRange>> ranges;
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(0, 349, /*nullAllowed=*/false));
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(
+          600, 2 * kChunkRows - 1, /*nullAllowed=*/false));
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintMultiRange>(
+          std::move(ranges), /*nullAllowed=*/false));
+
+  // Accepted output: chunk 1 rows 0-349 (350), then chunk 2 rows 600-799 which
+  // are chunk-local indices 200-399 (200) → 550 rows total.
+  auto expectedStrings = makeFlatVector<std::string>(550, [](auto i) {
+    if (i < 350) {
+      return std::vector<std::string>{"aaa", "bbb", "ccc"}[i % 3];
+    }
+    const int chunk2Index = (i - 350) + 200;
+    return fmt::format("unique_string_value_{}", chunk2Index);
+  });
+
+  auto readers = makeReaders(chunk1, file, scanSpec, stringDecoderZeroCopy);
+
+  using E = VectorEncoding::Simple;
+  // Batches: [0,249] dict, [250,349] dict (chunk 1), [600,749] flat,
+  // [750,799] flat (chunk 2 via the abandon-to-flat fallback).
+  validateWithEncodingChecks(
+      *expectedStrings,
+      *readers.rowReader,
+      /*batchSize=*/250,
+      /*totalRows=*/2 * kChunkRows,
+      {E::DICTIONARY, E::DICTIONARY, E::FLAT, E::FLAT},
+      readType,
+      pool(),
+      /*childIndex=*/1);
+}
+
+// Same as abandonDictionaryAfterSkip but with a NULLABLE string column. The
+// between-batch skip that lands in the non-dict chunk drives the abandon path
+// (readWithDictionary runs prepareRead<int32_t>, the landed chunk is not
+// convertible, so it abandons and read() re-runs
+// prepareRead<std::string_view>). Because NimbleData::readNulls advances the
+// nulls decoder (nextBools), that double prepareRead reads the null stream
+// twice and misplaces the nulls.
+TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkipWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 400;
+  auto chunk1String = [](auto i) -> std::optional<std::string> {
+    if (i % 7 == 0) {
+      return std::nullopt;
+    }
+    return std::vector<std::string>{"aaa", "bbb", "ccc"}[i % 3];
+  };
+  auto chunk2String = [](auto i) -> std::optional<std::string> {
+    if (i % 7 == 0) {
+      return std::nullopt;
+    }
+    return fmt::format("unique_string_value_{}", i);
+  };
+
+  std::vector<std::optional<std::string>> chunk1Data(kChunkRows);
+  std::vector<std::optional<std::string>> chunk2Data(kChunkRows);
+  for (int i = 0; i < kChunkRows; ++i) {
+    chunk1Data[i] = chunk1String(i);
+    chunk2Data[i] = chunk2String(i);
+  }
+  // Chunk 1: low-cardinality → nullable Dictionary. Chunk 2: unique → Trivial.
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(kChunkRows, [](auto i) { return i; }),
+      makeNullableFlatVector<std::string>(chunk1Data),
+  });
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(
+          kChunkRows, [](auto i) { return kChunkRows + i; }),
+      makeNullableFlatVector<std::string>(chunk2Data),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  std::vector<std::unique_ptr<common::BigintRange>> ranges;
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(0, 349, /*nullAllowed=*/false));
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(
+          600, 2 * kChunkRows - 1, /*nullAllowed=*/false));
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintMultiRange>(
+          std::move(ranges), /*nullAllowed=*/false));
+
+  // Accepted output: chunk-1 rows 0-349, then chunk-2 rows 600-799 (chunk-local
+  // indices 200-399) → 550 rows total, carrying their nulls.
+  std::vector<std::optional<std::string>> expectedData(550);
+  for (int i = 0; i < 550; ++i) {
+    expectedData[i] = i < 350 ? chunk1String(i) : chunk2String((i - 350) + 200);
+  }
+  auto expectedStrings = makeNullableFlatVector<std::string>(expectedData);
+
+  auto readers = makeReaders(chunk1, file, scanSpec, stringDecoderZeroCopy);
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expectedStrings,
+      *readers.rowReader,
+      /*batchSize=*/250,
+      /*totalRows=*/2 * kChunkRows,
+      {E::DICTIONARY, E::DICTIONARY, E::FLAT, E::FLAT},
+      readType,
+      pool(),
+      /*childIndex=*/1);
+}
+
+// Non-convertible ENTRY chunk with NO cross-chunk skip: a single Trivial
+// (all-unique) nullable string column read contiguously. readWithDictionary
+// abandons at entry. Isolates whether the no-skip abandon (prepareRead then
+// abandon, no between-batch skip) corrupts nulls.
+TEST_P(StringColumnReaderTest, abandonDictionaryNoSkipWithNulls) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kRows = 400;
+  std::vector<std::optional<std::string>> data(kRows);
+  for (int i = 0; i < kRows; ++i) {
+    data[i] = (i % 7 == 0)
+        ? std::nullopt
+        : std::optional<std::string>(fmt::format("unique_value_{}", i));
+  }
+  auto chunk = makeRowVector({
+      makeFlatVector<int64_t>(kRows, [](auto i) { return i; }),
+      makeNullableFlatVector<std::string>(data),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  auto file = test::createNimbleFile(*rootPool(), chunk, writerOptions);
+
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+
+  auto expected = makeNullableFlatVector<std::string>(data);
+  auto readers = makeReaders(chunk, file, scanSpec, stringDecoderZeroCopy);
+  using E = VectorEncoding::Simple;
+  validateWithEncodingChecks(
+      *expected,
+      *readers.rowReader,
+      /*batchSize=*/kRows,
+      /*totalRows=*/kRows,
+      {E::FLAT},
+      readType,
+      pool(),
+      /*childIndex=*/1);
+}
+
+// Latent check #2 bug for a FLATMAP feature: the feature's value stream is
+// Dictionary in chunk 1 and Trivial in chunk 2, and a sibling-column filter
+// forces a between-batch skip that crosses the chunk boundary, driving the
+// feature's child StringColumnReader to abandon the dictionary after
+// prepareRead. read() then re-runs prepareRead (numReadRows == 0), so
+// NimbleData::readNulls advances the feature's in-map decoder twice and the
+// output map gets phantom/missing entries. Plain-null columns survive this, so
+// only the flatmap in-map path exposes it.
+TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkipFlatMap) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 400;
+  // Feature key 1 is present on ~2/3 of rows (absent when g % 3 == 0), so the
+  // in-map bitmap is non-trivial. Its values are low-cardinality in chunk 1
+  // (→ Dictionary) and unique in chunk 2 (→ Trivial), all inline (< 12 bytes)
+  // so makeMapVector copies them and no source lifetime is needed.
+  auto present = [](int g) { return g % 3 != 0; };
+  auto valueStr = [](int g) {
+    return g < kChunkRows ? fmt::format("v{}", g % 5) : fmt::format("u{}", g);
+  };
+  std::vector<std::string> keep;
+  keep.reserve(4 * kChunkRows);
+  auto makeChunk = [&](int base, int n) {
+    std::vector<std::vector<std::pair<int32_t, std::optional<StringView>>>>
+        maps(n);
+    for (int r = 0; r < n; ++r) {
+      const int g = base + r;
+      if (present(g)) {
+        keep.push_back(valueStr(g));
+        maps[r] = {{1, StringView(keep.back())}};
+      }
+    }
+    return makeRowVector(
+        {"c0", "c1"},
+        {makeFlatVector<int64_t>(n, [base](auto r) { return base + r; }),
+         makeMapVector<int32_t, StringView>(maps)});
+  };
+  auto chunk1 = makeChunk(0, kChunkRows);
+  auto chunk2 = makeChunk(kChunkRows, kChunkRows);
+  auto combined = makeChunk(0, 2 * kChunkRows);
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flatMapColumns = {{"c1", {}}};
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  // Filter on sibling c0: accept [0,349] then [600,799]. Rejecting [350,599]
+  // forces a between-batch skip (350 → 600) crossing the chunk boundary at 400.
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*combined->type());
+  std::vector<std::unique_ptr<common::BigintRange>> ranges;
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(0, 349, /*nullAllowed=*/false));
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(
+          600, 2 * kChunkRows - 1, /*nullAllowed=*/false));
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintMultiRange>(
+          std::move(ranges), /*nullAllowed=*/false));
+
+  auto readers = makeReaders(combined, file, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(
+      *combined, *readers.rowReader, /*batchSize=*/250, [](int i) {
+        return i <= 349 || i >= 600;
+      });
+}
+
+// Forces the string column "c1" (child index 1) to encode as RLE wrapping
+// Dictionary, while the bigint sibling "c0" (child index 0) keeps its default
+// encoding. Row-schema children are matched to the layout tree by position, so
+// both children must be present in schema order.
+EncodingLayoutTree makeSecondChildRleDictionaryLayoutTree() {
+  EncodingLayout dictLayout{
+      EncodingType::Dictionary,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt}};
+  EncodingLayout rleLayout{
+      EncodingType::RLE,
+      {},
+      CompressionType::Uncompressed,
+      {std::nullopt, std::move(dictLayout)}};
+  return EncodingLayoutTree{
+      Kind::Row,
+      std::
+          unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>{},
+      "",
+      std::vector<EncodingLayoutTree>{
+          EncodingLayoutTree{
+              Kind::Scalar,
+              std::unordered_map<
+                  EncodingLayoutTree::StreamIdentifier,
+                  EncodingLayout>{},
+              "c0"},
+          EncodingLayoutTree{Kind::Scalar, {{0, std::move(rleLayout)}}, "c1"}}};
+}
+
+// Reverse of the mid-read dict abandon: a between-batch skip (inside
+// prepareRead's seekTo) lands the decoder inside an RLE<Dictionary> chunk that
+// is loaded with preserveDictionaryEncoding=false, so that chunk is in FLAT
+// mode (dictValues_ null, dictionaryEnabled()==false). readWithDictionary now
+// runs its single dictionaryConvertible() check AFTER prepareRead, on the
+// landed chunk, so the flat second chunk is detected as non-convertible and
+// abandons to the flat read path instead of driving the dict-mode path
+// (ensureDictionaryState -> buildEncodingDictionaryAlphabet /
+// readDictionaryIndices -> materializeIndices) on a flat encoding. Before the
+// check was moved after prepareRead, this crashed with
+// "buildEncodingDictionaryAlphabet requires a dictionary-enabled encoding".
+//
+// Mirrors skipAcrossChunkBoundaryDictRecovery scenario 1 (kChunkRows=400,
+// accept [0,349] u [600,799], batchSize=250), but forces the string column to
+// RLE<Dictionary> via a forced encoding layout so the preserve=false load
+// flattens it. A plain Dictionary chunk (as in that test) would stay
+// dict-convertible even when loaded preserve=false, which is why that scenario
+// does not surface this path.
+TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryRleDictionaryAbandon) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 400;
+  constexpr int kRunLength = 100;
+  const std::string chunk1Values[] = {"alpha", "bravo", "charlie"};
+  const std::string chunk2Values[] = {"delta", "echo", "foxtrot"};
+  // Long runs (100 rows each) so the forced RLE<Dictionary> layout produces
+  // real RLE runs of dictionary indices.
+  auto chunk1 = makeRowVector({
+      makeFlatVector<int64_t>(kChunkRows, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          kChunkRows,
+          [&](auto i) { return chunk1Values[(i / kRunLength) % 3]; }),
+  });
+  auto chunk2 = makeRowVector({
+      makeFlatVector<int64_t>(
+          kChunkRows, [](auto i) { return kChunkRows + i; }),
+      makeFlatVector<std::string>(
+          kChunkRows,
+          [&](auto i) { return chunk2Values[(i / kRunLength) % 3]; }),
+  });
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingLayoutTree.emplace(
+      makeSecondChildRleDictionaryLayoutTree());
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(), {chunk1, chunk2}, writerOptions, /*flushAfterWrite=*/false);
+
+  // Filter on c0: accept [0, 349] u [600, 799]. c1 has no filter, so it takes
+  // the dictionary index path.
+  auto readType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*readType);
+  std::vector<std::unique_ptr<common::BigintRange>> ranges;
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(0, 349, /*nullAllowed=*/false));
+  ranges.push_back(
+      std::make_unique<common::BigintRange>(
+          600, 2 * kChunkRows - 1, /*nullAllowed=*/false));
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintMultiRange>(
+          std::move(ranges), /*nullAllowed=*/false));
+
+  // Combined 800-row input for validateWithFilter.
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(2 * kChunkRows, [](auto i) { return i; }),
+      makeFlatVector<std::string>(
+          2 * kChunkRows,
+          [&](auto i) {
+            return i < kChunkRows
+                ? chunk1Values[(i / kRunLength) % 3]
+                : chunk2Values[((i - kChunkRows) / kRunLength) % 3];
+          }),
+  });
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  validateWithFilter(
+      *input,
+      *readers.rowReader,
+      /*batchSize=*/250,
+      /*filter=*/[](int i) { return i <= 349 || i >= 600; });
+}
+
 // Flatmap string column read via dictionary path.
 // When a string column is inside a flatmap, rows where the key is absent have
 // inMap=0 (null). The encoding only has data for in-map rows. The dictionary

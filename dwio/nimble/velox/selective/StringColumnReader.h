@@ -52,6 +52,12 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
     return false;
   }
 
+  // Whether the dictionary encoding is preservable for this read: only without
+  // a value hook, on the zero-copy (non-legacy) encoding path, and with
+  // preserve-dictionary enabled. Gates read()'s dispatch into
+  // readWithDictionary.
+  bool dictionaryPreservable();
+
   // Merged alphabet accumulated across chunks for multi-chunk dictionary
   // reads. Each chunk's alphabet is appended, and indices are offset to
   // reference this merged alphabet. Cleared when skip crosses a chunk
