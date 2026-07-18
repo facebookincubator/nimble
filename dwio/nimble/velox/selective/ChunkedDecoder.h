@@ -287,14 +287,14 @@ class ChunkedDecoder {
   // that the caller sees the encoding and remainingValues of the chunk that
   // will actually be read.
   void ensureLoaded(
-      bool preserveDictionaryEncoding = false,
+      bool preserveStringDictionaryEncoding = false,
       const ChunkBoundaryCallback& onChunkBoundary = kNoopAtChunkBoundary) {
     if (encoding_ != nullptr && remainingValues_ != 0) {
       return;
     }
 
     if (hasMoreChunks()) {
-      loadNextChunk(preserveDictionaryEncoding, onChunkBoundary);
+      loadNextChunk(preserveStringDictionaryEncoding, onChunkBoundary);
     }
   }
 
@@ -440,7 +440,7 @@ class ChunkedDecoder {
       // chunk mid-count, which would produce numNonNulls spanning two
       // chunks and incorrect index reads.
       if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        loadNextChunk(/*preserveDictionaryEncoding=*/true);
+        loadNextChunk(/*preserveStringDictionaryEncoding=*/true);
         if (!onChunkBoundary()) {
           // The new chunk is not dictionary-compatible. readOffset_ has not
           // moved during this read, so it still holds the read's start offset;
@@ -787,7 +787,8 @@ class ChunkedDecoder {
 
   // Loads the next chunk from the input stream and creates a new encoding.
   //
-  // @param preserveDictionaryEncoding When true, creates the encoding with
+  // @param preserveStringDictionaryEncoding When true, creates the encoding
+  // with
   //   dictionary mode enabled so that RLE enters dict index mode. Only the
   //   string dictionary reader passes true; all other callers use the
   //   default (false).
@@ -795,7 +796,7 @@ class ChunkedDecoder {
   //   continue reading, false to stop (e.g., the new chunk is not
   //   dictionary-compatible). Defaults to kNoopAtChunkBoundary.
   bool loadNextChunk(
-      bool preserveDictionaryEncoding = false,
+      bool preserveStringDictionaryEncoding = false,
       const ChunkBoundaryCallback& onChunkLoaded = kNoopAtChunkBoundary);
 
   void prepareInputBuffer(int32_t size);

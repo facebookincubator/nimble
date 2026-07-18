@@ -129,7 +129,7 @@ class Encoding {
     /// use the dictionary index path when the inner encoding is
     /// dictionary-enabled. False by default — only the selective
     /// reader enables this for dictionary vector output.
-    bool preserveDictionaryEncoding = false;
+    bool preserveStringDictionaryEncoding = false;
 
     /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
     /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,

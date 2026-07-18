@@ -351,7 +351,7 @@ bool StringColumnReader::readWithDictionary(
   // callback clears stale dictionary state so ensureDictionaryState rebuilds
   // from the new encoding.
   decoder_.ensureLoaded(
-      /*preserveDictionaryEncoding=*/true, [this] {
+      /*preserveStringDictionaryEncoding=*/true, [this] {
         clearDictionaryState();
         return true;
       });
