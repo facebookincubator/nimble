@@ -2285,6 +2285,13 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryBasics) {
   }
 
   auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    EXPECT_FALSE(encoding->dictionaryEnabled());
+    std::vector<T> result(data.size());
+    encoding->materialize(data.size(), result.data());
+    EXPECT_EQ(result, data);
+    return;
+  }
   EXPECT_TRUE(encoding->dictionaryEnabled());
   EXPECT_EQ(encoding->dictionarySize(), 3);
 
@@ -2345,6 +2352,16 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryMaterializeAfterSkip) {
   }
 
   auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    EXPECT_FALSE(encoding->dictionaryEnabled());
+    encoding->skip(5);
+    std::vector<T> result(data.size() - 5);
+    encoding->materialize(data.size() - 5, result.data());
+    for (size_t i = 0; i < result.size(); ++i) {
+      EXPECT_EQ(result[i], data[5 + i]);
+    }
+    return;
+  }
   ASSERT_TRUE(encoding->dictionaryEnabled());
 
   // Skip past the first run (5 rows) into the second run.
@@ -2623,6 +2640,13 @@ TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
     }
 
     auto encoding = this->encodeRleDictionary(data);
+    if constexpr (!nimble::isStringType<T>()) {
+      EXPECT_FALSE(encoding->dictionaryEnabled());
+      std::vector<T> result(data.size());
+      encoding->materialize(data.size(), result.data());
+      EXPECT_EQ(result, data);
+      continue;
+    }
     ASSERT_TRUE(encoding->dictionaryEnabled());
 
     const auto dictSize = encoding->dictionarySize();
@@ -2664,6 +2688,13 @@ TYPED_TEST(DictionaryApiTypedTest, buildAlphabetRleDictionary) {
   }
 
   auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    EXPECT_FALSE(encoding->dictionaryEnabled());
+    std::vector<T> result(data.size());
+    encoding->materialize(data.size(), result.data());
+    EXPECT_EQ(result, data);
+    return;
+  }
   auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
   EXPECT_EQ(alphabet.size(), 3);
 
@@ -2866,6 +2897,15 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeaf) {
   auto encoding = this->decodeEncoding(
       std::string_view(reserved, encodingSize),
       /*preserveDictionaryEncoding=*/true);
+  if constexpr (!nimble::isStringType<T>()) {
+    EXPECT_FALSE(encoding->dictionaryEnabled());
+    std::vector<T> result(totalRows);
+    encoding->materialize(totalRows, result.data());
+    for (size_t i = 0; i < totalRows; ++i) {
+      EXPECT_EQ(result[i], value) << "row " << i;
+    }
+    return;
+  }
   ASSERT_TRUE(encoding->dictionaryEnabled());
   EXPECT_EQ(encoding->dictionarySize(), 1);
 
@@ -3027,6 +3067,15 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeafFuzz) {
     auto encoding = this->decodeEncoding(
         std::string_view(reserved, encodingSize),
         /*preserveDictionaryEncoding=*/true);
+    if constexpr (!nimble::isStringType<T>()) {
+      EXPECT_FALSE(encoding->dictionaryEnabled());
+      std::vector<T> result(totalRows);
+      encoding->materialize(totalRows, result.data());
+      for (size_t i = 0; i < totalRows; ++i) {
+        EXPECT_EQ(result[i], value) << "row " << i;
+      }
+      continue;
+    }
     ASSERT_TRUE(encoding->dictionaryEnabled());
     ASSERT_EQ(encoding->dictionarySize(), 1);
 

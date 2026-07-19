@@ -528,7 +528,7 @@ RLEEncoding<T>::RLEEncoding(
           internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())};
   auto valuesEncoding =
       EncodingFactory(options).create(pool, valuesView, stringBufferFactory);
-  if (options.preserveDictionaryEncoding &&
+  if (options.preserveDictionaryEncoding && isStringType<physicalType>() &&
       valuesEncoding->dictionaryEnabled()) {
     dictValues_ =
         std::make_unique<detail::BufferedDictEncoding<physicalType, 128>>(
