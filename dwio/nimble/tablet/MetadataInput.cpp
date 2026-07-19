@@ -510,6 +510,8 @@ std::vector<uint32_t> CachedMetadataInput::loadFromCache(
 
     if (uncompressedSize.has_value()) {
       auto pin = acquireCachePin(key, uncompressedSize.value());
+      velox::common::testutil::TestValue::adjust(
+          "facebook::nimble::CachedMetadataInput::loadFromCache", &pin);
       auto buffer = tryCacheHit(uncompressedSize.value(), pin);
       if (buffer != nullptr) {
         sections[index].buffer = std::move(buffer);
