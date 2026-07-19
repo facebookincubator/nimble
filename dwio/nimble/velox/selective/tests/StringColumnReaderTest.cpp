@@ -71,7 +71,8 @@ class StringColumnReaderTest : public ::testing::Test,
       const RowVectorPtr& expected,
       const std::string& file,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
-      bool stringDecoderZeroCopy) {
+      bool stringDecoderZeroCopy,
+      bool compactDictionaryAcrossChunks = false) {
     auto readFile = std::make_shared<InMemoryReadFile>(file);
     auto factory =
         dwio::common::getReaderFactory(dwio::common::FileFormat::NIMBLE);
@@ -89,6 +90,8 @@ class StringColumnReaderTest : public ::testing::Test,
     rowOptions.setRequestedType(type);
     rowOptions.setStringDecoderZeroCopy(stringDecoderZeroCopy);
     rowOptions.setNimblePreserveDictionaryEncoding(stringDecoderZeroCopy);
+    rowOptions.setNimbleCompactDictionaryAcrossChunks(
+        compactDictionaryAcrossChunks);
     readers.rowReader = readers.reader->createRowReader(rowOptions);
     return readers;
   }
@@ -3339,6 +3342,94 @@ DEBUG_ONLY_TEST_P(StringColumnReaderTest, dictionaryPathAlphabetSize) {
       asRowType(input->type()),
       pool());
   EXPECT_EQ(dictPathEntries, 1);
+}
+
+// Cross-chunk dictionary deduplication (compaction). Two chunks share the same
+// kSharedValues values plus one chunk-unique value each. The unique value
+// forces a distinct per-chunk dictionary, so a batch spanning both chunks
+// merges the alphabets. With compaction enabled via the
+// nimbleCompactDictionaryAcrossChunks read option, the shared entries are
+// deduplicated: the merged alphabet holds kSharedValues + chunksMerged entries
+// (shared once, plus one unique per merged chunk) instead of
+// (kSharedValues + 1) * chunksMerged.
+TEST_P(StringColumnReaderTest, compactDictionaryAcrossChunks) {
+  const bool stringDecoderZeroCopy = GetParam();
+  if (!stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  constexpr int kChunkRows = 300;
+  constexpr int kSharedValues = 5;
+  // Value at row r of the given chunk: cycle through the kSharedValues shared
+  // values, with every (kSharedValues+1)-th row carrying the chunk-unique
+  // value. Each chunk's distinct set is {SHARED_0..4, UNIQUE_<chunk>}.
+  auto valueAt = [](int chunk, int rowInChunk) {
+    const int k = rowInChunk % (kSharedValues + 1);
+    return k < kSharedValues ? fmt::format("SHARED_{}", k)
+                             : fmt::format("UNIQUE_{}", chunk);
+  };
+  auto makeChunk = [&](int chunk) {
+    return makeRowVector({makeFlatVector<std::string>(
+        kChunkRows, [&](auto r) { return valueAt(chunk, r); })});
+  };
+
+  VeloxWriterOptions writerOptions;
+  writerOptions.enableChunking = true;
+  writerOptions.minStreamChunkRawSize = 0;
+  writerOptions.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      {makeChunk(0), makeChunk(1)},
+      writerOptions,
+      /*flushAfterWrite=*/false);
+
+  auto expected =
+      makeRowVector({makeFlatVector<std::string>(2 * kChunkRows, [&](auto i) {
+        return valueAt(i / kChunkRows, i % kChunkRows);
+      })});
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*expected->type());
+  auto readers = makeReaders(
+      expected,
+      file,
+      scanSpec,
+      stringDecoderZeroCopy,
+      /*compactDictionaryAcrossChunks=*/true);
+
+  // Batch size (2*kChunkRows) > chunk size: one next() merges both chunks.
+  auto result = BaseVector::create(asRowType(expected->type()), 0, pool());
+  int numScanned = 0;
+  int maxChunksMerged = 0;
+  while (numScanned < expected->size()) {
+    const auto n = readers.rowReader->next(2 * kChunkRows, result);
+    if (n == 0) {
+      break;
+    }
+    auto* row = result->asUnchecked<RowVector>();
+    auto stringChild = BaseVector::loadedVectorShared(row->childAt(0));
+    ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY);
+    ASSERT_EQ(result->size() % kChunkRows, 0);
+    const int chunksMerged = result->size() / kChunkRows;
+    if (chunksMerged > maxChunksMerged) {
+      maxChunksMerged = chunksMerged;
+    }
+    EXPECT_EQ(stringChild->valueVector()->size(), kSharedValues + chunksMerged)
+        << "Merged alphabet was not deduplicated across chunks";
+    for (int j = 0; j < result->size(); ++j) {
+      ASSERT_TRUE(stringChild->equalValueAt(
+          expected->childAt(0).get(), j, numScanned + j))
+          << "Mismatch at row " << (numScanned + j);
+    }
+    numScanned += result->size();
+  }
+  ASSERT_EQ(numScanned, expected->size());
+  ASSERT_GE(maxChunksMerged, 2)
+      << "Read never spanned a chunk boundary; dedup path not exercised";
 }
 
 // Reactive fallback: chunk 1 is dictionary-encoded, chunk 2 is trivial.

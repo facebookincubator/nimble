@@ -290,27 +290,73 @@ velox::vector_size_t StringColumnReader::processNullAndPassingRows(
   return count;
 }
 
+void StringColumnReader::ensureAlphabetIndex() {
+  auto& alphabetIndex = dictionaryState_.alphabetIndex;
+  const auto& alphabet = dictionaryState_.alphabet;
+  // After the first boundary, tryExtendDictionaryAtChunkBoundary keeps the map
+  // in lockstep with the alphabet, so this becomes a no-op. The only entries
+  // missing here are the first chunk's, indexed at their identity positions.
+  if (alphabetIndex.size() == alphabet.size()) {
+    return;
+  }
+  alphabetIndex.reserve(alphabet.size());
+  for (auto i = static_cast<int32_t>(alphabetIndex.size());
+       i < static_cast<int32_t>(alphabet.size());
+       ++i) {
+    alphabetIndex.emplace(alphabet[i], i);
+  }
+}
+
 void StringColumnReader::updateDictionaryIndices(
-    vector_size_t alphabetSize,
+    int32_t alphabetOffset,
     vector_size_t valueOffset) {
-  if (alphabetSize > 0) {
-    auto* values = reinterpret_cast<int32_t*>(rawValues_);
-    for (auto i = valueOffset; i < numValues_; ++i) {
-      values[i] += alphabetSize;
+  if (alphabetOffset == 0) {
+    return;
+  }
+  auto* values = reinterpret_cast<int32_t*>(rawValues_);
+  for (auto i = valueOffset; i < numValues_; ++i) {
+    values[i] += alphabetOffset;
+  }
+}
+
+void StringColumnReader::updateCompactedDictionaryIndices(
+    const std::vector<int32_t>& remap,
+    vector_size_t valueOffset) {
+  if (remap.empty()) {
+    // Identity remap: the first chunk's local indices already reference the
+    // merged alphabet's leading entries [0, firstChunkAlphabetSize).
+    return;
+  }
+  const auto remapSize = static_cast<int32_t>(remap.size());
+  auto* values = reinterpret_cast<int32_t*>(rawValues_);
+  for (auto i = valueOffset; i < numValues_; ++i) {
+    const auto localIndex = values[i];
+    // Null positions hold uninitialized indices that are never read
+    // downstream; guard the lookup so out-of-range garbage cannot fault.
+    // Valid non-null local indices are always in [0, remapSize).
+    if (localIndex >= 0 && localIndex < remapSize) {
+      values[i] = remap[localIndex];
     }
   }
 }
 
 bool StringColumnReader::tryExtendDictionaryAtChunkBoundary(
     int32_t& alphabetOffset,
+    std::vector<int32_t>& pendingRemap,
     vector_size_t& valueOffset) {
-  // Offset the indices written by the previous chunk so they reference the
+  const bool compactDictionary = compactDictionaryAcrossChunks();
+
+  // Remap the indices written by the previous chunk so they reference the
   // merged alphabet instead of the per-chunk alphabet. numValues_ is
   // incremented by the visitor (via process() / processNull()) as
   // readDictionaryIndices reads each row. At this point, numValues_ reflects
   // all rows read so far across chunks, and [valueOffset, numValues_) are
-  // the indices from the just-completed chunk that need offsetting.
-  updateDictionaryIndices(alphabetOffset, valueOffset);
+  // the indices from the just-completed chunk that need remapping.
+  if (compactDictionary) {
+    updateCompactedDictionaryIndices(pendingRemap, valueOffset);
+  } else {
+    updateDictionaryIndices(alphabetOffset, valueOffset);
+  }
   valueOffset = numValues_;
 
   // Check if the new chunk's encoding supports dictionary index reading.
@@ -319,16 +365,35 @@ bool StringColumnReader::tryExtendDictionaryAtChunkBoundary(
     return false;
   }
 
-  // Extend the merged alphabet with the new chunk's dictionary entries.
-  // alphabetOffset tracks the cumulative size so that the next chunk's
-  // indices can be offset correctly.
-  alphabetOffset = static_cast<int32_t>(dictionaryState_.alphabet.size());
   auto chunkAlphabet = buildEncodingDictionaryAlphabet<std::string_view>(
       decoder_.currentEncoding());
-  dictionaryState_.alphabet.insert(
-      dictionaryState_.alphabet.end(),
-      chunkAlphabet.begin(),
-      chunkAlphabet.end());
+
+  if (compactDictionary) {
+    // Deduplicate the new chunk's alphabet against the merged alphabet.
+    // An entry already present reuses its existing position; a new entry
+    // is appended. The remap table translates per-chunk local indices into
+    // the merged alphabet's index space.
+    ensureAlphabetIndex();
+    pendingRemap.resize(chunkAlphabet.size());
+    for (int32_t i = 0; i < static_cast<int32_t>(chunkAlphabet.size()); ++i) {
+      const auto mergedPosition =
+          static_cast<int32_t>(dictionaryState_.alphabet.size());
+      auto [it, inserted] = dictionaryState_.alphabetIndex.emplace(
+          chunkAlphabet[i], mergedPosition);
+      if (inserted) {
+        dictionaryState_.alphabet.push_back(chunkAlphabet[i]);
+      }
+      pendingRemap[i] = it->second;
+    }
+  } else {
+    // Simple append: the new chunk's indices are uniformly offset by the
+    // current merged alphabet size. No dedup map overhead.
+    alphabetOffset = static_cast<int32_t>(dictionaryState_.alphabet.size());
+    dictionaryState_.alphabet.insert(
+        dictionaryState_.alphabet.end(),
+        chunkAlphabet.begin(),
+        chunkAlphabet.end());
+  }
   dictionaryState_.alphabetVector.reset();
   crossChunkRead_ = true;
   return true;
@@ -443,7 +508,10 @@ bool StringColumnReader::readWithDictionary(
       /*kDictionary=*/false>(*this, rows)([&](auto visitor) {
     auto dictVisitor = visitor.toStringDictionaryColumnVisitor();
 
+    // The compaction-off path carries a running offset; the compaction-on path
+    // carries a per-chunk dedup table. Only one is used, per the mode.
     int32_t alphabetOffset = 0;
+    std::vector<int32_t> pendingRemap;
     velox::vector_size_t valueOffset = numValues_;
 
     // At each chunk boundary, try to extend the merged alphabet with the
@@ -451,7 +519,8 @@ bool StringColumnReader::readWithDictionary(
     // dict-compatible (alphabet extended, continue reading). Returns false
     // if the new chunk is not dict-compatible (stop, fall back to flat).
     auto onChunkBoundary = [&]() -> bool {
-      return tryExtendDictionaryAtChunkBoundary(alphabetOffset, valueOffset);
+      return tryExtendDictionaryAtChunkBoundary(
+          alphabetOffset, pendingRemap, valueOffset);
     };
 
     // readDictionaryIndices returns false when the onChunkBoundary callback
@@ -460,8 +529,12 @@ bool StringColumnReader::readWithDictionary(
     abandonDictionary =
         !decoder_.readDictionaryIndices(dictVisitor, onChunkBoundary);
 
-    // Offset the final chunk's indices into the merged alphabet.
-    updateDictionaryIndices(alphabetOffset, valueOffset);
+    // Remap the final chunk's indices into the merged alphabet.
+    if (compactDictionaryAcrossChunks()) {
+      updateCompactedDictionaryIndices(pendingRemap, valueOffset);
+    } else {
+      updateDictionaryIndices(alphabetOffset, valueOffset);
+    }
   });
   // Reinstate the filter before the post-hoc SIMD filtering below needs it; the
   // guard then no-ops since savedFilter has been moved out.
