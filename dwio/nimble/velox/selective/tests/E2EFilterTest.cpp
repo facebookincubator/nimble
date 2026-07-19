@@ -4444,6 +4444,488 @@ TEST_P(E2EFilterTest, crossChunkEncodingChangeWithFilter) {
   EXPECT_EQ(totalRows, expectedRows);
 }
 
+// Companion to filterOnlyDictAbandonDropsFilter with nulls in the dictionary
+// (filter) chunk: exercises the null-realignment branch of
+// filterDictionaryIndices on the abandon path — a non-null-accepting filter
+// must drop the null rows while filtering the dict portion before it is
+// expanded to flat.
+TEST_P(E2EFilterTest, crossChunkAbandonWithNullsAndFilter) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  auto type = ROW({"filter_col", "select_col"}, {VARCHAR(), VARCHAR()});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  // Chunk 1: low cardinality with periodic nulls → nullable dictionary.
+  constexpr size_t kChunk1Rows = 500;
+  constexpr size_t kNullEvery = 7;
+  std::vector<std::string> filter1Storage(kChunk1Rows);
+  std::vector<std::optional<velox::StringView>> filter1(kChunk1Rows);
+  std::vector<std::string> select1(kChunk1Rows);
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    select1[i] = fmt::format("VAL_{}", i % 5);
+    if (i % kNullEvery == 0) {
+      filter1[i] = std::nullopt;
+    } else {
+      filter1Storage[i] = fmt::format("EVENT_{}", i % 10);
+      filter1[i] = velox::StringView(filter1Storage[i]);
+    }
+  }
+  auto chunk1 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk1Rows,
+      std::vector<VectorPtr>{
+          maker.flatVectorNullable<velox::StringView>(filter1),
+          maker.flatVector<velox::StringView>(kChunk1Rows, [&](auto row) {
+            return velox::StringView(select1[row]);
+          })});
+
+  // Chunk 2: all unique → trivial encoding, forcing abandon.
+  constexpr size_t kChunk2Rows = 300;
+  std::vector<std::string> filter2(kChunk2Rows);
+  std::vector<std::string> select2(kChunk2Rows);
+  for (size_t i = 0; i < kChunk2Rows; ++i) {
+    filter2[i] =
+        fmt::format("UNIQUE_EVENT_{}_padding_to_avoid_inline_string", i);
+    select2[i] = fmt::format("UNIQUE_VAL_{}", i);
+  }
+  auto chunk2 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk2Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk2Rows,
+              [&](auto row) { return velox::StringView(filter2[row]); }),
+          maker.flatVector<velox::StringView>(kChunk2Rows, [&](auto row) {
+            return velox::StringView(select2[row]);
+          })});
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(chunk1);
+    writer.write(chunk2);
+    writer.close();
+  }
+
+  // Non-null-accepting filter: null rows must be dropped, and only matching
+  // non-null dict rows from chunk 1 survive.
+  std::vector<std::string> accepted = {"EVENT_3", "EVENT_7"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+  size_t expectedRows = 0;
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    if (filter1[i] && acceptedSet.count(filter1[i]->str())) {
+      ++expectedRows;
+    }
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto outputType = ROW({"select_col"}, {VARCHAR()});
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*outputType);
+  scanSpec->getOrCreateChild(velox::common::Subfield("filter_col"))
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(outputType, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(800, result)) {
+    totalRows += result->as<RowVector>()->size();
+  }
+
+  EXPECT_EQ(totalRows, expectedRows)
+      << "Nullable dict abandon path dropped or miscounted filtered rows";
+}
+
+// Projected variant of filterOnlyDictAbandonDropsFilter: the dictionary/filter
+// column is also read out, so the abandon path must produce correctly filtered
+// values (not just the right count) once the dict portion is expanded to flat.
+TEST_P(E2EFilterTest, crossChunkAbandonProjectedDictFilter) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  // Chunk 1: 10 distinct values → dictionary-encoded.
+  constexpr size_t kChunk1Rows = 500;
+  std::vector<std::string> string1(kChunk1Rows);
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    string1[i] = fmt::format("EVENT_{}", i % 10);
+  }
+  auto chunk1 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk1Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk1Rows,
+              [&](auto row) { return velox::StringView(string1[row]); }),
+          maker.flatVector<int64_t>(kChunk1Rows, [&](auto row) {
+            return static_cast<int64_t>(row);
+          })});
+
+  // Chunk 2: all unique → trivial encoding, forcing abandon.
+  constexpr size_t kChunk2Rows = 300;
+  std::vector<std::string> string2(kChunk2Rows);
+  for (size_t i = 0; i < kChunk2Rows; ++i) {
+    string2[i] = fmt::format("UNIQUE_{}_padding_to_avoid_inline_string", i);
+  }
+  auto chunk2 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk2Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk2Rows,
+              [&](auto row) { return velox::StringView(string2[row]); }),
+          maker.flatVector<int64_t>(kChunk2Rows, [&](auto row) {
+            return static_cast<int64_t>(kChunk1Rows + row);
+          })});
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(chunk1);
+    writer.write(chunk2);
+    writer.close();
+  }
+
+  std::vector<std::string> accepted = {"EVENT_3", "EVENT_7"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+  size_t expectedRows = 0;
+  for (const auto& s : string1) {
+    if (acceptedSet.count(s)) {
+      ++expectedRows;
+    }
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(800, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+    velox::DecodedVector decodedString(*rowResult->childAt(0)->loadedVector());
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto str = decodedString.valueAt<velox::StringView>(i).str();
+      ASSERT_TRUE(acceptedSet.count(str))
+          << "Row leaked past filter on abandon path: " << str;
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedRows)
+      << "Projected dict abandon path dropped filter on dict portion";
+}
+
+// Projected + nullable variant: the dict/filter column has periodic nulls and
+// is also read out. The non-null-accepting filter must drop nulls, filter the
+// dict portion, and expand it to flat with the output null bitmap realigned.
+TEST_P(E2EFilterTest, crossChunkAbandonProjectedNullableDictFilter) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  // Chunk 1: 10 distinct values with periodic nulls → nullable dictionary.
+  constexpr size_t kChunk1Rows = 500;
+  constexpr size_t kNullEvery = 7;
+  std::vector<std::string> string1Storage(kChunk1Rows);
+  std::vector<std::optional<velox::StringView>> string1(kChunk1Rows);
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    if (i % kNullEvery == 0) {
+      string1[i] = std::nullopt;
+    } else {
+      string1Storage[i] = fmt::format("EVENT_{}", i % 10);
+      string1[i] = velox::StringView(string1Storage[i]);
+    }
+  }
+  auto chunk1 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk1Rows,
+      std::vector<VectorPtr>{
+          maker.flatVectorNullable<velox::StringView>(string1),
+          maker.flatVector<int64_t>(kChunk1Rows, [&](auto row) {
+            return static_cast<int64_t>(row);
+          })});
+
+  // Chunk 2: all unique → trivial encoding, forcing abandon.
+  constexpr size_t kChunk2Rows = 300;
+  std::vector<std::string> string2(kChunk2Rows);
+  for (size_t i = 0; i < kChunk2Rows; ++i) {
+    string2[i] = fmt::format("UNIQUE_{}_padding_to_avoid_inline_string", i);
+  }
+  auto chunk2 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk2Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<velox::StringView>(
+              kChunk2Rows,
+              [&](auto row) { return velox::StringView(string2[row]); }),
+          maker.flatVector<int64_t>(kChunk2Rows, [&](auto row) {
+            return static_cast<int64_t>(kChunk1Rows + row);
+          })});
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(chunk1);
+    writer.write(chunk2);
+    writer.close();
+  }
+
+  std::vector<std::string> accepted = {"EVENT_3", "EVENT_7"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+  size_t expectedRows = 0;
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    if (string1[i] && acceptedSet.count(string1[i]->str())) {
+      ++expectedRows;
+    }
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("string_val")
+      ->setFilter(
+          std::make_unique<velox::common::BytesValues>(accepted, false));
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(800, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+    velox::DecodedVector decodedString(*rowResult->childAt(0)->loadedVector());
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      ASSERT_FALSE(decodedString.isNullAt(i))
+          << "Non-null-accepting filter emitted a null row on abandon path";
+      auto str = decodedString.valueAt<velox::StringView>(i).str();
+      ASSERT_TRUE(acceptedSet.count(str))
+          << "Row leaked past filter on abandon path: " << str;
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedRows)
+      << "Projected nullable dict abandon path dropped or miscounted rows";
+}
+
+// Sparse variant: a more-selective prior filter on `k` makes the dictionary
+// column `str` read over a non-contiguous (sparse) row set. When that sparse
+// read spans a dict chunk into a non-dict chunk, filterDictionaryIndices runs
+// on the abandon path with isDense=false — exercising the sparse null source
+// and the sparse rows[0, numValues_) mapping without subranging `rows`.
+TEST_P(E2EFilterTest, crossChunkAbandonSparseDictFilter) {
+  if (!param().stringDecoderZeroCopy) {
+    GTEST_SKIP() << "Dictionary path requires stringDecoderZeroCopy";
+  }
+
+  auto type = ROW({"k", "str"}, {BIGINT(), VARCHAR()});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  // Chunk 1: `str` low cardinality → dictionary. `k = i % 11`, so the very
+  // selective `k == 0` filter (~9%, applied before the ~12.5% `str` filter)
+  // sparsifies `str`'s read over non-contiguous rows.
+  constexpr size_t kChunk1Rows = 500;
+  std::vector<std::string> str1(kChunk1Rows);
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    str1[i] = fmt::format("EVENT_{}", i % 10);
+  }
+  auto chunk1 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk1Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<int64_t>(
+              kChunk1Rows,
+              [](auto row) { return static_cast<int64_t>(row % 11); }),
+          maker.flatVector<velox::StringView>(kChunk1Rows, [&](auto row) {
+            return velox::StringView(str1[row]);
+          })});
+
+  // Chunk 2: unique → trivial encoding, forcing abandon.
+  constexpr size_t kChunk2Rows = 300;
+  std::vector<std::string> str2(kChunk2Rows);
+  for (size_t i = 0; i < kChunk2Rows; ++i) {
+    str2[i] = fmt::format("UNIQUE_{}_padding_to_avoid_inline_string", i);
+  }
+  auto chunk2 = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kChunk2Rows,
+      std::vector<VectorPtr>{
+          maker.flatVector<int64_t>(
+              kChunk2Rows,
+              [](auto row) { return static_cast<int64_t>(row % 11); }),
+          maker.flatVector<velox::StringView>(kChunk2Rows, [&](auto row) {
+            return velox::StringView(str2[row]);
+          })});
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(chunk1);
+    writer.write(chunk2);
+    writer.close();
+  }
+
+  std::vector<std::string> accepted = {"EVENT_3", "EVENT_7"};
+  std::set<std::string> acceptedSet(accepted.begin(), accepted.end());
+  // Expected: chunk-1 rows with k == 0 (i % 11 == 0) whose str matches.
+  size_t expectedRows = 0;
+  for (size_t i = 0; i < kChunk1Rows; ++i) {
+    if (i % 11 == 0 && acceptedSet.count(str1[i])) {
+      ++expectedRows;
+    }
+  }
+  ASSERT_GT(expectedRows, 0u);
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  scanSpec->childByName("k")->setFilter(
+      std::make_unique<velox::common::BigintRange>(
+          0, 0, /*nullAllowed=*/false));
+  scanSpec->childByName("str")->setFilter(
+      std::make_unique<velox::common::BytesValues>(accepted, false));
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(800, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+    velox::DecodedVector decodedStr(*rowResult->childAt(1)->loadedVector());
+    for (size_t i = 0; i < rowResult->size(); ++i) {
+      auto s = decodedStr.valueAt<velox::StringView>(i).str();
+      ASSERT_TRUE(acceptedSet.count(s))
+          << "Row leaked past filter on sparse abandon path: " << s;
+    }
+  }
+
+  EXPECT_EQ(totalRows, expectedRows)
+      << "Sparse dict abandon path dropped or miscounted filtered rows";
+}
+
 // Exercises the IsNull filter guard: when a null-accepting filter (e.g. IsNull)
 // is combined with NullableEncoding wrapping Dictionary, the reader must bypass
 // the dictionary path. NullableEncoding::materializeNullsForVisitor writes
