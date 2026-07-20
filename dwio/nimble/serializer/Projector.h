@@ -132,13 +132,13 @@ class Projector {
   /// Returns the projected schema.
   /// The schema has compact stream indices starting from 0.
   std::shared_ptr<const Type> projectedSchema() const {
-    return projectedSchema_;
+    return projection_.nimbleType;
   }
 
   /// Returns the input stream indices that will be copied.
   /// Only for testing.
   const std::vector<uint32_t>& testingInputStreamIndices() const {
-    return inputStreamIndices_;
+    return projection_.streamOffsets;
   }
 
   /// Returns whether input stream indices are sorted (fast path eligible).
@@ -237,13 +237,9 @@ class Projector {
 
   std::shared_ptr<const Type> inputSchema_;
   // Built during construction.
-  std::shared_ptr<const Type> projectedSchema_;
-  std::vector<uint32_t> inputStreamIndices_;
-  // Parallel to inputStreamIndices_ and output stream indices. A true entry
-  // means the projected stream is a Row or FlatMap null stream.
-  std::vector<bool> rowOrFlatMapNullStreams_;
+  NimbleTypeProjection projection_;
 
-  // True when inputStreamIndices_ is already sorted (no FlatMap key
+  // True when projection_.streamOffsets is already sorted (no FlatMap key
   // reordering). Enables fast-path projection that avoids sorting and
   // reordering overhead.
   bool inputStreamsSorted_{false};

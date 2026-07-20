@@ -1581,6 +1581,11 @@ TEST_F(ClusterIndexTest, pinIndexEnabledRetainsChunks) {
   const auto bytesAfterChunk0 = indexIoStats_->rawBytesRead();
   EXPECT_GT(bytesAfterChunk0, 0);
 
+  reader->clusterIndex()->lookup(makeRangeScanRequest("bbb"));
+  EXPECT_EQ(helper.decodedChunkCount(0), 1);
+  EXPECT_EQ(indexIoStats_->rawBytesRead(), bytesAfterChunk0)
+      << "Repeated lookup of a pinned chunk must not trigger index IO";
+
   reader->clusterIndex()->lookup(makeRangeScanRequest("fff"));
   EXPECT_EQ(helper.decodedChunkCount(0), 2);
 

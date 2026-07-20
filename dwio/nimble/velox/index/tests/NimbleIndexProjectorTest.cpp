@@ -28,9 +28,12 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
+#include "dwio/nimble/velox/SchemaBuilder.h"
+#include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/velox/tests/SchemaUtils.h"
 
 #include "folly/Random.h"
 #include "velox/common/caching/FileIds.h"
@@ -94,6 +97,82 @@ struct TestParam {
         "cacheMetadata={}, pinMetadata={}", cacheMetadata, pinMetadata);
   }
 };
+
+TEST(NimbleTypeProjectionTest, buildsScalarProjection) {
+  SchemaBuilder schemaBuilder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({
+          {"id", NIMBLE_BIGINT()},
+          {"value", NIMBLE_INTEGER()},
+      }));
+  auto nimbleSchema = SchemaReader::getSchema(schemaBuilder.schemaNodes());
+
+  std::vector<Subfield> projectedSubfields;
+  projectedSubfields.emplace_back("value");
+  auto projection =
+      buildProjectedNimbleType(nimbleSchema.get(), projectedSubfields);
+
+  ASSERT_NE(projection.nimbleType, nullptr);
+  ASSERT_EQ(projection.nimbleType->kind(), Kind::Row);
+  const auto& projectedRow = projection.nimbleType->asRow();
+  ASSERT_EQ(projectedRow.childrenCount(), 1);
+  EXPECT_EQ(projectedRow.nameAt(0), "value");
+  EXPECT_EQ(projectedRow.childAt(0)->kind(), Kind::Scalar);
+  EXPECT_EQ(projection.streamOffsets, std::vector<uint32_t>({2, 1}));
+  EXPECT_EQ(
+      projection.rowOrFlatMapNullStreams, std::vector<bool>({true, false}));
+}
+
+TEST(NimbleTypeProjectionTest, buildsFlatMapProjectionWithMissingKey) {
+  SchemaBuilder schemaBuilder;
+  test::FlatMapChildAdder featuresAdder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({
+          {"features", NIMBLE_FLATMAP(String, NIMBLE_INTEGER(), featuresAdder)},
+      }));
+  featuresAdder.addChild("a");
+  featuresAdder.addChild("c");
+  auto nimbleSchema = SchemaReader::getSchema(schemaBuilder.schemaNodes());
+
+  std::vector<Subfield> projectedSubfields;
+  projectedSubfields.emplace_back("features[\"a\"]");
+  projectedSubfields.emplace_back("features[\"missing\"]");
+  auto projection =
+      buildProjectedNimbleType(nimbleSchema.get(), projectedSubfields);
+
+  ASSERT_NE(projection.nimbleType, nullptr);
+  ASSERT_EQ(projection.nimbleType->kind(), Kind::Row);
+  const auto& projectedRow = projection.nimbleType->asRow();
+  ASSERT_EQ(projectedRow.childrenCount(), 1);
+  ASSERT_EQ(projectedRow.childAt(0)->kind(), Kind::FlatMap);
+  const auto& projectedFlatMap = projectedRow.childAt(0)->asFlatMap();
+  ASSERT_EQ(projectedFlatMap.childrenCount(), 2);
+  EXPECT_EQ(projectedFlatMap.nameAt(0), "a");
+  EXPECT_EQ(projectedFlatMap.nameAt(1), "missing");
+  EXPECT_EQ(
+      projection.streamOffsets,
+      std::vector<uint32_t>({1, 0, 2, 3, UINT32_MAX, UINT32_MAX}));
+  EXPECT_EQ(
+      projection.rowOrFlatMapNullStreams,
+      std::vector<bool>({true, true, false, false, false, false}));
+}
+
+TEST(NimbleTypeProjectionTest, rejectsEmptyProjection) {
+  SchemaBuilder schemaBuilder;
+  NIMBLE_SCHEMA(
+      schemaBuilder,
+      NIMBLE_ROW({
+          {"value", NIMBLE_INTEGER()},
+      }));
+  auto nimbleSchema = SchemaReader::getSchema(schemaBuilder.schemaNodes());
+
+  const std::vector<Subfield> projectedSubfields;
+  NIMBLE_ASSERT_THROW(
+      buildProjectedNimbleType(nimbleSchema.get(), projectedSubfields),
+      "projectedSubfields must not be empty");
+}
 
 class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
  protected:
