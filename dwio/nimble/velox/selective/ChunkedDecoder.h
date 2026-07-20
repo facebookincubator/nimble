@@ -75,6 +75,23 @@ class ChunkedDecoder {
     NIMBLE_CHECK_NOT_NULL(encodingFactory_);
   }
 
+  /// Enables value-based chunk pruning for a scalar filter column: a dense read
+  /// skips chunks whose min/max can't pass. Holds the scan spec (not the
+  /// filter) so the filter is read fresh each chunk (respects mid-scan disable
+  /// / dynamic replacement). 'isFloatingPoint' picks testDoubleRange; no-op
+  /// without stats.
+  void setChunkPruneScanSpec(
+      const velox::common::ScanSpec* scanSpec,
+      bool isFloatingPoint) {
+    chunkPruneScanSpec_ = scanSpec;
+    chunkPruneFilterIsFloat_ = isFloatingPoint;
+  }
+
+  /// Number of chunks skipped by value-based interior pruning so far.
+  uint32_t numChunksSkipped() const {
+    return numChunksSkipped_;
+  }
+
   /// Skips non-null values. The optional onChunkBoundary callback is invoked
   /// whenever the skip crosses into a new chunk. This allows callers (e.g.,
   /// StringColumnReader) to invalidate cached state like mergedAlphabet_.
@@ -709,7 +726,21 @@ class ChunkedDecoder {
     while (visitor.rowIndex() < numRows) {
       if constexpr (!kHasNulls) {
         if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-          loadNextChunk();
+          // Interior chunk pruning is only sound for a dense scalar filter
+          // read.
+          if constexpr (V::dense) {
+            if (maybeSkipPrunableChunks(visitor, params, numRows)) {
+              if (remainingValues_ == 0) {
+                // The batch (or stream) was fully consumed by pruned chunks.
+                break;
+              }
+              // A surviving chunk was loaded; fall through to decode it.
+            } else {
+              loadNextChunk();
+            }
+          } else {
+            loadNextChunk();
+          }
         }
       }
       velox::vector_size_t numNulls;
@@ -848,6 +879,71 @@ class ChunkedDecoder {
       int64_t numValues,
       const ChunkBoundaryCallback& onChunkBoundary);
 
+  // Returns true if the chunk's stats can't prove no row passes the prune
+  // filter (keep it), false if safe to skip. Reads the filter fresh each call
+  // (respects a mid-scan disable / dynamic replacement). Fail-safe (true) on a
+  // disabled / non-deterministic filter or a chunk with no recorded stats.
+  bool chunkMayMatch(
+      const std::optional<std::pair<int64_t, int64_t>>& minMax,
+      const std::optional<uint32_t>& nullCount,
+      uint32_t chunkRows) const;
+
+  // Positions the input at a chunk byte offset without loading it; on
+  // DirectBufferedInput the skipped bytes are never fetched.
+  void seekInputToChunkStart(uint32_t offset);
+
+  // Skips a maximal run of leading prunable chunks from rowIndex, partially
+  // across read() calls when a chunk exceeds numRows. Returns true if it
+  // positioned the decoder (skipped rows, or realigned a resumed survivor whose
+  // filter relaxed mid-scan -- resume mid-chunk, do not restart the chunk);
+  // false only when the current chunk survives at a boundary. Preconditions
+  // validated by maybeSkipPrunableChunks.
+  bool skipPrunableChunks(
+      velox::vector_size_t& rowIndex,
+      ReadWithVisitorParams& params,
+      velox::vector_size_t numRows);
+
+  // Rows skipped and whole chunks consumed by a prunable-chunk probe. A partial
+  // skip advances 'rows' but not 'chunks' until a later batch finishes the
+  // chunk.
+  struct PrunedRun {
+    uint32_t rows{0};
+    uint32_t chunks{0};
+  };
+
+  // Probes a maximal run of leading prunable chunks from rowPosition_, bounded
+  // by 'budget' rows. Pure: mutates no decoder state.
+  PrunedRun probePrunableRun(uint32_t budget) const;
+
+  // Handles the "nothing pruned" case: realigns a survivor left mid-chunk by a
+  // prior partial skip (returns true), else returns false at a chunk boundary.
+  bool resumeSurvivingChunk();
+
+  // Repositions the input after a pruned run: drain at end of stream, park
+  // unloaded at the next chunk if the batch is consumed, else load the
+  // survivor.
+  void positionInputAfterSkip(bool batchConsumed);
+
+  // Chunk-pruning entry point at a chunk boundary: fast-paths the common case
+  // (no prune filter / stream index), else delegates to skipPrunableChunks.
+  template <typename V>
+  bool maybeSkipPrunableChunks(
+      V& visitor,
+      ReadWithVisitorParams& params,
+      velox::vector_size_t numRows) {
+    NIMBLE_DCHECK_EQ(remainingValues_, 0);
+    if (chunkPruneScanSpec_ == nullptr || streamIndex_ == nullptr ||
+        !streamRowCount_.has_value()) {
+      return false;
+    }
+    auto rowIndex = visitor.rowIndex();
+    if (!skipPrunableChunks(rowIndex, params, numRows)) {
+      return false;
+    }
+    visitor.setRowIndex(rowIndex);
+    return true;
+  }
+
   const std::unique_ptr<velox::dwio::common::SeekableInputStream> input_;
   velox::memory::MemoryPool* const pool_;
   // When true, decode nullable values (for array/map length streams that
@@ -865,6 +961,15 @@ class ChunkedDecoder {
   const std::shared_ptr<index::StreamIndex> streamIndex_;
   // Total row count in the stream, set from stream index if available.
   const std::optional<uint32_t> streamRowCount_;
+
+  // Scan spec of the filter column when chunk pruning is enabled, else nullptr
+  // (filter read fresh from it; see setChunkPruneScanSpec).
+  const velox::common::ScanSpec* chunkPruneScanSpec_{nullptr};
+  // Prune column is floating point (min/max bit_cast from double,
+  // testDoubleRange).
+  bool chunkPruneFilterIsFloat_{false};
+  // Number of chunks skipped by value-based interior pruning.
+  uint32_t numChunksSkipped_{0};
 
   // Pointer to the current position in the input buffer.
   // Points to the next byte to be read from the stream.

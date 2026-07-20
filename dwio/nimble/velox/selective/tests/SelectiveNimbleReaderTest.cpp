@@ -16,6 +16,8 @@
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
+#include <limits>
+
 #include <fmt/format.h>
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -31,6 +33,7 @@
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/VeloxReader.h"
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
@@ -42,6 +45,7 @@
 #include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/dwio/common/Statistics.h"
 #include "velox/dwio/common/TypeUtils.h"
+#include "velox/type/Filter.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 #include <gtest/gtest.h>
@@ -717,6 +721,611 @@ TEST_P(SelectiveNimbleReaderTest, basic) {
   validate(*input, *readers.rowReader, 101, [&](auto i) {
     return !c0->isNullAt(i) && rawC0[i] <= 502;
   });
+}
+
+// Captures thread-local runtime counters emitted during a read.
+class MapRuntimeStatWriter : public velox::BaseRuntimeStatWriter {
+ public:
+  void addRuntimeStat(std::string_view name, const velox::RuntimeCounter& value)
+      override {
+    counts[std::string(name)] += value.value;
+  }
+  std::unordered_map<std::string, int64_t> counts;
+};
+
+// Writes the given per-chunk vectors as one stripe (one chunk per vector) with
+// the chunk index (and per-chunk stats) enabled.
+std::string writeChunkedFile(
+    velox::memory::MemoryPool& rootPool,
+    const std::vector<velox::VectorPtr>& chunks) {
+  VeloxWriterOptions options;
+  options.enableChunking = true;
+  options.enableChunkIndex = true;
+  options.minStreamChunkRawSize = 0;
+  options.flushPolicyFactory = [] {
+    return std::make_unique<LambdaFlushPolicy>(
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
+  };
+  return test::createNimbleFile(
+      rootPool, chunks, options, /*flushAfterWrite=*/false);
+}
+
+// Value-based chunk pruning: chunks whose min/max can't pass the filter are
+// skipped while result rows stay correct. This range prunes leading + trailing.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningRange) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  // Four int64 chunks in c0 with disjoint ranges (chunk c covers [c*10,
+  // c*10+9]).
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(4);
+  for (int c = 0; c < 4; ++c) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(10, [&](auto i) { return c * 10 + i; }),
+        makeFlatVector<int64_t>(10, folly::identity),
+    }));
+  }
+  auto file = writeChunkedFile(*rootPool(), chunks);
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(40, folly::identity),
+      makeFlatVector<int64_t>(40, [](auto i) { return i % 10; }),
+  });
+  auto rowType = asRowType(expected->type());
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  // c0 in [15, 24]: prunes chunk0 [0,9] + chunk3 [30,39]; chunk1/chunk2
+  // decoded.
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(15, 24, false));
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+
+  MapRuntimeStatWriter statWriter;
+  auto result = BaseVector::create(rowType, 0, pool());
+  int total = 0;
+  {
+    velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+    while (readers.rowReader->next(64, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        const auto value = c0->valueAt(j);
+        EXPECT_GE(value, 15);
+        EXPECT_LE(value, 24);
+        EXPECT_EQ(c1->valueAt(j), value % 10);
+        ++total;
+      }
+    }
+  }
+  EXPECT_EQ(total, 10);
+  EXPECT_EQ(statWriter.counts["skippedNimbleChunks"], 2);
+}
+
+// A prunable chunk larger than the read batch must still be skipped. Same data/
+// filter as chunkPruningRange but read in 3-row batches (< 10-row chunk).
+TEST_P(SelectiveNimbleReaderTest, chunkPruningChunkLargerThanReadBatch) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(4);
+  for (int c = 0; c < 4; ++c) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(10, [&](auto i) { return c * 10 + i; }),
+        makeFlatVector<int64_t>(10, folly::identity),
+    }));
+  }
+  auto file = writeChunkedFile(*rootPool(), chunks);
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(40, folly::identity),
+      makeFlatVector<int64_t>(40, [](auto i) { return i % 10; }),
+  });
+  auto rowType = asRowType(expected->type());
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(15, 24, false));
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+
+  MapRuntimeStatWriter statWriter;
+  auto result = BaseVector::create(rowType, 0, pool());
+  int total = 0;
+  {
+    velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+    // Batch (3) < chunk (10): chunk0/chunk3 skipped across read() calls.
+    while (readers.rowReader->next(3, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        const auto value = c0->valueAt(j);
+        EXPECT_GE(value, 15);
+        EXPECT_LE(value, 24);
+        EXPECT_EQ(c1->valueAt(j), value % 10);
+        ++total;
+      }
+    }
+  }
+  EXPECT_EQ(total, 10);
+  EXPECT_EQ(statWriter.counts["skippedNimbleChunks"], 2);
+}
+
+// Resume after a mid-scan filter relaxation: the decode must realign to the
+// mid-chunk resume position, not restart at the chunk's first row.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningResumeAfterFilterRelaxed) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  // c0[row] = kBase + row is unique + increasing, so any resume misalignment
+  // shows up as a wrong/duplicated/missing c1. Layout (5, 20, 20, 20): four
+  // chunks keep avg chunks/stream above the writer's index threshold
+  // (chunkIndexMinAvgChunks) so the index -- and thus pruning -- is emitted;
+  // too few and the test would vacuously pass.
+  constexpr int64_t kBase = 1'000'000;
+  const std::vector<int> chunkSizes{5, 20, 20, 20};
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(chunkSizes.size());
+  int rowCount = 0;
+  for (int rows : chunkSizes) {
+    const int start = rowCount;
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(
+            rows, [&](auto i) { return kBase + start + i; }),
+        makeFlatVector<int64_t>(rows, [&](auto i) { return start + i; }),
+    }));
+    rowCount += rows;
+  }
+  const int kRows = rowCount; // 65
+  auto file = writeChunkedFile(*rootPool(), chunks);
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(kRows, [&](auto i) { return kBase + i; }),
+      makeFlatVector<int64_t>(kRows, folly::identity),
+  });
+  auto rowType = asRowType(expected->type());
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  // Strict filter (c0 >= kBase+25) keeps only the last two chunks; chunks 0-1
+  // (rows 0-24) are prunable.
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(kBase + 25, kBase + kRows, false));
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+
+  MapRuntimeStatWriter statWriter;
+  velox::RuntimeStatWriterScopeGuard statGuard(&statWriter);
+
+  auto result = BaseVector::create(rowType, 0, pool());
+  // Batch of 10: wholly skips chunk 0 (5 rows) + partially skips chunk 1 (rows
+  // 5-9), leaving the decode mid-chunk 1 (row 10). No rows survive.
+  readers.rowReader->next(10, result);
+  EXPECT_EQ(result->size(), 0);
+
+  // Relax the filter mid-scan so chunk 1 now survives on resume (must realign
+  // to row 10, not restart at chunk 1's first row 5).
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(0, kBase + kRows, false));
+
+  // After resume, emitted rows must be exactly the surviving rows 10..64 in
+  // order. Checking c0 == kBase + c1 alone is insufficient: under the
+  // misalignment bug both columns shift together, so only the absolute row
+  // identity (c1) exposes a re-read/duplication/gap.
+  std::vector<int64_t> got;
+  while (readers.rowReader->next(10, result) > 0) {
+    auto* row = result->loadedVector()->asChecked<RowVector>();
+    auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+    auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+    for (int j = 0; j < result->size(); ++j) {
+      EXPECT_EQ(c0->valueAt(j), kBase + c1->valueAt(j));
+      got.push_back(c1->valueAt(j));
+    }
+  }
+  // Rows 0-9 were pruned (chunk 0 + chunk 1 rows 5-9); rows 10..64 survive.
+  std::vector<int64_t> want;
+  for (int r = 10; r < kRows; ++r) {
+    want.push_back(r);
+  }
+  EXPECT_EQ(got, want);
+  // Non-vacuity guard: pruning must have run (else a future change that stops
+  // emitting the index would let this test vacuously pass).
+  EXPECT_GE(statWriter.counts["skippedNimbleChunks"], 1);
+}
+
+// Interior chunk skip: an IN filter matching only the first and last chunks
+// must skip the two middle chunks.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningInterior) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  // Four widely-separated chunks (chunk c covers [c*1000, c*1000+9]) so an IN
+  // filter over the first + last chunk lets testInt64Range reject the interior.
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(4);
+  for (int c = 0; c < 4; ++c) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(10, [&](auto i) { return c * 1000 + i; }),
+        makeFlatVector<int64_t>(10, folly::identity),
+    }));
+  }
+  auto file = writeChunkedFile(*rootPool(), chunks);
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>(
+          40, [](auto i) { return (i / 10) * 1000 + i % 10; }),
+      makeFlatVector<int64_t>(40, [](auto i) { return i % 10; }),
+  });
+  auto rowType = asRowType(expected->type());
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  // c0 IN (5, 3005): keep chunk0 + chunk3; chunk1 + chunk2 (interior) are
+  // pruned.
+  scanSpec->childByName("c0")->setFilter(
+      common::createBigintValues({5, 3005}, /*nullAllowed=*/false));
+  auto readers = makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+
+  MapRuntimeStatWriter statWriter;
+  auto result = BaseVector::create(rowType, 0, pool());
+  int total = 0;
+  {
+    velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+    while (readers.rowReader->next(64, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        const auto value = c0->valueAt(j);
+        EXPECT_TRUE(value == 5 || value == 3005);
+        EXPECT_EQ(c1->valueAt(j), value % 1000);
+        ++total;
+      }
+    }
+  }
+  EXPECT_EQ(total, 2);
+  EXPECT_EQ(statWriter.counts["skippedNimbleChunks"], 2);
+}
+
+// Oracle: chunk pruning must never change results. Compares many-chunks
+// (pruning on) vs single-chunk (unpruned oracle) output across a range of
+// filters.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningMatchesUnprunedOracle) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  constexpr int kChunks = 5;
+  constexpr int kPerChunk = 20;
+  constexpr int kRows = kChunks * kPerChunk;
+
+  // c0: five disjoint chunk ranges (chunk c covers [c*100, c*100+19]); c1:
+  // payload.
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(kChunks);
+  for (int c = 0; c < kChunks; ++c) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(kPerChunk, [&](auto i) { return c * 100 + i; }),
+        makeFlatVector<int64_t>(kPerChunk, folly::identity),
+    }));
+  }
+  const auto chunkedFile = writeChunkedFile(*rootPool(), chunks);
+
+  // Same logical data written as a single chunk: chunk index off -> no pruning.
+  auto combined = makeRowVector({
+      makeFlatVector<int64_t>(
+          kRows, [](auto i) { return (i / kPerChunk) * 100 + i % kPerChunk; }),
+      makeFlatVector<int64_t>(kRows, [](auto i) { return i % kPerChunk; }),
+  });
+  const auto oracleFile = test::createNimbleFile(
+      *rootPool(),
+      std::vector<velox::VectorPtr>{combined},
+      VeloxWriterOptions{},
+      /*flushAfterWrite=*/false);
+  const auto rowType = asRowType(combined->type());
+
+  auto readAll = [&](const std::string& file,
+                     std::unique_ptr<common::Filter> filter,
+                     int batchSize) {
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    scanSpec->childByName("c0")->setFilter(std::move(filter));
+    auto readers = makeReaders(combined, file, scanSpec, stringDecoderZeroCopy);
+    std::vector<std::pair<int64_t, int64_t>> rows;
+    auto result = BaseVector::create(rowType, 0, pool());
+    while (readers.rowReader->next(batchSize, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        rows.emplace_back(c0->valueAt(j), c1->valueAt(j));
+      }
+    }
+    return rows;
+  };
+
+  auto filterFor = [](int which) -> std::unique_ptr<common::Filter> {
+    switch (which) {
+      case 0: // interior range: leading + trailing chunks pruned
+        return std::make_unique<common::BigintRange>(105, 124, false);
+      case 1: // value set spanning first + last chunk
+        return common::createBigintValues({5, 405}, /*nullAllowed=*/false);
+      case 2: // matches nothing -> all chunks pruned
+        return std::make_unique<common::BigintRange>(10000, 20000, false);
+      case 3: // matches everything -> nothing pruned
+        return std::make_unique<common::BigintRange>(0, 10000, false);
+      default: // null-admitting range over a non-null column
+        return std::make_unique<common::BigintRange>(105, 124, true);
+    }
+  };
+
+  // Cover both regimes vs the oracle: a batch spanning chunks (64) and batches
+  // smaller than a chunk (7, 1) that exercise partial-skip-across-batches.
+  for (int batchSize : {64, 7, 1}) {
+    for (int f = 0; f <= 4; ++f) {
+      SCOPED_TRACE(fmt::format("batch {} filter case {}", batchSize, f));
+      EXPECT_EQ(
+          readAll(chunkedFile, filterFor(f), batchSize),
+          readAll(oracleFile, filterFor(f), batchSize));
+    }
+  }
+}
+
+// Chunk pruning reasons about per-chunk null counts, not just value ranges: an
+// all-null chunk is prunable only by a null-rejecting filter, and a maybe-null
+// chunk survives a null-admitting filter. Compares vs the unpruned oracle.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningWithNulls) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  constexpr int kChunks = 4;
+  constexpr int kPerChunk = 10;
+  constexpr int kRows = kChunks * kPerChunk;
+
+  // c0 null/value pattern by absolute row: chunks 0 and 3 are entirely null,
+  // chunk 2 is partially null, chunk 1 is fully populated with [100, 109].
+  auto c0At = [](int row) -> std::optional<int64_t> {
+    const int chunk = row / kPerChunk;
+    const int within = row % kPerChunk;
+    if (chunk == 0 || chunk == 3) {
+      return std::nullopt;
+    }
+    if (chunk == 2 && within % 2 == 0) {
+      return std::nullopt;
+    }
+    return chunk * 100 + within;
+  };
+
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(kChunks);
+  for (int chunk = 0; chunk < kChunks; ++chunk) {
+    std::vector<std::optional<int64_t>> values;
+    std::vector<std::optional<int64_t>> payload;
+    for (int within = 0; within < kPerChunk; ++within) {
+      const int row = chunk * kPerChunk + within;
+      values.push_back(c0At(row));
+      payload.emplace_back(row);
+    }
+    chunks.push_back(makeRowVector({
+        makeNullableFlatVector<int64_t>(values),
+        makeNullableFlatVector<int64_t>(payload),
+    }));
+  }
+  const auto chunkedFile = writeChunkedFile(*rootPool(), chunks);
+
+  // Same logical data as a single chunk: index off, so its output is the
+  // oracle.
+  std::vector<std::optional<int64_t>> allValues;
+  std::vector<std::optional<int64_t>> allPayload;
+  for (int row = 0; row < kRows; ++row) {
+    allValues.push_back(c0At(row));
+    allPayload.emplace_back(row);
+  }
+  const auto combined = makeRowVector({
+      makeNullableFlatVector<int64_t>(allValues),
+      makeNullableFlatVector<int64_t>(allPayload),
+  });
+  const auto oracleFile = test::createNimbleFile(
+      *rootPool(),
+      std::vector<velox::VectorPtr>{combined},
+      VeloxWriterOptions{},
+      /*flushAfterWrite=*/false);
+  const auto rowType = asRowType(combined->type());
+
+  auto readAll = [&](const std::string& file,
+                     std::unique_ptr<common::Filter> filter) {
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    scanSpec->childByName("c0")->setFilter(std::move(filter));
+    auto readers = makeReaders(combined, file, scanSpec, stringDecoderZeroCopy);
+    std::vector<std::pair<std::optional<int64_t>, int64_t>> rows;
+    auto result = BaseVector::create(rowType, 0, pool());
+    while (readers.rowReader->next(1'024, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<int64_t>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        rows.emplace_back(
+            c0->isNullAt(j) ? std::nullopt
+                            : std::optional<int64_t>(c0->valueAt(j)),
+            c1->valueAt(j));
+      }
+    }
+    return rows;
+  };
+
+  auto filterFor = [](int which) -> std::unique_ptr<common::Filter> {
+    switch (which) {
+      case 0:
+        // Null-rejecting range hitting only chunk 1: all-null + disjoint chunks
+        // prunable.
+        return std::make_unique<common::BigintRange>(100, 109, false);
+      case 1:
+        // Null-admitting range: null rows survive, so no null-holding chunk is
+        // prunable.
+        return std::make_unique<common::BigintRange>(100, 109, true);
+      case 2:
+        // IS NOT NULL: all-null chunks are prunable, the rest survive.
+        return std::make_unique<common::IsNotNull>();
+      default:
+        // Matches nothing and rejects nulls: every chunk is prunable.
+        return std::make_unique<common::BigintRange>(9'000, 9'999, false);
+    }
+  };
+
+  // Output must match the oracle for every filter. Assert skip direction, not
+  // exact count: a null-admitting filter (f==1) prunes nothing; the others
+  // skip.
+  for (int f = 0; f <= 3; ++f) {
+    SCOPED_TRACE(fmt::format("filter case {}", f));
+    MapRuntimeStatWriter statWriter;
+    std::vector<std::pair<std::optional<int64_t>, int64_t>> pruned;
+    {
+      velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+      pruned = readAll(chunkedFile, filterFor(f));
+    }
+    EXPECT_EQ(pruned, readAll(oracleFile, filterFor(f)));
+    const auto skips = statWriter.counts["skippedNimbleChunks"];
+    if (f == 1) {
+      EXPECT_EQ(skips, 0);
+    } else {
+      EXPECT_GT(skips, 0);
+    }
+  }
+}
+
+// Floating-point filter pruning: chunks failing a DoubleRange are skipped; a
+// NaN chunk records no min/max and is never pruned (fail-safe).
+TEST_P(SelectiveNimbleReaderTest, chunkPruningFloatingPoint) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  constexpr int kChunks = 4;
+  constexpr int kPerChunk = 10;
+  constexpr int kRows = kChunks * kPerChunk;
+
+  // c0 by absolute row: chunk c covers doubles [c*100+.5, c*100+9.5], except
+  // chunk 2's first value is NaN, which suppresses that chunk's min/max.
+  auto c0At = [](int row) -> double {
+    const int chunk = row / kPerChunk;
+    const int within = row % kPerChunk;
+    if (chunk == 2 && within == 0) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return static_cast<double>(chunk * 100 + within) + 0.5;
+  };
+
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(kChunks);
+  for (int chunk = 0; chunk < kChunks; ++chunk) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<double>(
+            kPerChunk,
+            [&](auto within) { return c0At(chunk * kPerChunk + within); }),
+        makeFlatVector<int64_t>(kPerChunk, folly::identity),
+    }));
+  }
+  const auto chunkedFile = writeChunkedFile(*rootPool(), chunks);
+
+  const auto combined = makeRowVector({
+      makeFlatVector<double>(kRows, [&](auto row) { return c0At(row); }),
+      makeFlatVector<int64_t>(kRows, [](auto row) { return row % kPerChunk; }),
+  });
+  const auto rowType = asRowType(combined->type());
+
+  // c0 in [100.0, 110.0]: matches chunk 1; chunks 0 and 3 are pruned by range,
+  // chunk 2 is kept (NaN -> no stats) and decoded, its values filtered out.
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::DoubleRange>(
+          100.0, false, false, 110.0, false, false, false));
+  auto readers =
+      makeReaders(combined, chunkedFile, scanSpec, stringDecoderZeroCopy);
+
+  MapRuntimeStatWriter statWriter;
+  auto result = BaseVector::create(rowType, 0, pool());
+  int total = 0;
+  {
+    velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+    while (readers.rowReader->next(1'024, result) > 0) {
+      auto* row = result->loadedVector()->asChecked<RowVector>();
+      auto* c0 = row->childAt(0)->asChecked<FlatVector<double>>();
+      auto* c1 = row->childAt(1)->asChecked<FlatVector<int64_t>>();
+      for (int j = 0; j < result->size(); ++j) {
+        const auto value = c0->valueAt(j);
+        EXPECT_GE(value, 100.0);
+        EXPECT_LE(value, 110.0);
+        // c1 is the within-chunk offset, i.e. value - 100.5 truncated.
+        EXPECT_EQ(c1->valueAt(j), static_cast<int64_t>(value) - 100);
+        ++total;
+      }
+    }
+  }
+  // Chunk 1 holds ten in-range values.
+  EXPECT_EQ(total, kPerChunk);
+  // Chunks 0 and 3 are pruned; chunk 2 (NaN) is decoded, not skipped.
+  EXPECT_EQ(statWriter.counts["skippedNimbleChunks"], 2);
+}
+
+// A transform makes the stored value differ from the logical value, so pruning
+// stays disabled on that column (no skips, output unchanged). Same reason as
+// the delta-update guard.
+TEST_P(SelectiveNimbleReaderTest, chunkPruningDisabledByTransform) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  constexpr int kChunks = 4;
+  constexpr int kPerChunk = 10;
+
+  // Four disjoint int64 chunks; chunk c covers [c*10, c*10+9].
+  std::vector<velox::VectorPtr> chunks;
+  chunks.reserve(kChunks);
+  for (int chunk = 0; chunk < kChunks; ++chunk) {
+    chunks.push_back(makeRowVector({
+        makeFlatVector<int64_t>(
+            kPerChunk, [&](auto within) { return chunk * kPerChunk + within; }),
+        makeFlatVector<int64_t>(kPerChunk, folly::identity),
+    }));
+  }
+  const auto file = writeChunkedFile(*rootPool(), chunks);
+  const auto expected = makeRowVector({
+      makeFlatVector<int64_t>(kChunks * kPerChunk, folly::identity),
+      makeFlatVector<int64_t>(
+          kChunks * kPerChunk, [](auto row) { return row % kPerChunk; }),
+  });
+  const auto rowType = asRowType(expected->type());
+
+  // c0 in [15, 24] prunes chunk 0 and chunk 3 when pruning is enabled.
+  auto makeScanSpec = [&] {
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*rowType);
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BigintRange>(15, 24, false));
+    return scanSpec;
+  };
+
+  auto readCountingSkips =
+      [&](const std::shared_ptr<common::ScanSpec>& scanSpec) {
+        auto readers =
+            makeReaders(expected, file, scanSpec, stringDecoderZeroCopy);
+        MapRuntimeStatWriter statWriter;
+        auto result = BaseVector::create(rowType, 0, pool());
+        int total = 0;
+        {
+          velox::RuntimeStatWriterScopeGuard guard(&statWriter);
+          while (readers.rowReader->next(1'024, result) > 0) {
+            total += result->size();
+          }
+        }
+        return std::pair<int, int64_t>{
+            total, statWriter.counts["skippedNimbleChunks"]};
+      };
+
+  // Without a transform, pruning skips the two disjoint chunks.
+  const auto [baselineRows, baselineSkips] = readCountingSkips(makeScanSpec());
+  EXPECT_EQ(baselineRows, 10);
+  EXPECT_EQ(baselineSkips, 2);
+
+  // An identity transform on the filter column disables pruning: same rows, no
+  // skipped chunks.
+  auto transformedSpec = makeScanSpec();
+  transformedSpec->childByName("c0")->setTransform(
+      [](const velox::VectorPtr& vector, velox::memory::MemoryPool*) {
+        return vector;
+      },
+      BIGINT());
+  const auto [transformedRows, transformedSkips] =
+      readCountingSkips(transformedSpec);
+  EXPECT_EQ(transformedSkips, 0);
+  EXPECT_EQ(transformedRows, baselineRows);
 }
 
 TEST_P(SelectiveNimbleReaderTest, denseWithNulls) {

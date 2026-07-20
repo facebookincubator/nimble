@@ -117,6 +117,11 @@ class StreamIndex {
   /// Returns the total number of rows in this stream.
   uint32_t rowCount() const;
 
+  /// Returns the number of rows in the chunk at the given absolute position
+  /// (ChunkLocation::chunkIndex). Reads only footer metadata (no chunk bytes),
+  /// so callers can size a chunk before deciding whether to read it.
+  uint32_t chunkRowCount(uint32_t chunkIndex) const;
+
   /// Returns the stream ID this index is for.
   uint32_t streamId() const {
     return streamId_;

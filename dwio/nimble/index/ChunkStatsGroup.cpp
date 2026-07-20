@@ -202,4 +202,22 @@ uint32_t StreamIndex::rowCount() const {
   return chunkRows->Get(endChunkOffset_ - 1);
 }
 
+uint32_t StreamIndex::chunkRowCount(uint32_t chunkIndex) const {
+  const auto* root = asFlatBuffersRoot<serialization::StripeChunkStats>(
+      chunkStats_->metadata_->content());
+
+  const auto* chunkRows = root->stream_chunk_rows();
+  NIMBLE_CHECK_NOT_NULL(chunkRows);
+  NIMBLE_CHECK_LE(endChunkOffset_, chunkRows->size());
+  NIMBLE_CHECK_GE(chunkIndex, startChunkOffset_);
+  NIMBLE_CHECK_LT(chunkIndex, endChunkOffset_);
+
+  // stream_chunk_rows holds per-stream accumulated row counts; the chunk's own
+  // row count is the delta from the previous chunk (0 at the stream's first).
+  const uint32_t accumulated = chunkRows->Get(chunkIndex);
+  const uint32_t previous =
+      chunkIndex == startChunkOffset_ ? 0 : chunkRows->Get(chunkIndex - 1);
+  return accumulated - previous;
+}
+
 } // namespace facebook::nimble::index

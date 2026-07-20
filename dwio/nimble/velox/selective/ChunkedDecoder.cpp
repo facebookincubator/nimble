@@ -16,14 +16,18 @@
 
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
 
+#include <folly/lang/Bits.h>
+
+#include <cstddef>
+
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/testutil/TestValue.h"
-
-#include <cstddef>
+#include "velox/type/Filter.h"
 
 namespace facebook::nimble {
 
@@ -288,21 +292,158 @@ void ChunkedDecoder::skipWithoutIndex(
   }
 }
 
-void ChunkedDecoder::seekToChunk(
-    uint32_t offset,
-    const ChunkBoundaryCallback& onChunkBoundary) {
-  // Use position provider to seek to the chunk offset
+void ChunkedDecoder::seekInputToChunkStart(uint32_t offset) {
   const std::vector<uint64_t> offsets{offset};
   velox::dwio::common::PositionProvider positionProvider(offsets);
   input_->seekToPosition(positionProvider);
 
-  // Reset buffer state after seeking
+  // Reset decode state; chunk not loaded. encoding_ cleared so
+  // estimateRowCount/ estimateStringDataSize don't return the previous chunk's
+  // stale estimate.
   inputData_ = nullptr;
   inputSize_ = 0;
   remainingValues_ = 0;
+  encoding_ = nullptr;
+}
+
+void ChunkedDecoder::seekToChunk(
+    uint32_t offset,
+    const ChunkBoundaryCallback& onChunkBoundary) {
+  seekInputToChunkStart(offset);
 
   // Load the chunk at this position
   loadNextChunk(preserveDictionaryEncoding_, onChunkBoundary);
+}
+
+bool ChunkedDecoder::chunkMayMatch(
+    const std::optional<std::pair<int64_t, int64_t>>& minMax,
+    const std::optional<uint32_t>& nullCount,
+    uint32_t chunkRows) const {
+  const auto* filter = chunkPruneScanSpec_->filter();
+  if (filter == nullptr || !filter->isDeterministic()) {
+    return true;
+  }
+  // Missing null count => may contain nulls (fail-safe); min/max is over
+  // non-nulls, so nulls are reasoned about separately.
+  const bool mayHaveNull = !nullCount.has_value() || nullCount.value() > 0;
+  // All-null chunk: only the null test decides.
+  if (nullCount.has_value() && nullCount.value() >= chunkRows) {
+    return filter->testNull();
+  }
+  // A passing null can't be pruned by value range; only prune when the filter
+  // rejects nulls.
+  if (mayHaveNull && filter->testNull()) {
+    return true;
+  }
+  // No value range recorded (pre-stats chunk): keep it (fail-safe).
+  if (!minMax.has_value()) {
+    return true;
+  }
+  if (chunkPruneFilterIsFloat_) {
+    return filter->testDoubleRange(
+        folly::bit_cast<double>(minMax->first),
+        folly::bit_cast<double>(minMax->second),
+        mayHaveNull);
+  }
+  return filter->testInt64Range(minMax->first, minMax->second, mayHaveNull);
+}
+
+ChunkedDecoder::PrunedRun ChunkedDecoder::probePrunableRun(
+    uint32_t budget) const {
+  // A chunk larger than the budget is skipped partially and resumed on a later
+  // read() call (keeps pruning effective when a chunk exceeds the batch).
+  const uint32_t streamRows = streamRowCount_.value();
+  PrunedRun run;
+  uint32_t probeRow = rowPosition_;
+  while (probeRow < streamRows && run.rows < budget) {
+    const auto location = streamIndex_->lookupChunk(probeRow);
+    const uint32_t chunkRows = streamIndex_->chunkRowCount(location.chunkIndex);
+    // A zero-row chunk would stall this loop (no progress); the writer never
+    // emits one, so enforce it.
+    NIMBLE_CHECK_GT(chunkRows, 0);
+    if (chunkMayMatch(
+            streamIndex_->chunkMinMax(location.chunkIndex),
+            streamIndex_->chunkNullCount(location.chunkIndex),
+            chunkRows)) {
+      break;
+    }
+    // Rows left in this (maybe mid-skipped) chunk, clamped to the batch budget.
+    const uint32_t remainingInChunk = location.rowOffset + chunkRows - probeRow;
+    const uint32_t canSkip = std::min(remainingInChunk, budget - run.rows);
+    run.rows += canSkip;
+    probeRow += canSkip;
+    if (canSkip == remainingInChunk) {
+      // Whole chunk consumed (counted once, on the batch that finishes it).
+      ++run.chunks;
+    }
+  }
+  return run;
+}
+
+bool ChunkedDecoder::resumeSurvivingChunk() {
+  // A prior partial skip can leave rowPosition_ mid-chunk (e.g. filter relaxed
+  // between batches so it now survives). Realign to rowPosition_ via skip(); a
+  // bare loadNextChunk would restart at the chunk's first row and misalign.
+  const auto location = streamIndex_->lookupChunk(rowPosition_);
+  if (rowPosition_ == location.rowOffset) {
+    // At a chunk boundary: caller loads the chunk normally.
+    return false;
+  }
+  const uint32_t resumePrefix = rowPosition_ - location.rowOffset;
+  rowPosition_ = location.rowOffset;
+  skip(resumePrefix);
+  return true;
+}
+
+void ChunkedDecoder::positionInputAfterSkip(bool batchConsumed) {
+  if (rowPosition_ >= streamRowCount_.value()) {
+    // Skipped through end of stream: mirror skipWithIndex's end handling.
+    encoding_ = nullptr;
+    remainingValues_ = 0;
+    inputData_ += inputSize_;
+    inputSize_ = 0;
+    input_->SkipInt64(std::numeric_limits<int64_t>::max());
+    return;
+  }
+  const auto nextChunk = streamIndex_->lookupChunk(rowPosition_);
+  if (batchConsumed) {
+    // Batch fully consumed by pruned chunks: park the input at the next chunk
+    // (unloaded) so the next read() batch can prune it too.
+    seekInputToChunkStart(nextChunk.chunkOffset);
+  } else {
+    // A surviving (or range-straddling) chunk remains; load it. rowPosition_
+    // already sits at its first row (prune loop breaks at a boundary), no
+    // rewind.
+    NIMBLE_DCHECK_EQ(rowPosition_, nextChunk.rowOffset);
+    seekToChunk(nextChunk.chunkOffset);
+  }
+}
+
+bool ChunkedDecoder::skipPrunableChunks(
+    velox::vector_size_t& rowIndex,
+    ReadWithVisitorParams& params,
+    velox::vector_size_t numRows) {
+  const uint32_t budget = static_cast<uint32_t>(numRows) - rowIndex;
+  const PrunedRun run = probePrunableRun(budget);
+
+  // Nothing pruned: the survivor is realigned if a prior partial skip left
+  // rowPosition_ mid-chunk, else the caller loads the chunk normally.
+  if (run.rows == 0) {
+    return resumeSurvivingChunk();
+  }
+
+  // Count a whole chunk only once, on the batch that finishes it: a partial
+  // skip (run.chunks == 0) must not emit a 0-valued skippedNimbleChunks sample.
+  if (run.chunks > 0) {
+    numChunksSkipped_ += run.chunks;
+    velox::addThreadLocalRuntimeStat(
+        "skippedNimbleChunks", velox::RuntimeCounter(run.chunks));
+  }
+  rowIndex += run.rows;
+  params.numScanned += run.rows;
+  rowPosition_ += run.rows;
+  positionInputAfterSkip(/*batchConsumed=*/rowIndex >= numRows);
+  return true;
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {
