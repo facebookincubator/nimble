@@ -445,34 +445,49 @@ class ChunkedDecoder {
     };
 
     while (visitor.rowIndex() < numRows) {
-      // Check for chunk exhaustion before computing the next row range.
-      // This is done unconditionally (for both kHasNulls and !kHasNulls)
-      // to avoid the testNulls path in computeNextRowIndex loading a new
-      // chunk mid-count, which would produce numNonNulls spanning two
-      // chunks and incorrect index reads.
+      // When the current chunk is exhausted, decide whether to load the
+      // next chunk based on the null bitmap. Fast path: if more chunks
+      // exist, load directly (common case). Slow path: no more chunks —
+      // scan the null bitmap to verify all remaining rows are null. If
+      // non-null rows remain with no chunks, loadNextChunk crashes —
+      // that's data corruption (encoding rowCount disagrees with the
+      // null bitmap).
       if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        loadNextChunk(/*preserveDictionaryEncoding=*/true);
-        if (!onChunkBoundary()) {
-          // The new chunk is not dictionary-compatible. readOffset_ has not
-          // moved during this read, so it still holds the read's start offset;
-          // adding params.numScanned (the rows consumed up to this chunk
-          // boundary) advances it to the boundary, where the flat encoding
-          // fallback resumes the decode.
-          //
-          // TODO: Make the decoder the single owner of readOffset_ — also
-          // advance it on the full-read path here instead of readWithDictionary
-          // doing readOffset_ += endReadRow, so the update is not split across
-          // the reader and the decoder.
-          visitor.reader().setReadOffset(
-              visitor.reader().readOffset() + params.numScanned);
-          return false;
-        }
+        if (hasMoreChunks()) {
+          loadNextChunk(/*preserveDictionaryEncoding=*/true);
+          if (!onChunkBoundary()) {
+            // The new chunk is not dictionary-compatible. readOffset_ has not
+            // moved during this read, so it still holds the read's start
+            // offset; adding params.numScanned (the rows consumed up to this
+            // chunk boundary) advances it to the boundary, where the flat
+            // encoding fallback resumes the decode.
+            //
+            // TODO: Make the decoder the single owner of readOffset_ — also
+            // advance it on the full-read path here instead of
+            // readWithDictionary doing readOffset_ += endReadRow, so the
+            // update is not split across the reader and the decoder.
+            visitor.reader().setReadOffset(
+                visitor.reader().readOffset() + params.numScanned);
+            return false;
+          }
 
-        // onChunkBoundary() rebuilt the per-chunk filter dictionary in the
-        // reader's scan state. Re-snapshot it into the visitor so the next
-        // chunk's filter evaluation uses this chunk's dictionary, not the
-        // stale copy captured when the visitor was constructed.
-        visitor.refreshScanState();
+          // onChunkBoundary() rebuilt the per-chunk filter dictionary in the
+          // reader's scan state. Re-snapshot it into the visitor so the next
+          // chunk's filter evaluation uses this chunk's dictionary, not the
+          // stale copy captured when the visitor was constructed.
+          visitor.refreshScanState();
+        } else if constexpr (kHasNulls) {
+          const auto endRow = V::dense
+              ? params.numScanned + (numRows - visitor.rowIndex())
+              : visitor.rowAt(numRows - 1) + 1;
+          NIMBLE_CHECK_EQ(
+              velox::bits::countNonNulls(nulls, params.numScanned, endRow),
+              0,
+              "Encoding stream exhausted but non-null rows remain in bitmap");
+          // All remaining rows are null — no chunk load needed. Fall
+          // through to computeNextRowIndex which produces numNonNulls=0
+          // and processes the null rows normally.
+        }
       }
 
       velox::vector_size_t numNulls{0};

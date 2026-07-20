@@ -4309,6 +4309,122 @@ TEST_P(E2EFilterTest, filterOnlyDictAbandonDropsFilter) {
       << "Dict abandon path dropped filter on dict portion";
 }
 
+// Regression: when all non-null values in a dictionary-encoded string field
+// inside a mostly-null struct are consumed in earlier batches, later batches
+// contain only null rows. readDictionaryIndicesImpl unconditionally calls
+// loadNextChunk when remainingValues_==0, even when no more chunks exist,
+// crashing with "Failed to read chunk header". The fix checks the null bitmap
+// to verify all remaining rows are null before skipping the chunk load.
+TEST_P(E2EFilterTest, dictionaryChunkExhaustedAllNullTail) {
+  if (!param().stringDecoderZeroCopy ||
+      !param().nimblePreserveDictionaryEncoding) {
+    GTEST_SKIP()
+        << "Dictionary path requires stringDecoderZeroCopy and nimblePreserveDict";
+  }
+
+  // 20,000 rows with only 20 struct-non-null. All non-null values are the
+  // same string → ConstantEncoding with rowCount=20. The non-null positions
+  // cluster in the first quarter so later batches are entirely null.
+  constexpr size_t kTotalRows = 20000;
+  constexpr size_t kNonNullCount = 20;
+
+  auto type =
+      ROW({"select_col", "info"}, {BIGINT(), ROW({{"val"}}, {VARCHAR()})});
+  rowType_ = asRowType(type);
+
+  velox::test::VectorMaker maker(leafPool_.get());
+
+  auto selectVector = maker.flatVector<int64_t>(
+      kTotalRows, [](auto row) { return static_cast<int64_t>(row); });
+
+  auto valVector = maker.flatVector<velox::StringView>(
+      kNonNullCount,
+      [](auto /*row*/) { return velox::StringView("constant-val"); });
+
+  auto innerType = ROW({{"val"}}, {VARCHAR()});
+  auto innerStruct = std::make_shared<RowVector>(
+      leafPool_.get(),
+      innerType,
+      nullptr,
+      kNonNullCount,
+      std::vector<VectorPtr>{valVector});
+
+  auto structNulls =
+      velox::AlignedBuffer::allocate<bool>(kTotalRows, leafPool_.get());
+  auto* rawStructNulls = structNulls->asMutable<uint64_t>();
+  velox::bits::fillBits(rawStructNulls, 0, kTotalRows, velox::bits::kNull);
+  for (size_t i = 0; i < kNonNullCount; ++i) {
+    velox::bits::setBit(rawStructNulls, i * 250, true);
+  }
+
+  auto indices = velox::AlignedBuffer::allocate<vector_size_t>(
+      kTotalRows, leafPool_.get());
+  auto* rawIndices = indices->asMutable<vector_size_t>();
+  vector_size_t innerIdx = 0;
+  for (size_t i = 0; i < kTotalRows; ++i) {
+    rawIndices[i] = velox::bits::isBitSet(rawStructNulls, i) ? innerIdx++ : 0;
+  }
+
+  auto infoVector = BaseVector::wrapInDictionary(
+      structNulls, indices, kTotalRows, innerStruct);
+
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      kTotalRows,
+      std::vector<VectorPtr>{selectVector, infoVector});
+
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    writer.write(batch);
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(true);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(true);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  size_t totalNonNull = 0;
+  constexpr size_t kBatchSize = 1000;
+  while (rowReader->next(kBatchSize, result)) {
+    auto* rowVector = result->as<RowVector>();
+    totalRows += rowVector->size();
+    auto info = rowVector->childAt(1);
+    info->loadedVector();
+    for (vector_size_t i = 0; i < info->size(); ++i) {
+      if (!info->isNullAt(i)) {
+        ++totalNonNull;
+        auto innerRow = info->as<RowVector>();
+        auto val = innerRow->childAt(0)->as<SimpleVector<velox::StringView>>();
+        ASSERT_FALSE(val->isNullAt(i));
+        EXPECT_EQ(val->valueAt(i), velox::StringView("constant-val"));
+      }
+    }
+  }
+
+  EXPECT_EQ(totalRows, kTotalRows);
+  EXPECT_EQ(totalNonNull, kNonNullCount);
+}
+
 // Exercises the reactive fallback path (dictionary → flat mid-batch) with an
 // active filter on the string column. The test creates alternating dictionary
 // and trivial chunks. When the reader encounters a trivial chunk mid-read, it
