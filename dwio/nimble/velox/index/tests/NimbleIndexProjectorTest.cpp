@@ -3157,6 +3157,7 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyOnTruncation) {
   request.keyBounds = {bounds};
   NimbleIndexProjector::Options options;
   options.maxRows = 50;
+  options.needResumeKey = true;
   auto result = projector->project(request, options);
 
   ASSERT_EQ(result.responses.size(), 1);
@@ -3247,6 +3248,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
     request.keyBounds = {bounds};
     NimbleIndexProjector::Options options;
     options.maxRows = 99;
+    options.needResumeKey = true;
     auto result = projector->project(request, options);
 
     ASSERT_EQ(result.responses.size(), 1);
@@ -3266,6 +3268,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
     request.keyBounds = {bounds};
     NimbleIndexProjector::Options options;
     options.maxRows = 100;
+    options.needResumeKey = true;
     auto result = projector->project(request, options);
 
     ASSERT_EQ(result.responses.size(), 1);
@@ -3286,6 +3289,7 @@ TEST_P(NimbleIndexProjectorTest, softLimitAtStripeBoundary) {
     request.keyBounds = {bounds};
     NimbleIndexProjector::Options options;
     options.maxRows = 101;
+    options.needResumeKey = true;
     auto result = projector->project(request, options);
 
     ASSERT_EQ(result.responses.size(), 1);
@@ -3323,6 +3327,7 @@ TEST_P(NimbleIndexProjectorTest, resumeKeyPagination) {
     request.keyBounds = {currentBounds};
     NimbleIndexProjector::Options options;
     options.maxRows = maxRows;
+    options.needResumeKey = true;
     auto result = projector->project(request, options);
 
     ASSERT_EQ(result.responses.size(), 1);
@@ -3370,6 +3375,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsTotalAcrossRequests) {
   request.keyBounds = {bounds0, bounds1};
   NimbleIndexProjector::Options options;
   options.maxRows = 50;
+  options.needResumeKey = true;
   auto result = projector->project(request, options);
 
   ASSERT_EQ(result.responses.size(), 2);
@@ -3413,6 +3419,7 @@ TEST_P(NimbleIndexProjectorTest, noResumeKeyWhenRequestFullySatisfied) {
   request.keyBounds = {bounds0, bounds1};
   NimbleIndexProjector::Options options;
   options.maxRows = 100;
+  options.needResumeKey = true;
   auto result = projector->project(request, options);
 
   ASSERT_EQ(result.responses.size(), 2);
@@ -3497,6 +3504,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsSingleRowStripes) {
   request.keyBounds = {bounds};
   NimbleIndexProjector::Options options;
   options.maxRows = 3;
+  options.needResumeKey = true;
   auto result = projector->project(request, options);
 
   ASSERT_EQ(result.responses.size(), 1);
@@ -3621,6 +3629,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesTruncation) {
     request.keyBounds = {bounds};
     NimbleIndexProjector::Options options;
     options.maxBytes = bytesPerStripe * 2;
+    options.needResumeKey = true;
 
     auto result = projector->project(request, options);
     ASSERT_EQ(result.responses.size(), 1);
@@ -3702,6 +3711,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesPagination) {
       request.keyBounds = {currentBounds};
       NimbleIndexProjector::Options options;
       options.maxBytes = maxBytes;
+      options.needResumeKey = true;
 
       auto result = projector->project(request, options);
       EXPECT_EQ(result.responses.size(), 1);
@@ -3757,6 +3767,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsInteraction) {
     NimbleIndexProjector::Options options;
     options.maxRows = 50;
     options.maxBytes = bytesPerStripe * 3;
+    options.needResumeKey = true;
 
     auto result = projector->project(request, options);
     ASSERT_EQ(result.responses.size(), 1);
@@ -3775,6 +3786,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsInteraction) {
     NimbleIndexProjector::Options options;
     options.maxRows = 500;
     options.maxBytes = bytesPerStripe;
+    options.needResumeKey = true;
 
     auto result = projector->project(request, options);
     ASSERT_EQ(result.responses.size(), 1);
@@ -3809,7 +3821,8 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestAndGlobalMaxRows) {
   }
 
   // Global limit is tighter: 50 rows global vs 300 rows/request.
-  // Global limit triggers resume key (stripe-boundary soft limit = 100 rows).
+  // Global limit triggers a resume key (needResumeKey set; stripe-boundary
+  // soft limit = 100 rows).
   {
     auto projector = createProjector(subfields);
     auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
@@ -3818,6 +3831,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestAndGlobalMaxRows) {
     NimbleIndexProjector::Options options;
     options.maxRowsPerRequest = 300;
     options.maxRows = 50;
+    options.needResumeKey = true;
 
     auto result = projector->project(request, options);
     ASSERT_EQ(result.responses.size(), 1);
@@ -3842,6 +3856,234 @@ TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestAndGlobalMaxRows) {
     EXPECT_FALSE(result.responses[0].resumeKey.has_value());
     EXPECT_EQ(projector->stats().numProjectedRows, 50);
   }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestStripeAlignedSetsResumeKeys) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  writeResumeKeyTestData();
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+  auto projector = createProjector(subfields);
+
+  auto bounds0 = makeRangeLookup(rowType, {"key"}, 0, 500);
+  auto bounds1 = makeRangeLookup(rowType, {"key"}, 200, 800);
+
+  // maxRowsPerRequest=100 lands exactly on the stripe boundary; needResumeKey
+  // makes each request resume from the next stripe that still contains it.
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds0, bounds1};
+  NimbleIndexProjector::Options options;
+  options.maxRowsPerRequest = 100;
+  options.needResumeKey = true;
+  auto result = projector->project(request, options);
+
+  ASSERT_EQ(result.responses.size(), 2);
+  EXPECT_EQ(projector->stats().numReadStripes, 2);
+  EXPECT_EQ(projector->stats().numProjectedRows, 200);
+
+  for (const auto& response : result.responses) {
+    ASSERT_EQ(response.slices.size(), 1);
+    EXPECT_EQ(readEmbeddedRowRange(response.slices[0]).numRows(), 100);
+    ASSERT_TRUE(response.resumeKey.has_value());
+    EXPECT_EQ(readEmbeddedResumeKey(response.slices[0]), response.resumeKey);
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, needResumeKeyGatesResumeKey) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  // 10 stripes x 100 rows.
+  writeResumeKeyTestData();
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+  auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+
+  // maxRows truncates after the first stripe, but needResumeKey is unset, so
+  // neither the response nor the last slice carries a resume key.
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRows = 50;
+    auto result = projector->project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+    ASSERT_FALSE(response.slices.empty());
+    EXPECT_FALSE(response.resumeKey.has_value());
+    EXPECT_FALSE(readEmbeddedResumeKey(response.slices.back()).has_value());
+  }
+
+  // Same truncation with needResumeKey set -> resume key present.
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRows = 50;
+    options.needResumeKey = true;
+    auto result = projector->project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_TRUE(result.responses[0].resumeKey.has_value());
+  }
+
+  // maxRowsPerRequest cuts the request mid-stripe; without needResumeKey the
+  // request is returned capped with no resume key.
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 150;
+    auto result = projector->project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_FALSE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector->stats().numProjectedRows, 150);
+  }
+
+  // Same per-request cap with needResumeKey set -> resume key present.
+  {
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 150;
+    options.needResumeKey = true;
+    auto result = projector->project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    EXPECT_TRUE(result.responses[0].resumeKey.has_value());
+    EXPECT_EQ(projector->stats().numProjectedRows, 150);
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, limitsTruncateButEmitNoResumeKeyWhenDisabled) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  // 10 stripes x 100 rows = 1000 rows, keys 0..999.
+  writeResumeKeyTestData();
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // maxRows still truncates at the stripe boundary (100 of the 500 matching
+  // rows, one stripe), but with needResumeKey unset no resume key is produced.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRows = 50;
+    options.needResumeKey = false;
+    auto result = projector->project(request, options);
+
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+    uint64_t totalRows = 0;
+    for (const auto& slice : response.slices) {
+      totalRows += readEmbeddedRowRange(slice).numRows();
+    }
+    EXPECT_EQ(totalRows, 100);
+    EXPECT_EQ(projector->stats().numReadStripes, 1);
+    ASSERT_FALSE(response.slices.empty());
+    EXPECT_FALSE(response.resumeKey.has_value());
+    EXPECT_FALSE(readEmbeddedResumeKey(response.slices.back()).has_value());
+  }
+
+  // maxRowsPerRequest still hard-clips the request to 150 rows, but with
+  // needResumeKey unset no resume key is produced.
+  {
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 150;
+    options.needResumeKey = false;
+    auto result = projector->project(request, options);
+
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+    EXPECT_EQ(projector->stats().numProjectedRows, 150);
+    ASSERT_FALSE(response.slices.empty());
+    EXPECT_FALSE(response.resumeKey.has_value());
+    EXPECT_FALSE(readEmbeddedResumeKey(response.slices.back()).has_value());
+  }
+
+  // maxBytes still truncates the stripes read, but with needResumeKey unset no
+  // resume key is produced.
+  {
+    uint64_t bytesPerStripe = 0;
+    {
+      auto probe = createProjector(subfields);
+      auto bounds = makeRangeLookup(rowType, {"key"}, 0, 100);
+      NimbleIndexProjector::Request request;
+      request.keyBounds = {bounds};
+      auto result = probe->project(request, {});
+      bytesPerStripe = probe->stats().numOutputBytes;
+      ASSERT_GT(bytesPerStripe, 0);
+    }
+
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, 0, 500);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    NimbleIndexProjector::Options options;
+    options.maxBytes = bytesPerStripe * 2;
+    options.needResumeKey = false;
+    auto result = projector->project(request, options);
+
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+    // Soft byte limit truncates before all 5 stripes are read.
+    EXPECT_LT(projector->stats().numReadStripes, 5);
+    ASSERT_FALSE(response.slices.empty());
+    EXPECT_FALSE(response.resumeKey.has_value());
+    EXPECT_FALSE(readEmbeddedResumeKey(response.slices.back()).has_value());
+  }
+}
+
+TEST_P(NimbleIndexProjectorTest, maxRowsPerRequestResumeKeyPagination) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  // 10 stripes x 100 rows = 1000 rows, keys 0..999.
+  writeResumeKeyTestData();
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("value");
+
+  // maxRowsPerRequest=150 cuts mid-stripe. With needResumeKey, the row-precise
+  // resume key lets the caller paginate the full range with no gaps or overlap:
+  // every page returns exactly 150 rows until the final tail page.
+  auto currentBounds = makeRangeLookup(rowType, {"key"}, 0, 1000);
+  uint64_t totalRows = 0;
+  int pages = 0;
+  while (pages < 100) {
+    ++pages;
+    auto projector = createProjector(subfields);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {currentBounds};
+    NimbleIndexProjector::Options options;
+    options.maxRowsPerRequest = 150;
+    options.needResumeKey = true;
+    auto result = projector->project(request, options);
+    ASSERT_EQ(result.responses.size(), 1);
+    const auto& response = result.responses[0];
+
+    uint64_t pageRows = 0;
+    for (const auto& slice : response.slices) {
+      pageRows += readEmbeddedRowRange(slice).numRows();
+    }
+    totalRows += pageRows;
+    if (!response.resumeKey.has_value()) {
+      break;
+    }
+    EXPECT_EQ(pageRows, 150) << "page " << pages;
+    currentBounds = velox::serializer::EncodedKeyBounds{
+        .lowerKey = response.resumeKey.value(),
+        .upperKey = currentBounds.upperKey};
+  }
+  EXPECT_LT(pages, 100);
+  EXPECT_EQ(totalRows, 1000);
 }
 
 TEST_P(
@@ -3931,6 +4173,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsLargeScale) {
       request.keyBounds = {currentBounds};
       NimbleIndexProjector::Options options;
       options.maxRows = maxRows;
+      options.needResumeKey = true;
       auto result = projector->project(request, options);
       EXPECT_EQ(result.responses.size(), 1);
       totalReadRows += projector->stats().numProjectedRows;
@@ -3973,6 +4216,7 @@ TEST_P(NimbleIndexProjectorTest, maxRowsMultiRequestMixedSatisfaction) {
   request.keyBounds = {bounds0, bounds1, bounds2, bounds3};
   NimbleIndexProjector::Options options;
   options.maxRows = 100;
+  options.needResumeKey = true;
   auto result = projector->project(request, options);
 
   ASSERT_EQ(result.responses.size(), 4);
@@ -4041,6 +4285,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesAndMaxRowsPerRequestInteraction) {
     NimbleIndexProjector::Options options;
     options.maxRowsPerRequest = 300;
     options.maxBytes = bytesPerStripe;
+    options.needResumeKey = true;
 
     auto result = projector->project(request, options);
     ASSERT_EQ(result.responses.size(), 1);
@@ -4081,6 +4326,7 @@ TEST_P(NimbleIndexProjectorTest, maxBytesLargeScale) {
     request.keyBounds = {currentBounds};
     NimbleIndexProjector::Options options;
     options.maxBytes = bytesPerStripe * 3;
+    options.needResumeKey = true;
     auto result = projector->project(request, options);
     EXPECT_EQ(result.responses.size(), 1);
     totalReadRows += projector->stats().numProjectedRows;

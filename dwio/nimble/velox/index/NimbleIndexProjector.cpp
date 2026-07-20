@@ -218,19 +218,54 @@ NimbleIndexProjector::Result NimbleIndexProjector::project(
 void NimbleIndexProjector::pruneStripeRanges(
     std::vector<StripeRange>& stripeRanges,
     const std::vector<uint64_t>& rowsPerRequest) {
-  if (ctx_.options->maxRowsPerRequest > 0) {
-    std::erase_if(stripeRanges, [&](const auto& range) {
-      return rowsPerRequest[range.requestIndex] >=
-          ctx_.options->maxRowsPerRequest;
+  const auto maxRowsPerRequest = ctx_.options->maxRowsPerRequest;
+  if (maxRowsPerRequest == 0) {
+    return;
+  }
+  std::erase_if(stripeRanges, [&](const auto& range) {
+    return rowsPerRequest[range.requestIndex] >= maxRowsPerRequest;
+  });
+}
+
+void NimbleIndexProjector::setResumeKey(
+    uint32_t requestIndex,
+    uint32_t stripeOffset,
+    uint32_t readEndRow,
+    bool partialRead) {
+  if (ctx_.resumeKeys[requestIndex].has_value()) {
+    return;
+  }
+  // More rows remain iff we clipped mid-stripe, or the request continues into
+  // the next stripe. A request occupies one contiguous stripe span, so
+  // "continues" can only mean the immediately-next stripe -- no scan needed.
+  bool hasMore = partialRead;
+  const uint32_t nextStripe = stripeOffset + 1;
+  if (!hasMore && nextStripe < ctx_.stripeRanges.numStripes) {
+    const auto ranges = ctx_.stripeRanges.getRanges(nextStripe);
+    hasMore = std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) {
+      return range.requestIndex == requestIndex;
     });
+  }
+  // The first un-returned row is stripeStartRow + readEndRow in both cases:
+  // the clip point for a mid-stripe cut, or this stripe's end (== the next
+  // stripe's start) for a boundary cap.
+  if (hasMore) {
+    const uint32_t stripeIndex = ctx_.stripeRanges.startStripe + stripeOffset;
+    const auto stripeStartRow =
+        static_cast<uint32_t>(tablet_->stripeStartRow(stripeIndex));
+    ctx_.resumeKeys[requestIndex] =
+        clusterIndex_->keyAtRow(stripeStartRow + readEndRow);
   }
 }
 
 void NimbleIndexProjector::prepareStripes() {
   uint64_t totalRows{0};
   uint64_t totalBytes{0};
+  const auto maxRowsPerRequest = ctx_.options->maxRowsPerRequest;
+  const auto needResumeKey = ctx_.options->needResumeKey;
   std::vector<uint64_t> rowsPerRequest(ctx_.numRequests, 0);
   ctx_.hasStripeRanges.assign(ctx_.numRequests, false);
+  ctx_.resumeKeys.assign(ctx_.numRequests, std::nullopt);
 
   for (uint32_t offset = 0; offset < ctx_.stripeRanges.numStripes; ++offset) {
     auto spanRanges = ctx_.stripeRanges.getRanges(offset);
@@ -240,22 +275,37 @@ void NimbleIndexProjector::prepareStripes() {
       continue;
     }
 
+    const uint32_t stripeIndex = ctx_.stripeRanges.startStripe + offset;
+
     uint64_t stripeRows{0};
     for (auto& stripeRange : stripeRanges) {
+      const auto requestIndex = stripeRange.requestIndex;
       const auto numRows =
           static_cast<uint64_t>(stripeRange.rowRange.numRows());
-      if (ctx_.options->maxRowsPerRequest > 0) {
-        const auto remaining = ctx_.options->maxRowsPerRequest -
-            rowsPerRequest[stripeRange.requestIndex];
-        const auto rowsToRead = std::min(numRows, remaining);
-        rowsPerRequest[stripeRange.requestIndex] += rowsToRead;
-        stripeRows += rowsToRead;
-        if (rowsToRead < numRows) {
-          stripeRange.rowRange.endRow =
-              stripeRange.rowRange.startRow + static_cast<uint32_t>(rowsToRead);
-        }
-      } else {
+      if (maxRowsPerRequest == 0) {
+        rowsPerRequest[requestIndex] += numRows;
         stripeRows += numRows;
+        continue;
+      }
+
+      const auto remaining = maxRowsPerRequest - rowsPerRequest[requestIndex];
+      const auto rowsToRead = std::min(numRows, remaining);
+      rowsPerRequest[requestIndex] += rowsToRead;
+      stripeRows += rowsToRead;
+
+      // The hard cap cut this request mid-stripe: clip its range to the rows we
+      // keep. Clipping is independent of resume keys and always applies.
+      const bool partialRead = rowsToRead < numRows;
+      if (partialRead) {
+        stripeRange.rowRange.endRow =
+            stripeRange.rowRange.startRow + static_cast<uint32_t>(rowsToRead);
+      }
+
+      // Once the request reaches its cap (via a mid-stripe clip or by landing
+      // exactly on this stripe's end), record where it resumes.
+      if (needResumeKey && rowsPerRequest[requestIndex] >= maxRowsPerRequest) {
+        setResumeKey(
+            requestIndex, offset, stripeRange.rowRange.endRow, partialRead);
       }
     }
 
@@ -263,7 +313,6 @@ void NimbleIndexProjector::prepareStripes() {
       ctx_.hasStripeRanges[range.requestIndex] = true;
     }
 
-    const uint32_t stripeIndex = ctx_.stripeRanges.startStripe + offset;
     StripePlan stripePlan;
     stripePlan.stripeIndex = stripeIndex;
     stripePlan.stripeRanges = std::move(stripeRanges);
@@ -299,6 +348,7 @@ void NimbleIndexProjector::clearRequest() {
   ctx_.plan.stripePlans.clear();
   ctx_.plan.truncated = false;
   ctx_.hasStripeRanges.clear();
+  ctx_.resumeKeys.clear();
   ctx_.dataInputIndices.clear();
   ctx_.dataHandle.reset();
   ctx_.stripeBodies.clear();
@@ -606,6 +656,14 @@ folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
 }
 
 void NimbleIndexProjector::setResumeKeys(Result& result) {
+  if (!ctx_.options->needResumeKey) {
+    return;
+  }
+  for (size_t i = 0; i < result.responses.size(); ++i) {
+    if (ctx_.resumeKeys[i].has_value()) {
+      result.responses[i].resumeKey = ctx_.resumeKeys[i];
+    }
+  }
   if (!ctx_.plan.truncated) {
     return;
   }
@@ -634,8 +692,8 @@ void NimbleIndexProjector::setResumeKeys(Result& result) {
 
   for (const auto& request : stripeRanges) {
     auto& response = result.responses[request.requestIndex];
-    NIMBLE_CHECK(!response.resumeKey.has_value());
-    if (std::any_of(
+    if (!response.resumeKey.has_value() &&
+        std::any_of(
             nextRanges.begin(), nextRanges.end(), [&](const auto& range) {
               return range.requestIndex == request.requestIndex;
             })) {
