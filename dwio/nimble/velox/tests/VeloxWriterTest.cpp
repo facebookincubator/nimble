@@ -3831,7 +3831,7 @@ class VeloxWriterIndexTest
         continue;
       }
 
-      nimble::index::test::ChunkIndexTestHelper chunkHelper(
+      nimble::index::test::ChunkStatsTestHelper chunkHelper(
           stripeId.chunkIndex().get());
 
       const uint32_t stripeOffsetInGroup =

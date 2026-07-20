@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/file/File.h"
@@ -59,9 +59,9 @@ class ClusterIndexTestBase : public ::testing::Test {
     /// Serialized ClusterIndexGroup flatbuffers (cluster index) appended
     /// sequentially.
     std::string indexPartitions;
-    /// Serialized ChunkIndex flatbuffers appended sequentially.
+    /// Serialized ChunkStats flatbuffers appended sequentially.
     std::string chunkIndexGroups;
-    /// Size of each ChunkIndex flatbuffer in chunkIndexGroups.
+    /// Size of each ChunkStats flatbuffer in chunkIndexGroups.
     std::vector<size_t> chunkIndexGroupSizes;
     /// Serialized root Index flatbuffer.
     std::string rootIndex;
@@ -103,8 +103,8 @@ class ClusterIndexTestBase : public ::testing::Test {
       const IndexBuffers& indexBuffers,
       velox::ReadFile* keyStreamFile = nullptr);
 
-  /// Creates a ChunkIndexGroup from the serialized IndexBuffers.
-  std::shared_ptr<ChunkIndexGroup> createChunkIndex(
+  /// Creates a ChunkStatsGroup from the serialized IndexBuffers.
+  std::shared_ptr<ChunkStatsGroup> createChunkIndex(
       const IndexBuffers& indexBuffers,
       uint32_t stripeGroupIndex);
 
