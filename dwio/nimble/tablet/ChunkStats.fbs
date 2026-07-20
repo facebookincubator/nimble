@@ -39,6 +39,10 @@ table StripeChunkStats {
   stream_chunk_rows:[uint32];
   /// Byte offset of each chunk within its stream.
   stream_chunk_offsets:[uint32];
+  /// Per-chunk null-value count, parallel to stream_chunk_rows/offsets.
+  /// Appended field: absent in files written before per-chunk null statistics
+  /// were added, in which case readers treat the null count as unknown.
+  stream_chunk_null_counts:[uint32];
 }
 
 /// Root table for the chunk stats optional section ("columnar.chunk.stats").

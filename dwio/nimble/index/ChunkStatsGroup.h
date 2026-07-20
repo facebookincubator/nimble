@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/IndexTypes.h"
@@ -100,6 +101,11 @@ class StreamIndex {
 
   /// Lookup chunk by row ID within the stream's row range.
   ChunkLocation lookupChunk(uint32_t rowId) const;
+
+  /// Returns the per-chunk null-value count for the chunk at the given absolute
+  /// position (ChunkLocation::chunkIndex), or std::nullopt when per-chunk null
+  /// statistics are absent (files written before chunk statistics were added).
+  std::optional<uint32_t> chunkNullCount(uint32_t chunkIndex) const;
 
   /// Returns the total number of rows in this stream.
   uint32_t rowCount() const;

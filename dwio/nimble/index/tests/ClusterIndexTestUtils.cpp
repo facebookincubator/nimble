@@ -103,7 +103,9 @@ std::vector<Chunk> createChunks(
     auto pos = buffer.reserve(spec.size);
     std::memset(pos, 'X', spec.size);
     chunks.push_back(
-        {.rowCount = spec.rowCount, .content = {{pos, spec.size}}});
+        {.rowCount = spec.rowCount,
+         .nullCount = spec.nullCount,
+         .content = {{pos, spec.size}}});
   }
   return chunks;
 }
@@ -167,6 +169,7 @@ StreamStats ChunkStatsTestHelper::streamStats(uint32_t streamId) const {
   NIMBLE_CHECK_NOT_NULL(chunkRows);
   const auto* chunkOffsets = root->stream_chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+  const auto* chunkNullCounts = root->stream_chunk_null_counts();
 
   const uint32_t stripeCount = chunkStats_->stripeCount_;
 
@@ -186,6 +189,9 @@ StreamStats ChunkStatsTestHelper::streamStats(uint32_t streamId) const {
       const uint32_t chunkIndex = startChunkIndex + i;
       stats.chunkRows.push_back(chunkRows->Get(chunkIndex));
       stats.chunkOffsets.push_back(chunkOffsets->Get(chunkIndex));
+      if (chunkNullCounts != nullptr) {
+        stats.chunkNullCounts.push_back(chunkNullCounts->Get(chunkIndex));
+      }
     }
   }
 
