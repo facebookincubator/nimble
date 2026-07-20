@@ -41,6 +41,7 @@
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
+#include "dwio/nimble/velox/stats/ColumnStatistics.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
@@ -1454,13 +1455,20 @@ uint32_t VeloxWriter::encodeChunk(
   }
   uint32_t chunkBytes{0};
   chunk.rowCount = chunkView.rowCount();
-  // Collect the per-chunk null-count statistic only when chunk statistics are
-  // enabled, so writers with chunk stats off pay no extra cost. Streams with no
-  // nulls keep the default 0 without scanning.
-  if (context_->options().enableChunkIndex && chunkView.hasNulls()) {
-    const auto nonNulls = chunkView.nonNulls();
-    chunk.nullCount = static_cast<uint32_t>(
-        std::count(nonNulls.begin(), nonNulls.end(), false));
+  // Per-chunk statistics, only when enabled (no cost when chunk stats are off).
+  if (context_->options().enableChunkIndex) {
+    if (chunkView.hasNulls()) {
+      const auto nonNulls = chunkView.nonNulls();
+      chunk.nullCount = static_cast<uint32_t>(
+          std::count(nonNulls.begin(), nonNulls.end(), false));
+    }
+    // Over the chunk's packed non-null values; self-filters by scalar kind.
+    if (const auto minMax = computeChunkMinMax(
+            chunkView.descriptor().scalarKind(), chunkView.data())) {
+      chunk.minValue = minMax->first;
+      chunk.maxValue = minMax->second;
+      chunk.hasMinMax = true;
+    }
   }
   ChunkedStreamWriter chunkWriter{
       *encodingBuffer_, context_->options().chunkCompression};

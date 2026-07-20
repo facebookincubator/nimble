@@ -84,6 +84,9 @@ class ChunkStatsWriter {
     std::vector<uint32_t> chunkOffsets;
     // Per-chunk null-value count (statistic used for chunk skipping).
     std::vector<uint32_t> chunkNullCounts;
+    std::vector<int64_t> chunkMinValues;
+    std::vector<int64_t> chunkMaxValues;
+    std::vector<uint8_t> chunkMinMaxValid;
     // Number of chunks in this stripe for this stream.
     uint32_t chunkCount{0};
   };

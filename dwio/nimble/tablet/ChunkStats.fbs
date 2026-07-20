@@ -43,6 +43,11 @@ table StripeChunkStats {
   /// Appended field: absent in files written before per-chunk null statistics
   /// were added, in which case readers treat the null count as unknown.
   stream_chunk_null_counts:[uint32];
+  /// Per-chunk min/max raw 64-bit payloads (int64 integral; bit_cast of double
+  /// for float). Valid where stream_chunk_min_max_valid==1; appended fields.
+  stream_chunk_min_values:[long];
+  stream_chunk_max_values:[long];
+  stream_chunk_min_max_valid:[ubyte];
 }
 
 /// Root table for the chunk stats optional section ("columnar.chunk.stats").

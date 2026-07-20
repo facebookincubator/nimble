@@ -204,6 +204,54 @@ TEST_F(ChunkStatsWriterTest, perChunkNullCounts) {
   EXPECT_EQ(stream1->chunkNullCount(stream1->lookupChunk(60).chunkIndex), 40);
 }
 
+TEST_F(ChunkStatsWriterTest, perChunkMinMax) {
+  ChunkStatsWriter writer(*pool_);
+  Buffer buffer{*pool_};
+  TestChunkFileIndex fileIndex;
+
+  // 1 stripe, 2 streams. ChunkSpec = {rowCount, size, nullCount, min, max,
+  // hasMinMax}. Stream 0's middle chunk has no valid min/max (e.g. all-null or
+  // NaN at encode time) and must read back as nullopt.
+  writer.newStripe(2);
+  auto chunks0 = createChunks(
+      buffer,
+      {{30, 10, 0, -5, 100, true},
+       {45, 15, 0, 0, 0, false},
+       {25, 8, 0, 7, 7, true}});
+  auto chunks1 = createChunks(
+      buffer, {{60, 20, 0, 1000, 2000, true}, {40, 12, 0, -1, -1, true}});
+  writer.addStream(0, chunks0);
+  writer.addStream(1, chunks1);
+
+  writer.writeGroup(2, 1, createMetadataSectionCallback(fileIndex));
+  writer.writeRoot(writeRootCallback(fileIndex));
+
+  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+
+  using MinMax = std::optional<std::pair<int64_t, int64_t>>;
+
+  auto stream0 = chunkIndex->createStreamIndex(0, 0, 33);
+  ASSERT_NE(stream0, nullptr);
+  EXPECT_EQ(
+      stream0->chunkMinMax(stream0->lookupChunk(0).chunkIndex),
+      MinMax(std::pair<int64_t, int64_t>{-5, 100}));
+  // Middle chunk had hasMinMax=false -> unknown.
+  EXPECT_EQ(
+      stream0->chunkMinMax(stream0->lookupChunk(30).chunkIndex), MinMax{});
+  EXPECT_EQ(
+      stream0->chunkMinMax(stream0->lookupChunk(75).chunkIndex),
+      MinMax(std::pair<int64_t, int64_t>{7, 7}));
+
+  auto stream1 = chunkIndex->createStreamIndex(0, 1, 32);
+  ASSERT_NE(stream1, nullptr);
+  EXPECT_EQ(
+      stream1->chunkMinMax(stream1->lookupChunk(0).chunkIndex),
+      MinMax(std::pair<int64_t, int64_t>{1000, 2000}));
+  EXPECT_EQ(
+      stream1->chunkMinMax(stream1->lookupChunk(60).chunkIndex),
+      MinMax(std::pair<int64_t, int64_t>{-1, -1}));
+}
+
 TEST_F(ChunkStatsWriterTest, multipleStripesInSingleGroup) {
   ChunkStatsWriter writer(*pool_);
   Buffer buffer{*pool_};

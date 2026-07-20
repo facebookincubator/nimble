@@ -31,6 +31,11 @@ struct Chunk {
   /// are enabled (VeloxWriterOptions::enableChunkIndex); left at 0 otherwise.
   uint32_t nullCount{0};
 
+  /// Per-chunk min/max raw 64-bit payloads; valid only when hasMinMax.
+  int64_t minValue{0};
+  int64_t maxValue{0};
+  bool hasMinMax{false};
+
   /// The encoded and compressed data content of this chunk, stored as a vector
   /// of string views. Each string_view points to a buffer containing a portion
   /// of the chunk's data. Multiple buffers may be used for large chunks.
