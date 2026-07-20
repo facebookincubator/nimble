@@ -20,7 +20,7 @@
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexConstants.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
@@ -147,18 +147,18 @@ PartitionStats ClusterIndexTestHelper::partitionStats(
   return stats;
 }
 
-StreamStats ChunkIndexTestHelper::streamStats(uint32_t streamId) const {
+StreamStats ChunkStatsTestHelper::streamStats(uint32_t streamId) const {
   StreamStats stats;
 
-  const auto* root = flatbuffers::GetRoot<serialization::StripeChunkIndex>(
-      chunkIndex_->metadata_->content().data());
+  const auto* root = flatbuffers::GetRoot<serialization::StripeChunkStats>(
+      chunkStats_->metadata_->content().data());
 
   const auto* streamChunkCounts = root->stream_chunk_counts();
   if (streamChunkCounts == nullptr) {
     return stats;
   }
 
-  const uint32_t streamCount = chunkIndex_->streamCount_;
+  const uint32_t streamCount = chunkStats_->streamCount_;
   if (streamId >= streamCount) {
     return stats;
   }
@@ -168,7 +168,7 @@ StreamStats ChunkIndexTestHelper::streamStats(uint32_t streamId) const {
   const auto* chunkOffsets = root->stream_chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
 
-  const uint32_t stripeCount = chunkIndex_->stripeCount_;
+  const uint32_t stripeCount = chunkStats_->stripeCount_;
 
   uint32_t accumulatedChunkCountForStream = 0;
   for (uint32_t stripeOffset = 0; stripeOffset < stripeCount; ++stripeOffset) {
