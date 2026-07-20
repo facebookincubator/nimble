@@ -719,6 +719,17 @@ TEST_P(SelectiveNimbleReaderTest, basic) {
   });
 }
 
+TEST_P(SelectiveNimbleReaderTest, currentStripe) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(200, folly::identity),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto readers = makeReaders(input, scanSpec, stringDecoderZeroCopy);
+  EXPECT_EQ(readers.rowReader->currentStripe(), 0u);
+}
+
 TEST_P(SelectiveNimbleReaderTest, denseWithNulls) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
   auto input = makeRowVector({
