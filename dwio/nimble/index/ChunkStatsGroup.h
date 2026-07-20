@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/IndexTypes.h"
@@ -106,6 +107,12 @@ class StreamIndex {
   /// position (ChunkLocation::chunkIndex), or std::nullopt when per-chunk null
   /// statistics are absent (files written before chunk statistics were added).
   std::optional<uint32_t> chunkNullCount(uint32_t chunkIndex) const;
+
+  /// Returns the chunk's [min, max] raw 64-bit payloads (int64 for integral,
+  /// bit_cast<int64_t> of the double for float/double), or std::nullopt when
+  /// absent (pre-stats files) or invalid for that chunk.
+  std::optional<std::pair<int64_t, int64_t>> chunkMinMax(
+      uint32_t chunkIndex) const;
 
   /// Returns the total number of rows in this stream.
   uint32_t rowCount() const;

@@ -161,6 +161,30 @@ std::optional<uint32_t> StreamIndex::chunkNullCount(uint32_t chunkIndex) const {
   return nullCounts->Get(chunkIndex);
 }
 
+std::optional<std::pair<int64_t, int64_t>> StreamIndex::chunkMinMax(
+    uint32_t chunkIndex) const {
+  const auto* root = asFlatBuffersRoot<serialization::StripeChunkStats>(
+      chunkStats_->metadata_->content());
+
+  const auto* valid = root->stream_chunk_min_max_valid();
+  const auto* mins = root->stream_chunk_min_values();
+  const auto* maxs = root->stream_chunk_max_values();
+  if (valid == nullptr || mins == nullptr || maxs == nullptr) {
+    // Absent in pre-stats files.
+    return std::nullopt;
+  }
+  // Arrays present and appended in lockstep, so an out-of-range index is a
+  // bug/corruption, not a legacy file -- fail loudly (mirrors chunkNullCount).
+  NIMBLE_CHECK_LT(chunkIndex, valid->size());
+  NIMBLE_CHECK_LT(chunkIndex, mins->size());
+  NIMBLE_CHECK_LT(chunkIndex, maxs->size());
+  if (valid->Get(chunkIndex) == 0) {
+    return std::nullopt; // recorded but unknown (NaN / ineligible / empty)
+  }
+  return std::pair<int64_t, int64_t>{
+      mins->Get(chunkIndex), maxs->Get(chunkIndex)};
+}
+
 uint32_t StreamIndex::rowCount() const {
   if (endChunkOffset_ == startChunkOffset_) {
     return 0;

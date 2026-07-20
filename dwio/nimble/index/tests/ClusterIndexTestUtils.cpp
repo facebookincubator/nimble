@@ -105,6 +105,9 @@ std::vector<Chunk> createChunks(
     chunks.push_back(
         {.rowCount = spec.rowCount,
          .nullCount = spec.nullCount,
+         .minValue = spec.minValue,
+         .maxValue = spec.maxValue,
+         .hasMinMax = spec.hasMinMax,
          .content = {{pos, spec.size}}});
   }
   return chunks;

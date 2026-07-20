@@ -144,6 +144,9 @@ struct ChunkSpec {
   uint32_t rowCount{};
   uint32_t size{};
   uint32_t nullCount{0};
+  int64_t minValue{0};
+  int64_t maxValue{0};
+  bool hasMinMax{false};
 };
 
 /// Specification for a single stream (for test data creation).

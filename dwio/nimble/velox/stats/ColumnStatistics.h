@@ -22,6 +22,8 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
@@ -40,6 +42,14 @@ enum class StatType : uint8_t {
   STRING,
   DEDUPLICATED,
 };
+
+/// Computes [min, max] over the chunk's packed non-null scalar values (reusing
+/// the file-level vectorized routines) as raw 64-bit payloads: int64 for
+/// integral, bit_cast<int64_t> of the double for float/double. nullopt when
+/// empty, an ineligible kind, or NaN.
+std::optional<std::pair<int64_t, int64_t>> computeChunkMinMax(
+    ScalarKind scalarKind,
+    std::string_view data);
 
 // Forward declarations for friend classes
 class StatisticsCollector;
