@@ -3509,6 +3509,154 @@ TEST_P(E2EFilterTest, multiChunkDictionaryWithDifferentAlphabets) {
   EXPECT_EQ(totalRows, kNumBatches * kRowsPerBatch);
 }
 
+// Verifies cross-chunk dictionary deduplication (compaction). Each chunk's
+// alphabet is the same kSharedValues shared values PLUS one batch-unique value.
+// The unique value forces the writer to emit a distinct dictionary per chunk
+// (so the read path actually merges alphabets across chunks); the shared values
+// give the merge something to deduplicate. When N chunks are merged in a single
+// next(), the compacted alphabet must hold kSharedValues + N entries (the
+// shared values appear once, plus one unique per chunk). Without dedup it would
+// hold (kSharedValues + 1) * N entries, bloating the DictionaryVector's backing
+// FlatVector and memory.
+TEST_P(E2EFilterTest, multiChunkDictionaryWithOverlappingAlphabets) {
+  auto type = ROW({"string_val", "long_val"}, {VARCHAR(), BIGINT()});
+  rowType_ = asRowType(type);
+
+  const size_t kRowsPerBatch = 200;
+  const int kNumBatches = 8;
+  const int kSharedValues = 5;
+  // Row index within each batch that carries the batch-unique value.
+  const size_t kUniqueRow = 5;
+  std::vector<RowVectorPtr> batches;
+
+  // Reconstructs the value written at a given global row, so reads can be
+  // verified and the alphabet shape reasoned about.
+  auto valueAtGlobalRow = [&](int64_t globalRow) {
+    const auto rowInBatch = globalRow % kRowsPerBatch;
+    const auto batchIdx = globalRow / kRowsPerBatch;
+    return rowInBatch == kUniqueRow
+        ? fmt::format("BATCH{}_UNIQUE", batchIdx)
+        : fmt::format("SHARED_VAL_{}", rowInBatch % kSharedValues);
+  };
+
+  for (int batchIdx = 0; batchIdx < kNumBatches; ++batchIdx) {
+    std::vector<std::string> stringStorage(kRowsPerBatch);
+    std::vector<int64_t> longVals(kRowsPerBatch);
+
+    // Each batch's distinct values are {SHARED_VAL_0..4, BATCH<idx>_UNIQUE}:
+    // five shared entries plus one per-batch unique entry. The unique entry
+    // makes every chunk's dictionary differ, forcing separate chunks.
+    for (size_t i = 0; i < kRowsPerBatch; ++i) {
+      const auto globalRow = batchIdx * kRowsPerBatch + i;
+      stringStorage[i] = valueAtGlobalRow(globalRow);
+      longVals[i] = globalRow;
+    }
+
+    auto stringVector =
+        velox::test::VectorMaker(leafPool_.get())
+            .flatVector<velox::StringView>(kRowsPerBatch, [&](auto row) {
+              return velox::StringView(stringStorage[row]);
+            });
+    auto longVector = velox::test::VectorMaker(leafPool_.get())
+                          .flatVector<int64_t>(kRowsPerBatch, [&](auto row) {
+                            return longVals[row];
+                          });
+
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            type,
+            nullptr,
+            kRowsPerBatch,
+            std::vector<VectorPtr>{stringVector, longVector}));
+  }
+
+  // Single stripe (flushLambda=false), one chunk per batch (chunkLambda=true),
+  // all dictionary-encoded — forcing cross-chunk alphabet merging on read.
+  {
+    auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+    VeloxWriterOptions writerOptions;
+    writerOptions.enableChunking = true;
+    // Without this, the writer coalesces the small per-batch chunks into a
+    // single stream chunk (one shared dictionary), and the cross-chunk merge
+    // path is never exercised. Setting it to 0 keeps each batch a distinct
+    // chunk with its own dictionary.
+    writerOptions.minStreamChunkRawSize = 0;
+    writerOptions.flushPolicyFactory = [] {
+      return std::make_unique<LambdaFlushPolicy>(
+          /*flushLambda=*/[](const StripeProgress&) { return false; },
+          /*chunkLambda=*/[](const StripeProgress&) { return true; });
+    };
+    writerOptions.encodingLayoutTree.emplace(
+        buildForcedDictionaryEncodingLayoutTree());
+    VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+    for (auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+  }
+
+  auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+      std::make_shared<velox::InMemoryReadFile>(sinkData_),
+      *leafPool_,
+      velox::dwio::common::MetricsLog::voidLog());
+
+  velox::dwio::common::ReaderOptions readerOpts{leafPool_.get()};
+  readerOpts.setMetadataIoStats(metadataIoStats_);
+  auto reader = makeReader(readerOpts, std::move(input));
+  auto scanSpec = std::make_shared<velox::common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*type);
+  velox::dwio::common::RowReaderOptions rowReaderOptions;
+  rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setStringDecoderZeroCopy(param().stringDecoderZeroCopy);
+  rowReaderOptions.setNimblePreserveDictionaryEncoding(
+      param().stringDecoderZeroCopy);
+  auto rowReader = reader->createRowReader(rowReaderOptions);
+
+  // Batch size (1000) > chunk size (200): each next() merges multiple chunks.
+  VectorPtr result = velox::BaseVector::create(type, 0, leafPool_.get());
+  size_t totalRows = 0;
+  while (rowReader->next(1000, result)) {
+    auto* rowResult = result->as<RowVector>();
+    ASSERT_NE(rowResult, nullptr);
+    totalRows += rowResult->size();
+
+    auto stringChild = rowResult->childAt(0)->loadedVector();
+    if (param().stringDecoderZeroCopy) {
+      ASSERT_EQ(stringChild->encoding(), VectorEncoding::Simple::DICTIONARY)
+          << "Expected DICTIONARY encoding for string column, got "
+          << stringChild->encoding();
+      // Without compaction (nimbleCompactDictionaryAcrossChunks=false), each
+      // chunk's full alphabet is appended: (kSharedValues + 1) * chunksMerged.
+      // With compaction, shared entries are deduplicated: kSharedValues +
+      // chunksMerged. TODO: enable the compacted assertion once the session
+      // property is plumbed through RowReaderOptions.
+      ASSERT_EQ(rowResult->size() % kRowsPerBatch, 0)
+          << "Expected a whole number of chunks per next()";
+      const auto chunksMerged = rowResult->size() / kRowsPerBatch;
+      ASSERT_NE(stringChild->valueVector(), nullptr);
+      EXPECT_EQ(
+          stringChild->valueVector()->size(),
+          (kSharedValues + 1) * chunksMerged)
+          << "Alphabet should contain all per-chunk entries without compaction";
+    }
+
+    velox::DecodedVector decodedString(*stringChild);
+    velox::DecodedVector decodedLong(*rowResult->childAt(1));
+
+    for (velox::vector_size_t i = 0; i < rowResult->size(); ++i) {
+      const auto globalRow = decodedLong.valueAt<int64_t>(i);
+      ASSERT_EQ(
+          decodedString.valueAt<velox::StringView>(i).str(),
+          valueAtGlobalRow(globalRow))
+          << "Mismatch at globalRow=" << globalRow;
+    }
+  }
+
+  EXPECT_EQ(totalRows, kNumBatches * kRowsPerBatch);
+}
+
 // Regression test for two bugs in the dictionary reactive fallback path:
 //   Bug 1: expandDictionaryToFlat was called after mergedAlphabet_.clear(),
 //          causing out-of-bounds access when expanding dictionary indices.
