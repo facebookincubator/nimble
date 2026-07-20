@@ -23,8 +23,8 @@ namespace facebook.nimble.serialization;
 ///
 /// All streams are indexed. Streams with a single chunk have one entry
 /// each. The group-level minAvgChunksPerStream threshold controls whether
-/// the entire chunk index is written for a stripe group.
-table StripeChunkIndex {
+/// the entire chunk stats section is written for a stripe group.
+table StripeChunkStats {
   /// Total number of streams indexed in this stripe group.
   stream_count:uint32;
   /// Accumulated chunk counts per (stripe, stream) pair,
@@ -39,15 +39,24 @@ table StripeChunkIndex {
   stream_chunk_rows:[uint32];
   /// Byte offset of each chunk within its stream.
   stream_chunk_offsets:[uint32];
+  /// Per-chunk null-value count, parallel to stream_chunk_rows/offsets.
+  /// Appended field: absent in files written before per-chunk null statistics
+  /// were added, in which case readers treat the null count as unknown.
+  stream_chunk_null_counts:[uint32];
+  /// Per-chunk min/max raw 64-bit payloads (int64 integral; bit_cast of double
+  /// for float). Valid where stream_chunk_min_max_valid==1; appended fields.
+  stream_chunk_min_values:[long];
+  stream_chunk_max_values:[long];
+  stream_chunk_min_max_valid:[ubyte];
 }
 
-/// Root table for the chunk index optional section.
+/// Root table for the chunk stats optional section ("columnar.chunk.stats").
 /// Contains per-stripe-group MetadataSection references.
-table ChunkIndex {
-  /// MetadataSection for each stripe group's StripeChunkIndex.
-  /// Parallel to Footer.stripe_groups. size==0 means no chunk index
+table ChunkStats {
+  /// MetadataSection for each stripe group's StripeChunkStats.
+  /// Parallel to Footer.stripe_groups. size==0 means no chunk stats
   /// for that group (e.g., when average chunks per stream is below threshold).
   stripe_indexes:[MetadataSection];
 }
 
-root_type ChunkIndex;
+root_type ChunkStats;

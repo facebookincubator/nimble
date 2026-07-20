@@ -18,6 +18,8 @@
 #include <optional>
 #include <utility>
 
+#include <folly/lang/Bits.h>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
 
@@ -44,7 +46,76 @@ void addFloatingPointValuesScalar(
   }
 }
 
+// Packed scalar bytes as a span; findMinMax uses unaligned loads (no alignment
+// required).
+template <typename T>
+std::span<const T> chunkValues(std::string_view data) {
+  NIMBLE_DCHECK(
+      data.size() % sizeof(T) == 0,
+      "Chunk value stream size is not a multiple of the value width");
+  return {reinterpret_cast<const T*>(data.data()), data.size() / sizeof(T)};
+}
+
+template <typename T>
+std::optional<std::pair<int64_t, int64_t>> integralChunkMinMax(
+    std::string_view data) {
+  const auto values = chunkValues<T>(data);
+  if (values.empty()) {
+    return std::nullopt;
+  }
+  const auto minMax = findMinMax(values);
+  return std::pair<int64_t, int64_t>{minMax.min, minMax.max};
+}
+
+template <typename T>
+std::optional<std::pair<int64_t, int64_t>> floatingChunkMinMax(
+    std::string_view data) {
+  const auto values = chunkValues<T>(data);
+  if (values.empty()) {
+    return std::nullopt;
+  }
+  const auto minMax = findMinMax(values);
+  if (!minMax.has_value()) {
+    return std::nullopt;
+  }
+  // Store float and double bounds identically as the bit_cast of a double, so
+  // the reader can testDoubleRange regardless of the column's scalar kind.
+  return std::pair<int64_t, int64_t>{
+      folly::bit_cast<int64_t>(static_cast<double>(minMax->min)),
+      folly::bit_cast<int64_t>(static_cast<double>(minMax->max))};
+}
+
 } // namespace
+
+std::optional<std::pair<int64_t, int64_t>> computeChunkMinMax(
+    ScalarKind scalarKind,
+    std::string_view data) {
+  switch (scalarKind) {
+    case ScalarKind::Int8:
+      return integralChunkMinMax<int8_t>(data);
+    case ScalarKind::Int16:
+      return integralChunkMinMax<int16_t>(data);
+    case ScalarKind::Int32:
+      return integralChunkMinMax<int32_t>(data);
+    case ScalarKind::Int64:
+      return integralChunkMinMax<int64_t>(data);
+    case ScalarKind::Float:
+      return floatingChunkMinMax<float>(data);
+    case ScalarKind::Double:
+      return floatingChunkMinMax<double>(data);
+    // Not eligible for min/max chunk stats.
+    case ScalarKind::UInt8:
+    case ScalarKind::UInt16:
+    case ScalarKind::UInt32:
+    case ScalarKind::UInt64:
+    case ScalarKind::Bool:
+    case ScalarKind::String:
+    case ScalarKind::Binary:
+    case ScalarKind::Undefined:
+      return std::nullopt;
+  }
+  return std::nullopt;
+}
 
 ColumnStatistics::ColumnStatistics(
     uint64_t valueCount,

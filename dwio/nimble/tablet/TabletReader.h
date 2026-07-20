@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "dwio/nimble/common/Vector.h"
-#include "dwio/nimble/index/ChunkIndex.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStats.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/DenseIndexRegistry.h"
 #include "dwio/nimble/index/IndexConfig.h"
@@ -107,18 +107,18 @@ class StripeGroup {
   const uint32_t* streamSizes_;
 };
 
-using index::ChunkIndex;
-using index::ChunkIndexGroup;
+using index::ChunkStats;
+using index::ChunkStatsGroup;
 
 class StripeIdentifier {
  public:
   StripeIdentifier(
       uint32_t stripeId,
       std::shared_ptr<StripeGroup> stripeGroup,
-      std::shared_ptr<ChunkIndexGroup> chunkIndex = nullptr)
+      std::shared_ptr<ChunkStatsGroup> chunkIndex = nullptr)
       : stripeId_{stripeId},
         stripeGroup_{std::move(stripeGroup)},
-        chunkIndex_{std::move(chunkIndex)} {}
+        chunkStats_{std::move(chunkIndex)} {}
 
   uint32_t stripeId() const {
     return stripeId_;
@@ -128,14 +128,14 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
-  const std::shared_ptr<ChunkIndexGroup>& chunkIndex() const {
-    return chunkIndex_;
+  const std::shared_ptr<ChunkStatsGroup>& chunkIndex() const {
+    return chunkStats_;
   }
 
  private:
   uint32_t stripeId_;
   std::shared_ptr<StripeGroup> stripeGroup_;
-  std::shared_ptr<ChunkIndexGroup> chunkIndex_;
+  std::shared_ptr<ChunkStatsGroup> chunkStats_;
 };
 
 using index::ClusterIndex;
@@ -178,7 +178,7 @@ class TabletReader {
     /// Whether to load the dense indexes during initialization. Default false.
     bool loadDenseIndexes{false};
 
-    /// If true, pins parsed metadata objects (StripeGroup, ChunkIndexGroup)
+    /// If true, pins parsed metadata objects (StripeGroup, ChunkStatsGroup)
     /// in the metadata cache with strong references so they are never evicted.
     /// This avoids re-reading and re-parsing metadata on every stripe access
     /// when the weak-pointer cache entries would otherwise expire. Works
@@ -281,8 +281,8 @@ class TabletReader {
   // Returns true if the chunk index is loaded and has data for the given
   // stripe group.
   inline bool hasChunkIndex(uint32_t stripeGroupIndex) const {
-    return chunkIndex_ != nullptr &&
-        chunkIndex_->groupMetadata(stripeGroupIndex).size() > 0;
+    return chunkStats_ != nullptr &&
+        chunkStats_->groupMetadata(stripeGroupIndex).size() > 0;
   }
 
   // Returns the cluster index if available, nullptr otherwise.
@@ -494,7 +494,7 @@ class TabletReader {
   // Holds the result of a coalesced metadata load for a stripe group.
   struct StripeGroupMetadata {
     std::shared_ptr<StripeGroup> stripeGroup;
-    std::shared_ptr<ChunkIndexGroup> chunkIndex;
+    std::shared_ptr<ChunkStatsGroup> chunkIndex;
   };
 
   // Loads stripe group and chunk index together using coalesced IO via
@@ -522,11 +522,11 @@ class TabletReader {
       std::string_view footerBuf = {},
       uint64_t footerOffset = 0);
 
-  // Returns the cached ChunkIndexGroup for the given stripe group index.
-  std::shared_ptr<ChunkIndexGroup> chunkIndex(uint32_t stripeGroupIndex) const;
+  // Returns the cached ChunkStatsGroup for the given stripe group index.
+  std::shared_ptr<ChunkStatsGroup> chunkIndex(uint32_t stripeGroupIndex) const;
 
-  // Loads the ChunkIndexGroup for the given stripe group index from file.
-  std::shared_ptr<ChunkIndexGroup> loadChunkIndexGroup(
+  // Loads the ChunkStatsGroup for the given stripe group index from file.
+  std::shared_ptr<ChunkStatsGroup> loadChunkStatsGroup(
       uint32_t stripeGroupIndex) const;
 
   // Computes first stripe index for the given stripe group.
@@ -575,9 +575,9 @@ class TabletReader {
 
   std::unique_ptr<index::DenseIndexRegistry> denseIndexRegistry_;
 
-  // Chunk index root, loaded from "chunk_index" optional section.
-  std::unique_ptr<ChunkIndex> chunkIndex_;
-  mutable MetadataCache<uint32_t, ChunkIndexGroup> chunkIndexCache_;
+  // Chunk stats root, loaded from the "columnar.chunk.stats" optional section.
+  std::unique_ptr<ChunkStats> chunkStats_;
+  mutable MetadataCache<uint32_t, ChunkStatsGroup> chunkIndexCache_;
 
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<

@@ -25,30 +25,30 @@ namespace facebook::nimble {
 
 struct Chunk;
 
-/// ChunkIndexWriter manages chunk-level position index data for streams.
+/// ChunkStatsWriter manages chunk-level position index data for streams.
 ///
 /// This index enables O(1) chunk-level seeking within stripes via
 /// ChunkedDecoder::skipWithIndex(). It can be used standalone (chunk-index-only
 /// mode) or combined with a cluster index (ClusterIndexWriter).
 ///
-/// Each stripe group produces a standalone ChunkIndex flatbuffer stored as a
-/// MetadataSection. The root ChunkIndexRoot table is written to the
-/// "chunk_index" optional section.
+/// Each stripe group produces a standalone ChunkStats flatbuffer stored as a
+/// MetadataSection. The root ChunkStats table is written to the
+/// "columnar.chunk.stats" optional section.
 ///
 /// NOTE: This class is not thread-safe. All methods must be called from a
 /// single thread.
-class ChunkIndexWriter {
+class ChunkStatsWriter {
  public:
   /// @param pool Memory pool for allocations.
   /// @param minAvgChunksPerStream Skip writing chunk index for a stripe group
   ///        if the average number of chunks per stream is below this threshold.
   ///        0 disables chunk index skipping.
-  explicit ChunkIndexWriter(
+  explicit ChunkStatsWriter(
       velox::memory::MemoryPool& pool,
       float minAvgChunksPerStream = 2);
 
-  ChunkIndexWriter(const ChunkIndexWriter&) = delete;
-  ChunkIndexWriter& operator=(const ChunkIndexWriter&) = delete;
+  ChunkStatsWriter(const ChunkStatsWriter&) = delete;
+  ChunkStatsWriter& operator=(const ChunkStatsWriter&) = delete;
 
   /// Initializes structures for writing a new stripe.
   void newStripe(size_t streamCount);
@@ -56,7 +56,7 @@ class ChunkIndexWriter {
   /// Adds chunk-level index data for a stream.
   void addStream(uint32_t streamIndex, const std::vector<Chunk>& chunks);
 
-  /// Writes a standalone ChunkIndex flatbuffer for the current stripe group
+  /// Writes a standalone ChunkStats flatbuffer for the current stripe group
   /// and stores the resulting MetadataSection.
   ///
   /// @param streamCount Total number of streams in the stripe group.
@@ -68,7 +68,7 @@ class ChunkIndexWriter {
       size_t stripeCount,
       const CreateMetadataSectionFn& createMetadataSection);
 
-  /// Writes the root ChunkIndexRoot table to the "chunk_index" optional
+  /// Writes the root ChunkStats table to the "columnar.chunk.stats" optional
   /// section.
   ///
   /// @param writeOptionalSection Callback to persist the root chunk index as a
@@ -82,6 +82,11 @@ class ChunkIndexWriter {
     std::vector<uint32_t> chunkRows;
     // Byte offsets of each chunk within the stream.
     std::vector<uint32_t> chunkOffsets;
+    // Per-chunk null-value count (statistic used for chunk skipping).
+    std::vector<uint32_t> chunkNullCounts;
+    std::vector<int64_t> chunkMinValues;
+    std::vector<int64_t> chunkMaxValues;
+    std::vector<uint8_t> chunkMinMaxValid;
     // Number of chunks in this stripe for this stream.
     uint32_t chunkCount{0};
   };

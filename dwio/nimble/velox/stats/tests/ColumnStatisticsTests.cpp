@@ -19,6 +19,7 @@
 #include <span>
 #include <vector>
 
+#include <folly/lang/Bits.h>
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
@@ -885,4 +886,45 @@ TEST_F(StatisticsCollectorTests, DeduplicatedStatisticsCollectorMerge) {
       dedupCollector1.getBaseCollector()->getValueCount(),
       270); // (100-10) + (200-20)
   EXPECT_EQ(dedupCollector1.getBaseCollector()->getNullCount(), 30);
+}
+
+namespace {
+template <typename T>
+std::string_view bytesOf(const std::vector<T>& values) {
+  return std::string_view(
+      reinterpret_cast<const char*>(values.data()), values.size() * sizeof(T));
+}
+} // namespace
+
+TEST(ComputeChunkMinMaxTest, integralAndFloating) {
+  // Signed integral: min/max are widened to int64.
+  const std::vector<int32_t> ints = {5, -3, 12, 7};
+  EXPECT_EQ(
+      computeChunkMinMax(ScalarKind::Int32, bytesOf(ints)),
+      (std::optional<std::pair<int64_t, int64_t>>({-3, 12})));
+
+  // Floating point: payloads are the bit_cast<int64_t> of the doubles.
+  const std::vector<double> dbls = {2.5, -1.0, 9.25};
+  const auto minMax = computeChunkMinMax(ScalarKind::Double, bytesOf(dbls));
+  ASSERT_TRUE(minMax.has_value());
+  EXPECT_EQ(folly::bit_cast<double>(minMax->first), -1.0);
+  EXPECT_EQ(folly::bit_cast<double>(minMax->second), 9.25);
+}
+
+TEST(ComputeChunkMinMaxTest, unknownCases) {
+  // Empty input -> unknown.
+  EXPECT_FALSE(computeChunkMinMax(ScalarKind::Int64, {}).has_value());
+
+  // NaN anywhere in floating data -> unknown.
+  const std::vector<double> withNan = {1.0, std::nan(""), 3.0};
+  EXPECT_FALSE(
+      computeChunkMinMax(ScalarKind::Double, bytesOf(withNan)).has_value());
+
+  // Non-eligible kinds (unsigned / bool / string) -> unknown.
+  const std::vector<uint32_t> unsignedValues = {1, 2, 3};
+  EXPECT_FALSE(computeChunkMinMax(ScalarKind::UInt32, bytesOf(unsignedValues))
+                   .has_value());
+  const std::vector<int32_t> boolBytes = {1};
+  EXPECT_FALSE(
+      computeChunkMinMax(ScalarKind::Bool, bytesOf(boolBytes)).has_value());
 }
