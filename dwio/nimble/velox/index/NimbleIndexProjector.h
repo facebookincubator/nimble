@@ -67,8 +67,8 @@ using Subfield = velox::common::Subfield;
 ///     const auto& response = result.responses[i];
 ///     for (const auto& slice : response.slices) {
 ///       // `slice` is a self-describing kTablet IOBuf chain with
-///       // the request's row range and (on the last slice of a truncated
-///       // response) the resume key embedded in the header.
+///       // the request's row range and (on the last slice of a
+///       // cut-short response) the resume key embedded in the header.
 ///     }
 ///   }
 /// NOTE: NimbleIndexProjector is not thread-safe. Each thread must use its
@@ -94,6 +94,13 @@ class NimbleIndexProjector {
   ~NimbleIndexProjector() = default;
 
   /// Options for controlling projection behavior.
+  ///
+  /// The three limits below (maxRows, maxBytes, maxRowsPerRequest) only bound
+  /// how much data a single project() call returns; on their own they never
+  /// decide whether a resume key is produced. Resume keys are governed solely
+  /// by needResumeKey: when it is set, any request whose results were cut short
+  /// by one of these limits carries a resume key; when it is unset, no resume
+  /// keys are produced regardless of which limits fire.
   struct Options {
     /// Soft limit on total rows across all requests. 0 means no limit.
     /// When the running total exceeds this limit mid-stripe, the entire
@@ -106,9 +113,14 @@ class NimbleIndexProjector {
     /// that exceeds the budget.
     uint64_t maxBytes{0};
     /// Hard per-request row limit. 0 means no limit. Each request's row
-    /// range is clipped so that it never exceeds this many rows total.
-    /// No resume key is set — the request is considered fulfilled.
+    /// range is clipped so that it never returns more than this many rows.
     uint64_t maxRowsPerRequest{0};
+    /// When set, every request whose results were cut short by a limit
+    /// (maxRows, maxBytes, or maxRowsPerRequest) is given a resume key so the
+    /// caller can continue from where the request stopped (use the resume key
+    /// as the new lowerKey with the original upperKey). When unset, no resume
+    /// keys are produced even if a limit truncated the results.
+    bool needResumeKey{false};
   };
 
   /// Request for a batch of index lookups.
@@ -130,9 +142,11 @@ class NimbleIndexProjector {
     /// the last slice to extract it.
     std::vector<folly::IOBuf> slices;
 
-    /// If the result was truncated by maxRows or maxBytes, the encoded resume
-    /// key for continuation. The caller constructs new key bounds using this
-    /// as lowerKey with their original upperKey. nullopt if complete or miss.
+    /// When Options::needResumeKey is set and this request's results were cut
+    /// short by a limit (maxRows, maxBytes, or maxRowsPerRequest), the encoded
+    /// resume key for continuation. The caller constructs new key bounds using
+    /// this as lowerKey with their original upperKey. nullopt if complete, a
+    /// miss, or needResumeKey was not set.
     ///
     /// Also embedded in the last slice's per-slice header (when slices
     /// is non-empty) so consumers that hold an IOBuf can recover the key
@@ -284,6 +298,21 @@ class NimbleIndexProjector {
       std::vector<StripeRange>& stripeRanges,
       const std::vector<uint64_t>& rowsPerRequest);
 
+  // Records the resume key for a request that reached its maxRowsPerRequest cap
+  // in the stripe at `stripeOffset` (index relative to
+  // stripeRanges.startStripe, not an absolute stripe index). `readEndRow` is
+  // the request's stripe-relative end row after clipping. When `partialRead` is
+  // true the cap fell inside the stripe, so the key is the row-precise key at
+  // `readEndRow`; otherwise the cap landed on the stripe boundary and the key
+  // resumes from the next stripe still holding this request. The stripe's
+  // absolute start row is derived from `stripeOffset`. Idempotent (no-op once a
+  // key is recorded); callers gate on Options::needResumeKey.
+  void setResumeKey(
+      uint32_t requestIndex,
+      uint32_t stripeOffset,
+      uint32_t readEndRow,
+      bool partialRead);
+
   // Applies row and byte limits to the looked-up stripe ranges, computes stream
   // metadata for selected stripes, and populates ctx_.plan.
   void prepareStripes();
@@ -300,8 +329,10 @@ class NimbleIndexProjector {
   // loaded data directly into an IOBuf chain without copying.
   folly::IOBuf packStripe(size_t stripeOffset);
 
-  // If ctx_.plan.truncated, sets resume keys on requests that have data in the
-  // next unprocessed stripe.
+  // When Options::needResumeKey is set, attaches resume keys to requests whose
+  // results were cut short: per-request keys from maxRowsPerRequest caps, plus
+  // (on global maxRows/maxBytes truncation) keys for requests that still have
+  // data in an unprocessed stripe. No-op when needResumeKey is unset.
   void setResumeKeys(Result& result);
 
   // Iterates ctx_.plan.stripePlans and ctx_.stripeBodies to build per-request
@@ -343,6 +374,9 @@ class NimbleIndexProjector {
     // Per-request flag: true if the request has ranges in any StripePlan.
     // Set by prepareStripes(), used by setResumeKeys().
     std::vector<bool> hasStripeRanges;
+    // Per-request resume keys set when a request reaches maxRowsPerRequest and
+    // Options::needResumeKey is enabled.
+    std::vector<std::optional<std::string>> resumeKeys;
     // Flat array of enqueue indices, logically
     // [stripeOffset * numProjectedStreams + streamIndex]. nullopt for absent
     // streams. Populated by loadStripes().
