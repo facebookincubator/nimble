@@ -150,22 +150,37 @@ std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
       "NimbleIndexProjector does not support data caching");
   auto cached = tabletReaderCache.get(
       fileHandle.file, TabletReader::configureOptions(options));
+  auto projection = std::make_shared<NimbleTypeProjection>(
+      buildProjectedNimbleType(cached.nimbleSchema.get(), projectedSubfields));
+  return create(
+      std::move(cached.tablet), fileHandle, std::move(projection), options);
+}
+
+std::unique_ptr<NimbleIndexProjector> NimbleIndexProjector::create(
+    std::shared_ptr<TabletReader> tablet,
+    const velox::FileHandle& fileHandle,
+    std::shared_ptr<const NimbleTypeProjection> projection,
+    const velox::dwio::common::ReaderOptions& options) {
+  validateReaderOptions(options);
+  NIMBLE_CHECK(
+      !options.cacheData(),
+      "NimbleIndexProjector does not support data caching");
+  NIMBLE_CHECK_NOT_NULL(tablet);
+  NIMBLE_CHECK_NOT_NULL(projection);
   return std::unique_ptr<NimbleIndexProjector>(new NimbleIndexProjector(
-      std::move(cached.tablet),
-      std::move(cached.nimbleSchema),
+      std::move(tablet),
       fileHandle.file,
       createDataInput(fileHandle, options),
-      projectedSubfields,
+      std::move(projection),
       &options.memoryPool(),
       options.dataIoStats()));
 }
 
 NimbleIndexProjector::NimbleIndexProjector(
     std::shared_ptr<TabletReader> tablet,
-    std::shared_ptr<const Type> nimbleSchema,
     std::shared_ptr<velox::ReadFile> file,
     std::unique_ptr<DataInput> dataInput,
-    const std::vector<Subfield>& projectedSubfields,
+    std::shared_ptr<const NimbleTypeProjection> projection,
     velox::memory::MemoryPool* pool,
     std::shared_ptr<velox::io::IoStatistics> ioStats)
     : file_{std::move(file)},
@@ -174,19 +189,15 @@ NimbleIndexProjector::NimbleIndexProjector(
       pool_{pool},
       dataInput_{std::move(dataInput)},
       clusterIndex_{tablet_->clusterIndex()},
-      numStripes_{tablet_->stripeCount()} {
+      numStripes_{tablet_->stripeCount()},
+      projection_{std::move(projection)} {
   NIMBLE_CHECK_NOT_NULL(
       clusterIndex_, "NimbleIndexProjector requires a tablet with an index");
   NIMBLE_CHECK_GT(numStripes_, 0, "NimbleIndexProjector requires stripes");
 
-  projectedNimbleType_ = buildProjectedNimbleType(
-      nimbleSchema.get(),
-      projectedSubfields,
-      projectedStreamOffsets_,
-      rowOrFlatMapNullStreams_);
   NIMBLE_CHECK_EQ(
-      projectedStreamOffsets_.size(),
-      rowOrFlatMapNullStreams_.size(),
+      projection_->streamOffsets.size(),
+      projection_->rowOrFlatMapNullStreams.size(),
       "Projected stream offsets and Row/FlatMap null stream mask must align");
 }
 
@@ -392,7 +403,7 @@ void NimbleIndexProjector::loadStripes() {
   }
   dataInput_->reserve(totalStreams);
 
-  const auto numProjectedStreams = projectedStreamOffsets_.size();
+  const auto numProjectedStreams = projection_->streamOffsets.size();
   ctx_.dataInputIndices.resize(stripePlans.size() * numProjectedStreams);
   for (size_t stripeOffset = 0; stripeOffset < stripePlans.size();
        ++stripeOffset) {
@@ -438,9 +449,9 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
   const auto& streamOffsets = tablet_->streamOffsets(stripeId);
   const auto& streamSizes = tablet_->streamSizes(stripeId);
 
-  stripePlan.projectedStreams.resize(projectedStreamOffsets_.size());
-  for (size_t i = 0; i < projectedStreamOffsets_.size(); ++i) {
-    const auto streamId = projectedStreamOffsets_[i];
+  stripePlan.projectedStreams.resize(projection_->streamOffsets.size());
+  for (size_t i = 0; i < projection_->streamOffsets.size(); ++i) {
+    const auto streamId = projection_->streamOffsets[i];
     if (streamId >= streamCount || streamSizes[streamId] == 0) {
       continue;
     }
@@ -448,7 +459,7 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
         stripeOffset + streamOffsets[streamId], streamSizes[streamId]};
     ++stripePlan.numStreams;
     stripePlan.projectedBytes += streamSizes[streamId];
-    if (rowOrFlatMapNullStreams_[i]) {
+    if (projection_->rowOrFlatMapNullStreams[i]) {
       // A present Row/FlatMap null stream means the slice may carry nulls.
       stripePlan.requiresNullBarrier = true;
     }
@@ -458,7 +469,7 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
 folly::IOBuf NimbleIndexProjector::packStripe(size_t stripeOffset) {
   const auto& stripePlan = ctx_.plan.stripePlans[stripeOffset];
   const auto numRows = stripeRowCount(stripePlan.stripeIndex);
-  const auto numProjectedStreams = projectedStreamOffsets_.size();
+  const auto numProjectedStreams = projection_->streamOffsets.size();
 
   // Deduplicate streams that the source tablet already aliased: multiple
   // projected slots can resolve to the same physical extent. DataInput detects

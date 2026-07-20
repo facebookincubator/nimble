@@ -83,6 +83,14 @@ class NimbleIndexProjector {
       const std::vector<Subfield>& projectedSubfields,
       const velox::dwio::common::ReaderOptions& options);
 
+  /// Creates a projector with projection metadata built by the caller.
+  /// The projection must have been built from the schema of `tablet`.
+  static std::unique_ptr<NimbleIndexProjector> create(
+      std::shared_ptr<TabletReader> tablet,
+      const velox::FileHandle& fileHandle,
+      std::shared_ptr<const NimbleTypeProjection> projection,
+      const velox::dwio::common::ReaderOptions& options);
+
   ~NimbleIndexProjector() = default;
 
   /// Options for controlling projection behavior.
@@ -147,7 +155,7 @@ class NimbleIndexProjector {
   /// (ArrayWithOffsets, SlidingWindowMap, FlatMap) from the file schema.
   /// Clients need this to build a Deserializer for the output data.
   const std::shared_ptr<const Type>& projectedNimbleType() const {
-    return projectedNimbleType_;
+    return projection_->nimbleType;
   }
 
   /// Statistics captured during project().
@@ -182,10 +190,9 @@ class NimbleIndexProjector {
  private:
   NimbleIndexProjector(
       std::shared_ptr<TabletReader> tablet,
-      std::shared_ptr<const Type> nimbleSchema,
       std::shared_ptr<velox::ReadFile> file,
       std::unique_ptr<DataInput> dataInput,
-      const std::vector<Subfield>& projectedSubfields,
+      std::shared_ptr<const NimbleTypeProjection> projection,
       velox::memory::MemoryPool* pool,
       std::shared_ptr<velox::io::IoStatistics> ioStats);
 
@@ -262,7 +269,7 @@ class NimbleIndexProjector {
 
   // Output of prepareStripes(): the set of stripes to process and whether
   // global limits (maxRows/maxBytes) caused early termination.
-  struct ProjectionPlan {
+  struct ScanPlan {
     std::vector<StripePlan> stripePlans;
     bool truncated{false};
   };
@@ -319,14 +326,7 @@ class NimbleIndexProjector {
   const ClusterIndex* const clusterIndex_;
   const uint32_t numStripes_{0};
 
-  // Projected nimble schema built from file nimble schema. Preserves
-  // encoding-specific types (ArrayWithOffsets, SlidingWindowMap, FlatMap).
-  std::shared_ptr<const Type> projectedNimbleType_;
-  std::vector<uint32_t> projectedStreamOffsets_;
-  // Parallel to projectedStreamOffsets_: true at the projected stream indices
-  // that are Row/FlatMap null streams. Present streams with this bit require
-  // the null-barrier path.
-  std::vector<bool> rowOrFlatMapNullStreams_;
+  const std::shared_ptr<const NimbleTypeProjection> projection_;
 
   // Per-project() call state. Set by initRequest(), populated through the
   // pipeline (lookupStripes → prepareStripes → loadStripes → processStripes),
@@ -339,7 +339,7 @@ class NimbleIndexProjector {
     // lookupStripes(), read-only during stripe processing.
     StripeRanges stripeRanges;
     // Populated by prepareStripes().
-    ProjectionPlan plan;
+    ScanPlan plan;
     // Per-request flag: true if the request has ranges in any StripePlan.
     // Set by prepareStripes(), used by setResumeKeys().
     std::vector<bool> hasStripeRanges;

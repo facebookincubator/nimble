@@ -748,17 +748,12 @@ TEST(SchemaUtilsTest, projectionDeepWithStreamOffsets) {
 
   // Drive the projection through the same nimble-source API the projectors
   // use: derive projected schema metadata in one pass.
-  std::vector<uint32_t> projectedStreamOffsets;
-  std::vector<bool> rowOrFlatMapNullStreams;
-  auto projectedNimbleType = buildProjectedNimbleType(
-      convertedNimbleType.get(),
-      subfields,
-      projectedStreamOffsets,
-      rowOrFlatMapNullStreams);
+  auto projection =
+      buildProjectedNimbleType(convertedNimbleType.get(), subfields);
 
   // Verify projected schema structure.
-  ASSERT_EQ(projectedNimbleType->kind(), Kind::Row);
-  const auto& root = projectedNimbleType->asRow();
+  ASSERT_EQ(projection.nimbleType->kind(), Kind::Row);
+  const auto& root = projection.nimbleType->asRow();
   ASSERT_EQ(root.childrenCount(), 1);
   EXPECT_EQ(root.nameAt(0), "map_col");
 
@@ -784,9 +779,9 @@ TEST(SchemaUtilsTest, projectionDeepWithStreamOffsets) {
   //   key2.inner_a = 6, key2.inner_b = 7, key2.Row.nulls = 8, key2.inMap = 9.
   // The walker visits: outer-Row.nulls (1), map_col-FlatMap.nulls (0),
   // key1.Row.nulls (4), key1.inner_b (3), key1.inMap (5).
-  EXPECT_EQ(projectedStreamOffsets, std::vector<uint32_t>({1, 0, 4, 3, 5}));
+  EXPECT_EQ(projection.streamOffsets, std::vector<uint32_t>({1, 0, 4, 3, 5}));
   EXPECT_EQ(
-      rowOrFlatMapNullStreams,
+      projection.rowOrFlatMapNullStreams,
       std::vector<bool>({true, true, true, false, false}));
 }
 
@@ -849,19 +844,8 @@ TEST(SchemaUtilsTest, projectionMarksRowOrFlatMapNullStreams) {
         features.inMapDescriptorAt(featureAIdx).offset()};
   }();
 
-  struct ProjectedMetadata {
-    std::shared_ptr<const Type> schema;
-    std::vector<uint32_t> streamOffsets;
-    std::vector<bool> rowOrFlatMapNullStreams;
-  };
   auto project = [&](const std::vector<Subfield>& subfields) {
-    ProjectedMetadata metadata;
-    metadata.schema = buildProjectedNimbleType(
-        sourceNimbleType.get(),
-        subfields,
-        metadata.streamOffsets,
-        metadata.rowOrFlatMapNullStreams);
-    return metadata;
+    return buildProjectedNimbleType(sourceNimbleType.get(), subfields);
   };
 
   enum class ProjectedShape {
@@ -918,8 +902,8 @@ TEST(SchemaUtilsTest, projectionMarksRowOrFlatMapNullStreams) {
 
     auto metadata = project(subfields);
 
-    ASSERT_EQ(metadata.schema->kind(), Kind::Row);
-    const auto& projectedRoot = metadata.schema->asRow();
+    ASSERT_EQ(metadata.nimbleType->kind(), Kind::Row);
+    const auto& projectedRoot = metadata.nimbleType->asRow();
     ASSERT_EQ(projectedRoot.childrenCount(), 1);
     switch (testCase.shape) {
       case ProjectedShape::Scalar:
@@ -985,14 +969,8 @@ TEST(SchemaUtilsTest, nestedFlatMapProjectionFails) {
   std::vector<Subfield> subfields;
   subfields.emplace_back("nested");
 
-  std::vector<uint32_t> projectedStreamOffsets;
-  std::vector<bool> rowOrFlatMapNullStreams;
   NIMBLE_ASSERT_THROW(
-      buildProjectedNimbleType(
-          sourceNimbleType.get(),
-          subfields,
-          projectedStreamOffsets,
-          rowOrFlatMapNullStreams),
+      buildProjectedNimbleType(sourceNimbleType.get(), subfields),
       "FlatMap projection is supported only for top-level columns");
 }
 
@@ -1023,19 +1001,13 @@ TEST(SchemaUtilsTest, projectionEncodingHints_SlidingWindowMap) {
   subfields.emplace_back("id");
   subfields.emplace_back("dedup_map");
 
-  std::vector<uint32_t> projectedStreamOffsets;
-  std::vector<bool> rowOrFlatMapNullStreams;
-  auto projectedNimbleType = buildProjectedNimbleType(
-      sourceNimbleType.get(),
-      subfields,
-      projectedStreamOffsets,
-      rowOrFlatMapNullStreams);
+  auto projection = buildProjectedNimbleType(sourceNimbleType.get(), subfields);
 
   // Verify the SlidingWindowMap encoding is preserved (this is the path
   // through getColumnEncodings → deduplicatedMapColumns → velox-source
   // builder's SlidingWindowMap branch).
-  ASSERT_EQ(projectedNimbleType->kind(), Kind::Row);
-  const auto& root = projectedNimbleType->asRow();
+  ASSERT_EQ(projection.nimbleType->kind(), Kind::Row);
+  const auto& root = projection.nimbleType->asRow();
   ASSERT_EQ(root.childrenCount(), 2);
   EXPECT_EQ(root.nameAt(0), "id");
   EXPECT_EQ(root.childAt(0)->kind(), Kind::Scalar);
@@ -1044,9 +1016,10 @@ TEST(SchemaUtilsTest, projectionEncodingHints_SlidingWindowMap) {
 
   // Walker visits: outer-Row.nulls (5), id Scalar (0), dedup_map offsets (3),
   // lengths (4), keys (1), values (2).
-  EXPECT_EQ(projectedStreamOffsets, std::vector<uint32_t>({5, 0, 3, 4, 1, 2}));
   EXPECT_EQ(
-      rowOrFlatMapNullStreams,
+      projection.streamOffsets, std::vector<uint32_t>({5, 0, 3, 4, 1, 2}));
+  EXPECT_EQ(
+      projection.rowOrFlatMapNullStreams,
       std::vector<bool>({true, false, false, false, false, false}));
 }
 
@@ -1089,17 +1062,11 @@ TEST(SchemaUtilsTest, projectionEncodingHints_Mixed) {
   subfields.emplace_back("features[\"a\"]");
   subfields.emplace_back("features[\"missing\"]");
 
-  std::vector<uint32_t> projectedStreamOffsets;
-  std::vector<bool> rowOrFlatMapNullStreams;
-  auto projectedNimbleType = buildProjectedNimbleType(
-      sourceNimbleType.get(),
-      subfields,
-      projectedStreamOffsets,
-      rowOrFlatMapNullStreams);
+  auto projection = buildProjectedNimbleType(sourceNimbleType.get(), subfields);
 
   // All three encoding-specific Kinds survive the projection.
-  ASSERT_EQ(projectedNimbleType->kind(), Kind::Row);
-  const auto& root = projectedNimbleType->asRow();
+  ASSERT_EQ(projection.nimbleType->kind(), Kind::Row);
+  const auto& root = projection.nimbleType->asRow();
   ASSERT_EQ(root.childrenCount(), 4);
   EXPECT_EQ(root.childAt(0)->kind(), Kind::Scalar);
   EXPECT_EQ(root.childAt(1)->kind(), Kind::ArrayWithOffsets);
@@ -1120,11 +1087,11 @@ TEST(SchemaUtilsTest, projectionEncodingHints_Mixed) {
   //     "a" value (10), "a" inMap (11),
   //     "missing" value (UINT32_MAX), "missing" inMap (UINT32_MAX).
   EXPECT_EQ(
-      projectedStreamOffsets,
+      projection.streamOffsets,
       std::vector<uint32_t>(
           {9, 0, 2, 3, 1, 6, 7, 4, 5, 8, 10, 11, UINT32_MAX, UINT32_MAX}));
   EXPECT_EQ(
-      rowOrFlatMapNullStreams,
+      projection.rowOrFlatMapNullStreams,
       std::vector<bool>(
           {true,
            false,

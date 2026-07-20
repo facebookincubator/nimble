@@ -76,6 +76,11 @@ class TabletReaderTestHelper {
     return tabletReader_->chunkIndexCache_.testingCacheCount();
   }
 
+  /// Returns statistics for cluster-index reads.
+  std::shared_ptr<velox::io::IoStatistics> indexIoStats() const {
+    return tabletReader_->ioOptions_.indexIoStats();
+  }
+
   /// Returns true if the chunk index group at the given index is cached.
   bool hasChunkIndexGroupCached(uint32_t groupIndex) const {
     return tabletReader_->chunkIndexCache_.hasCacheEntry(groupIndex);

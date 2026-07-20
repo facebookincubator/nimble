@@ -1010,19 +1010,15 @@ ColumnEncodings getColumnEncodings(const RowType& nimbleType) {
 
 } // namespace
 
-std::shared_ptr<const Type> buildProjectedNimbleType(
+NimbleTypeProjection buildProjectedNimbleType(
     const Type* type,
-    const std::vector<velox::common::Subfield>& projectedSubfields,
-    std::vector<uint32_t>& projectedStreamOffsets,
-    std::vector<bool>& rowOrFlatMapNullStreams) {
+    const std::vector<velox::common::Subfield>& projectedSubfields) {
   NIMBLE_CHECK(
       !projectedSubfields.empty(), "projectedSubfields must not be empty");
-  NIMBLE_CHECK(
-      projectedStreamOffsets.empty(), "projectedStreamOffsets must be empty");
-  NIMBLE_CHECK(
-      rowOrFlatMapNullStreams.empty(), "rowOrFlatMapNullStreams must be empty");
   NIMBLE_CHECK_NOT_NULL(type, "type must not be null");
   NIMBLE_CHECK(type->isRow(), "Root type must be a Row, got: {}", type->kind());
+
+  NimbleTypeProjection projection;
 
   // Resolve subfields against the source schema once. Real selections (Row
   // children + present FlatMap keys) land in `selectedChildren` keyed by
@@ -1054,7 +1050,7 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
   // source-offset walker below to align positionally.
   auto veloxSource = convertToVeloxType(*type);
   const auto encodings = getColumnEncodings(rootRow);
-  auto projectedSchema = buildProjectedNimbleType(
+  projection.nimbleType = buildProjectedNimbleType(
       veloxSource->asRow(), projectedSubfields, encodings);
 
   // Walk the source nimble in the same DFS pre-order + FlatMap-alphabetical
@@ -1062,8 +1058,8 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
   // and Row/FlatMap null stream bit per projected stream position (UINT32_MAX
   // for missing keys).
   appendProjectedStream(
-      projectedStreamOffsets,
-      rowOrFlatMapNullStreams,
+      projection.streamOffsets,
+      projection.rowOrFlatMapNullStreams,
       rootRow.nullsDescriptor().offset(),
       /*isRowOrFlatMapNullStream=*/true);
   for (size_t columnIdx : selectedColumnIndices) {
@@ -1073,21 +1069,22 @@ std::shared_ptr<const Type> buildProjectedNimbleType(
           child->asFlatMap(),
           selectedChildren,
           missingChildren,
-          projectedStreamOffsets,
-          rowOrFlatMapNullStreams);
+          projection.streamOffsets,
+          projection.rowOrFlatMapNullStreams);
     } else {
       projectStreamOffsets(
           child,
           selectedChildren,
           missingChildren,
-          projectedStreamOffsets,
-          rowOrFlatMapNullStreams);
+          projection.streamOffsets,
+          projection.rowOrFlatMapNullStreams);
     }
   }
   NIMBLE_DCHECK_EQ(
-      projectedStreamOffsets.size(), rowOrFlatMapNullStreams.size());
+      projection.streamOffsets.size(),
+      projection.rowOrFlatMapNullStreams.size());
 
-  return projectedSchema;
+  return projection;
 }
 
 } // namespace facebook::nimble

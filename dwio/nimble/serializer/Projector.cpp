@@ -321,23 +321,19 @@ Projector::Projector(
     NIMBLE_CHECK(subfield.valid(), "Invalid subfield: {}", subfield.toString());
   }
 
-  projectedSchema_ = buildProjectedNimbleType(
-      inputSchema_.get(),
-      projectSubfields,
-      inputStreamIndices_,
-      rowOrFlatMapNullStreams_);
+  projection_ = buildProjectedNimbleType(inputSchema_.get(), projectSubfields);
   NIMBLE_CHECK_EQ(
-      inputStreamIndices_.size(),
-      rowOrFlatMapNullStreams_.size(),
+      projection_.streamOffsets.size(),
+      projection_.rowOrFlatMapNullStreams.size(),
       "Projected stream indices and Row/FlatMap null stream mask must align");
 
-  inputStreamsSorted_ =
-      std::is_sorted(inputStreamIndices_.begin(), inputStreamIndices_.end());
+  inputStreamsSorted_ = std::is_sorted(
+      projection_.streamOffsets.begin(), projection_.streamOffsets.end());
 
   if (!inputStreamsSorted_) {
-    sortedStreamMappings_.reserve(inputStreamIndices_.size());
-    for (size_t i = 0; i < inputStreamIndices_.size(); ++i) {
-      sortedStreamMappings_.push_back({inputStreamIndices_[i], i});
+    sortedStreamMappings_.reserve(projection_.streamOffsets.size());
+    for (size_t i = 0; i < projection_.streamOffsets.size(); ++i) {
+      sortedStreamMappings_.push_back({projection_.streamOffsets[i], i});
     }
     std::sort(
         sortedStreamMappings_.begin(),
@@ -770,9 +766,9 @@ folly::IOBuf Projector::projectContiguous(
         dataOffset,
         streamIndices,
         streamSizes,
-        inputStreamIndices_,
+        projection_.streamOffsets,
         inputRequiresNullBarrier,
-        rowOrFlatMapNullStreams_,
+        projection_.rowOrFlatMapNullStreams,
         outputRequiresNullBarrier,
         output);
   } else {
@@ -781,9 +777,9 @@ folly::IOBuf Projector::projectContiguous(
         dataOffset,
         streamIndices,
         streamSizes,
-        inputStreamIndices_,
+        projection_.streamOffsets,
         inputRequiresNullBarrier,
-        rowOrFlatMapNullStreams_,
+        projection_.rowOrFlatMapNullStreams,
         outputRequiresNullBarrier,
         output);
   }
@@ -823,9 +819,9 @@ folly::IOBuf Projector::projectChained(
         cursor,
         streamIndices,
         streamSizes,
-        inputStreamIndices_,
+        projection_.streamOffsets,
         inputRequiresNullBarrier,
-        rowOrFlatMapNullStreams_,
+        projection_.rowOrFlatMapNullStreams,
         outputRequiresNullBarrier,
         output);
   } else {
@@ -835,7 +831,7 @@ folly::IOBuf Projector::projectChained(
         streamSizes,
         sortedStreamMappings_,
         inputRequiresNullBarrier,
-        rowOrFlatMapNullStreams_,
+        projection_.rowOrFlatMapNullStreams,
         outputRequiresNullBarrier,
         output);
   }
