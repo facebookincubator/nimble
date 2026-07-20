@@ -65,20 +65,20 @@ target_include_directories(
 add_dependencies(nimble_index_fb nimble_index_schema_fb)
 
 build_flatbuffers(
-  "${CMAKE_CURRENT_SOURCE_DIR}/ChunkIndex.fbs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ChunkStats.fbs"
   ""
-  nimble_chunk_index_schema_fb
+  nimble_chunk_stats_schema_fb
   ""
   "${CMAKE_CURRENT_BINARY_DIR}"
   ""
   ""
 )
-add_library(nimble_chunk_index_fb INTERFACE)
+add_library(nimble_chunk_stats_fb INTERFACE)
 target_include_directories(
-  nimble_chunk_index_fb
+  nimble_chunk_stats_fb
   INTERFACE ${PROJECT_BINARY_DIR} ${FLATBUFFERS_INCLUDE_DIR}
 )
-add_dependencies(nimble_chunk_index_fb nimble_chunk_index_schema_fb)
+add_dependencies(nimble_chunk_stats_fb nimble_chunk_stats_schema_fb)
 
 build_flatbuffers(
   "${CMAKE_CURRENT_SOURCE_DIR}/BloomFilter.fbs"
@@ -162,7 +162,7 @@ target_link_libraries(
     nimble_index
     nimble_tablet_common
     nimble_cluster_index_fb
-    nimble_chunk_index_fb
+    nimble_chunk_stats_fb
     nimble_hash_index_fb
 )
 
@@ -183,12 +183,12 @@ target_link_libraries(
     Folly::folly
 )
 
-add_library(nimble_tablet_writer ChunkIndexWriter.cpp TabletWriter.cpp)
+add_library(nimble_tablet_writer ChunkStatsWriter.cpp TabletWriter.cpp)
 target_link_libraries(
   nimble_tablet_writer
   nimble_tablet_common
   nimble_cluster_index_fb
-  nimble_chunk_index_fb
+  nimble_chunk_stats_fb
 )
 
 add_subdirectory(tests)

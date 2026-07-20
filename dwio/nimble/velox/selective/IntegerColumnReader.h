@@ -30,7 +30,17 @@ class IntegerColumnReader
       NimbleParams& params,
       velox::common::ScanSpec& scanSpec)
       : SelectiveIntegerColumnReader(requestedType, params, scanSpec, fileType),
-        decoder_(formatData().as<NimbleData>().makeScalarDecoder()) {}
+        decoder_(formatData().as<NimbleData>().makeScalarDecoder()) {
+    // Enable value-based chunk pruning when this column has a deterministic
+    // integer filter (no-op without chunk stats). Transform / delta-update
+    // columns are excluded: their chunk min/max is over the stored
+    // (pre-transform, pre-update) values, so pruning could drop a matching row.
+    const auto* filter = scanSpec.filter();
+    if (filter != nullptr && filter->isDeterministic() &&
+        !scanSpec.hasTransform() && !scanSpec.deltaUpdate()) {
+      decoder_.setChunkPruneScanSpec(&scanSpec, /*isFloatingPoint=*/false);
+    }
+  }
 
   uint64_t skip(uint64_t numValues) override;
 

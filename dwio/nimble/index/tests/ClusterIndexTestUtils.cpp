@@ -20,7 +20,7 @@
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexConstants.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
@@ -103,7 +103,12 @@ std::vector<Chunk> createChunks(
     auto pos = buffer.reserve(spec.size);
     std::memset(pos, 'X', spec.size);
     chunks.push_back(
-        {.rowCount = spec.rowCount, .content = {{pos, spec.size}}});
+        {.rowCount = spec.rowCount,
+         .nullCount = spec.nullCount,
+         .minValue = spec.minValue,
+         .maxValue = spec.maxValue,
+         .hasMinMax = spec.hasMinMax,
+         .content = {{pos, spec.size}}});
   }
   return chunks;
 }
@@ -147,18 +152,18 @@ PartitionStats ClusterIndexTestHelper::partitionStats(
   return stats;
 }
 
-StreamStats ChunkIndexTestHelper::streamStats(uint32_t streamId) const {
+StreamStats ChunkStatsTestHelper::streamStats(uint32_t streamId) const {
   StreamStats stats;
 
-  const auto* root = flatbuffers::GetRoot<serialization::StripeChunkIndex>(
-      chunkIndex_->metadata_->content().data());
+  const auto* root = flatbuffers::GetRoot<serialization::StripeChunkStats>(
+      chunkStats_->metadata_->content().data());
 
   const auto* streamChunkCounts = root->stream_chunk_counts();
   if (streamChunkCounts == nullptr) {
     return stats;
   }
 
-  const uint32_t streamCount = chunkIndex_->streamCount_;
+  const uint32_t streamCount = chunkStats_->streamCount_;
   if (streamId >= streamCount) {
     return stats;
   }
@@ -167,8 +172,9 @@ StreamStats ChunkIndexTestHelper::streamStats(uint32_t streamId) const {
   NIMBLE_CHECK_NOT_NULL(chunkRows);
   const auto* chunkOffsets = root->stream_chunk_offsets();
   NIMBLE_CHECK_NOT_NULL(chunkOffsets);
+  const auto* chunkNullCounts = root->stream_chunk_null_counts();
 
-  const uint32_t stripeCount = chunkIndex_->stripeCount_;
+  const uint32_t stripeCount = chunkStats_->stripeCount_;
 
   uint32_t accumulatedChunkCountForStream = 0;
   for (uint32_t stripeOffset = 0; stripeOffset < stripeCount; ++stripeOffset) {
@@ -186,6 +192,9 @@ StreamStats ChunkIndexTestHelper::streamStats(uint32_t streamId) const {
       const uint32_t chunkIndex = startChunkIndex + i;
       stats.chunkRows.push_back(chunkRows->Get(chunkIndex));
       stats.chunkOffsets.push_back(chunkOffsets->Get(chunkIndex));
+      if (chunkNullCounts != nullptr) {
+        stats.chunkNullCounts.push_back(chunkNullCounts->Get(chunkIndex));
+      }
     }
   }
 

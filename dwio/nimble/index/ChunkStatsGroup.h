@@ -17,6 +17,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <utility>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/IndexTypes.h"
@@ -28,25 +30,25 @@ class MetadataBuffer;
 namespace facebook::nimble::index {
 
 namespace test {
-class ChunkIndexTestHelper;
+class ChunkStatsTestHelper;
 } // namespace test
 
 class StreamIndex;
 
-/// ChunkIndexGroup provides O(1) chunk-level seeking by row ID within stripes.
-/// It reads from the standalone ChunkIndex flatbuffer stored in the
-/// "chunk_index" optional section.
+/// ChunkStatsGroup provides O(1) chunk-level seeking by row ID within stripes.
+/// It reads from the standalone ChunkStats flatbuffer stored in the
+/// "columnar.chunk.stats" optional section.
 ///
-/// Each ChunkIndexGroup instance corresponds to one stripe group and contains
+/// Each ChunkStatsGroup instance corresponds to one stripe group and contains
 /// chunk-level position data for all streams across all stripes in that group.
-class ChunkIndexGroup : public std::enable_shared_from_this<ChunkIndexGroup> {
+class ChunkStatsGroup : public std::enable_shared_from_this<ChunkStatsGroup> {
  public:
-  /// Creates a ChunkIndexGroup from a decompressed ChunkIndex flatbuffer.
+  /// Creates a ChunkStatsGroup from a decompressed ChunkStats flatbuffer.
   ///
   /// @param firstStripe First stripe index in this stripe group.
   /// @param stripeCount Number of stripes in this stripe group.
-  /// @param metadata Decompressed ChunkIndex flatbuffer data.
-  static std::shared_ptr<ChunkIndexGroup> create(
+  /// @param metadata Decompressed ChunkStats flatbuffer data.
+  static std::shared_ptr<ChunkStatsGroup> create(
       uint32_t firstStripe,
       uint32_t stripeCount,
       std::unique_ptr<MetadataBuffer> metadata);
@@ -60,7 +62,7 @@ class ChunkIndexGroup : public std::enable_shared_from_this<ChunkIndexGroup> {
       uint32_t streamSize) const;
 
  private:
-  ChunkIndexGroup(
+  ChunkStatsGroup(
       uint32_t firstStripe,
       uint32_t stripeCount,
       std::unique_ptr<MetadataBuffer> metadata);
@@ -83,7 +85,7 @@ class ChunkIndexGroup : public std::enable_shared_from_this<ChunkIndexGroup> {
   const uint32_t streamCount_;
 
   friend class StreamIndex;
-  friend class test::ChunkIndexTestHelper;
+  friend class test::ChunkStatsTestHelper;
 };
 
 /// StreamIndex provides O(1) chunk-level seeking for a specific stream within
@@ -92,7 +94,7 @@ class ChunkIndexGroup : public std::enable_shared_from_this<ChunkIndexGroup> {
 class StreamIndex {
  public:
   static std::shared_ptr<StreamIndex> create(
-      std::shared_ptr<const ChunkIndexGroup> chunkIndex,
+      std::shared_ptr<const ChunkStatsGroup> chunkIndex,
       uint32_t streamId,
       uint32_t startChunkOffset,
       uint32_t endChunkOffset,
@@ -101,8 +103,24 @@ class StreamIndex {
   /// Lookup chunk by row ID within the stream's row range.
   ChunkLocation lookupChunk(uint32_t rowId) const;
 
+  /// Returns the per-chunk null-value count for the chunk at the given absolute
+  /// position (ChunkLocation::chunkIndex), or std::nullopt when per-chunk null
+  /// statistics are absent (files written before chunk statistics were added).
+  std::optional<uint32_t> chunkNullCount(uint32_t chunkIndex) const;
+
+  /// Returns the chunk's [min, max] raw 64-bit payloads (int64 for integral,
+  /// bit_cast<int64_t> of the double for float/double), or std::nullopt when
+  /// absent (pre-stats files) or invalid for that chunk.
+  std::optional<std::pair<int64_t, int64_t>> chunkMinMax(
+      uint32_t chunkIndex) const;
+
   /// Returns the total number of rows in this stream.
   uint32_t rowCount() const;
+
+  /// Returns the number of rows in the chunk at the given absolute position
+  /// (ChunkLocation::chunkIndex). Reads only footer metadata (no chunk bytes),
+  /// so callers can size a chunk before deciding whether to read it.
+  uint32_t chunkRowCount(uint32_t chunkIndex) const;
 
   /// Returns the stream ID this index is for.
   uint32_t streamId() const {
@@ -111,14 +129,14 @@ class StreamIndex {
 
  private:
   StreamIndex(
-      std::shared_ptr<const ChunkIndexGroup> chunkIndex,
+      std::shared_ptr<const ChunkStatsGroup> chunkIndex,
       uint32_t streamId,
       uint32_t startChunkOffset,
       uint32_t endChunkOffset,
       uint32_t streamSize);
 
   // Kept alive to ensure metadata_ stays valid.
-  const std::shared_ptr<const ChunkIndexGroup> chunkIndex_;
+  const std::shared_ptr<const ChunkStatsGroup> chunkStats_;
   const uint32_t streamId_;
   // Precomputed chunk range [startChunkOffset_, endChunkOffset_) into the
   // flattened chunk_rows/chunk_offsets arrays.

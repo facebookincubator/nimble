@@ -19,7 +19,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
 #include "dwio/nimble/index/IndexSerialization.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
@@ -82,7 +82,7 @@ TabletReader::Options TabletReader::configureOptions(
   tabletOptions.preloadIndex = options.preloadIndex();
   tabletOptions.loadChunkIndex = options.loadChunkIndex();
   if (tabletOptions.loadChunkIndex) {
-    tabletOptions.preloadOptionalSections.emplace_back(kChunkIndexSection);
+    tabletOptions.preloadOptionalSections.emplace_back(kChunkStatsSection);
   }
   tabletOptions.pinMetadata = options.pinMetadata();
   tabletOptions.cacheMetadata = options.cacheMetadata();
@@ -276,7 +276,7 @@ TabletReader::TabletReader(
           options.pinMetadata},
       chunkIndexCache_{
           [this](uint32_t stripeGroupIndex) {
-            return loadChunkIndexGroup(stripeGroupIndex);
+            return loadChunkStatsGroup(stripeGroupIndex);
           },
           options.pinMetadata} {
   NIMBLE_CHECK_EQ(
@@ -509,12 +509,12 @@ void TabletReader::cacheMetadata(
     cacheSection(indexIt->second);
   }
 
-  if (chunkIndex_ != nullptr) {
-    auto chunkIndexIt = optionalSections_.find(std::string{kChunkIndexSection});
+  if (chunkStats_ != nullptr) {
+    auto chunkIndexIt = optionalSections_.find(std::string{kChunkStatsSection});
     NIMBLE_CHECK(chunkIndexIt != optionalSections_.end());
     cacheSection(chunkIndexIt->second);
 
-    const auto& firstSection = chunkIndex_->groupMetadata(0);
+    const auto& firstSection = chunkStats_->groupMetadata(0);
     if (firstSection.size() > 0) {
       cacheSection(firstSection);
     }
@@ -548,7 +548,7 @@ void TabletReader::loadStripes(
     updateOffset(kIndexSection);
   }
   if (options.loadChunkIndex) {
-    updateOffset(kChunkIndexSection);
+    updateOffset(kChunkStatsSection);
   }
   const uint64_t requiredSize = fileSize_ - requiredOffset;
   if (requiredSize > footerIoSize) {
@@ -862,7 +862,7 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   std::vector<MetadataSection> sections;
   sections.emplace_back(groupSection);
   if (hasChunkIndex) {
-    sections.emplace_back(chunkIndex_->groupMetadata(stripeGroupIndex));
+    sections.emplace_back(chunkStats_->groupMetadata(stripeGroupIndex));
   }
 
   auto results = metadataInput_->load(sections);
@@ -875,7 +875,7 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   if (hasChunkIndex) {
     auto chunkIndexMetadata =
         std::make_unique<MetadataBuffer>(std::move(*results[1]));
-    result.chunkIndex = ChunkIndexGroup::create(
+    result.chunkIndex = ChunkStatsGroup::create(
         result.stripeGroup->firstStripe(),
         result.stripeGroup->stripeCount(),
         std::move(chunkIndexMetadata));
@@ -938,7 +938,7 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
       stripeGroupIndex,
       [&loaded](uint32_t) { return std::move(loaded.stripeGroup); });
 
-  std::shared_ptr<ChunkIndexGroup> cachedChunkIndex;
+  std::shared_ptr<ChunkStatsGroup> cachedChunkIndex;
   if (hasChunkIndex) {
     cachedChunkIndex = chunkIndexCache_.getOrCreate(
         stripeGroupIndex,
@@ -1096,7 +1096,7 @@ std::optional<Section> TabletReader::loadOptionalSection(
 }
 
 bool TabletReader::hasChunkIndexSection() const {
-  return hasOptionalSection(std::string{kChunkIndexSection});
+  return hasOptionalSection(std::string{kChunkStatsSection});
 }
 
 bool TabletReader::hasIndexSection() const {
@@ -1215,25 +1215,25 @@ void TabletReader::initChunkIndex(
   }
 
   auto section =
-      loadOptionalSection(std::string{kChunkIndexSection}, /*keepCache=*/false);
-  NIMBLE_CHECK(section.has_value(), "Failed to load chunk_index section.");
+      loadOptionalSection(std::string{kChunkStatsSection}, /*keepCache=*/false);
+  NIMBLE_CHECK(section.has_value(), "Failed to load chunk stats section.");
 
-  auto chunkIndex = ChunkIndex::create(std::move(section.value()));
+  auto chunkIndex = ChunkStats::create(std::move(section.value()));
   if (chunkIndex->numGroups() > 0) {
-    chunkIndex_ = std::move(chunkIndex);
+    chunkStats_ = std::move(chunkIndex);
   }
 
   // Eagerly pin the first chunk index group if covered by the speculative
   // buffer.
-  if (chunkIndex_ != nullptr && chunkIndex_->numGroups() == 1) {
-    const auto& groupMetadata = chunkIndex_->groupMetadata(0);
+  if (chunkStats_ != nullptr && chunkStats_->numGroups() == 1) {
+    const auto& groupMetadata = chunkStats_->groupMetadata(0);
     if (groupMetadata.size() > 0) {
       auto metadataBuffer =
           tryExtractFromBuffer(footerBuf, footerOffset, groupMetadata, pool_);
       if (metadataBuffer != nullptr) {
         chunkIndexCache_.pin(
             0,
-            ChunkIndexGroup::create(
+            ChunkStatsGroup::create(
                 firstStripe(0), stripeCount(0), std::move(metadataBuffer)));
       }
     }
@@ -1286,25 +1286,25 @@ uint32_t TabletReader::stripeCount(uint32_t stripeGroupIndex) const {
   return count;
 }
 
-std::shared_ptr<ChunkIndexGroup> TabletReader::chunkIndex(
+std::shared_ptr<ChunkStatsGroup> TabletReader::chunkIndex(
     uint32_t stripeGroupIndex) const {
   return chunkIndexCache_.getOrCreate(stripeGroupIndex);
 }
 
-std::shared_ptr<ChunkIndexGroup> TabletReader::loadChunkIndexGroup(
+std::shared_ptr<ChunkStatsGroup> TabletReader::loadChunkStatsGroup(
     uint32_t stripeGroupIndex) const {
-  NIMBLE_CHECK_NOT_NULL(chunkIndex_, "Chunk index not initialized.");
+  NIMBLE_CHECK_NOT_NULL(chunkStats_, "Chunk index not initialized.");
   NIMBLE_CHECK_LT(
       stripeGroupIndex,
-      chunkIndex_->numGroups(),
+      chunkStats_->numGroups(),
       "Chunk index group out of range");
 
-  const auto& section = chunkIndex_->groupMetadata(stripeGroupIndex);
+  const auto& section = chunkStats_->groupMetadata(stripeGroupIndex);
   if (section.size() == 0) {
     return nullptr;
   }
 
-  return ChunkIndexGroup::create(
+  return ChunkStatsGroup::create(
       this->firstStripe(stripeGroupIndex),
       this->stripeCount(stripeGroupIndex),
       readMetadata(section));

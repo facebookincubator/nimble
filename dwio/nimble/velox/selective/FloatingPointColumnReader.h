@@ -36,7 +36,17 @@ class FloatingPointColumnReader
       velox::common::ScanSpec& scanSpec)
       : Base(requestedType, fileType, params, scanSpec),
         decoder_(
-            this->formatData().template as<NimbleData>().makeScalarDecoder()) {}
+            this->formatData().template as<NimbleData>().makeScalarDecoder()) {
+    // Enable value-based chunk pruning when this column has a deterministic
+    // floating-point filter (no-op without chunk stats). Transform /
+    // delta-update columns are excluded: their chunk min/max is over the stored
+    // (pre-transform, pre-update) values, so pruning could drop a matching row.
+    const auto* filter = scanSpec.filter();
+    if (filter != nullptr && filter->isDeterministic() &&
+        !scanSpec.hasTransform() && !scanSpec.deltaUpdate()) {
+      decoder_.setChunkPruneScanSpec(&scanSpec, /*isFloatingPoint=*/true);
+    }
+  }
 
   uint64_t skip(uint64_t numValues) final {
     numValues = Base::skip(numValues);

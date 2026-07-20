@@ -261,13 +261,15 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.chunking.enabled",
     true);
 
-/// Enable chunk index for chunk-level seeking and per-chunk statistics
-/// for filter pushdown. When enabled, a chunk index optional section is
-/// written alongside chunk position data in the file.
+/// Enable the chunk stats optional section: per-chunk positional index (for
+/// chunk-level seeking) plus null/min/max value stats (for filter pushdown).
+/// Enabling it writes both -- value stats are stored parallel to the chunk
+/// position data and are meaningless without it. Written to the on-disk
+/// "columnar.chunk.stats" section.
 // EXPERIMENTAL: Not production-ready. Do not enable for production tables
 // without consulting the Nimble team (oncall: dwios).
-/* static */ Config::Entry<bool> Config::ENABLE_CHUNK_INDEX(
-    "nimble.chunk.index.enabled",
+/* static */ Config::Entry<bool> Config::ENABLE_CHUNK_STATS(
+    "nimble.chunk.stats.enabled",
     false);
 
 /// Threshold to trigger chunking to relieve memory pressure.

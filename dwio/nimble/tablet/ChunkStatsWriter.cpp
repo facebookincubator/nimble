@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/tablet/ChunkIndexWriter.h"
+#include "dwio/nimble/tablet/ChunkStatsWriter.h"
 
 #include <algorithm>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "flatbuffers/flatbuffers.h"
@@ -37,13 +37,13 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 
 } // namespace
 
-ChunkIndexWriter::ChunkIndexWriter(
+ChunkStatsWriter::ChunkStatsWriter(
     velox::memory::MemoryPool& pool,
     float minAvgChunksPerStream)
     : pool_{&pool}, minAvgChunksPerStream_{minAvgChunksPerStream} {}
 
-void ChunkIndexWriter::newStripe(size_t streamCount) {
-  NIMBLE_CHECK(!finalized_, "ChunkIndexWriter has been finalized");
+void ChunkStatsWriter::newStripe(size_t streamCount) {
+  NIMBLE_CHECK(!finalized_, "ChunkStatsWriter has been finalized");
   if (groupIndex_ == nullptr) {
     groupIndex_ = std::make_unique<GroupIndex>();
   }
@@ -51,10 +51,10 @@ void ChunkIndexWriter::newStripe(size_t streamCount) {
   stripeIndex.streams.resize(streamCount);
 }
 
-void ChunkIndexWriter::addStream(
+void ChunkStatsWriter::addStream(
     uint32_t streamIndex,
     const std::vector<Chunk>& chunks) {
-  NIMBLE_CHECK(!finalized_, "ChunkIndexWriter has been finalized");
+  NIMBLE_CHECK(!finalized_, "ChunkStatsWriter has been finalized");
   NIMBLE_CHECK_NOT_NULL(groupIndex_);
   NIMBLE_CHECK(!groupIndex_->empty());
   NIMBLE_CHECK_LT(streamIndex, groupIndex_->stripes.back().streams.size());
@@ -66,16 +66,20 @@ void ChunkIndexWriter::addStream(
     accumulatedRows += chunk.rowCount;
     index.chunkRows.emplace_back(accumulatedRows);
     index.chunkOffsets.emplace_back(accumulatedOffset);
+    index.chunkNullCounts.emplace_back(chunk.nullCount);
+    index.chunkMinValues.emplace_back(chunk.minValue);
+    index.chunkMaxValues.emplace_back(chunk.maxValue);
+    index.chunkMinMaxValid.emplace_back(chunk.hasMinMax ? 1 : 0);
     accumulatedOffset += chunk.contentSize();
     ++index.chunkCount;
   }
 }
 
-void ChunkIndexWriter::writeGroup(
+void ChunkStatsWriter::writeGroup(
     size_t streamCount,
     size_t stripeCount,
     const CreateMetadataSectionFn& createMetadataSection) {
-  NIMBLE_CHECK(!finalized_, "ChunkIndexWriter has been finalized");
+  NIMBLE_CHECK(!finalized_, "ChunkStatsWriter has been finalized");
   NIMBLE_CHECK_NOT_NULL(groupIndex_);
   NIMBLE_CHECK_EQ(stripeCount, groupIndex_->stripes.size());
   NIMBLE_CHECK_GT(stripeCount, 0);
@@ -123,8 +127,16 @@ void ChunkIndexWriter::writeGroup(
 
   std::vector<uint32_t> flattenedChunkRows;
   std::vector<uint32_t> flattenedChunkOffsets;
+  std::vector<uint32_t> flattenedChunkNullCounts;
+  std::vector<int64_t> flattenedChunkMinValues;
+  std::vector<int64_t> flattenedChunkMaxValues;
+  std::vector<uint8_t> flattenedChunkMinMaxValid;
   flattenedChunkRows.reserve(accumulatedChunkCount);
   flattenedChunkOffsets.reserve(accumulatedChunkCount);
+  flattenedChunkNullCounts.reserve(accumulatedChunkCount);
+  flattenedChunkMinValues.reserve(accumulatedChunkCount);
+  flattenedChunkMaxValues.reserve(accumulatedChunkCount);
+  flattenedChunkMinMaxValid.reserve(accumulatedChunkCount);
 
   for (const auto& stripe : groupIndex_->stripes) {
     for (size_t streamId = 0; streamId < streamCount; ++streamId) {
@@ -138,25 +150,53 @@ void ChunkIndexWriter::writeGroup(
             flattenedChunkOffsets.end(),
             stream.chunkOffsets.begin(),
             stream.chunkOffsets.end());
+        flattenedChunkNullCounts.insert(
+            flattenedChunkNullCounts.end(),
+            stream.chunkNullCounts.begin(),
+            stream.chunkNullCounts.end());
+        flattenedChunkMinValues.insert(
+            flattenedChunkMinValues.end(),
+            stream.chunkMinValues.begin(),
+            stream.chunkMinValues.end());
+        flattenedChunkMaxValues.insert(
+            flattenedChunkMaxValues.end(),
+            stream.chunkMaxValues.begin(),
+            stream.chunkMaxValues.end());
+        flattenedChunkMinMaxValid.insert(
+            flattenedChunkMinMaxValid.end(),
+            stream.chunkMinMaxValid.begin(),
+            stream.chunkMinMaxValid.end());
       }
     }
   }
 
+  // All per-chunk arrays must stay in lockstep -- the reader indexes them by
+  // the same chunk position.
+  NIMBLE_DCHECK_EQ(flattenedChunkOffsets.size(), flattenedChunkRows.size());
+  NIMBLE_DCHECK_EQ(flattenedChunkNullCounts.size(), flattenedChunkRows.size());
+  NIMBLE_DCHECK_EQ(flattenedChunkMinValues.size(), flattenedChunkRows.size());
+  NIMBLE_DCHECK_EQ(flattenedChunkMaxValues.size(), flattenedChunkRows.size());
+  NIMBLE_DCHECK_EQ(flattenedChunkMinMaxValid.size(), flattenedChunkRows.size());
+
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
-  auto chunkIndex = serialization::CreateStripeChunkIndex(
+  auto chunkIndex = serialization::CreateStripeChunkStats(
       builder,
       static_cast<uint32_t>(streamCount),
       builder.CreateVector(flattenedStreamChunkCounts),
       builder.CreateVector(flattenedChunkRows),
-      builder.CreateVector(flattenedChunkOffsets));
+      builder.CreateVector(flattenedChunkOffsets),
+      builder.CreateVector(flattenedChunkNullCounts),
+      builder.CreateVector(flattenedChunkMinValues),
+      builder.CreateVector(flattenedChunkMaxValues),
+      builder.CreateVector(flattenedChunkMinMaxValid));
   builder.Finish(chunkIndex);
 
   chunkIndexSections_.push_back(createMetadataSection(asView(builder)));
 }
 
-void ChunkIndexWriter::writeRoot(
+void ChunkStatsWriter::writeRoot(
     const WriteOptionalSectionFn& writeOptionalSection) {
-  NIMBLE_CHECK(!finalized_, "ChunkIndexWriter has been finalized");
+  NIMBLE_CHECK(!finalized_, "ChunkStatsWriter has been finalized");
   SCOPE_EXIT {
     finalized_ = true;
   };
@@ -186,8 +226,8 @@ void ChunkIndexWriter::writeRoot(
                     chunkIndexSections_[i].size()));
           });
 
-  builder.Finish(serialization::CreateChunkIndex(builder, stripeIndexesVector));
-  writeOptionalSection(std::string(kChunkIndexSection), asView(builder));
+  builder.Finish(serialization::CreateChunkStats(builder, stripeIndexesVector));
+  writeOptionalSection(std::string(kChunkStatsSection), asView(builder));
 }
 
 } // namespace facebook::nimble
