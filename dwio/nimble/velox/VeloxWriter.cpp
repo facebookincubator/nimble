@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/velox/VeloxWriter.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -1453,6 +1454,14 @@ uint32_t VeloxWriter::encodeChunk(
   }
   uint32_t chunkBytes{0};
   chunk.rowCount = chunkView.rowCount();
+  // Collect the per-chunk null-count statistic only when chunk statistics are
+  // enabled, so writers with chunk stats off pay no extra cost. Streams with no
+  // nulls keep the default 0 without scanning.
+  if (context_->options().enableChunkIndex && chunkView.hasNulls()) {
+    const auto nonNulls = chunkView.nonNulls();
+    chunk.nullCount = static_cast<uint32_t>(
+        std::count(nonNulls.begin(), nonNulls.end(), false));
+  }
   ChunkedStreamWriter chunkWriter{
       *encodingBuffer_, context_->options().chunkCompression};
   for (auto& buffer : chunkWriter.encode(encoded)) {
