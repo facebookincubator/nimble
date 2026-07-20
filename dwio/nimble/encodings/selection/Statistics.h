@@ -196,6 +196,32 @@ class Statistics {
     return uniqueCounts_.value();
   }
 
+  /// Returns one value per consecutive run in input order. The sequence is
+  /// computed lazily and cached independently from aggregate repeat metrics.
+  const std::vector<T>& runValues() const {
+    if (runValues_.has_value()) {
+      return runValues_.value();
+    }
+    if (!consecutiveRepeatCount_.has_value()) {
+      populateRepeats(/*collectRunValues=*/true);
+      return runValues_.value();
+    }
+
+    std::vector<T> values;
+    if (!data_.empty()) {
+      values.reserve(consecutiveRepeatCount());
+      T last = data_.front();
+      values.push_back(last);
+      for (size_t i = 1; i < data_.size(); ++i) {
+        if (data_[i] != last) {
+          last = data_[i];
+          values.push_back(last);
+        }
+      }
+    }
+    return runValues_.emplace(std::move(values));
+  }
+
   struct BlockStats {
     uint64_t count;
     uint64_t min;
@@ -255,7 +281,7 @@ class Statistics {
     std::vector<BlockStats> result_;
   };
 
-  void populateRepeats() const;
+  void populateRepeats(bool collectRunValues = false) const;
   void populateUniques() const;
   void populateMinMax() const;
   void populateBucketCounts() const;
@@ -274,6 +300,7 @@ class Statistics {
   mutable uint16_t minMaxBlockSize_{0};
   mutable std::optional<std::optional<UniqueValueCounts<T, InputType>>>
       uniqueCounts_;
+  mutable std::optional<std::vector<T>> runValues_;
 };
 
 } // namespace facebook::nimble

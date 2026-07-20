@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
@@ -123,10 +124,11 @@ void traverseEncodings(
     }
     case EncodingType::ALP: {
       const char* pos = stream.data() + kEncodingPrefixSize;
-      encoding::read<uint8_t>(pos); // exponent
-      encoding::read<uint8_t>(pos); // factor
-      encoding::readUint32(pos); // exceptionCount
-      const uint32_t encodedValuesSize = encoding::readUint32(pos);
+      const auto header = detail::alp::readHeader(pos);
+      if (header.hasExceptions) {
+        varint::readVarint32(&pos); // exceptionCount
+      }
+      const uint32_t encodedValuesSize = varint::readVarint32(&pos);
       traverseEncodings(
           {pos, encodedValuesSize}, level + 1, 0, "EncodedValues", visitor);
       break;

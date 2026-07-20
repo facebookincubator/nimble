@@ -56,6 +56,30 @@ class StatisticsBoolTests : public ::testing::Test {};
 template <typename C>
 class StatisticsStringTests : public ::testing::Test {};
 
+TEST(StatisticsTest, runValues) {
+  const std::vector<int32_t> data = {1, 1, 2, 2, 1, 3, 3};
+  const std::vector<int32_t> expected = {1, 2, 1, 3};
+  for (const bool populateRepeatMetricsFirst : {false, true}) {
+    SCOPED_TRACE(populateRepeatMetricsFirst);
+    const auto statistics = nimble::Statistics<int32_t>::create(data);
+    if (populateRepeatMetricsFirst) {
+      EXPECT_EQ(statistics.consecutiveRepeatCount(), 4);
+      EXPECT_EQ(statistics.minRepeat(), 1);
+      EXPECT_EQ(statistics.maxRepeat(), 2);
+    }
+
+    const auto& runValues = statistics.runValues();
+    EXPECT_EQ(runValues, expected);
+    EXPECT_EQ(&statistics.runValues(), &runValues);
+    EXPECT_EQ(statistics.consecutiveRepeatCount(), 4);
+    EXPECT_EQ(statistics.minRepeat(), 1);
+    EXPECT_EQ(statistics.maxRepeat(), 2);
+  }
+
+  const std::vector<int32_t> empty;
+  EXPECT_TRUE(nimble::Statistics<int32_t>::create(empty).runValues().empty());
+}
+
 TYPED_TEST(StatisticsNumericTests, Create) {
   using T = TypeParam;
   using ValueType = typename T::valueType;

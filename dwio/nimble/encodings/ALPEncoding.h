@@ -25,6 +25,7 @@
 #include <vector>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -40,10 +41,14 @@
 ///
 ///
 /// Data layout after the standard Encoding prefix:
-///   1 byte:  exponent (uint8)
-///   1 byte:  factor   (uint8)
-///   4 bytes: exceptionCount (uint32)
-///   4 bytes: encodedValuesSize (uint32, size of nested encoding)
+///   3 bytes: ALP control word:
+///     bits 0..4: exponent
+///     bits 5..9: factor
+///     bits 10..15: reserved
+///     bit 16: has exceptions
+///     bits 17..23: reserved
+///   1-5 bytes: exceptionCount (varint, present only when has exceptions)
+///   1-5 bytes: encodedValuesSize (varint uint32, size of nested encoding)
 ///   N bytes: nested encoding of ZigZag-coded signed encoded values
 ///   exceptionCount * 4 bytes: exception positions (uint32 each)
 ///   exceptionCount * sizeof(physicalType) bytes: exception values
@@ -62,6 +67,39 @@ template <typename FloatType>
 inline typename TypeTraits<FloatType>::physicalType toPhysical(
     FloatType logicalValue) {
   return EncodingPhysicalType<FloatType>::asEncodingPhysicalType(logicalValue);
+}
+
+struct Header {
+  // Parameters used to transform floating-point values into integers.
+  uint8_t exponent{0};
+  uint8_t factor{0};
+
+  // Whether the optional exception count and exception streams are present.
+  bool hasExceptions{false};
+};
+
+inline Header readHeader(const char*& pos) {
+  const auto control = static_cast<uint32_t>(
+      static_cast<uint8_t>(pos[0]) | (static_cast<uint8_t>(pos[1]) << 8) |
+      (static_cast<uint8_t>(pos[2]) << 16));
+  pos += 3;
+  return Header{
+      .exponent = static_cast<uint8_t>(control & 0x1f),
+      .factor = static_cast<uint8_t>((control >> 5) & 0x1f),
+      .hasExceptions = (control & (1u << 16)) != 0};
+}
+
+inline void writeHeader(const Header& header, char*& pos) {
+  NIMBLE_DCHECK_LE(header.exponent, 31);
+  NIMBLE_DCHECK_LE(header.factor, 31);
+  uint32_t control = header.exponent | (header.factor << 5);
+  if (header.hasExceptions) {
+    control |= 1u << 16;
+  }
+  pos[0] = static_cast<char>(control & 0xff);
+  pos[1] = static_cast<char>((control >> 8) & 0xff);
+  pos[2] = static_cast<char>((control >> 16) & 0xff);
+  pos += 3;
 }
 
 } // namespace detail::alp
@@ -85,10 +123,11 @@ class ALPEncoding final
       : TypedEncoding<T, physicalType>(pool, data, options), pos_(0) {
     const char* pos = data.data() + this->dataOffset();
 
-    exponent_ = encoding::read<uint8_t>(pos);
-    factor_ = encoding::read<uint8_t>(pos);
-    exceptionCount_ = encoding::readUint32(pos);
-    const uint32_t encodedValuesSize = encoding::readUint32(pos);
+    const auto header = detail::alp::readHeader(pos);
+    exponent_ = header.exponent;
+    factor_ = header.factor;
+    exceptionCount_ = header.hasExceptions ? varint::readVarint32(&pos) : 0;
+    const uint32_t encodedValuesSize = varint::readVarint32(&pos);
 
     const EncodingFactory encodingFactory(options);
     auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
@@ -213,8 +252,11 @@ class ALPEncoding final
 
     const uint32_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
     const uint32_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
+    const uint32_t metadataSize = kHeaderSize +
+        (exceptionCount > 0 ? varint::varintSize(exceptionCount) : 0) +
+        varint::varintSize(serializedEncoded.size());
     const uint32_t encodingSize =
-        Encoding::serializePrefixSize(rowCount, useVarint) + kAlpPrefixSize +
+        Encoding::serializePrefixSize(rowCount, useVarint) + metadataSize +
         serializedEncoded.size() + exceptionPositionsSize + exceptionValuesSize;
 
     char* reserved = buffer.reserve(encodingSize);
@@ -222,10 +264,16 @@ class ALPEncoding final
     Encoding::serializePrefix(
         EncodingType::ALP, TypeTraits<T>::dataType, rowCount, useVarint, pos);
 
-    encoding::write<uint8_t>(exponent, pos);
-    encoding::write<uint8_t>(factor, pos);
-    encoding::writeUint32(exceptionCount, pos);
-    encoding::writeUint32(serializedEncoded.size(), pos);
+    detail::alp::writeHeader(
+        detail::alp::Header{
+            .exponent = exponent,
+            .factor = factor,
+            .hasExceptions = exceptionCount > 0},
+        pos);
+    if (exceptionCount > 0) {
+      varint::writeVarint(exceptionCount, &pos);
+    }
+    varint::writeVarint(serializedEncoded.size(), &pos);
     encoding::writeBytes(serializedEncoded, pos);
 
     if (exceptionCount > 0) {
@@ -247,17 +295,37 @@ class ALPEncoding final
     }
 
     const uint64_t rowCount = values.size();
-    const uint32_t sampleSize =
-        std::min(static_cast<uint32_t>(rowCount), kSampleSize);
+    const uint32_t sampleSize = estimateSampleSize(rowCount);
+
+    std::vector<physicalType> sampledValues;
+    sampledValues.reserve(sampleSize);
+    // Select evenly spaced input positions without accumulating rounding error.
+    for (uint32_t i = 0; i < sampleSize; ++i) {
+      const auto inputIndex = sampledValueIndex(i, rowCount, sampleSize);
+      sampledValues.push_back(values[inputIndex]);
+    }
+
+    return estimateSizeFromSample(rowCount, sampledValues, options);
+  }
+
+  static std::optional<uint64_t> estimateSizeFromSample(
+      uint64_t rowCount,
+      std::span<const physicalType> sampledValues,
+      const Encoding::Options& options = {}) {
+    NIMBLE_CHECK_GT(rowCount, 0, "ALP estimation requires non-empty input.");
+    NIMBLE_CHECK(
+        !sampledValues.empty(), "ALP estimation requires a non-empty sample.");
+    NIMBLE_CHECK_LE(
+        sampledValues.size(),
+        rowCount,
+        "ALP sample size cannot exceed the input row count.");
+
+    const uint64_t sampleSize = sampledValues.size();
 
     std::vector<cppDataType> logicalValues;
     logicalValues.reserve(sampleSize);
-    std::vector<physicalType> sampledValues;
-    sampledValues.reserve(sampleSize);
-    for (uint32_t i = 0; i < sampleSize; ++i) {
-      const auto value = values[sampledValueIndex(i, rowCount, sampleSize)];
+    for (const auto value : sampledValues) {
       logicalValues.push_back(detail::alp::toLogical<cppDataType>(value));
-      sampledValues.push_back(value);
     }
 
     const auto [exponent, factor] = findBestExponentFactor(
@@ -269,7 +337,10 @@ class ALPEncoding final
     uint64_t sampleExceptionCount{0};
     for (auto i = 0; i < sampleSize; ++i) {
       if (!canRepresentExactly(
-              logicalValues[i], sampledValues[i], exponent, factor)) {
+              logicalValues[i],
+              sampledValues[static_cast<size_t>(i)],
+              exponent,
+              factor)) {
         encodedValues.push_back(0);
         ++sampleExceptionCount;
         continue;
@@ -282,19 +353,35 @@ class ALPEncoding final
 
     const auto encodedStats = Statistics<uint64_t>::create(
         std::span<const uint64_t>{encodedValues.data(), encodedValues.size()});
-    // Match existing nested-stream estimators: use FixedBitWidth as a simple
-    // representative estimate instead of recursively modeling nested selection.
-    const uint64_t nestedEncodedValuesSize =
+    // Model the inexpensive scalar candidates without recursively estimating
+    // complex nested encodings.
+    const uint64_t nestedEncodedValuesSize = std::min(
         FixedBitWidthEncoding<uint64_t>::estimateSize(
-            rowCount, encodedStats, options);
+            rowCount, encodedStats, options),
+        TrivialEncoding<uint64_t>::estimateSize(rowCount));
     const uint64_t exceptionCount =
         (sampleExceptionCount * rowCount + sampleSize - 1) / sampleSize;
     const uint64_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
     const uint64_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
+    const uint64_t metadataSize = kHeaderSize +
+        (exceptionCount > 0 ? varint::varintSize(exceptionCount) : 0) +
+        varint::varintSize(nestedEncodedValuesSize);
     return Encoding::serializePrefixSize(
                static_cast<uint32_t>(rowCount), options.useVarintRowCount) +
-        kAlpPrefixSize + nestedEncodedValuesSize + exceptionPositionsSize +
+        metadataSize + nestedEncodedValuesSize + exceptionPositionsSize +
         exceptionValuesSize;
+  }
+
+  static uint32_t estimateSampleSize(uint64_t rowCount) {
+    return std::min(static_cast<uint32_t>(rowCount), kSampleSize);
+  }
+
+  /// Maps a dense sample ordinal to an evenly spaced input row.
+  static uint64_t sampledValueIndex(
+      uint32_t sampleIndex,
+      uint64_t rowCount,
+      uint32_t sampleSize) {
+    return sampleIndex * rowCount / sampleSize;
   }
 
   // Pre-computed powers of 10 for double precision.
@@ -306,19 +393,10 @@ class ALPEncoding final
   // Largest exponent and factor values backed by kPow10Double.
   static constexpr int kMaxExponent{23};
   static constexpr int kMaxFactor{23};
-  // ALP prefix: exponent(1) + factor(1) + exceptionCount(4) +
-  // encodedValuesSize(4).
-  static constexpr int kAlpPrefixSize{10};
+  // ALP-specific control word following the standard Encoding prefix.
+  static constexpr uint32_t kHeaderSize{3};
   // Sample up to this many values to find the best (exponent, factor) pair.
   static constexpr uint32_t kSampleSize{1024};
-
-  // Maps a dense sample ordinal to an evenly spaced input row.
-  static uint64_t sampledValueIndex(
-      uint32_t sampleIndex,
-      uint64_t rowCount,
-      uint32_t sampleSize) {
-    return sampleIndex * rowCount / sampleSize;
-  }
 
   // Checks whether the selected ALP transform can encode the value without an
   // exception.
@@ -418,11 +496,11 @@ class ALPEncoding final
 
   void
   patchExceptions(uint32_t startRow, uint32_t rowCount, physicalType* output) {
-    const auto* exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
     const auto* exVals =
         reinterpret_cast<const physicalType*>(exceptionValues_);
-    const auto* exBegin = exPos;
-    const auto* exEnd = exPos + exceptionCount_;
+    const auto* exBegin =
+        reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    const auto* exEnd = exBegin + exceptionCount_;
     const auto* first = std::lower_bound(exBegin, exEnd, startRow);
     const auto* last = std::lower_bound(first, exEnd, startRow + rowCount);
     for (auto* it = first; it != last; ++it) {
@@ -432,11 +510,11 @@ class ALPEncoding final
   }
 
   const physicalType* findException(uint32_t row) const {
-    const auto* exPos = reinterpret_cast<const uint32_t*>(exceptionPositions_);
     const auto* exVals =
         reinterpret_cast<const physicalType*>(exceptionValues_);
-    const auto* exBegin = exPos;
-    const auto* exEnd = exPos + exceptionCount_;
+    const auto* exBegin =
+        reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    const auto* exEnd = exBegin + exceptionCount_;
     const auto* it = std::lower_bound(exBegin, exEnd, row);
     if (it == exEnd || *it != row) {
       return nullptr;

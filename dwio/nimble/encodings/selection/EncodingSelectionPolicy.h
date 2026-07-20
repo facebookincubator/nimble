@@ -126,7 +126,9 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // selection.
     if constexpr (isFloatingPointType<T>()) {
       if (options.allowNestedAlpSelection &&
-          identifier_ == EncodingIdentifiers::Dictionary::Alphabet &&
+          (identifier_ == EncodingIdentifiers::Dictionary::Alphabet ||
+           identifier_ == EncodingIdentifiers::MainlyConstant::OtherValues ||
+           identifier_ == EncodingIdentifiers::RunLength::RunValues) &&
           std::none_of(
               candidateEncodingReadFactors.begin(),
               candidateEncodingReadFactors.end(),
