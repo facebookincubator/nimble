@@ -15,7 +15,9 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <span>
+#include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -30,6 +32,7 @@
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/NestedAlpSizeEstimation.h"
 #include "velox/common/base/SimdUtil.h"
 
 // Holds data in RLE format. Consecutive equal values are collapsed into runs:
@@ -50,11 +53,16 @@ namespace facebook::nimble {
 
 namespace rle {
 
-template <typename T>
+/// Builds run lengths and applies `transform` to each run's representative
+/// input value before storing it in `runValues`. This allows floating-point
+/// physical values to be converted back to their logical type for nested
+/// encoding.
+template <typename T, typename RunValue, typename Transform>
 void computeRuns(
     std::span<const T> data,
     Vector<uint32_t>* runLengths,
-    Vector<T>* runValues) {
+    Vector<RunValue>* runValues,
+    Transform transform) {
   static_assert(!std::is_floating_point_v<T>);
   if (data.empty()) {
     return;
@@ -66,13 +74,21 @@ void computeRuns(
       ++runLength;
     } else {
       runLengths->push_back(runLength);
-      runValues->push_back(last);
+      runValues->push_back(transform(last));
       last = data[i];
       runLength = 1;
     }
   }
   runLengths->push_back(runLength);
-  runValues->push_back(last);
+  runValues->push_back(transform(last));
+}
+
+template <typename T>
+void computeRuns(
+    std::span<const T> data,
+    Vector<uint32_t>* runLengths,
+    Vector<T>* runValues) {
+  computeRuns(data, runLengths, runValues, [](const T value) { return value; });
 }
 
 } // namespace rle
@@ -167,19 +183,33 @@ class RLEEncodingBase
     const uint32_t valueCount = values.size();
     auto* pool = &buffer.getMemoryPool();
     Vector<uint32_t> runLengths(pool);
-    Vector<physicalType> runValues(pool);
-    rle::computeRuns(values, &runLengths, &runValues);
-
     ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
-    std::string_view serializedRunLengths =
-        selection.template encodeNested<uint32_t>(
-            EncodingIdentifiers::RunLength::RunLengths,
-            runLengths,
-            scopedBuffer.get(),
-            options);
-
-    std::string_view serializedRunValues = getSerializedRunValues(
-        selection, runValues, scopedBuffer.get(), options);
+    std::string_view serializedRunLengths;
+    std::string_view serializedRunValues;
+    if constexpr (isFloatingPointType<T>()) {
+      Vector<T> logicalRunValues(pool);
+      rle::computeRuns(
+          values, &runLengths, &logicalRunValues, [](const physicalType value) {
+            return EncodingPhysicalType<T>::asEncodingLogicalType(value);
+          });
+      serializedRunLengths = selection.template encodeNested<uint32_t>(
+          EncodingIdentifiers::RunLength::RunLengths,
+          runLengths,
+          scopedBuffer.get(),
+          options);
+      serializedRunValues = RLEEncoding::getSerializedLogicalRunValues(
+          selection, logicalRunValues, scopedBuffer.get(), options);
+    } else {
+      Vector<physicalType> runValues(pool);
+      rle::computeRuns(values, &runLengths, &runValues);
+      serializedRunLengths = selection.template encodeNested<uint32_t>(
+          EncodingIdentifiers::RunLength::RunLengths,
+          runLengths,
+          scopedBuffer.get(),
+          options);
+      serializedRunValues = getSerializedPhysicalRunValues(
+          selection, runValues, scopedBuffer.get(), options);
+    }
 
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(valueCount, useVarint) + 4 +
@@ -221,12 +251,12 @@ class RLEEncodingBase
     advanceRunValue();
   }
 
-  static std::string_view getSerializedRunValues(
+  static std::string_view getSerializedPhysicalRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
       Buffer& buffer,
       const Encoding::Options& options = {}) {
-    return RLEEncoding::getSerializedRunValues(
+    return RLEEncoding::getSerializedPhysicalRunValues(
         selection, runValues, buffer, options);
   }
 
@@ -273,11 +303,32 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
 
   void resetValues();
 
-  static std::string_view getSerializedRunValues(
+  static std::string_view getSerializedLogicalRunValues(
+      EncodingSelection<physicalType>& selection,
+      const Vector<T>& logicalRunValues,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    static_assert(isFloatingPointType<T>());
+    auto nestedPolicy = std::unique_ptr<EncodingSelectionPolicy<T>>(
+        static_cast<EncodingSelectionPolicy<T>*>(
+            selection
+                .template createNestedPolicy<T>(
+                    selection.encodingType(),
+                    EncodingIdentifiers::RunLength::RunValues)
+                .release()));
+    return EncodingFactory::encode<T>(
+        std::move(nestedPolicy),
+        std::span<const T>{logicalRunValues.data(), logicalRunValues.size()},
+        buffer,
+        options);
+  }
+
+  static std::string_view getSerializedPhysicalRunValues(
       EncodingSelection<physicalType>& selection,
       const Vector<physicalType>& runValues,
       Buffer& buffer,
       const Encoding::Options& options = {}) {
+    static_assert(!isFloatingPointType<T>());
     return selection.template encodeNested<physicalType>(
         EncodingIdentifiers::RunLength::RunValues, runValues, buffer, options);
   }
@@ -379,7 +430,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   }
 
   static uint64_t estimateSize(
-      uint64_t /*rowCount*/,
+      uint64_t rowCount,
       const Statistics<physicalType>& statistics,
       const Encoding::Options& options = {}) {
     // Estimate the two nested streams produced by RLE:
@@ -395,25 +446,39 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
         FixedBitWidthEncoding<uint32_t>::estimateSize(
             runCount, statistics.minRepeat(), statistics.maxRepeat(), options);
 
-    uint64_t runValuesEncodingSize{0};
-    if constexpr (isStringType<physicalType>()) {
-      // String run values often repeat across non-adjacent runs, so estimate
-      // them as Dictionary: unique strings in the alphabet plus one index per
-      // run.
-      runValuesEncodingSize =
-          DictionaryEncoding<std::string_view>::estimateSize(
-              runCount, statistics, options);
-    } else {
-      // Run values are encoded as a FixedBitWidth child.
-      runValuesEncodingSize = FixedBitWidthEncoding<physicalType>::estimateSize(
-          runCount, statistics, options);
-    }
+    const uint64_t runValuesEncodingSize =
+        estimateRunValuesSize(runCount, statistics, options);
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
     return outerEncodingSize + runValuesEncodingSize + runLengthsEncodingSize;
   }
 
  private:
+  static uint64_t estimateRunValuesSize(
+      uint64_t runCount,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    if constexpr (isStringType<physicalType>()) {
+      return DictionaryEncoding<std::string_view>::estimateSize(
+          runCount, statistics, options);
+    } else {
+      uint64_t bestSize = FixedBitWidthEncoding<physicalType>::estimateSize(
+          runCount, statistics, options);
+      if constexpr (isFloatingPointType<T>()) {
+        if (options.allowNestedAlpSelection) {
+          const auto& runValues = statistics.runValues();
+          if (const auto alpEncodingSize = detail::nestedAlpSize<T>(
+                  std::span<const physicalType>{
+                      runValues.data(), runValues.size()},
+                  options)) {
+            bestSize = std::min(bestSize, *alpEncodingSize);
+          }
+        }
+      }
+      return bestSize;
+    }
+  }
+
   using internal::RLEEncodingBase<T, RLEEncoding<T>>::advanceRunLength;
 
   void advanceRunValue();
@@ -470,7 +535,7 @@ class RLEEncoding<bool> final
 
   bool nextValue();
   void resetValues();
-  static std::string_view getSerializedRunValues(
+  static std::string_view getSerializedPhysicalRunValues(
       EncodingSelection<bool>& /* selection */,
       const Vector<bool>& runValues,
       Buffer& buffer,

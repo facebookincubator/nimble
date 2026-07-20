@@ -27,6 +27,7 @@
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/NestedAlpSizeEstimation.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/Memory.h"
 
@@ -90,10 +91,11 @@ class DictionaryEncoding
       uint64_t rowCount,
       const Statistics<physicalType>& statistics,
       const Encoding::Options& options = {}) {
-    // Assumptions:
-    // Alphabet estimated as min of Trival and bit-packed.
-    // Indices are stored bit-packed, with bit width needed to store max
-    // dictionary index.
+    // Estimate the two nested streams produced by Dictionary:
+    //
+    //   alphabet: unique values. Floating-point alphabets may use ALP when
+    //     nested ALP selection is enabled.
+    //   indices: one dictionary index per row, estimated as FixedBitWidth.
     const auto& uniqueCounts = statistics.uniqueCounts().value();
     const uint64_t uniqueCount = uniqueCounts.size();
     const uint64_t indicesEncodingSize =
@@ -117,6 +119,15 @@ class DictionaryEncoding
           TrivialEncoding<physicalType>::estimateSize(uniqueCount),
           FixedBitWidthEncoding<physicalType>::estimateSize(
               uniqueCount, statistics.min(), statistics.max(), options));
+      // TODO: Consider PFOR after its statistics can be derived from unique
+      // values without rebuilding Statistics for every dictionary estimate.
+      if constexpr (isFloatingPointType<T>()) {
+        if (const auto alpEncodingSize =
+                detail::uniqueValuesNestedAlpSize<T>(uniqueCounts, options)) {
+          alphabetEncodingSize =
+              std::min(alphabetEncodingSize, *alpEncodingSize);
+        }
+      }
     }
     const uint64_t outerEncodingSize =
         EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);

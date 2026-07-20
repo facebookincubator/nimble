@@ -128,7 +128,7 @@ uint64_t countTrueValues(std::span<const bool> values) {
 } // namespace
 
 template <typename T, typename InputType>
-void Statistics<T, InputType>::populateRepeats() const {
+void Statistics<T, InputType>::populateRepeats(bool collectRunValues) const {
   uint64_t consecutiveRepeatCount = 0;
   uint64_t minRepeat = std::numeric_limits<uint64_t>::max();
   uint64_t maxRepeat = 0;
@@ -140,6 +140,10 @@ void Statistics<T, InputType>::populateRepeats() const {
 
   T currentValue = data_[0];
   uint64_t currentRepeat = 0;
+  std::vector<T> runValues;
+  if (collectRunValues) {
+    runValues.push_back(currentValue);
+  }
 
   for (auto i = 0; i < data_.size(); ++i) {
     const auto& value = data_[i];
@@ -160,6 +164,9 @@ void Statistics<T, InputType>::populateRepeats() const {
 
       currentRepeat = 1;
       currentValue = value;
+      if (collectRunValues) {
+        runValues.push_back(currentValue);
+      }
       ++consecutiveRepeatCount;
     }
   }
@@ -177,6 +184,9 @@ void Statistics<T, InputType>::populateRepeats() const {
   maxRepeat_ = maxRepeat;
   consecutiveRepeatCount_ = consecutiveRepeatCount;
   totalStringsRepeatLength_ = totalRepeatLength;
+  if (collectRunValues) {
+    runValues_ = std::move(runValues);
+  }
 }
 
 template <typename T, typename InputType>
@@ -340,20 +350,20 @@ Statistics<std::string_view, std::string>::create(
     std::span<const std::string> data);
 
 // populateRepeats works on all types
-template void Statistics<int8_t>::populateRepeats() const;
-template void Statistics<uint8_t>::populateRepeats() const;
-template void Statistics<int16_t>::populateRepeats() const;
-template void Statistics<uint16_t>::populateRepeats() const;
-template void Statistics<int32_t>::populateRepeats() const;
-template void Statistics<uint32_t>::populateRepeats() const;
-template void Statistics<int64_t>::populateRepeats() const;
-template void Statistics<uint64_t>::populateRepeats() const;
-template void Statistics<float>::populateRepeats() const;
-template void Statistics<double>::populateRepeats() const;
-template void Statistics<bool>::populateRepeats() const;
-template void Statistics<std::string_view>::populateRepeats() const;
-template void Statistics<std::string_view, std::string>::populateRepeats()
-    const;
+template void Statistics<int8_t>::populateRepeats(bool) const;
+template void Statistics<uint8_t>::populateRepeats(bool) const;
+template void Statistics<int16_t>::populateRepeats(bool) const;
+template void Statistics<uint16_t>::populateRepeats(bool) const;
+template void Statistics<int32_t>::populateRepeats(bool) const;
+template void Statistics<uint32_t>::populateRepeats(bool) const;
+template void Statistics<int64_t>::populateRepeats(bool) const;
+template void Statistics<uint64_t>::populateRepeats(bool) const;
+template void Statistics<float>::populateRepeats(bool) const;
+template void Statistics<double>::populateRepeats(bool) const;
+template void Statistics<bool>::populateRepeats(bool) const;
+template void Statistics<std::string_view>::populateRepeats(bool) const;
+template void Statistics<std::string_view, std::string>::populateRepeats(
+    bool) const;
 
 // populateUniques works on all types
 template void Statistics<int8_t>::populateUniques() const;

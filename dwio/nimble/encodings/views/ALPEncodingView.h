@@ -40,10 +40,11 @@ class ALPEncodingView final : public TypedEncodingView<T> {
       : TypedEncodingView<T>{data, pool, options} {
     NIMBLE_CHECK_EQ(this->encodingType_, EncodingType::ALP);
     const char* pos = data.data() + this->dataOffset_;
-    exponent_ = encoding::read<uint8_t>(pos);
-    factor_ = encoding::read<uint8_t>(pos);
-    exceptionCount_ = encoding::readUint32(pos);
-    const auto encodedValuesSize = encoding::readUint32(pos);
+    const auto header = detail::alp::readHeader(pos);
+    exponent_ = header.exponent;
+    factor_ = header.factor;
+    exceptionCount_ = header.hasExceptions ? varint::readVarint32(&pos) : 0;
+    const auto encodedValuesSize = varint::readVarint32(&pos);
 
     encodedValues_ = detail::createTypedEncodingView<uint64_t>(
         {pos, encodedValuesSize}, this->pool_, options);
@@ -68,7 +69,7 @@ class ALPEncodingView final : public TypedEncodingView<T> {
 
   const physicalType* findException(uint32_t index) const {
     const auto* begin = exceptionPositions_;
-    const auto* end = exceptionPositions_ + exceptionCount_;
+    const auto* end = begin + exceptionCount_;
     const auto* it = std::lower_bound(begin, end, index);
     if (it == end || *it != index) {
       return nullptr;

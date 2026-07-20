@@ -18,6 +18,8 @@
 #include <memory>
 #include <vector>
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
@@ -197,10 +199,11 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       break;
     case EncodingType::ALP: {
       const char* pos = encoding.data() + kEncodingPrefixSize;
-      encoding::read<uint8_t>(pos); // exponent
-      encoding::read<uint8_t>(pos); // factor
-      encoding::readUint32(pos); // exceptionCount
-      const uint32_t encodedValuesBytes = encoding::readUint32(pos);
+      const auto header = detail::alp::readHeader(pos);
+      if (header.hasExceptions) {
+        varint::readVarint32(&pos); // exceptionCount
+      }
+      const uint32_t encodedValuesBytes = varint::readVarint32(&pos);
 
       children.reserve(1);
       children.emplace_back(

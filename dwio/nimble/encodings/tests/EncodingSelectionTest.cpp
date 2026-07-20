@@ -141,7 +141,7 @@ void verifySizeEstimate(
   // Check the estimated size
   auto estimatedSize = nimble::detail::EncodingSizeEstimation<T>::estimateSize(
       encodingTypeForEstimation,
-      values.size(),
+      values,
       nimble::Statistics<T>::create(values),
       options);
   EXPECT_EQ(estimatedSize, expectedEstimatedSize);
@@ -353,8 +353,10 @@ TYPED_TEST(EncodingSelectionNumericTests, selectMainlyConst) {
                .level = 2,
                .nestedEncodingName = "Indices"},
               {.encodingType = nimble::EncodingType::Trivial,
-               .dataType = nimble::TypeTraits<
-                   typename nimble::EncodingPhysicalType<T>::type>::dataType,
+               .dataType = nimble::isFloatingPointType<T>()
+                   ? nimble::TypeTraits<T>::dataType
+                   : nimble::TypeTraits<typename nimble::EncodingPhysicalType<
+                         T>::type>::dataType,
                .level = 1,
                .nestedEncodingName = "OtherValues"},
           });
@@ -520,13 +522,17 @@ TYPED_TEST(EncodingSelectionNumericTests, selectRunLength) {
              .level = 1,
              .nestedEncodingName = "Lengths"},
             {.encodingType = nimble::EncodingType::Dictionary,
-             .dataType = nimble::TypeTraits<
-                 typename nimble::EncodingPhysicalType<T>::type>::dataType,
+             .dataType = nimble::isFloatingPointType<T>()
+                 ? nimble::TypeTraits<T>::dataType
+                 : nimble::TypeTraits<typename nimble::EncodingPhysicalType<
+                       T>::type>::dataType,
              .level = 1,
              .nestedEncodingName = "Values"},
             {.encodingType = nimble::EncodingType::Trivial,
-             .dataType = nimble::TypeTraits<
-                 typename nimble::EncodingPhysicalType<T>::type>::dataType,
+             .dataType = nimble::isFloatingPointType<T>()
+                 ? nimble::TypeTraits<T>::dataType
+                 : nimble::TypeTraits<typename nimble::EncodingPhysicalType<
+                       T>::type>::dataType,
              .level = 2,
              .nestedEncodingName = "Alphabet"},
             {.encodingType = nimble::EncodingType::FixedBitWidth,

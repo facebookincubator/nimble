@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <optional>
 #include <span>
 #include "dwio/nimble/common/Buffer.h"
@@ -46,11 +47,14 @@ class ConstantEncodingBase
       : TypedEncoding<T, physicalType>(pool, data, options) {}
 
   static std::optional<uint64_t> estimateSize(
-      const Statistics<physicalType>& statistics) {
-    if (statistics.uniqueCounts().value().size() != 1) {
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
+    if (!isConstant(values, statistics)) {
       return std::nullopt;
     }
-    const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize;
+    const uint64_t outerEncodingSize =
+        Encoding::serializePrefixSize(values.size(), options.useVarintRowCount);
     if constexpr (isStringType<physicalType>()) {
       const uint64_t valueSize = statistics.max().size() + sizeof(uint32_t);
       return outerEncodingSize + valueSize;
@@ -165,7 +169,7 @@ class ConstantEncodingBase
       NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding cannot be empty.");
     }
 
-    if (selection.statistics().uniqueCounts().value().size() != 1) {
+    if (!isConstant(values, selection.statistics())) {
       NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding requires constant data.");
     }
 
@@ -184,12 +188,41 @@ class ConstantEncodingBase
         rowCount,
         useVarint,
         pos);
-    encoding::write<physicalType>(values[0], pos);
+    encoding::write<physicalType>(canonicalValue(values.front()), pos);
     NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
     return {reserved, encodingSize};
   }
 
  protected:
+  static bool isConstant(
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics) {
+    NIMBLE_CHECK(
+        !values.empty(), "ConstantEncoding requires non-empty values.");
+    if (values.size() == 1 || statistics.uniqueCounts().value().size() == 1) {
+      return true;
+    }
+    if constexpr (!isFloatingPointType<T>()) {
+      return false;
+    }
+    const auto logicalValue =
+        EncodingPhysicalType<T>::asEncodingLogicalType(values.front());
+    return std::all_of(values.begin(), values.end(), [&](physicalType value) {
+      return EncodingPhysicalType<T>::asEncodingLogicalType(value) ==
+          logicalValue;
+    });
+  }
+
+  static physicalType canonicalValue(physicalType value) {
+    if constexpr (!isFloatingPointType<T>()) {
+      return value;
+    }
+    // Floating-point constant selection uses logical equality; store the
+    // matching canonical physical value.
+    const auto logical = EncodingPhysicalType<T>::asEncodingLogicalType(value);
+    return EncodingPhysicalType<T>::asEncodingPhysicalType(logical);
+  }
+
   physicalType value_;
 };
 

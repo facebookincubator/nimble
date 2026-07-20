@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <span>
+#include <vector>
 
 #include <folly/CPortability.h>
 
@@ -24,6 +25,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
@@ -34,6 +36,7 @@
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
+#include "dwio/nimble/encodings/selection/NestedAlpSizeEstimation.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/Casts.h"
 #include "velox/common/base/SimdUtil.h"
@@ -147,10 +150,11 @@ class MainlyConstantEncodingBase
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
     } else {
       const uint64_t commonValueSize = sizeof(physicalType);
-      // Other values are encoded as a FixedBitWidth child.
-      const uint64_t otherValuesSize =
-          FixedBitWidthEncoding<physicalType>::estimateSize(
-              uncommonCount, statistics.min(), statistics.max(), options);
+      const uint64_t otherValuesSize = estimateOtherValuesSize(
+          uniqueCounts,
+          /*commonValue=*/maxUniqueCount->first,
+          uncommonCount,
+          options);
       const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
           2 * sizeof(uint32_t) + commonValueSize;
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
@@ -562,6 +566,59 @@ class MainlyConstantEncodingBase
         });
   }
 
+  template <typename UniqueCounts>
+  static uint64_t estimateOtherValuesSize(
+      const UniqueCounts& uniqueCounts,
+      const physicalType& commonValue,
+      uint64_t uncommonCount,
+      const Encoding::Options& options) {
+    std::vector<physicalType> otherValues;
+    otherValues.reserve(uncommonCount);
+    for (const auto& uniqueCount : uniqueCounts) {
+      if (uniqueCount.first == commonValue) {
+        continue;
+      }
+      otherValues.insert(
+          otherValues.end(), uniqueCount.second, uniqueCount.first);
+    }
+
+    if (otherValues.empty()) {
+      return TrivialEncoding<physicalType>::estimateSize(0);
+    }
+
+    // Removing the common value can change the child stream's range and value
+    // distribution, so estimate its candidates from the actual other values.
+    const auto otherStats = Statistics<physicalType>::create(
+        std::span<const physicalType>{otherValues.data(), otherValues.size()});
+
+    uint64_t estimatedSize = std::min({
+        FixedBitWidthEncoding<physicalType>::estimateSize(
+            otherValues.size(), otherStats.min(), otherStats.max(), options),
+        TrivialEncoding<physicalType>::estimateSize(otherValues.size()),
+        DictionaryEncoding<T>::estimateSize(
+            otherValues.size(), otherStats, options),
+    });
+
+    const auto constantSize = ConstantEncoding<T>::estimateSize(
+        std::span<const physicalType>{otherValues.data(), otherValues.size()},
+        otherStats,
+        options);
+    if (constantSize.has_value()) {
+      estimatedSize = std::min(estimatedSize, constantSize.value());
+    }
+
+    if constexpr (isFloatingPointType<T>()) {
+      if (const auto alpEncodingSize = detail::nestedAlpSize<T>(
+              std::span<const physicalType>{
+                  otherValues.data(), otherValues.size()},
+              options)) {
+        estimatedSize = std::min(estimatedSize, *alpEncodingSize);
+      }
+    }
+
+    return estimatedSize;
+  }
+
   // Encode-time child streams: isCommon spans all input rows, while
   // otherValues contains only rows that differ from the common value.
   struct ChildStreams {
@@ -602,6 +659,41 @@ class MainlyConstantEncodingBase
         uncommonCount,
         "Unexpected uncommon value count.");
     return streams;
+  }
+
+  static std::string_view encodeOtherValues(
+      EncodingSelection<physicalType>& selection,
+      std::span<const physicalType> otherValues,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    if constexpr (!isFloatingPointType<T>()) {
+      return selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::MainlyConstant::OtherValues,
+          otherValues,
+          buffer,
+          options);
+    } else {
+      Vector<T> logicalOtherValues{&buffer.getMemoryPool()};
+      logicalOtherValues.resize(otherValues.size());
+      for (uint32_t i = 0; i < otherValues.size(); ++i) {
+        logicalOtherValues[i] =
+            EncodingPhysicalType<T>::asEncodingLogicalType(otherValues[i]);
+      }
+
+      auto nestedPolicy = std::unique_ptr<EncodingSelectionPolicy<T>>(
+          static_cast<EncodingSelectionPolicy<T>*>(
+              selection
+                  .template createNestedPolicy<T>(
+                      selection.encodingType(),
+                      EncodingIdentifiers::MainlyConstant::OtherValues)
+                  .release()));
+      return EncodingFactory::encode<T>(
+          std::move(nestedPolicy),
+          std::span<const T>{
+              logicalOtherValues.data(), logicalOtherValues.size()},
+          buffer,
+          options);
+    }
   }
 
   // Counts unset bits across all words. Caller must mask tail bits
@@ -739,11 +831,8 @@ std::string_view MainlyConstantEncoding<T>::encode(
       scopedBuffer.get(),
       options);
   std::string_view serializedOtherValues =
-      selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::MainlyConstant::OtherValues,
-          childStreams.otherValues,
-          scopedBuffer.get(),
-          options);
+      MainlyConstantEncodingBase<T>::encodeOtherValues(
+          selection, childStreams.otherValues, scopedBuffer.get(), options);
 
   uint32_t encodingSize = Encoding::serializePrefixSize(entryCount, useVarint) +
       8 + serializedIsCommon.size() + serializedOtherValues.size();

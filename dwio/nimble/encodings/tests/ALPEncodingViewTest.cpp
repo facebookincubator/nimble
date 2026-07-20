@@ -17,6 +17,7 @@
 #include "dwio/nimble/encodings/tests/EncodingViewTestUtils.h"
 
 #include <gtest/gtest.h>
+#include <limits>
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
 
@@ -30,6 +31,9 @@ TEST_F(EncodingViewTest, readsAlpEncoding) {
       makeVector<float>({-12.5F, -1.25F, 0.0F, 1.25F, 12.5F}), {4, 0, 2, 1, 3});
   expectReads<nimble::ALPEncoding<double>>(
       makeVector<double>({-12.5, -1.25, 0.0, 1.25, 12.5}), {4, 0, 2, 1, 3});
+  expectReads<nimble::ALPEncoding<float>>(
+      makeVector<float>({1.25F, std::numeric_limits<float>::infinity(), 2.5F}),
+      {1, 2, 0});
 }
 
 TEST_F(ALPEncodingViewTest, concurrent) {
