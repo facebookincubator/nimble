@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 // SubIntSplit integration commented out (disabled):
@@ -22,11 +23,6 @@
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitEncoding.h"
 #endif
-*/
-// FOR and FrequencyPartition integration commented out (disabled):
-/*
-#include "dwio/nimble/encodings/ForEncoding.h"
-#include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
 */
 #include "dwio/nimble/encodings/legacy/ConstantEncoding.h"
 #include "dwio/nimble/encodings/legacy/DeltaEncoding.h"
@@ -218,36 +214,40 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           toString(dataType));                              \
   }
 
-#define RETURN_ENCODING_BY_INTEGRAL_TYPE(Encoding, dataType)    \
-  switch (dataType) {                                           \
-    case DataType::Int8:                                        \
-      return std::make_unique<Encoding<int8_t>>(                \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Uint8:                                       \
-      return std::make_unique<Encoding<uint8_t>>(               \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Int16:                                       \
-      return std::make_unique<Encoding<int16_t>>(               \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Uint16:                                      \
-      return std::make_unique<Encoding<uint16_t>>(              \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Int32:                                       \
-      return std::make_unique<Encoding<int32_t>>(               \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Uint32:                                      \
-      return std::make_unique<Encoding<uint32_t>>(              \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Int64:                                       \
-      return std::make_unique<Encoding<int64_t>>(               \
-          memoryPool, data, stringBufferFactory);               \
-    case DataType::Uint64:                                      \
-      return std::make_unique<Encoding<uint64_t>>(              \
-          memoryPool, data, stringBufferFactory);               \
-    default:                                                    \
-      NIMBLE_UNREACHABLE(                                       \
-          "FOR encoding only supports integral types, got {}.", \
-          toString(dataType));                                  \
+#define RETURN_ENCODING_BY_INTEGRAL_TYPE(Encoding, dataType)                  \
+  switch (dataType) {                                                         \
+    case DataType::Int8:                                                      \
+      return std::make_unique<Encoding<int8_t>>(                              \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Uint8:                                                     \
+      return std::make_unique<Encoding<uint8_t>>(                             \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Int16:                                                     \
+      return std::make_unique<Encoding<int16_t>>(                             \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Uint16:                                                    \
+      return std::make_unique<Encoding<uint16_t>>(                            \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Int32:                                                     \
+      return std::make_unique<Encoding<int32_t>>(                             \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Uint32:                                                    \
+      return std::make_unique<Encoding<uint32_t>>(                            \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Int64:                                                     \
+      return std::make_unique<Encoding<int64_t>>(                             \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Uint64:                                                    \
+      return std::make_unique<Encoding<uint64_t>>(                            \
+          memoryPool, data, stringBufferFactory);                             \
+    case DataType::Undefined:                                                 \
+    case DataType::Float:                                                     \
+    case DataType::Double:                                                    \
+    case DataType::Bool:                                                      \
+    case DataType::String:                                                    \
+    default:                                                                  \
+      NIMBLE_UNREACHABLE(                                                     \
+          "HuffmanEncoding only supports integral types, got {}.", dataType); \
   }
 
   switch (encodingType) {
@@ -313,19 +313,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
       RETURN_ENCODING_BY_NUMERIC_TYPE(
           ::facebook::nimble::SimdForBitpackEncoding, dataType);
     }
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::FOR: {
+    case EncodingType::Huffman: {
       RETURN_ENCODING_BY_INTEGRAL_TYPE(
-          ::facebook::nimble::ForEncoding, dataType);
+          ::facebook::nimble::HuffmanEncoding, dataType);
     }
-    case EncodingType::FrequencyPartition: {
-      RETURN_ENCODING_BY_NON_BOOL_TYPE(
-          ::facebook::nimble::FrequencyPartitionEncoding, dataType);
-    }
-#endif
-    */
     default: {
       NIMBLE_UNREACHABLE(
           "Trying to deserialize invalid EncodingType -- garbage input?");

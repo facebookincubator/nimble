@@ -34,6 +34,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -355,6 +356,22 @@ Vector<uint32_t> pforData() {
       data[i] += 10000;
     }
   }
+  return data;
+}
+
+Vector<uint32_t> huffmanSkewedData() {
+  Vector<uint32_t> data{benchmarkPool().get()};
+  data.resize(kRows);
+  for (uint32_t row = 0; row < kRows; ++row) {
+    data[row] = row % 10 == 0 ? 1 + row % 15 : 0;
+  }
+  return data;
+}
+
+Vector<uint32_t> huffmanUniformData() {
+  Vector<uint32_t> data{benchmarkPool().get()};
+  data.resize(kRows);
+  std::iota(data.begin(), data.end(), 0);
   return data;
 }
 
@@ -752,6 +769,34 @@ MATERIALIZE_BENCHMARK(
     Materialize_PFORUint32_Random130,
     uint32_t,
     encodeWithSelection<PFOREncoding<uint32_t>>(EncodingType::PFOR, pforData()),
+    randomPositions(kRows))
+VIEW_BENCHMARK(
+    View_HuffmanUint32_SkewedRandom130,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanSkewedData()),
+    randomPositions(kRows))
+MATERIALIZE_BENCHMARK(
+    Materialize_HuffmanUint32_SkewedRandom130,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanSkewedData()),
+    randomPositions(kRows))
+VIEW_BENCHMARK(
+    View_HuffmanUint32_UniformRandom130,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanUniformData()),
+    randomPositions(kRows))
+MATERIALIZE_BENCHMARK(
+    Materialize_HuffmanUint32_UniformRandom130,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanUniformData()),
     randomPositions(kRows))
 VIEW_BENCHMARK(
     View_SimdForBitpackUint32_Random130,

@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 // SubIntSplit integration commented out (disabled):
@@ -133,6 +134,13 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
       }
+    case EncodingType::Huffman:
+      if constexpr (isIntegralType<T>()) {
+        return f(
+            static_cast<::facebook::nimble::HuffmanEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
     // SubIntSplit integration commented out (disabled):
     /*
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
@@ -142,24 +150,6 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
             static_cast<::facebook::nimble::SubIntSplitEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
-      }
-#endif
-    */
-    // FOR and FrequencyPartition integration commented out (disabled):
-    /*
-#ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
-    case EncodingType::FOR:
-      if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
-        return f(static_cast<::facebook::nimble::ForEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
-      }
-    case EncodingType::FrequencyPartition:
-      if constexpr (!std::is_same_v<T, bool>) {
-        return f(static_cast<
-                 ::facebook::nimble::FrequencyPartitionEncoding<T>&>(encoding));
-      } else {
-        NIMBLE_UNREACHABLE(toString(encoding.dataType()));
       }
 #endif
     */

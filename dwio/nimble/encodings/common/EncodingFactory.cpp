@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -211,28 +212,40 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           toString(dataType));                              \
   }
 
-#define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)    \
-  switch (dataType) {                                          \
-    case DataType::Int8:                                       \
-      return std::make_unique<Encoding<int8_t>>(pool, data);   \
-    case DataType::Uint8:                                      \
-      return std::make_unique<Encoding<uint8_t>>(pool, data);  \
-    case DataType::Int16:                                      \
-      return std::make_unique<Encoding<int16_t>>(pool, data);  \
-    case DataType::Uint16:                                     \
-      return std::make_unique<Encoding<uint16_t>>(pool, data); \
-    case DataType::Int32:                                      \
-      return std::make_unique<Encoding<int32_t>>(pool, data);  \
-    case DataType::Uint32:                                     \
-      return std::make_unique<Encoding<uint32_t>>(pool, data); \
-    case DataType::Int64:                                      \
-      return std::make_unique<Encoding<int64_t>>(pool, data);  \
-    case DataType::Uint64:                                     \
-      return std::make_unique<Encoding<uint64_t>>(pool, data); \
-    default:                                                   \
-      NIMBLE_UNREACHABLE(                                      \
-          "ForEncoding only supports integer types, got {}.",  \
-          toString(dataType));                                 \
+#define RETURN_ENCODING_BY_INTEGER_TYPE(Encoding, dataType)                  \
+  switch (dataType) {                                                        \
+    case DataType::Int8:                                                     \
+      return std::make_unique<Encoding<int8_t>>(                             \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Uint8:                                                    \
+      return std::make_unique<Encoding<uint8_t>>(                            \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Int16:                                                    \
+      return std::make_unique<Encoding<int16_t>>(                            \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Uint16:                                                   \
+      return std::make_unique<Encoding<uint16_t>>(                           \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Int32:                                                    \
+      return std::make_unique<Encoding<int32_t>>(                            \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Uint32:                                                   \
+      return std::make_unique<Encoding<uint32_t>>(                           \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Int64:                                                    \
+      return std::make_unique<Encoding<int64_t>>(                            \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Uint64:                                                   \
+      return std::make_unique<Encoding<uint64_t>>(                           \
+          pool, data, stringBufferFactory, options);                         \
+    case DataType::Undefined:                                                \
+    case DataType::Float:                                                    \
+    case DataType::Double:                                                   \
+    case DataType::Bool:                                                     \
+    case DataType::String:                                                   \
+    default:                                                                 \
+      NIMBLE_UNREACHABLE(                                                    \
+          "HuffmanEncoding only supports integer types, got {}.", dataType); \
   }
 
   switch (encodingType) {
@@ -309,6 +322,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::SimdForBitpack: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(SimdForBitpackEncoding, dataType);
+    }
+    case EncodingType::Huffman: {
+      RETURN_ENCODING_BY_INTEGER_TYPE(HuffmanEncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(
@@ -487,6 +503,15 @@ std::string_view EncodingFactory::encode(
       }
       NIMBLE_INCOMPATIBLE_ENCODING(
           "SimdForBitpack encoding only supports integral data types, got {}.",
+          TypeTraits<T>::dataType);
+    }
+    case EncodingType::Huffman: {
+      if constexpr (isIntegralType<physicalType>()) {
+        return HuffmanEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Huffman encoding only supports integral data types, got {}.",
           TypeTraits<T>::dataType);
     }
     default: {

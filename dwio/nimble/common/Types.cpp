@@ -57,6 +57,8 @@ std::string toString(EncodingType encodingType) {
       return "ALP";
     case EncodingType::Fsst:
       return "Fsst";
+    case EncodingType::Huffman:
+      return "Huffman";
     case EncodingType::PFOR:
       return "PFOR";
     case EncodingType::SimdForBitpack:

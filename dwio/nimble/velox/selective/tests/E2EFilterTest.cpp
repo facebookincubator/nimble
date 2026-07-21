@@ -1232,6 +1232,27 @@ TEST_P(E2EFilterTest, integerBiasedDelta) {
   verifyColumnEncodingsOnDisk(EncodingType::Delta);
 }
 
+TEST_P(E2EFilterTest, integerForcedHuffman) {
+  forcedEncodingType_ = EncodingType::Huffman;
+  testWithTypes(
+      "tiny_val:tinyint,"
+      "short_val:smallint,"
+      "int_val:int,"
+      "long_val:bigint",
+      [&]() {
+        makeIntDistribution<int8_t>("tiny_val", -8, 7, 20, 0, 0, 0, false);
+        makeIntDistribution<int16_t>("short_val", -32, 31, 20, 0, 0, 0, false);
+        makeIntDistribution<int32_t>("int_val", -128, 127, 20, 0, 0, 0, false);
+        makeIntDistribution<int64_t>("long_val", -512, 511, 20, 0, 0, 0, false);
+      },
+      /*wrapInStruct=*/false,
+      {"tiny_val", "short_val", "int_val", "long_val"},
+      /*numCombinations=*/20,
+      /*withRecursiveNulls=*/true);
+  forcedEncodingType_.reset();
+  verifyColumnEncodingsOnDisk(EncodingType::Huffman);
+}
+
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 // Biased variant that forces SubIntSplit encoding selection.
 // SubIntSplit only applies to 32- and 64-bit types; smallint is excluded.

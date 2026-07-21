@@ -28,6 +28,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -362,6 +363,27 @@ class PforEncodingViewFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(PforEncodingViewFuzzerTest, PforViewTypes);
 
 TYPED_TEST(PforEncodingViewFuzzerTest, readAtMatchesMaterialize) {
+  runEncodingViewFuzzer<TypeParam>(
+      FLAGS_view_fuzzer_iterations,
+      FLAGS_view_fuzzer_max_rows,
+      FLAGS_view_fuzzer_seed);
+}
+
+using HuffmanViewTypes = ::testing::Types<
+    HuffmanEncoding<int8_t>,
+    HuffmanEncoding<uint8_t>,
+    HuffmanEncoding<int16_t>,
+    HuffmanEncoding<uint16_t>,
+    HuffmanEncoding<int32_t>,
+    HuffmanEncoding<uint32_t>,
+    HuffmanEncoding<int64_t>,
+    HuffmanEncoding<uint64_t>>;
+
+template <typename E>
+class HuffmanEncodingViewFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(HuffmanEncodingViewFuzzerTest, HuffmanViewTypes);
+
+TYPED_TEST(HuffmanEncodingViewFuzzerTest, readAtMatchesMaterialize) {
   runEncodingViewFuzzer<TypeParam>(
       FLAGS_view_fuzzer_iterations,
       FLAGS_view_fuzzer_max_rows,

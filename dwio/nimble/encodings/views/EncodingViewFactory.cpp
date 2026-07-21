@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/views/DictionaryEncodingView.h"
 #include "dwio/nimble/encodings/views/FOREncodingView.h"
 #include "dwio/nimble/encodings/views/FixedBitWidthEncodingView.h"
+#include "dwio/nimble/encodings/views/HuffmanEncodingView.h"
 #include "dwio/nimble/encodings/views/MainlyConstantEncodingView.h"
 #include "dwio/nimble/encodings/views/PFOREncodingView.h"
 #include "dwio/nimble/encodings/views/RLEEncodingView.h"
@@ -86,6 +87,15 @@ std::unique_ptr<TypedEncodingView<T>> createTypedEncodingView(
       }
       NIMBLE_INCOMPATIBLE_ENCODING(
           "FOR encoding should not be selected for non-integral data type: {}.",
+          TypeTraits<T>::dataType);
+    case EncodingType::Huffman:
+      if constexpr (
+          isIntegralType<physicalType>() &&
+          !std::is_same_v<physicalType, bool>) {
+        return std::make_unique<HuffmanEncodingView<T>>(data, pool, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "Huffman encoding should not be selected for non-integral data type: {}.",
           TypeTraits<T>::dataType);
     case EncodingType::PFOR:
       if constexpr (isIntegralType<physicalType>()) {

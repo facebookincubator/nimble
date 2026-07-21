@@ -62,6 +62,7 @@ void extractCompressionType(
     case EncodingType::SubIntSplit:
     case EncodingType::FrequencyPartition:
     case EncodingType::FOR:
+    case EncodingType::Huffman:
       break;
   }
 }
@@ -294,6 +295,7 @@ void traverseEncodings(
     }
     case EncodingType::FrequencyPartition:
     case EncodingType::FOR:
+    case EncodingType::Huffman:
       break;
   }
 }

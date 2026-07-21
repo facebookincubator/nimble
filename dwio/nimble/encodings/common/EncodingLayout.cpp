@@ -195,6 +195,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::SubIntSplit:
     case EncodingType::FOR:
     case EncodingType::FrequencyPartition:
+    case EncodingType::Huffman:
       // Non nested encodings have zero children
       break;
     case EncodingType::ALP: {

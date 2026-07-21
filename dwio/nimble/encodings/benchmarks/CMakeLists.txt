@@ -47,6 +47,17 @@ target_link_libraries(
   fsst
 )
 
+add_executable(nimble_huffman_benchmark HuffmanBenchmark.cpp)
+
+target_link_libraries(
+  nimble_huffman_benchmark
+  nimble_encodings
+  nimble_common
+  Folly::follybenchmark
+  Folly::folly
+  velox_memory
+)
+
 add_executable(nimble_encoding_view_benchmark EncodingViewBenchmark.cpp)
 
 target_link_libraries(
