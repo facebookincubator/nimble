@@ -101,6 +101,7 @@ ClusterIndexWriter::ClusterIndexWriter(
       keyColumnIndices_{getKeyColumnIndices({config.columns}, inputType)},
       noDuplicateKey_{config.noDuplicateKey},
       maxRowsPerKeyChunk_{config.maxRowsPerKeyChunk},
+      keyCompressionParams_{.type = config.keyChunkCompressionType},
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
           *pool_,
           keyStreamDescriptor(),
@@ -112,6 +113,12 @@ ClusterIndexWriter::ClusterIndexWriter(
           encodingType == EncodingType::Trivial,
       "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
       encodingType);
+  NIMBLE_CHECK(
+      keyCompressionParams_.type == CompressionType::Uncompressed ||
+          keyCompressionParams_.type == CompressionType::Zstd ||
+          keyCompressionParams_.type == CompressionType::Lz4,
+      "Key chunk compression only supports Uncompressed, Zstd, or Lz4, but got: {}",
+      keyCompressionParams_.type);
 }
 
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
@@ -266,7 +273,7 @@ void ClusterIndexWriter::encodeKeyChunk(
   chunk.rowCount = keys.size();
   chunk.key = std::string(keys.back());
 
-  ChunkedStreamWriter chunkWriter{encodingBuffer};
+  ChunkedStreamWriter chunkWriter{encodingBuffer, keyCompressionParams_};
   for (auto& contentBuffer : chunkWriter.encode(encoded)) {
     chunk.content.push_back(std::move(contentBuffer));
   }

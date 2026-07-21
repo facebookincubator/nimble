@@ -176,6 +176,9 @@ class ClusterIndexWriter : public IndexWriter {
   const std::vector<velox::column_index_t> keyColumnIndices_;
   const bool noDuplicateKey_;
   const uint64_t maxRowsPerKeyChunk_;
+  // Chunk-level compression applied to each encoded key chunk (Prefix encoding
+  // never compresses its own output).
+  const CompressionParams keyCompressionParams_;
   const std::unique_ptr<ContentStreamData<std::string_view>> keyStream_;
 
   // Last encoded key from the previous write() or encodeKeyChunks() call.
