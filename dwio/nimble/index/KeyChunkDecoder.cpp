@@ -17,6 +17,7 @@
 
 #include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/compression/Compression.h"
 
 namespace facebook::nimble::index {
 
@@ -30,10 +31,12 @@ std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
   NIMBLE_CHECK_GE(bufLen, kChunkHeaderSize);
   const auto* header = static_cast<const char*>(buf);
   const auto chunkHeader = readChunkHeader(header);
-  NIMBLE_CHECK_EQ(
-      chunkHeader.compressionType,
-      CompressionType::Uncompressed,
-      "Compressed key chunks are not supported");
+  NIMBLE_CHECK(
+      chunkHeader.compressionType == CompressionType::Uncompressed ||
+          chunkHeader.compressionType == CompressionType::Zstd ||
+          chunkHeader.compressionType == CompressionType::Lz4,
+      "Unsupported key chunk compression type: {}",
+      chunkHeader.compressionType);
 
   const auto dataLen = chunkHeader.length;
   auto result = std::make_shared<DecodedKeyChunk>();
@@ -69,11 +72,32 @@ std::shared_ptr<DecodedKeyChunk> decodeKeyChunk(
     result->stringBuffers.push_back(dataBuffer);
   }
 
+  // chunkData/dataLen is the raw chunk payload. For a compressed chunk it must
+  // be decompressed into an owned buffer before decoding keys, so the returned
+  // (and cached) DecodedKeyChunk holds uncompressed key bytes. Uses the same
+  // Compression::uncompress path as the general chunked-stream reader.
+  std::string_view encodedData{chunkData, dataLen};
+  if (chunkHeader.compressionType != CompressionType::Uncompressed) {
+    auto uncompressed = Compression::uncompress(
+        pool,
+        chunkHeader.compressionType,
+        DataType::String,
+        encodedData,
+        /*decompressCounter=*/nullptr);
+    // Drop the returned chunk's references to the compressed payload (input
+    // stream or staging copy) so the cached DecodedKeyChunk holds only the
+    // uncompressed key bytes. The caller's dataBuffer scratch may still hold
+    // the staging copy, but callers use only the returned chunk and discard it.
+    result->dataStream.reset();
+    result->stringBuffers.clear();
+    encodedData =
+        std::string_view(uncompressed->as<char>(), uncompressed->size());
+    result->stringBuffers.push_back(std::move(uncompressed));
+  }
+
   auto* raw = result.get();
   result->encoding = KeyEncoding::create(
-      pool,
-      std::string_view(chunkData, dataLen),
-      [raw, &pool](uint32_t totalLength) {
+      pool, encodedData, [raw, &pool](uint32_t totalLength) {
         auto& buffer = raw->stringBuffers.emplace_back(
             velox::AlignedBuffer::allocate<char>(totalLength, &pool));
         return buffer->asMutable<void>();
