@@ -18,6 +18,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "dwio/nimble/serializer/Options.h"
@@ -59,9 +61,8 @@ class Deserializer {
 
   /// Builds a deserializer that reads selected subfields from a Row schema.
   /// Empty selectedSubfields reads all fields.
-  /// Output keeps the original Row type, but fields not reached by
-  /// selectedSubfields are left unset. This does not support FlatMap feature
-  /// projection, schema compaction, or stream offset remapping.
+  /// Output Row types contain only fields reached by selectedSubfields, ordered
+  /// lexicographically by field name at each projected Row level.
   Deserializer(
       std::shared_ptr<const Type> schema,
       const std::vector<Subfield>& selectedSubfields,
@@ -83,14 +84,28 @@ class Deserializer {
 
  private:
   // Invoked by constructors to build parser, reader factory, reader, and stream
-  // decoders. `isSelected` is keyed by schemaWithId node id.
+  // decoders from the requested schema and field selection.
   void initialize(
       const std::shared_ptr<const velox::dwio::common::TypeWithId>&
           schemaWithId,
       const std::function<bool(uint32_t)>& isSelected);
 
+  // Builds projected output type, selected column paths, FlatMap key filters,
+  // then initializes readers for the projected schema.
+  void initializeColumnProjection(
+      const velox::TypePtr& veloxType,
+      const std::vector<Subfield>& selectedSubfields);
+
   // Creates deserializers for a type and its FlatMap inMap streams.
   void createDeserializersForType(const Type& type, uint32_t depth);
+
+  // Projection keeps only stream offsets selected by the reader tree. When
+  // projection is disabled, every stream is selected.
+  bool shouldDecodeStream(offset_size streamOffset) const {
+    return !hasColumnProjection_ ||
+        (streamOffset < selectedStreamOffsetFlags_.size() &&
+         selectedStreamOffsetFlags_[streamOffset]);
+  }
 
   // Creates FieldReaderParams from DeserializerOptions, including decode
   // executor, parallel decode threshold, and flatmap-as-struct settings.
@@ -105,6 +120,48 @@ class Deserializer {
     uint32_t rows{0};
     uint32_t batches{0};
   };
+
+  // Channel mapping for one projected Row child. The reader decodes selected
+  // fields into their original source channels; projection wraps them into the
+  // compact output Row using outputChannel.
+  struct IdentityProjection {
+    IdentityProjection(
+        velox::column_index_t inputChannel,
+        velox::column_index_t outputChannel)
+        : inputChannel{inputChannel}, outputChannel{outputChannel} {}
+
+    velox::column_index_t inputChannel;
+    velox::column_index_t outputChannel;
+  };
+
+  // Maps projected Row children to decoded channels. Nested plans are present
+  // only for recursively projected Row children.
+  struct OutputProjection {
+    std::vector<IdentityProjection> identityProjections;
+    std::vector<OutputProjection> childProjections;
+  };
+
+  struct ProjectedField {
+    ProjectedField* ensureChild(const std::string& name);
+
+    // A path ending at this node selects its complete source type; otherwise,
+    // only the descendants in children are retained.
+    bool selectWholeField{false};
+    folly::F14FastMap<std::string, std::unique_ptr<ProjectedField>> children;
+  };
+
+  // Recursively builds a projected field type and decoded-input channel
+  // mapping.
+  static velox::TypePtr buildProjectedType(
+      const velox::TypePtr& source,
+      const ProjectedField& selected,
+      OutputProjection& projection);
+
+  // Builds the projected type and its decoded-input channel mapping.
+  static velox::RowTypePtr buildProjectedType(
+      const velox::RowTypePtr& sourceType,
+      const std::vector<Subfield>& selectedSubfields,
+      OutputProjection& outputProjection);
 
   // Adds one serialized batch to the current decode run, decoding before and
   // after batches that require a null barrier.
@@ -124,6 +181,16 @@ class Deserializer {
   void appendToOutput(velox::VectorPtr&& decoded, velox::VectorPtr& output)
       const;
 
+  // Wraps selected Row children in the projected Row type after physical
+  // decoding. Returns decoded unchanged when projection is disabled.
+  velox::VectorPtr projectOutput(velox::VectorPtr&& decoded) const;
+
+  // Applies the projected Row type and source-to-output channel mapping.
+  velox::VectorPtr projectOutput(
+      velox::VectorPtr&& source,
+      const velox::TypePtr& projectedType,
+      const OutputProjection& projection) const;
+
   // Decodes the pending non-barrier batch run and resets reader state for the
   // next run.
   void decodeRun(DecodeRun& run, velox::VectorPtr& output) const;
@@ -135,9 +202,14 @@ class Deserializer {
 
   // If column projection is enabled, only selected fields in the schema will be
   // deserialized.
-  const bool columnProjectionEnabled_;
+  const bool hasColumnProjection_;
 
   // --- Non-const members (assigned in constructor body) ---
+  // Output Row type used only by projected reads to wrap decoded children.
+  velox::RowTypePtr outputType_;
+  std::unique_ptr<OutputProjection> outputProjection_;
+  // Requested keys for projected top-level FlatMap fields.
+  folly::F14FastMap<std::string, FeatureSelection> flatMapFeatureSelector_;
   std::unique_ptr<FieldReaderFactory> rootFactory_;
   std::unique_ptr<FieldReader> reader_;
   mutable std::unique_ptr<serde::StreamDataParser> parser_;

@@ -20,6 +20,7 @@
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/Likely.h"
+#include "folly/container/F14Set.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/ColumnSelector.h"
 #include "velox/dwio/common/TypeWithId.h"
@@ -651,7 +652,7 @@ const StreamDescriptor& getMainDescriptor(const Type& type) {
   }
 }
 
-void checkColumnProjectionSubfield(
+bool checkColumnProjectionSubfield(
     const RowType& row,
     const Deserializer::Subfield& subfield) {
   const auto& path = subfield.path();
@@ -666,10 +667,19 @@ void checkColumnProjectionSubfield(
       subfield);
   const auto* nestedType = row.childAt(childIndex.value()).get();
   for (size_t i = 1; i < path.size(); ++i) {
-    NIMBLE_USER_CHECK(
-        !nestedType->isFlatMap(),
-        "Column projection deserialize does not support FlatMap feature projection: {}",
-        subfield);
+    if (nestedType->isFlatMap()) {
+      NIMBLE_USER_CHECK(
+          path[i]->is(velox::common::SubfieldKind::kStringSubscript) ||
+              path[i]->is(velox::common::SubfieldKind::kLongSubscript),
+          "FlatMap projection requires a string or integer key: {}",
+          subfield);
+      NIMBLE_USER_CHECK_EQ(
+          i + 1,
+          path.size(),
+          "Nested projection inside a FlatMap value is not supported: {}",
+          subfield);
+      return true;
+    }
     NIMBLE_USER_CHECK(
         path[i]->is(velox::common::SubfieldKind::kNestedField),
         "Column projection deserialize only supports named fields. Path: {}, element: {}",
@@ -689,12 +699,87 @@ void checkColumnProjectionSubfield(
         subfield);
     nestedType = nestedType->asRow().childAt(childIndex.value()).get();
   }
+  return false;
 }
 
 } // namespace
 
+Deserializer::ProjectedField* Deserializer::ProjectedField::ensureChild(
+    const std::string& name) {
+  auto& selectedChild = children[name];
+  if (selectedChild == nullptr) {
+    selectedChild = std::make_unique<ProjectedField>();
+  }
+  return selectedChild.get();
+}
+
+velox::TypePtr Deserializer::buildProjectedType(
+    const velox::TypePtr& source,
+    const ProjectedField& selected,
+    Deserializer::OutputProjection& projection) {
+  if (selected.selectWholeField) {
+    return source;
+  }
+  const auto& sourceRow = source->asRow();
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  names.reserve(selected.children.size());
+  types.reserve(selected.children.size());
+  std::vector<std::string> selectedNames;
+  selectedNames.reserve(selected.children.size());
+  for (const auto& [name, _] : selected.children) {
+    selectedNames.emplace_back(name);
+  }
+  std::sort(selectedNames.begin(), selectedNames.end());
+  for (const auto& name : selectedNames) {
+    const auto sourceChannel = sourceRow.getChildIdx(name);
+    const auto& selectedChild = *selected.children.at(name);
+    projection.identityProjections.emplace_back(sourceChannel, names.size());
+    names.emplace_back(name);
+    auto& childProjection = projection.childProjections.emplace_back();
+    if (selectedChild.selectWholeField) {
+      types.emplace_back(sourceRow.childAt(sourceChannel));
+    } else {
+      types.emplace_back(buildProjectedType(
+          sourceRow.childAt(sourceChannel), selectedChild, childProjection));
+    }
+  }
+  return velox::ROW(std::move(names), std::move(types));
+}
+
+velox::RowTypePtr Deserializer::buildProjectedType(
+    const velox::RowTypePtr& sourceType,
+    const std::vector<Deserializer::Subfield>& selectedSubfields,
+    Deserializer::OutputProjection& outputProjection) {
+  ProjectedField root;
+  for (const auto& subfield : selectedSubfields) {
+    auto* selected = root.ensureChild(subfield.baseName());
+    const auto& path = subfield.path();
+    for (size_t i = 1; i < path.size(); ++i) {
+      if (path[i]->is(velox::common::SubfieldKind::kStringSubscript) ||
+          path[i]->is(velox::common::SubfieldKind::kLongSubscript)) {
+        NIMBLE_CHECK_EQ(
+            i,
+            1,
+            "FlatMap key projection is only supported for top-level fields: {}",
+            subfield);
+        selected->selectWholeField = true;
+        break;
+      }
+      const auto& name =
+          path[i]->asChecked<velox::common::Subfield::NestedField>()->name();
+      selected = selected->ensureChild(name);
+    }
+    selected->selectWholeField = true;
+  }
+
+  return velox::checkedPointerCast<const velox::RowType>(
+      buildProjectedType(sourceType, root, outputProjection));
+}
+
 FieldReaderParams Deserializer::createFieldReaderParams() const {
   FieldReaderParams params;
+  params.flatMapFeatureSelector = flatMapFeatureSelector_;
   params.decodeExecutor = options_.decodeExecutor;
   params.maxDecodeParallelism = options_.maxDecodeParallelism;
   params.minStreamsPerDecodeUnit = options_.minStreamsPerDecodeUnit;
@@ -762,27 +847,74 @@ Deserializer::Deserializer(
     : schema_{std::move(schema)},
       pool_{pool},
       options_{std::move(options)},
-      columnProjectionEnabled_{!selectedSubfields.empty()} {
+      hasColumnProjection_{!selectedSubfields.empty()} {
   auto veloxType = convertToVeloxType(*schema_);
-  if (selectedSubfields.empty()) {
-    initialize(velox::dwio::common::TypeWithId::create(veloxType), [](auto) {
-      return true;
-    });
+  if (!hasColumnProjection_) {
+    initialize(
+        velox::dwio::common::TypeWithId::create(veloxType),
+        [](uint32_t) { return true; });
     return;
   }
 
-  auto rowType = velox::checkedPointerCast<const velox::RowType>(veloxType);
+  initializeColumnProjection(veloxType, selectedSubfields);
+}
+
+void Deserializer::initializeColumnProjection(
+    const velox::TypePtr& veloxType,
+    const std::vector<Deserializer::Subfield>& selectedSubfields) {
+  NIMBLE_CHECK(hasColumnProjection_, "Column projection is not enabled");
+  const auto rowType =
+      velox::checkedPointerCast<const velox::RowType>(veloxType);
   std::vector<std::string> projectedColumnPaths;
+  folly::F14FastSet<std::string> selectedSubfieldSet;
+  folly::F14FastSet<std::string> projectedColumnPathSet;
+  folly::F14FastMap<std::string, folly::F14FastSet<std::string>>
+      flatMapFeatureSets;
   projectedColumnPaths.reserve(selectedSubfields.size());
+  selectedSubfieldSet.reserve(selectedSubfields.size());
+  projectedColumnPathSet.reserve(selectedSubfields.size());
+  flatMapFeatureSets.reserve(selectedSubfields.size());
   for (const auto& subfield : selectedSubfields) {
-    checkColumnProjectionSubfield(schema_->asRow(), subfield);
-    projectedColumnPaths.emplace_back(subfield.toString());
+    const bool selectsFlatMapKey =
+        checkColumnProjectionSubfield(schema_->asRow(), subfield);
+    const auto& path = subfield.path();
+    const auto selectedPath = subfield.toString();
+    NIMBLE_USER_CHECK(
+        selectedSubfieldSet.insert(selectedPath).second,
+        "Duplicate column projection subfield: {}",
+        subfield);
+    std::string columnPath;
+    if (selectsFlatMapKey) {
+      columnPath = subfield.baseName();
+      auto feature = path[1]->is(velox::common::SubfieldKind::kStringSubscript)
+          ? path[1]
+                ->asChecked<velox::common::Subfield::StringSubscript>()
+                ->index()
+          : std::to_string(
+                path[1]
+                    ->asChecked<velox::common::Subfield::LongSubscript>()
+                    ->index());
+      const bool newFlatMapFeature =
+          flatMapFeatureSets[columnPath].insert(feature).second;
+      NIMBLE_USER_CHECK(
+          newFlatMapFeature, "Duplicate FlatMap projection key: {}", subfield);
+      flatMapFeatureSelector_[columnPath].features.emplace_back(
+          std::move(feature));
+    } else {
+      columnPath = subfield.toString();
+    }
+    const bool newColumnPath = projectedColumnPathSet.insert(columnPath).second;
+    if (newColumnPath) {
+      projectedColumnPaths.emplace_back(columnPath);
+    }
   }
 
+  outputProjection_ = std::make_unique<OutputProjection>();
+  outputType_ =
+      buildProjectedType(rowType, selectedSubfields, *outputProjection_);
   auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
       rowType, projectedColumnPaths);
-  auto schemaWithId = selector->getSchemaWithId();
-  initialize(schemaWithId, [selector](auto nodeId) {
+  initialize(selector->getSchemaWithId(), [selector](auto nodeId) {
     return selector->shouldReadNode(nodeId);
   });
 }
@@ -796,6 +928,16 @@ void Deserializer::initialize(
   std::vector<uint32_t> offsets;
   rootFactory_ = FieldReaderFactory::create(
       params, schema_, schemaWithId, offsets, isSelected, pool_);
+
+  if (hasColumnProjection_) {
+    const auto maxSelectedOffset =
+        *std::max_element(offsets.begin(), offsets.end());
+    selectedStreamOffsetFlags_.resize(maxSelectedOffset + 1, false);
+    for (const auto offset : offsets) {
+      selectedStreamOffsetFlags_[offset] = true;
+    }
+  }
+
   SchemaReader::traverseSchema(schema_, [this](auto depth, auto& type, auto&) {
     createDeserializersForType(type, depth);
   });
@@ -812,13 +954,6 @@ void Deserializer::initialize(
     deserializers_[offset] = decoder.get();
   }
 
-  if (columnProjectionEnabled_) {
-    selectedStreamOffsetFlags_.resize(maxOffset + 1, false);
-    for (const auto offset : offsets) {
-      NIMBLE_CHECK_LE(offset, maxOffset, "Unexpected selected stream offset");
-      selectedStreamOffsetFlags_[offset] = true;
-    }
-  }
   // Pre-size stream presence-tracking state once. Both vectors are bounded
   // by maxOffset because every value-stream anchor offset is a Type main
   // descriptor offset already in deserializerMap_. Sizing here (rather than
@@ -856,12 +991,14 @@ Deserializer::~Deserializer() = default;
 void Deserializer::createDeserializersForType(
     const Type& type,
     uint32_t depth) {
-  deserializerMap_[getMainDescriptor(type).offset()] =
-      std::make_unique<SegmentedStreamDecoder>(
-          &type,
-          /*isInMapStream=*/false,
-          options_.bufferPoolCapacity,
-          pool_);
+  const auto streamOffset = getMainDescriptor(type).offset();
+  if (shouldDecodeStream(streamOffset)) {
+    deserializerMap_[streamOffset] = std::make_unique<SegmentedStreamDecoder>(
+        &type,
+        /*isInMapStream=*/false,
+        options_.bufferPoolCapacity,
+        pool_);
+  }
   // FlatMap is only supported at depth 1 (top-level columns). Register each
   // child in-map stream so it is decoded like other physical streams.
   if (type.isFlatMap()) {
@@ -870,6 +1007,9 @@ void Deserializer::createDeserializersForType(
     auto& flatMap = type.asFlatMap();
     for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
       const auto inMapOffset = flatMap.inMapDescriptorAt(i).offset();
+      if (!shouldDecodeStream(inMapOffset)) {
+        continue;
+      }
       deserializerMap_[inMapOffset] = std::make_unique<SegmentedStreamDecoder>(
           &type,
           /*isInMapStream=*/true,
@@ -902,6 +1042,54 @@ void Deserializer::appendToOutput(
   output->append(decoded.get());
 }
 
+velox::VectorPtr Deserializer::projectOutput(velox::VectorPtr&& decoded) const {
+  if (!hasColumnProjection_) {
+    return std::move(decoded);
+  }
+  NIMBLE_CHECK_NOT_NULL(
+      outputProjection_, "Output projection must be initialized");
+  NIMBLE_CHECK_NOT_NULL(outputType_, "Output type must be initialized");
+
+  return projectOutput(std::move(decoded), outputType_, *outputProjection_);
+}
+
+velox::VectorPtr Deserializer::projectOutput(
+    velox::VectorPtr&& source,
+    const velox::TypePtr& projectedType,
+    const OutputProjection& projection) const {
+  auto* decodedRow = source->asChecked<velox::RowVector>();
+  const auto& projectedRowType = projectedType->asRow();
+  NIMBLE_CHECK_EQ(
+      projection.identityProjections.size(), projectedRowType.size());
+  NIMBLE_CHECK_EQ(projection.childProjections.size(), projectedRowType.size());
+  std::vector<velox::VectorPtr> children(projectedRowType.size());
+  for (const auto& identity : projection.identityProjections) {
+    const auto inputChannel = identity.inputChannel;
+    const auto outputChannel = identity.outputChannel;
+    const auto& childProjection = projection.childProjections[outputChannel];
+    auto decodedChild = decodedRow->childAt(inputChannel);
+    NIMBLE_CHECK_NOT_NULL(
+        decodedChild,
+        "Projected field was not decoded: {}",
+        projectedRowType.nameOf(outputChannel));
+    if (childProjection.identityProjections.empty()) {
+      children[outputChannel] = std::move(decodedChild);
+    } else {
+      children[outputChannel] = projectOutput(
+          std::move(decodedChild),
+          projectedRowType.childAt(outputChannel),
+          childProjection);
+    }
+  }
+  return std::make_shared<velox::RowVector>(
+      pool_,
+      projectedType,
+      decodedRow->nulls(),
+      decodedRow->size(),
+      std::move(children),
+      std::nullopt);
+}
+
 void Deserializer::decodeRun(DecodeRun& run, velox::VectorPtr& output) const {
   if (FOLLY_UNLIKELY(run.batches == 0)) {
     return;
@@ -909,6 +1097,7 @@ void Deserializer::decodeRun(DecodeRun& run, velox::VectorPtr& output) const {
 
   velox::VectorPtr decoded;
   reader_->next(run.rows, decoded, nullptr);
+  decoded = projectOutput(std::move(decoded));
   run = {};
   appendToOutput(std::move(decoded), output);
   reader_->reset();
@@ -929,8 +1118,7 @@ void Deserializer::appendStreamSegments(
     if (FOLLY_UNLIKELY(offset > maxStreamOffset)) {
       return;
     }
-    if (FOLLY_UNLIKELY(
-            columnProjectionEnabled_ && !selectedStreamOffsetFlags_[offset])) {
+    if (FOLLY_UNLIKELY(!shouldDecodeStream(offset))) {
       return;
     }
     if (hasInMapChildren) {
