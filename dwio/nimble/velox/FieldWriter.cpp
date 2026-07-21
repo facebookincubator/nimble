@@ -1516,6 +1516,15 @@ class FlatMapFieldWriter : public FieldWriter {
 
   FlatMapPassthroughValueFieldWriter& createPassthroughValueFieldWriter(
       const std::string& key) {
+    // Creating a new passthrough value field mutates shared context state:
+    // FieldWriter::create() appends to the shared streams_ and schemaBuilder_,
+    // and handleFlatmapFieldAddEvent() updates shared context. Sibling flat-map
+    // columns are written concurrently by RowFieldWriter::co_write when
+    // parallel write is enabled, so these mutations must be serialized. This
+    // mirrors getValueFieldWriter(), which already guards the identical
+    // operations with flatMapSchemaMutex_; the passthrough path was missing the
+    // lock.
+    std::scoped_lock<std::mutex> lock{context_.flatMapSchemaMutex()};
     auto fieldWriter = FieldWriter::create(context_, valueType_);
     auto& inMapDescriptor =
         typeBuilder_->asFlatMap().addChild(key, fieldWriter->typeBuilder());
