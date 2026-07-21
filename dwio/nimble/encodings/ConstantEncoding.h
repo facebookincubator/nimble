@@ -50,7 +50,7 @@ class ConstantEncodingBase
       std::span<const physicalType> values,
       const Statistics<physicalType>& statistics,
       const Encoding::Options& options) {
-    if (!isConstant(values, statistics)) {
+    if (!isConstant(values, statistics, options)) {
       return std::nullopt;
     }
     const uint64_t outerEncodingSize =
@@ -169,7 +169,7 @@ class ConstantEncodingBase
       NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding cannot be empty.");
     }
 
-    if (!isConstant(values, selection.statistics())) {
+    if (!isConstant(values, selection.statistics(), options)) {
       NIMBLE_INCOMPATIBLE_ENCODING("ConstantEncoding requires constant data.");
     }
 
@@ -188,21 +188,35 @@ class ConstantEncodingBase
         rowCount,
         useVarint,
         pos);
-    encoding::write<physicalType>(canonicalValue(values.front()), pos);
-    NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+    // Canonicalizing logically-equal floats is only valid under ALP (which
+    // encodes floats by logical value); otherwise store the exact bits.
+    encoding::write<physicalType>(
+        options.allowNestedAlpSelection ? canonicalValue(values.front())
+                                        : values.front(),
+        pos);
+    NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
     return {reserved, encodingSize};
   }
 
  protected:
   static bool isConstant(
       std::span<const physicalType> values,
-      const Statistics<physicalType>& statistics) {
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) {
     NIMBLE_CHECK(
         !values.empty(), "ConstantEncoding requires non-empty values.");
     if (values.size() == 1 || statistics.uniqueCounts().value().size() == 1) {
       return true;
     }
     if constexpr (!isFloatingPointType<T>()) {
+      return false;
+    }
+    // Logical-equality constancy collapses physically-distinct but logically
+    // equal floats (only -0.0/+0.0; NaN is excluded since NaN != NaN) to a
+    // single canonical value. That is only sound when ALP is enabled, since ALP
+    // encodes floats by logical value. Without ALP, encodings must preserve the
+    // exact bits, so require physical (bit-exact) constancy.
+    if (!options.allowNestedAlpSelection) {
       return false;
     }
     const auto logicalValue =

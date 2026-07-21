@@ -23,6 +23,8 @@
 #include "velox/dwio/common/TypeUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
+#include <bit>
+
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 
@@ -30,6 +32,12 @@ namespace facebook::nimble {
 namespace {
 
 using namespace facebook::velox;
+
+// Reinterprets a float as its raw bits so that -0.0f and +0.0f (which compare
+// equal under float ==) can be distinguished in assertions.
+uint32_t floatBits(float value) {
+  return std::bit_cast<uint32_t>(value);
+}
 
 // Tests for FlatMapAsStructColumnReader, FlatMapAsMapColumnReader, and
 // FlatMapColumnReader (native).
@@ -534,6 +542,63 @@ TEST_P(FlatMapColumnReaderTest, nativeWithNulls) {
       makeReaders(input, file, scanSpec, /*preserveFlatMapsInMemory=*/true);
   auto expected = makeRowVector({flatMap->toMapVector(), flatMap});
   validate(*expected, *readers.rowReader, 3);
+}
+
+// Regression: float flat-map value streams with mixed sign bits (-0.0f/+0.0f)
+// must round-trip bit-exactly through the native FlatMapVector path. The value
+// stream is logically constant (all zeros) but physically distinct; without ALP
+// the writer must not collapse it into a single ConstantEncoding value.
+// Existing native FlatMapVector tests only cover int64, so this closes the
+// float coverage gap.
+TEST_P(FlatMapColumnReaderTest, nativeFloatMixedSignedZeroPreservesBits) {
+  constexpr int kNumRows = 200;
+  std::vector<std::vector<std::pair<int32_t, std::optional<float>>>> data;
+  data.reserve(kNumRows);
+  for (int i = 0; i < kNumRows; ++i) {
+    // Single key per row; the key's value stream alternates -0.0f/+0.0f.
+    data.push_back({{1, (i % 2 == 0) ? -0.0f : 0.0f}});
+  }
+
+  auto flatMap = makeFlatMapVector<int32_t, float>(data);
+  auto input = makeRowVector({flatMap});
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c0", {}}};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
+
+  // Read c0 back as a native FlatMapVector (preserveFlatMapsInMemory).
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  auto firstReaders =
+      makeReaders(input, file, scanSpec, /*preserveFlatMapsInMemory=*/true);
+  auto roundTripped = BaseVector::create(asRowType(input->type()), 0, pool());
+  ASSERT_EQ(firstReaders.rowReader->next(kNumRows, roundTripped), kNumRows);
+  roundTripped->validate();
+
+  // Write the read-back FlatMapVector out again and re-read it as a MapVector.
+  auto file2 = test::createNimbleFile(*rootPool(), roundTripped, writerOptions);
+  auto secondScanSpec = std::make_shared<common::ScanSpec>("root");
+  secondScanSpec->addAllChildFields(*input->type());
+  auto secondReaders = makeReaders(input, file2, secondScanSpec);
+  auto result = BaseVector::create(asRowType(input->type()), 0, pool());
+  ASSERT_EQ(secondReaders.rowReader->next(kNumRows, result), kNumRows);
+  result->validate();
+
+  // Bit-compare each value against the original input; -0.0f != +0.0f.
+  auto* resultRow = result->asUnchecked<RowVector>();
+  auto* mapVec =
+      resultRow->childAt(0)->loadedVector()->asUnchecked<MapVector>();
+  auto* values = mapVec->mapValues()->loadedVector()->as<SimpleVector<float>>();
+  ASSERT_NE(values, nullptr);
+  const auto* rawOffsets = mapVec->rawOffsets();
+  const auto* rawSizes = mapVec->rawSizes();
+  for (int i = 0; i < kNumRows; ++i) {
+    ASSERT_EQ(rawSizes[i], 1) << "row " << i;
+    EXPECT_EQ(
+        floatBits(values->valueAt(rawOffsets[i])),
+        floatBits(*data[i][0].second))
+        << "row " << i;
+  }
 }
 
 // ----- Lazy I/O tests -----
