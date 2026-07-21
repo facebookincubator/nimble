@@ -91,6 +91,10 @@ struct ClusterIndexConfig {
   /// granularity — chunks have start/end keys for binary search. Smaller values
   /// give finer-grained lookups at the cost of more metadata.
   uint64_t maxRowsPerKeyChunk{10'000};
+  /// Chunk-level compression for the encoded key stream. Prefix encoding does
+  /// not compress its own output, so this is the only way to block-compress a
+  /// Prefix key index. Only Uncompressed, Zstd, and Lz4 are supported.
+  CompressionType keyChunkCompressionType{CompressionType::Uncompressed};
   /// Configuration options for a custom cluster index implementation.
   std::shared_ptr<const velox::config::ConfigBase> customOptions;
 };

@@ -17,11 +17,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/KeyChunkDecoder.h"
 #include "dwio/nimble/index/SortOrder.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/MetadataInput.h"
@@ -148,6 +150,90 @@ TEST_F(ClusterIndexWriterTest, createWithInvalidConfig) {
     NIMBLE_ASSERT_THROW(
         ClusterIndexWriter::create(config, type, pool_.get()),
         "Key stream encoding only supports Prefix or Trivial encoding");
+  }
+}
+
+TEST_F(ClusterIndexWriterTest, keyChunkCompressionProducesRequestedChunkCodec) {
+  // Sorted VARCHAR keys sharing a long common prefix so the encoded key stream
+  // is highly compressible and ChunkedStreamWriter emits the requested codec's
+  // chunk header (it falls back to Uncompressed when compression would not
+  // shrink the payload).
+  constexpr int kNumRows = 4000;
+  const std::string prefix(64, 'a');
+  std::vector<std::string> col0Storage(kNumRows);
+  std::vector<velox::StringView> col0(kNumRows);
+  std::vector<int32_t> col1(kNumRows);
+  std::vector<velox::StringView> col2(kNumRows);
+  for (int i = 0; i < kNumRows; ++i) {
+    col0Storage[i] = fmt::format("{}{:05d}", prefix, i);
+    col0[i] = velox::StringView(col0Storage[i]);
+    col1[i] = i;
+    col2[i] = velox::StringView("v");
+  }
+  auto batch = makeRowVector(
+      {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
+      {makeFlatVector<velox::StringView>(col0),
+       makeFlatVector<int32_t>(col1),
+       makeFlatVector<velox::StringView>(col2)});
+
+  // Decoded keys from the uncompressed run; every codec must decode to these.
+  std::vector<std::string> referenceKeys;
+  for (const auto compressionType :
+       {CompressionType::Uncompressed,
+        CompressionType::Zstd,
+        CompressionType::Lz4}) {
+    SCOPED_TRACE(toString(compressionType));
+    ClusterIndexConfig config{
+        .columns = {std::string(kCol0)},
+        .keyChunkCompressionType = compressionType,
+    };
+    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    ASSERT_NE(writer, nullptr);
+    writer->write(batch);
+
+    std::string keyStreamData;
+    WriteDataFn writeDataFn = [&](const std::vector<std::string_view>& segments)
+        -> std::pair<uint64_t, uint32_t> {
+      const uint64_t offset = keyStreamData.size();
+      uint32_t total = 0;
+      for (const auto& segment : segments) {
+        keyStreamData.append(segment.data(), segment.size());
+        total += segment.size();
+      }
+      return {offset, total};
+    };
+    uint32_t nextSectionId = 0;
+    CreateMetadataSectionFn createMetadataFn = [&](std::string_view) {
+      return MetadataSection{nextSectionId++, 0, CompressionType::Uncompressed};
+    };
+    writer->flush(writeDataFn, createMetadataFn);
+
+    // The first chunk's header compression-type byte (the last byte of the
+    // 5-byte header) reflects the configured codec.
+    ASSERT_GE(keyStreamData.size(), kChunkHeaderSize);
+    EXPECT_EQ(
+        static_cast<uint8_t>(keyStreamData[kChunkHeaderSize - 1]),
+        static_cast<uint8_t>(compressionType));
+
+    // Decode the writer's actual output and confirm every codec round-trips to
+    // the same keys as the uncompressed run: compression must not alter
+    // content.
+    velox::BufferPtr decodeBuffer;
+    auto decoded = decodeKeyChunk(
+        std::make_unique<velox::dwio::common::SeekableArrayInputStream>(
+            keyStreamData.data(), keyStreamData.size()),
+        *pool_,
+        decodeBuffer);
+    ASSERT_NE(decoded, nullptr);
+    ASSERT_NE(decoded->encoding, nullptr);
+    ASSERT_EQ(decoded->encoding->rowCount(), static_cast<uint32_t>(kNumRows));
+    auto materialized =
+        decoded->encoding->materialize(0, static_cast<uint32_t>(kNumRows));
+    if (compressionType == CompressionType::Uncompressed) {
+      referenceKeys = std::move(materialized);
+    } else {
+      EXPECT_EQ(materialized, referenceKeys);
+    }
   }
 }
 
