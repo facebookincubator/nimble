@@ -160,6 +160,8 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
 
   bool allPrefetchIssued() const final;
 
+  uint32_t currentStripe() const override;
+
  private:
   // Initializes the stripe range to read based on row offset bounds
   // specified in options. Sets startStripe_ and endStripe_.
@@ -300,6 +302,10 @@ void SelectiveNimbleRowReader::advanceToNextStripe() {
   ++currentStripe_;
   rowInCurrentStripe_ = 0;
   endRowInCurrentStripe_.reset();
+}
+
+uint32_t SelectiveNimbleRowReader::currentStripe() const {
+  return static_cast<uint32_t>(currentStripe_);
 }
 
 int64_t SelectiveNimbleRowReader::nextReadSize(uint64_t size) {
