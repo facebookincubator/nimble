@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/ChunkHeader.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
@@ -40,7 +43,9 @@ class KeyChunkDecoderTest : public ::testing::TestWithParam<EncodingType> {
     leafPool_ = pool_->addLeafChild("leaf");
   }
 
-  std::string encodeChunk(const std::vector<std::string_view>& keys) {
+  std::string encodeChunk(
+      const std::vector<std::string_view>& keys,
+      CompressionType compressionType = CompressionType::Uncompressed) {
     Buffer encodingBuffer{*leafPool_};
     auto policy =
         std::make_unique<ManualEncodingSelectionPolicy<std::string_view>>(
@@ -50,7 +55,8 @@ class KeyChunkDecoderTest : public ::testing::TestWithParam<EncodingType> {
     auto encoded = EncodingFactory::encode<std::string_view>(
         std::move(policy), keys, encodingBuffer);
 
-    ChunkedStreamWriter writer{encodingBuffer};
+    ChunkedStreamWriter writer{
+        encodingBuffer, CompressionParams{.type = compressionType}};
     auto segments = writer.encode(encoded);
     std::string result;
     for (const auto& segment : segments) {
@@ -59,10 +65,17 @@ class KeyChunkDecoderTest : public ::testing::TestWithParam<EncodingType> {
     return result;
   }
 
+  // blockSize caps how many bytes each SeekableArrayInputStream::Next() returns
+  // (0 means the whole buffer in one call). decodeKeyChunk branches on whether
+  // the first Next() window already holds the whole chunk, so a small blockSize
+  // splits the data across windows and forces its multi-buffer copy path.
   std::unique_ptr<SeekableArrayInputStream> makeStream(
-      const std::string& data) {
+      const std::string& data,
+      uint64_t blockSize = 0) {
     return std::make_unique<SeekableArrayInputStream>(
-        reinterpret_cast<const unsigned char*>(data.data()), data.size());
+        reinterpret_cast<const unsigned char*>(data.data()),
+        data.size(),
+        blockSize);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -152,6 +165,69 @@ TEST_P(KeyChunkDecoderTest, materializeAfterMoveAssign) {
   EXPECT_EQ(materialized[0], "gamma");
   EXPECT_EQ(materialized[1], "delta");
   EXPECT_EQ(materialized[2], "epsilon");
+}
+
+TEST_P(KeyChunkDecoderTest, roundTripsCompressedKeyChunk) {
+  // Many sorted keys sharing a long prefix so the encoded blob is compressible
+  // and ChunkedStreamWriter actually emits a Zstd chunk header (it falls back
+  // to Uncompressed when compression would not shrink the payload).
+  const std::string prefix(64, 'a');
+  std::vector<std::string> storage;
+  std::vector<std::string_view> keys;
+  storage.reserve(2000);
+  keys.reserve(2000);
+  for (int i = 0; i < 2000; ++i) {
+    storage.push_back(fmt::format("{}{:05d}", prefix, i));
+    keys.emplace_back(storage.back());
+  }
+
+  for (const auto compressionType :
+       {CompressionType::Zstd, CompressionType::Lz4}) {
+    SCOPED_TRACE(toString(compressionType));
+    const auto chunkData = encodeChunk(keys, compressionType);
+
+    // Sanity-check the setup: the chunk header's compression-type byte (the
+    // last byte of the 5-byte header) must actually say the requested type,
+    // otherwise the test is not exercising the decompression path.
+    ASSERT_GE(chunkData.size(), kChunkHeaderSize);
+    ASSERT_EQ(
+        static_cast<uint8_t>(chunkData[kChunkHeaderSize - 1]),
+        static_cast<uint8_t>(compressionType));
+
+    // Exercise both compressed-payload release paths. blockSize 0 delivers the
+    // whole chunk in the first Next() (zero-copy branch: releases dataStream);
+    // blockSize 64 delivers it in 64-byte windows, so the first window is
+    // smaller than the payload and decode stitches across windows (multi-buffer
+    // branch: releases the staging copy from stringBuffers).
+    for (const uint64_t blockSize : {uint64_t{0}, uint64_t{64}}) {
+      SCOPED_TRACE(fmt::format("blockSize={}", blockSize));
+      auto result = decodeKeyChunk(
+          makeStream(chunkData, blockSize), *leafPool_, dataBuffer_);
+      ASSERT_NE(result, nullptr);
+      ASSERT_NE(result->encoding, nullptr);
+      ASSERT_EQ(
+          result->encoding->rowCount(), static_cast<uint32_t>(keys.size()));
+
+      auto materialized =
+          result->encoding->materialize(0, static_cast<uint32_t>(keys.size()));
+      for (size_t i = 0; i < keys.size(); ++i) {
+        EXPECT_EQ(materialized[i], keys[i]);
+      }
+    }
+  }
+}
+
+TEST_P(KeyChunkDecoderTest, rejectsUnsupportedChunkCompression) {
+  std::vector<std::string_view> keys = {"apple", "banana", "cherry"};
+  auto chunkData = encodeChunk(keys); // uncompressed chunk
+  ASSERT_GE(chunkData.size(), kChunkHeaderSize);
+  // Rewrite the header's compression-type byte to an unsupported type.
+  chunkData[kChunkHeaderSize - 1] =
+      static_cast<char>(CompressionType::MetaInternal);
+
+  NIMBLE_ASSERT_THROW(
+      decodeKeyChunk(makeStream(chunkData), *leafPool_, dataBuffer_),
+      "Unsupported key chunk compression type");
 }
 
 INSTANTIATE_TEST_SUITE_P(

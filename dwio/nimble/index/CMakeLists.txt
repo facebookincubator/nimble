@@ -37,6 +37,7 @@ add_library(
 target_link_libraries(
   nimble_index
   nimble_common
+  nimble_compression
   nimble_encodings
   nimble_tablet_common
   nimble_cluster_index_fb

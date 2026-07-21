@@ -44,6 +44,7 @@ add_executable(
   IndexFilterTest.cpp
   IndexLookupTest.cpp
   ClusterIndexTest.cpp
+  KeyChunkDecoderTest.cpp
   ClusterIndexTestBase.cpp
 )
 
