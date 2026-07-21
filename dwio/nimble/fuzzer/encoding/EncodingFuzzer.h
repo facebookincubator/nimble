@@ -21,6 +21,7 @@
 #include <limits>
 #include <random>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include <glog/logging.h>
@@ -251,12 +252,16 @@ class EncodingFuzzer {
       uint32_t maxRows,
       uint32_t seed,
       bool testCompression,
-      const Encoding::Options& options = {})
+      const Encoding::Options& options = {},
+      uint32_t minDistinctValues = 1,
+      uint32_t maxDistinctValues = std::numeric_limits<uint32_t>::max())
       : iterations_{iterations},
         maxRows_{maxRows},
         seed_{seed},
         testCompression_{testCompression},
-        options_{options} {
+        options_{options},
+        minDistinctValues_{minDistinctValues},
+        maxDistinctValues_{maxDistinctValues} {
     pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<Buffer>(*pool_);
   }
@@ -277,7 +282,7 @@ class EncodingFuzzer {
       auto datasets = generateDatasets(rng);
 
       for (auto& data : datasets) {
-        if (data.empty()) {
+        if (data.empty() || !hasSupportedCardinality(data)) {
           continue;
         }
         auto compressionModes = testCompression_
@@ -292,6 +297,21 @@ class EncodingFuzzer {
   }
 
  private:
+  bool hasSupportedCardinality(const Vector<T>& data) const {
+    if (minDistinctValues_ == 1 &&
+        maxDistinctValues_ == std::numeric_limits<uint32_t>::max()) {
+      return true;
+    }
+    std::unordered_set<T> distinctValues;
+    for (const auto& value : data) {
+      distinctValues.insert(value);
+      if (distinctValues.size() > maxDistinctValues_) {
+        return false;
+      }
+    }
+    return distinctValues.size() >= minDistinctValues_;
+  }
+
   std::vector<Vector<T>> generateDatasets(std::mt19937& rng) {
     std::vector<Vector<T>> datasets;
     uint32_t rowCount = 1 + folly::Random::rand32(rng) % maxRows_;
@@ -549,6 +569,8 @@ class EncodingFuzzer {
   uint32_t seed_;
   bool testCompression_;
   Encoding::Options options_;
+  uint32_t minDistinctValues_;
+  uint32_t maxDistinctValues_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<Buffer> buffer_;
 };

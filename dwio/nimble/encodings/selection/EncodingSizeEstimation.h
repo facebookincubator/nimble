@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -162,6 +163,13 @@ struct EncodingSizeEstimation {
     switch (encodingType) {
       case EncodingType::Constant: {
         return ConstantEncoding<T>::estimateSize(values, statistics, options);
+      }
+      case EncodingType::Huffman: {
+        if constexpr (isIntegralType<physicalType>()) {
+          return HuffmanEncoding<T>::estimateSize(values, statistics, options);
+        } else {
+          return std::nullopt;
+        }
       }
       case EncodingType::ALP: {
         if constexpr (isFloatingPointType<T>()) {

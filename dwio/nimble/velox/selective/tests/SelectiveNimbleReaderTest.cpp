@@ -3149,7 +3149,42 @@ TEST_P(SelectiveNimbleReaderTest, delta) {
 }
 
 // ---------------------------------------------------------------------------
-// DeltaEncoding: forced via ManualEncodingSelectionPolicyFactory
+// HuffmanEncoding: filtered reads across random-access checkpoints
+// ---------------------------------------------------------------------------
+TEST_P(SelectiveNimbleReaderTest, huffmanFilteredAcrossCheckpoints) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  auto c0 = makeFlatVector<int64_t>(1025, [](auto i) {
+    return i % 10 == 0 ? static_cast<int64_t>(100 + i % 7)
+                       : static_cast<int64_t>(i % 4);
+  });
+  auto input = makeRowVector({c0});
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(102, 104, false));
+
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      input,
+      {.encodingLayoutTree = EncodingLayoutTree{
+           Kind::Row,
+           {},
+           "",
+           {{Kind::Scalar,
+             {{0,
+               EncodingLayout{
+                   EncodingType::Huffman, {}, CompressionType::Uncompressed}}},
+             ""}}}});
+  verifyEncodingOnDisk(file, EncodingType::Huffman, /*isNullable=*/false);
+
+  auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+  validate(*input, *readers.rowReader, 73, [&](auto i) {
+    return c0->valueAt(i) >= 102 && c0->valueAt(i) <= 104;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// DeltaEncoding: forced via encoding layout
 // ---------------------------------------------------------------------------
 TEST_P(SelectiveNimbleReaderTest, deltaForcedEncoding) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();

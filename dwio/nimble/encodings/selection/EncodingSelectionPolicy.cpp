@@ -120,6 +120,7 @@ ManualEncodingSelectionPolicyFactory::possibleEncodings() {
       EncodingType::SubIntSplit,
       EncodingType::BlockBitPacking,
       EncodingType::Fsst,
+      EncodingType::Huffman,
   };
 }
 

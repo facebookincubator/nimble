@@ -35,6 +35,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -333,6 +334,33 @@ TYPED_TEST(ALPFuzzerTest, correctness) {
       FLAGS_fuzzer_max_rows,
       FLAGS_fuzzer_seed,
       FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// Huffman: all integral types.
+using HuffmanTypes = ::testing::Types<
+    HuffmanEncoding<int8_t>,
+    HuffmanEncoding<uint8_t>,
+    HuffmanEncoding<int16_t>,
+    HuffmanEncoding<uint16_t>,
+    HuffmanEncoding<int32_t>,
+    HuffmanEncoding<uint32_t>,
+    HuffmanEncoding<int64_t>,
+    HuffmanEncoding<uint64_t>>;
+
+template <typename E>
+class HuffmanFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(HuffmanFuzzerTest, HuffmanTypes);
+
+TYPED_TEST(HuffmanFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression,
+      {},
+      /*minDistinctValues=*/2,
+      /*maxDistinctValues=*/HuffmanEncoding<int8_t>::kMaxSymbols);
   fuzzer.run();
 }
 

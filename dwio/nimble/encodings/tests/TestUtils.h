@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FrequencyPartitionEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -89,6 +90,12 @@ template <typename T>
 struct EncodingTypeTraits<nimble::ForEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::FOR;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::HuffmanEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::Huffman;
 };
 
 template <typename T>

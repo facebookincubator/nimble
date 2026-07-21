@@ -19,6 +19,7 @@ add_library(
   nimble_encodings
   ConstantEncoding.cpp
   FsstEncoding.cpp
+  HuffmanEncoding.h
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RLEEncoding.cpp
@@ -30,6 +31,7 @@ add_library(
   selection/EncodingSelectionPolicy.cpp
   selection/Statistics.cpp
   views/EncodingViewFactory.cpp
+  views/HuffmanEncodingView.h
 )
 
 set(FSST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third-party/fsst")

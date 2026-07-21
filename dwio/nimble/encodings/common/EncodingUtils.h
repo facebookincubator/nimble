@@ -22,6 +22,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
@@ -155,6 +156,13 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       }
       NIMBLE_UNREACHABLE(
           "SimdForBitpack encoding only supports integral data types, got {}.",
+          encoding.dataType());
+    case EncodingType::Huffman:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<HuffmanEncoding<T>&>(encoding));
+      }
+      NIMBLE_UNREACHABLE(
+          "Huffman encoding only supports integral data types, got {}.",
           encoding.dataType());
     default:
       NIMBLE_UNSUPPORTED("{}", encoding.encodingType());

@@ -33,6 +33,8 @@ add_executable(
   EncodingLegacyTest.cpp
   FixedBitWidthEncodingViewTest.cpp
   FsstEncodingTest.cpp
+  HuffmanEncodingTest.cpp
+  HuffmanEncodingViewTest.cpp
   FOREncodingViewTest.cpp
   Lz4CompressorTest.cpp
   ForEncodingTest.cpp
