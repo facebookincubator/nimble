@@ -1072,7 +1072,10 @@ TEST_P(FlatMapColumnReaderTest, lazyIONestedRowNoFilter) {
   velox::test::assertEqualVectors(expected, result);
 }
 
-TEST_P(FlatMapColumnReaderTest, lazyIOTransformColumnStaysEager) {
+// A projected column with a post-read extraction transform, read with lazy
+// column I/O enabled. The transform is still applied and the result must match
+// the eager read.
+TEST_P(FlatMapColumnReaderTest, lazyIOTransformColumn) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
       makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
@@ -1125,6 +1128,63 @@ TEST_P(FlatMapColumnReaderTest, lazyIOTransformColumnStaysEager) {
   velox::test::assertEqualVectors(expected, result);
 }
 
+// A transform column read lazily across three stripes, applying the transform
+// at each stripe; the result must match the eager read.
+TEST_P(FlatMapColumnReaderTest, lazyIOTransformColumnMultiStripe) {
+  auto batch1 = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3}),
+      makeFlatVector<int64_t>({100, 200, 300}),
+  });
+  auto batch2 = makeRowVector({
+      makeFlatVector<int64_t>({4, 5, 6}),
+      makeFlatVector<int64_t>({400, 500, 600}),
+  });
+  auto batch3 = makeRowVector({
+      makeFlatVector<int64_t>({7, 8, 9}),
+      makeFlatVector<int64_t>({700, 800, 900}),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      {batch1, batch2, batch3},
+      writerOptions,
+      /*flushAfterWrite=*/true);
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*batch1->type());
+  // Pass-all filter keeps c0 eager; c1 has a post-read transform (x10) and is
+  // projected -> lazy-eligible.
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(0, 1000, false));
+  scanSpec->childByName("c1")->setTransform(
+      [](const VectorPtr& v, memory::MemoryPool* pool) -> VectorPtr {
+        auto* flat = v->asFlatVector<int64_t>();
+        auto result = BaseVector::create(BIGINT(), flat->size(), pool);
+        auto* out = result->asFlatVector<int64_t>();
+        for (auto i = 0; i < flat->size(); ++i) {
+          out->set(i, flat->valueAt(i) * 10);
+        }
+        return result;
+      },
+      BIGINT());
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6, 7, 8, 9}),
+      makeFlatVector<int64_t>(
+          {1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000}),
+  });
+  auto readers = makeReaders(
+      expected,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  // Batch size 2 (< 3 rows/stripe) crosses stripe boundaries while c1 is
+  // materialized via the lazy TransformColumnLoader + hook.
+  validate(*expected, *readers.rowReader, 2);
+}
+
 TEST_P(FlatMapColumnReaderTest, lazyIORegularMapColumn) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>({10, 20, 30, 40}),
@@ -1160,6 +1220,74 @@ TEST_P(FlatMapColumnReaderTest, lazyIORegularMapColumn) {
       }),
   });
   velox::test::assertEqualVectors(expected, result);
+}
+
+// A lazy flat-map column read across three stripes, covering lazy loading at
+// each stripe boundary.
+TEST_P(FlatMapColumnReaderTest, lazyIOMultiStripe) {
+  auto batch1 = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+      }),
+  });
+  auto batch2 = makeRowVector({
+      makeFlatVector<int64_t>({40, 50, 60}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 600}},
+          {{2, 700}, {3, 800}},
+          {{1, 900}},
+      }),
+  });
+  auto batch3 = makeRowVector({
+      makeFlatVector<int64_t>({70, 80, 90}),
+      makeMapVector<int32_t, int64_t>({
+          {{3, 1000}},
+          {{1, 1100}, {2, 1200}},
+          {},
+      }),
+  });
+  VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns = {{"c1", {}}};
+  writerOptions.skipConstantFlatMapInMapStreams = GetParam();
+  auto file = test::createNimbleFile(
+      *rootPool(),
+      {batch1, batch2, batch3},
+      writerOptions,
+      /*flushAfterWrite=*/true);
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({10, 20, 30, 40, 50, 60, 70, 80, 90}),
+      makeMapVector<int32_t, int64_t>({
+          {{1, 100}, {2, 200}},
+          {{1, 300}},
+          {{2, 400}, {3, 500}},
+          {{1, 600}},
+          {{2, 700}, {3, 800}},
+          {{1, 900}},
+          {{3, 1000}},
+          {{1, 1100}, {2, 1200}},
+          {},
+      }),
+  });
+
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*expected->type());
+  // Pass-all filter keeps c0 eager (filter column) while the flatmap c1 stays
+  // lazy; all 9 rows survive so validate() compares the full cross-stripe read.
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::BigintRange>(0, 1000, false));
+  auto readers = makeReaders(
+      expected,
+      file,
+      scanSpec,
+      /*preserveFlatMapsInMemory=*/false,
+      /*lazyColumnIo=*/true);
+  // Batch size 2 (< 3 rows/stripe) forces next() calls that cross stripe
+  // boundaries while c1 is materialized via the lazy hook.
+  validate(*expected, *readers.rowReader, 2);
 }
 
 INSTANTIATE_TEST_SUITE_P(
