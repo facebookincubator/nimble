@@ -119,6 +119,18 @@ class HuffmanEncoding final
     int32_t left;
     int32_t right;
     int32_t symbol;
+
+    // Declaring the explicit constructor below removes the implicit default
+    // constructor; keep TreeNode default-constructible because
+    // Vector<TreeNode>'s debug-only placeholder_ member (see Vector.h) odr-uses
+    // it under mode/dev.
+    TreeNode() = default;
+
+    // Explicit constructor so emplace_back() works under compilers that do not
+    // apply parenthesized aggregate initialization (P0960) inside construct_at
+    // / placement-new (e.g. the OSS GCC build).
+    TreeNode(uint64_t frequency, int32_t left, int32_t right, int32_t symbol)
+        : frequency(frequency), left(left), right(right), symbol(symbol) {}
   };
 
   // Maps tableLog_ lookahead bits to an alphabet index and the number of bits
@@ -334,6 +346,13 @@ std::string_view HuffmanEncoding<T>::encode(
   struct QueueEntry {
     uint64_t frequency;
     int32_t node;
+
+    // Explicit constructor so priority_queue::emplace() works under compilers
+    // that do not apply parenthesized aggregate initialization (P0960) inside
+    // construct_at (e.g. the OSS GCC build).
+    QueueEntry(uint64_t frequency, int32_t node)
+        : frequency(frequency), node(node) {}
+
     bool operator>(const QueueEntry& other) const {
       // Node order makes equal-frequency trees deterministic.
       return frequency != other.frequency ? frequency > other.frequency
