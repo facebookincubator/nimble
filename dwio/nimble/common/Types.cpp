@@ -67,6 +67,8 @@ std::string toString(EncodingType encodingType) {
       return "SubIntSplit";
     case EncodingType::BlockBitPacking:
       return "BlockBitPacking";
+    case EncodingType::DeltaBlock:
+      return "DeltaBlock";
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));

@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
@@ -146,9 +147,6 @@ struct EncodingSizeEstimation {
         return BlockBitPackingEncoding<physicalType>::estimateSize(
             statistics, options.blockBitPackingBlockSize);
       }
-      case EncodingType::ALP: {
-        return std::nullopt;
-      }
       default: {
         return std::nullopt;
       }
@@ -174,6 +172,13 @@ struct EncodingSizeEstimation {
       case EncodingType::ALP: {
         if constexpr (isFloatingPointType<T>()) {
           return ALPEncoding<T>::estimateSize(values, options);
+        } else {
+          return std::nullopt;
+        }
+      }
+      case EncodingType::DeltaBlock: {
+        if constexpr (isIntegralType<T>()) {
+          return DeltaBlockEncoding<T>::estimateSize(values, options);
         } else {
           return std::nullopt;
         }

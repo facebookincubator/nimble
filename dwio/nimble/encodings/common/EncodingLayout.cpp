@@ -191,6 +191,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
     case EncodingType::Varint:
     case EncodingType::Constant:
     case EncodingType::Prefix:
+    case EncodingType::DeltaBlock:
     case EncodingType::SimdForBitpack:
     case EncodingType::SubIntSplit:
     case EncodingType::FOR:

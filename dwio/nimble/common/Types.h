@@ -132,9 +132,13 @@ enum class EncodingType {
   // Partitions data by value frequency. Also, frequent values get shorter
   // bit-width
   // codes. Rows are reordered to group values with same code length.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   FrequencyPartition = 17,
   // Frame of Reference: stores offsets from per-frame minimum values.
   // Supports O(1) random access. Preserves row order.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
   FOR = 18,
   // Stores string data compressed with FSST (Fast Static Symbol Table).
   // Trains a per-stripe symbol table and compresses each string independently,
@@ -147,6 +151,10 @@ enum class EncodingType {
   // EXPERIMENTAL: Not production-ready. Do not enable for production tables
   // without consulting the Nimble team (oncall: dwios).
   Huffman = 20,
+  // Stores sorted integer streams as block checkpoints plus bit-packed deltas.
+  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  // without consulting the Nimble team (oncall: dwios).
+  DeltaBlock = 21,
 };
 std::string toString(EncodingType encodingType);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);

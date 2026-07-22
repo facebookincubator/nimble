@@ -119,6 +119,7 @@ ManualEncodingSelectionPolicyFactory::possibleEncodings() {
       EncodingType::SimdForBitpack,
       EncodingType::SubIntSplit,
       EncodingType::BlockBitPacking,
+      EncodingType::DeltaBlock,
       EncodingType::Fsst,
       EncodingType::Huffman,
   };

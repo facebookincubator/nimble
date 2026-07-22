@@ -30,6 +30,7 @@ add_library(
   common/EncodingLayout.cpp
   selection/EncodingSelectionPolicy.cpp
   selection/Statistics.cpp
+  views/DeltaBlockEncodingView.h
   views/EncodingViewFactory.cpp
   views/HuffmanEncodingView.h
 )

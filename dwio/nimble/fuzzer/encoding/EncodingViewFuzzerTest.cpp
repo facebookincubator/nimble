@@ -26,6 +26,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
@@ -133,6 +134,16 @@ std::vector<Vector<typename EncodingClass::cppDataType>> makeDatasets(
   if constexpr (
       Encoder<EncodingClass>::encodingType() == EncodingType::Constant) {
     return makeConstantViewDatasets<T>(pool, rng, rowCount, buffer);
+  } else if constexpr (
+      Encoder<EncodingClass>::encodingType() == EncodingType::DeltaBlock) {
+    std::vector<Vector<T>> datasets;
+    datasets.push_back(
+        makeDeltaBlockSortedData<T>(pool, rng, rowCount, buffer));
+    datasets.push_back(makeSingleValueData<T>(pool, rng, rowCount, buffer));
+    for (uint32_t size : {1u, 2u, 3u}) {
+      datasets.push_back(makeDeltaBlockSortedData<T>(pool, rng, size, buffer));
+    }
+    return datasets;
   } else {
     return makeViewDatasets<T>(pool, rng, rowCount, buffer);
   }
@@ -363,6 +374,27 @@ class PforEncodingViewFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(PforEncodingViewFuzzerTest, PforViewTypes);
 
 TYPED_TEST(PforEncodingViewFuzzerTest, readAtMatchesMaterialize) {
+  runEncodingViewFuzzer<TypeParam>(
+      FLAGS_view_fuzzer_iterations,
+      FLAGS_view_fuzzer_max_rows,
+      FLAGS_view_fuzzer_seed);
+}
+
+using DeltaBlockViewTypes = ::testing::Types<
+    DeltaBlockEncoding<int8_t>,
+    DeltaBlockEncoding<uint8_t>,
+    DeltaBlockEncoding<int16_t>,
+    DeltaBlockEncoding<uint16_t>,
+    DeltaBlockEncoding<int32_t>,
+    DeltaBlockEncoding<uint32_t>,
+    DeltaBlockEncoding<int64_t>,
+    DeltaBlockEncoding<uint64_t>>;
+
+template <typename E>
+class DeltaBlockEncodingViewFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(DeltaBlockEncodingViewFuzzerTest, DeltaBlockViewTypes);
+
+TYPED_TEST(DeltaBlockEncodingViewFuzzerTest, readAtMatchesMaterialize) {
   runEncodingViewFuzzer<TypeParam>(
       FLAGS_view_fuzzer_iterations,
       FLAGS_view_fuzzer_max_rows,

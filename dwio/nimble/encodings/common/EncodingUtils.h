@@ -18,6 +18,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -134,6 +135,13 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<MainlyConstantEncoding<T>&>(encoding));
     case EncodingType::Delta:
       return f(static_cast<DeltaEncoding<T>&>(encoding));
+    case EncodingType::DeltaBlock:
+      if constexpr (isIntegralType<T>()) {
+        return f(static_cast<DeltaBlockEncoding<T>&>(encoding));
+      }
+      NIMBLE_UNREACHABLE(
+          "DeltaBlock encoding only supports integral data types, got {}.",
+          encoding.dataType());
     case EncodingType::ALP:
       if constexpr (isFloatingPointType<T>()) {
         return f(static_cast<ALPEncoding<T>&>(encoding));
