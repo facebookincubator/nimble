@@ -866,6 +866,11 @@ VeloxWriter::VeloxWriter(
                context_->options().enableStreamDeduplication,
            .enableChunkIndex = context_->options().enableChunkIndex,
            .chunkIndexMinAvgChunks = context_->options().chunkIndexMinAvgChunks,
+           .stripeGroupEncodingLayout =
+               context_->options().experimentalStripeGroupEncodingLayout,
+           .stripeGroupEncodingLayoutReadFactors =
+               context_->options()
+                   .experimentalStripeGroupEncodingLayoutReadFactors,
            .stripeGroupFlushCallback = clusterIndexWriter_ != nullptr
                ? TabletWriter::StripeGroupFlushCallback(
                      [this](

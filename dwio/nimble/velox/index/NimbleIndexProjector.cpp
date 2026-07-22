@@ -496,19 +496,22 @@ void NimbleIndexProjector::locateStripeStreams(StripePlan& stripePlan) {
   const auto stripeId = tablet_->stripeIdentifier(stripePlan.stripeIndex);
   const auto streamCount = tablet_->streamCount(stripeId);
   const auto stripeOffset = tablet_->stripeOffset(stripePlan.stripeIndex);
-  const auto& streamOffsets = tablet_->streamOffsets(stripeId);
-  const auto& streamSizes = tablet_->streamSizes(stripeId);
 
   stripePlan.projectedStreams.resize(projection_->streamOffsets.size());
   for (size_t i = 0; i < projection_->streamOffsets.size(); ++i) {
     const auto streamId = projection_->streamOffsets[i];
-    if (streamId >= streamCount || streamSizes[streamId] == 0) {
+    if (streamId >= streamCount) {
       continue;
     }
-    stripePlan.projectedStreams[i] = velox::common::Region{
-        stripeOffset + streamOffsets[streamId], streamSizes[streamId]};
+    const auto streamSize = tablet_->streamSize(stripeId, streamId);
+    if (streamSize == 0) {
+      continue;
+    }
+    const auto streamOffset = tablet_->streamOffset(stripeId, streamId);
+    stripePlan.projectedStreams[i] =
+        velox::common::Region{stripeOffset + streamOffset, streamSize};
     ++stripePlan.numStreams;
-    stripePlan.projectedBytes += streamSizes[streamId];
+    stripePlan.projectedBytes += streamSize;
     if (projection_->rowOrFlatMapNullStreams[i]) {
       // A present Row/FlatMap null stream means the slice may carry nulls.
       stripePlan.requiresNullBarrier = true;

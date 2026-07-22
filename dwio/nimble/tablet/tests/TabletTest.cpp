@@ -1348,13 +1348,10 @@ TEST_P(TabletTest, streamSize) {
       {0, 0, 10},
       {0, 1, 20},
       {0, 2, 8},
-      // Out of range returns 0.
-      {0, 3, 0},
-      {0, 100, 0},
       // Stripe 1: 2 streams with sizes 15, 25.
       {1, 0, 15},
       {1, 1, 25},
-      // Stream 2 doesn't exist in stripe 1.
+      // Stream 2 is absent in stripe 1 but within the group's stream count.
       {1, 2, 0},
   };
 
@@ -1363,6 +1360,360 @@ TEST_P(TabletTest, streamSize) {
     auto stripe = tablet->stripeIdentifier(testCase.stripeIndex);
     EXPECT_EQ(
         tablet->streamSize(stripe, testCase.streamId), testCase.expectedSize);
+  }
+
+  // An out-of-range streamId is a programming error: point access check-fails
+  // rather than silently returning 0.
+  auto stripe0 = tablet->stripeIdentifier(0);
+  const auto streamCount = tablet->streamCount(stripe0);
+  EXPECT_ANY_THROW(tablet->streamSize(stripe0, streamCount));
+  EXPECT_ANY_THROW(tablet->streamOffset(stripe0, streamCount));
+}
+
+TEST_P(TabletTest, stripeGroupEncodingLayouts) {
+  // Write the same 2-stripe layout in each StripeGroup metadata format, then
+  // verify: (1) each round-trips its stream offsets/sizes, and (2) all formats
+  // produce identical reads, via both point access and bulk materialize.
+  auto writeTablet = [&](nimble::StripeGroup::EncodingLayout format) {
+    std::string file;
+    velox::InMemoryWriteFile writeFile(&file);
+    auto tabletWriter = nimble::TabletWriter::create(
+        &writeFile,
+        *pool_,
+        {.streamDeduplicationEnabled = false,
+         .stripeGroupEncodingLayout = format});
+
+    nimble::Buffer buffer{*pool_};
+    // Stripe 0: 3 streams with sizes 10, 20, 8.
+    {
+      std::vector<nimble::Stream> streams;
+      streams.push_back(
+          nimble::index::test::createStream(
+              buffer, {.offset = 0, .chunks = {{.rowCount = 50, .size = 10}}}));
+      streams.push_back(
+          nimble::index::test::createStream(
+              buffer, {.offset = 1, .chunks = {{.rowCount = 50, .size = 20}}}));
+      streams.push_back(
+          nimble::index::test::createStream(
+              buffer, {.offset = 2, .chunks = {{.rowCount = 50, .size = 8}}}));
+      tabletWriter->writeStripe(50, std::move(streams));
+    }
+    // Stripe 1: 2 streams with sizes 15, 25.
+    {
+      std::vector<nimble::Stream> streams;
+      streams.push_back(
+          nimble::index::test::createStream(
+              buffer, {.offset = 0, .chunks = {{.rowCount = 30, .size = 15}}}));
+      streams.push_back(
+          nimble::index::test::createStream(
+              buffer, {.offset = 1, .chunks = {{.rowCount = 30, .size = 25}}}));
+      tabletWriter->writeStripe(30, std::move(streams));
+    }
+    tabletWriter->close();
+    writeFile.close();
+    return file;
+  };
+
+  auto readTablet = [&](const std::string& file) {
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, false);
+    return createTabletReader(readFile, nimble::TabletReader::Options{});
+  };
+
+  // kRaw is also the default write path; kStreamMajor is the opt-in format.
+  auto rawTablet =
+      readTablet(writeTablet(nimble::StripeGroup::EncodingLayout::kRaw));
+  auto streamMajorTablet = readTablet(
+      writeTablet(nimble::StripeGroup::EncodingLayout::kStreamMajor));
+
+  // Per-stream sizes are the same regardless of representation.
+  struct SizeCase {
+    uint32_t stripe;
+    uint32_t streamId;
+    uint32_t expectedSize;
+  };
+  const std::vector<SizeCase> sizeCases = {
+      {0, 0, 10},
+      {0, 1, 20},
+      {0, 2, 8},
+      {1, 0, 15},
+      {1, 1, 25},
+      {1, 2, 0}}; // absent in stripe 1 (padded within the group's stream count)
+  for (const auto& tablet : {rawTablet, streamMajorTablet}) {
+    for (const auto& c : sizeCases) {
+      SCOPED_TRACE(
+          fmt::format(
+              "stripe={} stream={} expected={}",
+              c.stripe,
+              c.streamId,
+              c.expectedSize));
+      auto stripe = tablet->stripeIdentifier(c.stripe);
+      EXPECT_EQ(tablet->streamSize(stripe, c.streamId), c.expectedSize);
+    }
+  }
+
+  // An out-of-range streamId is a programming error: point access check-fails
+  // rather than silently returning 0.
+  for (const auto& tablet : {rawTablet, streamMajorTablet}) {
+    auto stripe = tablet->stripeIdentifier(0);
+    const auto streamCount = tablet->streamCount(stripe);
+    EXPECT_ANY_THROW(tablet->streamOffset(stripe, streamCount));
+    EXPECT_ANY_THROW(tablet->streamSize(stripe, streamCount));
+  }
+
+  // The encoded representation must agree with raw on every stripe/stream,
+  // via point access and bulk materialize.
+  for (const auto& encodedTablet : {streamMajorTablet}) {
+    ASSERT_EQ(rawTablet->stripeCount(), encodedTablet->stripeCount());
+    for (uint32_t stripe = 0; stripe < rawTablet->stripeCount(); ++stripe) {
+      SCOPED_TRACE(fmt::format("stripe={}", stripe));
+      auto rawStripe = rawTablet->stripeIdentifier(stripe);
+      auto encStripe = encodedTablet->stripeIdentifier(stripe);
+      const auto streamCount = rawTablet->streamCount(rawStripe);
+      ASSERT_EQ(streamCount, encodedTablet->streamCount(encStripe));
+
+      for (uint32_t streamId = 0; streamId < streamCount; ++streamId) {
+        EXPECT_EQ(
+            rawTablet->streamOffset(rawStripe, streamId),
+            encodedTablet->streamOffset(encStripe, streamId));
+        EXPECT_EQ(
+            rawTablet->streamSize(rawStripe, streamId),
+            encodedTablet->streamSize(encStripe, streamId));
+      }
+
+      std::vector<uint32_t> rawOffsets(streamCount);
+      std::vector<uint32_t> encOffsets(streamCount);
+      std::vector<uint32_t> rawSizes(streamCount);
+      std::vector<uint32_t> encSizes(streamCount);
+      rawTablet->streamOffsets(rawStripe, rawOffsets);
+      encodedTablet->streamOffsets(encStripe, encOffsets);
+      rawTablet->streamSizes(rawStripe, rawSizes);
+      encodedTablet->streamSizes(encStripe, encSizes);
+      EXPECT_EQ(rawOffsets, encOffsets);
+      EXPECT_EQ(rawSizes, encSizes);
+    }
+  }
+}
+
+TEST_P(TabletTest, writeStripeGroupUnknownLayoutThrows) {
+  // An unrecognized StripeGroup encoding layout must hit the writer switch's
+  // default and check-fail rather than silently writing malformed metadata.
+  std::string file;
+  velox::InMemoryWriteFile writeFile(&file);
+  auto tabletWriter = nimble::TabletWriter::create(
+      &writeFile,
+      *pool_,
+      {.streamDeduplicationEnabled = false,
+       .stripeGroupEncodingLayout =
+           static_cast<nimble::StripeGroup::EncodingLayout>(99)});
+
+  nimble::Buffer buffer{*pool_};
+  std::vector<nimble::Stream> streams;
+  streams.push_back(
+      nimble::index::test::createStream(
+          buffer, {.offset = 0, .chunks = {{.rowCount = 10, .size = 10}}}));
+  tabletWriter->writeStripe(10, std::move(streams));
+  // close() force-flushes the final stripe group, dispatching on the layout.
+  EXPECT_ANY_THROW(tabletWriter->close());
+}
+
+TEST_P(TabletTest, stripeGroupEncodingLayoutsMultipleGroups) {
+  // A tiny metadataFlushThreshold forces the writer to flush many stripe
+  // groups, so groups after the first have firstStripeIndex_ != 0. This
+  // exercises the encoded formats' per-group encode/reset and the reader's
+  // global->local stripe-index mapping across group boundaries, which the
+  // single-group tests above cannot reach.
+  constexpr uint32_t kStripeCount = 12;
+  constexpr uint32_t kStreamCount = 3;
+
+  auto writeTablet = [&](nimble::StripeGroup::EncodingLayout format) {
+    std::string file;
+    velox::InMemoryWriteFile writeFile(&file);
+    auto tabletWriter = nimble::TabletWriter::create(
+        &writeFile,
+        *pool_,
+        {// Small enough to flush a stripe group every few stripes.
+         .metadataFlushThreshold = 100,
+         .streamDeduplicationEnabled = false,
+         .stripeGroupEncodingLayout = format});
+
+    nimble::Buffer buffer{*pool_};
+    for (uint32_t stripe = 0; stripe < kStripeCount; ++stripe) {
+      std::vector<nimble::Stream> streams;
+      for (uint32_t s = 0; s < kStreamCount; ++s) {
+        // Vary sizes per (stripe, stream) so the encoded per-group arrays are
+        // not trivially constant.
+        const uint32_t size = 10 + stripe * kStreamCount + s;
+        streams.push_back(
+            nimble::index::test::createStream(
+                buffer,
+                {.offset = s, .chunks = {{.rowCount = 10, .size = size}}}));
+      }
+      tabletWriter->writeStripe(10, std::move(streams));
+    }
+    tabletWriter->close();
+    writeFile.close();
+    return file;
+  };
+
+  auto readTablet = [&](const std::string& file) {
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, false);
+    return createTabletReader(readFile, nimble::TabletReader::Options{});
+  };
+
+  // Keep the file buffers alive for the whole test: the reader references the
+  // InMemoryReadFile's backing string and loads later stripe groups lazily, so
+  // a temporary would dangle once the first group is read.
+  const std::string rawFile =
+      writeTablet(nimble::StripeGroup::EncodingLayout::kRaw);
+  const std::string streamMajorFile =
+      writeTablet(nimble::StripeGroup::EncodingLayout::kStreamMajor);
+  auto rawTablet = readTablet(rawFile);
+  auto streamMajorTablet = readTablet(streamMajorFile);
+
+  // The test is only meaningful if writing produced several stripe groups (so
+  // later groups have firstStripeIndex_ != 0) and at least one group spans
+  // multiple stripes (so encoded arrays are not length-1). Assert both, so the
+  // test fails loudly rather than silently degrading if the flush heuristic
+  // changes.
+  for (const auto& tablet : {rawTablet, streamMajorTablet}) {
+    nimble::test::TabletReaderTestHelper helper(tablet.get());
+    ASSERT_GE(helper.numStripeGroups(), 2u);
+    ASSERT_LT(helper.numStripeGroups(), size_t{kStripeCount});
+    ASSERT_GT(helper.stripeGroupIndex(kStripeCount - 1), 0u);
+  }
+
+  // Every stripe/stream must agree between Raw and each encoded format, across
+  // all group boundaries, via point access and bulk materialize.
+  ASSERT_EQ(rawTablet->stripeCount(), kStripeCount);
+  for (const auto& encodedTablet : {streamMajorTablet}) {
+    ASSERT_EQ(rawTablet->stripeCount(), encodedTablet->stripeCount());
+    for (uint32_t stripe = 0; stripe < kStripeCount; ++stripe) {
+      SCOPED_TRACE(fmt::format("stripe={}", stripe));
+      auto rawStripe = rawTablet->stripeIdentifier(stripe);
+      auto encStripe = encodedTablet->stripeIdentifier(stripe);
+      const auto streamCount = rawTablet->streamCount(rawStripe);
+      ASSERT_EQ(streamCount, encodedTablet->streamCount(encStripe));
+
+      for (uint32_t streamId = 0; streamId < streamCount; ++streamId) {
+        EXPECT_EQ(
+            rawTablet->streamOffset(rawStripe, streamId),
+            encodedTablet->streamOffset(encStripe, streamId));
+        EXPECT_EQ(
+            rawTablet->streamSize(rawStripe, streamId),
+            encodedTablet->streamSize(encStripe, streamId));
+      }
+
+      std::vector<uint32_t> rawOffsets(streamCount);
+      std::vector<uint32_t> encOffsets(streamCount);
+      std::vector<uint32_t> rawSizes(streamCount);
+      std::vector<uint32_t> encSizes(streamCount);
+      rawTablet->streamOffsets(rawStripe, rawOffsets);
+      encodedTablet->streamOffsets(encStripe, encOffsets);
+      rawTablet->streamSizes(rawStripe, rawSizes);
+      encodedTablet->streamSizes(encStripe, encSizes);
+      EXPECT_EQ(rawOffsets, encOffsets);
+      EXPECT_EQ(rawSizes, encSizes);
+    }
+  }
+}
+
+TEST_P(TabletTest, stripeGroupMetadataConfigurableReadFactors) {
+  // The StripeGroup metadata encoding candidates are configurable via
+  // TabletWriter::Options::stripeGroupEncodingLayoutReadFactors. For
+  // kStreamMajor, write the same many-stripe layout twice: once with the
+  // default candidate set (includes Constant) and once restricted to Trivial.
+  // Verify (1) both round-trip every stream offset/size, and (2) restricting to
+  // Trivial produces strictly larger stripe-group metadata than the default —
+  // proving the option actually drives selection (the default collapses the
+  // constant arrays, Trivial stores them raw).
+  constexpr uint32_t kStripeCount = 64;
+  constexpr uint32_t kStreamCount = 3;
+  const std::vector<uint32_t> sizes = {10, 20, 8};
+
+  auto writeTablet =
+      [&](nimble::StripeGroup::EncodingLayout format,
+          const std::vector<std::pair<nimble::EncodingType, float>>&
+              readFactors) {
+        std::string file;
+        velox::InMemoryWriteFile writeFile(&file);
+        nimble::TabletWriter::Options options{
+            .streamDeduplicationEnabled = false,
+            .stripeGroupEncodingLayout = format};
+        if (!readFactors.empty()) {
+          options.stripeGroupEncodingLayoutReadFactors = readFactors;
+        }
+        auto tabletWriter = nimble::TabletWriter::create(
+            &writeFile, *pool_, std::move(options));
+
+        nimble::Buffer buffer{*pool_};
+        // Identical stripes, so every stream's offset/size array is constant
+        // across stripes and the default selector can collapse it.
+        for (uint32_t s = 0; s < kStripeCount; ++s) {
+          std::vector<nimble::Stream> streams;
+          streams.reserve(kStreamCount);
+          for (uint32_t id = 0; id < kStreamCount; ++id) {
+            streams.push_back(
+                nimble::index::test::createStream(
+                    buffer,
+                    {.offset = id,
+                     .chunks = {{.rowCount = 10, .size = sizes[id]}}}));
+          }
+          tabletWriter->writeStripe(10, std::move(streams));
+        }
+        tabletWriter->close();
+        writeFile.close();
+        return file;
+      };
+
+  auto readTablet = [&](const std::string& file) {
+    auto readFile =
+        std::make_shared<nimble::testing::InMemoryTrackableReadFile>(
+            file, false);
+    return createTabletReader(readFile, nimble::TabletReader::Options{});
+  };
+
+  auto metadataSize = [](const std::shared_ptr<nimble::TabletReader>& tablet) {
+    uint64_t total = 0;
+    for (const auto& section : tablet->stripeGroupsMetadata()) {
+      total += section.size();
+    }
+    return total;
+  };
+
+  for (const auto format :
+       {nimble::StripeGroup::EncodingLayout::kStreamMajor}) {
+    SCOPED_TRACE(fmt::format("format={}", static_cast<int>(format)));
+    auto defaultTablet = readTablet(writeTablet(format, /*readFactors=*/{}));
+    auto trivialTablet =
+        readTablet(writeTablet(format, {{nimble::EncodingType::Trivial, 1.0}}));
+
+    ASSERT_EQ(defaultTablet->stripeCount(), kStripeCount);
+    ASSERT_EQ(trivialTablet->stripeCount(), kStripeCount);
+    for (uint32_t s = 0; s < kStripeCount; ++s) {
+      auto defStripe = defaultTablet->stripeIdentifier(s);
+      auto trivStripe = trivialTablet->stripeIdentifier(s);
+      ASSERT_EQ(defaultTablet->streamCount(defStripe), kStreamCount);
+      ASSERT_EQ(trivialTablet->streamCount(trivStripe), kStreamCount);
+      for (uint32_t id = 0; id < kStreamCount; ++id) {
+        SCOPED_TRACE(fmt::format("stripe={} stream={}", s, id));
+        EXPECT_EQ(defaultTablet->streamSize(defStripe, id), sizes[id]);
+        EXPECT_EQ(
+            trivialTablet->streamSize(trivStripe, id),
+            defaultTablet->streamSize(defStripe, id));
+        EXPECT_EQ(
+            trivialTablet->streamOffset(trivStripe, id),
+            defaultTablet->streamOffset(defStripe, id));
+      }
+    }
+
+    // Restricting to Trivial drops Constant/FBW/Dictionary from the candidate
+    // set, so the constant arrays can no longer collapse — the encoded metadata
+    // must be strictly larger than the default.
+    EXPECT_GT(metadataSize(trivialTablet), metadataSize(defaultTablet));
   }
 }
 
@@ -1459,12 +1810,11 @@ class TabletWithIndexTest : public TabletTest {
     ASSERT_NE(stripeIdentifier.stripeGroup(), nullptr)
         << "Stripe group should be available for stripe " << stripeIdx;
 
-    // Get stream sizes from stripe group metadata
-    auto streamSizes = tablet.streamSizes(stripeIdentifier);
-    ASSERT_GT(streamSizes.size(), streamId)
+    // Get stream size from stripe group metadata
+    ASSERT_GT(tablet.streamCount(stripeIdentifier), streamId)
         << "Stream " << streamId << " not found in stripe " << stripeIdx;
 
-    const uint32_t streamSize = streamSizes[streamId];
+    const uint32_t streamSize = tablet.streamSize(stripeIdentifier, streamId);
 
     // Calculate stripe offset within the chunk index group.
     // Use the ChunkIndexTestHelper to get the first stripe of the group.

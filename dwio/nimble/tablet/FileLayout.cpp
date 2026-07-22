@@ -71,10 +71,13 @@ FileLayout FileLayout::create(
   // Per-stripe info
   const auto stripeCount = tablet->stripeCount();
   layout.stripesInfo.reserve(stripeCount);
+  std::vector<uint32_t> sizesScratch;
   for (uint32_t i = 0; i < stripeCount; ++i) {
     auto stripeIdentifier = tablet->stripeIdentifier(i);
-    auto sizes = tablet->streamSizes(stripeIdentifier);
-    auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
+    sizesScratch.resize(tablet->streamCount(stripeIdentifier));
+    tablet->streamSizes(stripeIdentifier, sizesScratch);
+    auto stripeSize =
+        std::accumulate(sizesScratch.begin(), sizesScratch.end(), 0UL);
     layout.stripesInfo.push_back({
         .offset = tablet->stripeOffset(i),
         .size = stripeSize,

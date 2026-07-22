@@ -30,10 +30,34 @@ table Stripes {
   group_indices:[uint32];
 }
 
+/// Raw (default) StripeGroup: flattened stripeCount x streamCount arrays
+/// (stripe-major) of per-stream byte offsets (relative to the owning stripe's
+/// start) and byte sizes. The original, universally-readable layout; short
+/// stripes are padded to streamCount with 0. Field slots 0..2 are FROZEN for
+/// backward compatibility with pre-existing files.
 table StripeGroup {
   stripe_count:uint32;
   stream_offsets:[uint32];
   stream_sizes:[uint32];
+}
+
+/// One independently encoded array. Wraps the raw encoded bytes in a sub-table
+/// so flatbuffers can express a vector of them (`[EncodedStream]`); it cannot
+/// express a bare vector-of-vectors (`[[ubyte]]`).
+table EncodedStream {
+  data:[ubyte];
+}
+
+/// kStreamMajor: one Nimble-encoded uint32 array per leaf stream, each of length
+/// stripe_count holding that stream's offsets / sizes across every stripe in the
+/// group. Per-stream bit width is tight to that stream's value range.
+table StreamMajorStripeGroup {
+  stripe_count:uint32;
+  /// Total number of leaf streams in the group (length of stream_offsets /
+  /// stream_sizes), not a per-stripe count.
+  stream_count:uint32;
+  stream_offsets:[EncodedStream];
+  stream_sizes:[EncodedStream];
 }
 
 table MetadataSection {

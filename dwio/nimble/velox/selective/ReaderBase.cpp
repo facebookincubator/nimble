@@ -174,13 +174,13 @@ std::optional<common::Region> StripeStreams::streamRegion(int streamId) const {
   if (streamId >= tablet.streamCount(*stripeIdentifier_)) {
     return std::nullopt;
   }
-  const auto size = tablet.streamSizes(*stripeIdentifier_)[streamId];
+  const auto size = tablet.streamSize(*stripeIdentifier_, streamId);
   if (size == 0) {
     return std::nullopt;
   }
   common::Region region;
   region.offset = tablet.stripeOffset(stripe_) +
-      tablet.streamOffsets(*stripeIdentifier_)[streamId];
+      tablet.streamOffset(*stripeIdentifier_, streamId);
   region.length = size;
   return region;
 }
@@ -206,19 +206,20 @@ std::vector<std::optional<StreamLocation>> StripeStreams::locateStreams(
   const auto streamCount = tablet.streamCount(*stripeIdentifier_);
   // File offset where this stripe's data begins.
   const auto stripeOffset = tablet.stripeOffset(stripe_);
-  const auto& streamOffsets = tablet.streamOffsets(*stripeIdentifier_);
-  const auto& streamSizes = tablet.streamSizes(*stripeIdentifier_);
 
   std::vector<std::optional<StreamLocation>> locations(streamIds.size());
   for (size_t i = 0; i < streamIds.size(); ++i) {
     const auto streamId = streamIds[i];
-    if (streamId >= streamCount || streamSizes[streamId] == 0) {
+    if (streamId >= streamCount) {
       continue;
     }
+    const auto streamSize = tablet.streamSize(*stripeIdentifier_, streamId);
+    if (streamSize == 0) {
+      continue;
+    }
+    const auto streamOffset = tablet.streamOffset(*stripeIdentifier_, streamId);
     locations[i] = StreamLocation{
-        streamId,
-        common::Region{
-            stripeOffset + streamOffsets[streamId], streamSizes[streamId]}};
+        streamId, common::Region{stripeOffset + streamOffset, streamSize}};
   }
   return locations;
 }
@@ -229,6 +230,14 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
 
   const auto& chunkIndex = stripeIdentifier_->chunkIndex();
   if (chunkIndex == nullptr) {
+    return nullptr;
+  }
+  // A stream absent from this stripe group (e.g. added by later schema
+  // evolution or a flat-map feature not present in this group) has no chunk
+  // index. Gate on streamCount as streamRegion()/locateStreams() do, so an
+  // out-of-range stream id does not reach streamSize() (which check-fails on
+  // out-of-range).
+  if (streamId >= readerBase_->tablet().streamCount(*stripeIdentifier_)) {
     return nullptr;
   }
   const uint32_t streamSize =
