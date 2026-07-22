@@ -16,6 +16,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include "dwio/nimble/common/FixedBitArray.h"
@@ -124,9 +127,144 @@ class BlockBitPackingEncodingView final : public TypedEncodingView<T> {
         static_cast<physicalType>(fba.get(blockOffset) + block.baseline));
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto blockIndex = offset / blockSize_;
+      const auto blockOffset = offset % blockSize_;
+      const auto count =
+          std::min<uint32_t>(length - outputOffset, blockSize_ - blockOffset);
+      readBlockRange(blockIndex, blockOffset, count, output + outputOffset);
+      outputOffset += count;
+      offset += count;
+    }
+  }
+
   uint32_t blockRowCount(uint32_t blockIndex) const {
     const auto start = blockIndex * blockSize_;
     return std::min<uint32_t>(blockSize_, this->rowCount_ - start);
+  }
+
+  void readBlockRange(
+      uint32_t blockIndex,
+      uint32_t blockOffset,
+      uint32_t length,
+      physicalType* output) const {
+    const auto& block = blocks_[blockIndex];
+    const auto bitWidth = block.bitWidth;
+    const auto baseline = block.baseline;
+    const auto* blockData = packedData_ + block.offset;
+
+    if (bitWidth == BlockBitPackingEncoding<T>::kRawBlockBitWidth) {
+      const auto* rawValues = reinterpret_cast<const physicalType*>(blockData);
+      std::memcpy(
+          output, rawValues + blockOffset, length * sizeof(physicalType));
+      return;
+    }
+
+    if (bitWidth == 0) {
+      std::fill(output, output + length, baseline);
+      return;
+    }
+
+    const auto* inputBytes = reinterpret_cast<const uint8_t*>(blockData);
+    if (blockOffset == 0) {
+      BlockBitPackingEncoding<T>::fullUnpack(
+          inputBytes, output, length, bitWidth, baseline);
+      return;
+    }
+
+    readPartialBlockRange(
+        inputBytes,
+        blockIndex,
+        blockOffset,
+        length,
+        bitWidth,
+        baseline,
+        output);
+  }
+
+  void readPartialBlockRange(
+      const uint8_t* input,
+      uint32_t blockIndex,
+      uint32_t blockOffset,
+      uint32_t length,
+      uint8_t bitWidth,
+      physicalType baseline,
+      physicalType* output) const {
+    constexpr uint32_t kGroupSize = packingGroupSize();
+    const auto numRows = blockRowCount(blockIndex);
+    const auto numFullGroupRows = numRows - (numRows % kGroupSize);
+    const auto groupBytes = bitWidth * kGroupSize / 8;
+    const auto* remainderInput = reinterpret_cast<const char*>(input) +
+        (numFullGroupRows / kGroupSize) * groupBytes;
+
+    // Rows after the full fastpack groups are stored as a FixedBitArray tail.
+    if (blockOffset >= numFullGroupRows) {
+      FixedBitArray fba{
+          {remainderInput,
+           FixedBitArray::bufferSize(numRows - numFullGroupRows, bitWidth)},
+          bitWidth};
+      const auto remainderOffset = blockOffset - numFullGroupRows;
+      fba.bulkGetWithBaseline(remainderOffset, length, output, baseline);
+      return;
+    }
+
+    uint32_t outputOffset{0};
+    if (const auto groupOffset = blockOffset % kGroupSize; groupOffset != 0) {
+      std::array<physicalType, kGroupSize> values;
+      const auto group = blockOffset / kGroupSize;
+      BlockBitPackingEncoding<T>::fullUnpack(
+          input + group * groupBytes,
+          values.data(),
+          kGroupSize,
+          bitWidth,
+          baseline);
+      const auto count = std::min<uint32_t>(length, kGroupSize - groupOffset);
+      std::copy(
+          values.data() + groupOffset,
+          values.data() + groupOffset + count,
+          output);
+      outputOffset += count;
+      blockOffset += count;
+    }
+
+    const auto packedLength = std::min<uint32_t>(
+        length - outputOffset, numFullGroupRows - blockOffset);
+    if (packedLength != 0) {
+      BlockBitPackingEncoding<T>::fullUnpack(
+          input + (blockOffset / kGroupSize) * groupBytes,
+          output + outputOffset,
+          packedLength,
+          bitWidth,
+          baseline);
+      outputOffset += packedLength;
+      blockOffset += packedLength;
+    }
+
+    if (outputOffset < length) {
+      FixedBitArray fba{
+          {remainderInput,
+           FixedBitArray::bufferSize(numRows - numFullGroupRows, bitWidth)},
+          bitWidth};
+      fba.bulkGetWithBaseline(
+          blockOffset - numFullGroupRows,
+          length - outputOffset,
+          output + outputOffset,
+          baseline);
+    }
+  }
+
+  static constexpr uint32_t packingGroupSize() {
+    if constexpr (sizeof(physicalType) == 1) {
+      return 8u;
+    } else if constexpr (sizeof(physicalType) == 2) {
+      return 16u;
+    } else {
+      return 32u;
+    }
   }
 
   struct BlockMeta {

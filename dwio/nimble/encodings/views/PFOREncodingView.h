@@ -99,6 +99,26 @@ class PFOREncodingView final : public TypedEncodingView<T> {
         static_cast<physicalType>(baseline_ + residual));
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (baseBitWidth_ == 0) {
+      std::fill(output, output + length, baseline_);
+    } else {
+      fixedBitArray_.bulkGetWithBaseline(offset, length, output, baseline_);
+    }
+
+    auto exceptionIt = std::lower_bound(
+        exceptionPositions_.begin(), exceptionPositions_.end(), offset);
+    const auto end = offset + length;
+    while (exceptionIt != exceptionPositions_.end() && *exceptionIt < end) {
+      output[*exceptionIt - offset] = static_cast<physicalType>(
+          baseline_ +
+          exceptionValues_[exceptionIt - exceptionPositions_.begin()]);
+      ++exceptionIt;
+    }
+  }
+
   physicalType baseline_{};
   uint8_t baseBitWidth_{0};
   uint32_t numExceptions_{0};

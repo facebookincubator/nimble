@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <algorithm>
+
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingView.h"
 
@@ -39,6 +41,12 @@ class ConstantEncodingView final : public TypedEncodingView<T> {
   T readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
     return detail::castFromPhysicalType<T>(value_);
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    std::fill(output, output + length, value_);
   }
 
   physicalType value_;

@@ -67,6 +67,24 @@ class ALPEncodingView final : public TypedEncodingView<T> {
     return decodeValue(encoded);
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    const auto* exceptionPosition = std::lower_bound(
+        exceptionPositions_, exceptionPositions_ + exceptionCount_, offset);
+    for (uint32_t i = 0; i < length; ++i) {
+      const auto row = offset + i;
+      if (exceptionPosition != exceptionPositions_ + exceptionCount_ &&
+          *exceptionPosition == row) {
+        output[i] = exceptionValues_[exceptionPosition - exceptionPositions_];
+        ++exceptionPosition;
+      } else {
+        output[i] = detail::alp::toPhysical<T>(
+            decodeValue(velox::ZigZag::decode(encodedValues_->readAt(row))));
+      }
+    }
+  }
+
   const physicalType* findException(uint32_t index) const {
     const auto* begin = exceptionPositions_;
     const auto* end = begin + exceptionCount_;

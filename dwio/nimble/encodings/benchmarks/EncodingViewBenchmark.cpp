@@ -59,6 +59,7 @@ namespace {
 
 constexpr uint32_t kRows = 4096;
 constexpr uint32_t kPositions = 130;
+constexpr uint32_t kRangeSize = 1024;
 
 template <typename T>
 std::span<const typename TypeTraits<T>::physicalType> physicalSpan(
@@ -123,12 +124,38 @@ void readPositionsWithView(
     const EncodingView& view,
     const std::vector<uint32_t>& positions,
     uint32_t iters) {
-  T value;
+  typename TypeTraits<T>::physicalType value;
   while (iters--) {
     for (const auto position : positions) {
       view.readAt(position, &value);
       folly::doNotOptimizeAway(value);
     }
+  }
+}
+
+template <typename T>
+void readRangesWithView(const EncodingView& view, uint32_t iters) {
+  auto output =
+      std::make_unique<typename TypeTraits<T>::physicalType[]>(kRangeSize);
+  while (iters--) {
+    for (uint32_t offset = 0; offset < kRows; offset += kRangeSize) {
+      view.read(
+          offset, std::min<uint32_t>(kRangeSize, kRows - offset), output.get());
+    }
+    folly::doNotOptimizeAway(output[0]);
+  }
+}
+
+template <typename T>
+void readUnalignedRangesWithView(const EncodingView& view, uint32_t iters) {
+  auto output =
+      std::make_unique<typename TypeTraits<T>::physicalType[]>(kRangeSize);
+  while (iters--) {
+    for (uint32_t offset = 17; offset < kRows; offset += kRangeSize) {
+      view.read(
+          offset, std::min<uint32_t>(kRangeSize, kRows - offset), output.get());
+    }
+    folly::doNotOptimizeAway(output[0]);
   }
 }
 
@@ -431,6 +458,28 @@ Vector<std::string_view> dictionaryStringData(
     readPositionsWithView<Type>(*view, positions, iters);        \
   }
 
+#define RANGE_VIEW_BENCHMARK(Name, Type, EncodedExpr)            \
+  BENCHMARK(Name, iters) {                                       \
+    std::string encoded;                                         \
+    std::unique_ptr<EncodingView> view;                          \
+    BENCHMARK_SUSPEND {                                          \
+      encoded = EncodedExpr;                                     \
+      view = createEncodingView(encoded, benchmarkPool().get()); \
+    }                                                            \
+    readRangesWithView<Type>(*view, iters);                      \
+  }
+
+#define UNALIGNED_RANGE_VIEW_BENCHMARK(Name, Type, EncodedExpr)  \
+  BENCHMARK(Name, iters) {                                       \
+    std::string encoded;                                         \
+    std::unique_ptr<EncodingView> view;                          \
+    BENCHMARK_SUSPEND {                                          \
+      encoded = EncodedExpr;                                     \
+      view = createEncodingView(encoded, benchmarkPool().get()); \
+    }                                                            \
+    readUnalignedRangesWithView<Type>(*view, iters);             \
+  }
+
 #define MATERIALIZE_BENCHMARK(Name, Type, EncodedExpr, PositionsExpr)    \
   BENCHMARK(Name, iters) {                                               \
     std::string encoded;                                                 \
@@ -452,6 +501,12 @@ VIEW_BENCHMARK(
         EncodingType::Trivial,
         makeRandom<uint32_t>(kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_TrivialUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<TrivialEncoding<uint32_t>>(
+        EncodingType::Trivial,
+        makeRandom<uint32_t>(kRows)))
 VIEW_BENCHMARK(
     View_TrivialBool_Random130,
     bool,
@@ -459,6 +514,12 @@ VIEW_BENCHMARK(
         EncodingType::Trivial,
         boolData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_TrivialBool_Range1024,
+    bool,
+    encodeWithSelection<TrivialEncoding<bool>>(
+        EncodingType::Trivial,
+        boolData()))
 MATERIALIZE_BENCHMARK(
     Materialize_TrivialUint32_Random130,
     uint32_t,
@@ -480,6 +541,12 @@ VIEW_BENCHMARK(
         EncodingType::SparseBool,
         boolData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_SparseBool_Range1024,
+    bool,
+    encodeWithSelection<SparseBoolEncoding>(
+        EncodingType::SparseBool,
+        boolData()))
 MATERIALIZE_BENCHMARK(
     Materialize_SparseBool_Random130,
     bool,
@@ -499,6 +566,17 @@ BENCHMARK(View_TrivialStringEager_Random130, iters) {
     view = createEncodingView(encoded, benchmarkPool().get());
   }
   readPositionsWithView<std::string_view>(*view, positions, iters);
+}
+
+BENCHMARK(RangeView_TrivialStringEager_Range1024, iters) {
+  std::vector<std::string> backing;
+  std::string encoded;
+  std::unique_ptr<EncodingView> view;
+  BENCHMARK_SUSPEND {
+    encoded = encodeTrivialString(stringData(backing));
+    view = createEncodingView(encoded, benchmarkPool().get());
+  }
+  readRangesWithView<std::string_view>(*view, iters);
 }
 
 BENCHMARK(Construct_TrivialStringOffsets_ReadAt, iters) {
@@ -575,6 +653,12 @@ VIEW_BENCHMARK(
         EncodingType::Constant,
         makeConstant<uint32_t>(42, kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_ConstantUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<ConstantEncoding<uint32_t>>(
+        EncodingType::Constant,
+        makeConstant<uint32_t>(42, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_ConstantUint32_Random130,
     uint32_t,
@@ -589,6 +673,12 @@ VIEW_BENCHMARK(
         EncodingType::FixedBitWidth,
         makeNarrow<uint32_t>(10, kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_FixedBitWidthUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<FixedBitWidthEncoding<uint32_t>>(
+        EncodingType::FixedBitWidth,
+        makeNarrow<uint32_t>(10, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_FixedBitWidthUint32_Random130,
     uint32_t,
@@ -603,6 +693,12 @@ VIEW_BENCHMARK(
         EncodingType::MainlyConstant,
         mainlyConstantData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_MainlyConstantUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<MainlyConstantEncoding<uint32_t>>(
+        EncodingType::MainlyConstant,
+        mainlyConstantData()))
 MATERIALIZE_BENCHMARK(
     Materialize_MainlyConstantUint32_Random130,
     uint32_t,
@@ -617,6 +713,12 @@ VIEW_BENCHMARK(
         EncodingType::Dictionary,
         dictionaryData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_DictionaryUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<DictionaryEncoding<uint32_t>>(
+        EncodingType::Dictionary,
+        dictionaryData()))
 VIEW_BENCHMARK(
     View_DictionaryFloat_Random130,
     float,
@@ -624,6 +726,12 @@ VIEW_BENCHMARK(
         EncodingType::Dictionary,
         floatingDictionaryData<float>()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_DictionaryFloat_Range1024,
+    float,
+    encodeWithSelection<DictionaryEncoding<float>>(
+        EncodingType::Dictionary,
+        floatingDictionaryData<float>()))
 VIEW_BENCHMARK(
     View_DictionaryDouble_Random130,
     double,
@@ -631,6 +739,12 @@ VIEW_BENCHMARK(
         EncodingType::Dictionary,
         floatingDictionaryData<double>()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_DictionaryDouble_Range1024,
+    double,
+    encodeWithSelection<DictionaryEncoding<double>>(
+        EncodingType::Dictionary,
+        floatingDictionaryData<double>()))
 BENCHMARK(View_DictionaryString_Random130, iters) {
   std::vector<std::string> backing;
   std::string encoded;
@@ -643,6 +757,17 @@ BENCHMARK(View_DictionaryString_Random130, iters) {
     view = createEncodingView(encoded, benchmarkPool().get());
   }
   readPositionsWithView<std::string_view>(*view, positions, iters);
+}
+BENCHMARK(RangeView_DictionaryString_Range1024, iters) {
+  std::vector<std::string> backing;
+  std::string encoded;
+  std::unique_ptr<EncodingView> view;
+  BENCHMARK_SUSPEND {
+    encoded = encodeWithSelection<DictionaryEncoding<std::string_view>>(
+        EncodingType::Dictionary, dictionaryStringData(backing));
+    view = createEncodingView(encoded, benchmarkPool().get());
+  }
+  readRangesWithView<std::string_view>(*view, iters);
 }
 MATERIALIZE_BENCHMARK(
     Materialize_DictionaryUint32_Random130,
@@ -685,6 +810,10 @@ VIEW_BENCHMARK(
     uint32_t,
     encodeWithSelection<RLEEncoding<uint32_t>>(EncodingType::RLE, rleData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_RLEUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<RLEEncoding<uint32_t>>(EncodingType::RLE, rleData()))
 MATERIALIZE_BENCHMARK(
     Materialize_RLEUint32_Random130,
     uint32_t,
@@ -721,6 +850,12 @@ VIEW_BENCHMARK(
         EncodingType::ALP,
         alpData<float>()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_ALPFloat_Range1024,
+    float,
+    encodeWithSelection<ALPEncoding<float>>(
+        EncodingType::ALP,
+        alpData<float>()))
 VIEW_BENCHMARK(
     View_ALPDouble_Random130,
     double,
@@ -728,6 +863,12 @@ VIEW_BENCHMARK(
         EncodingType::ALP,
         alpData<double>()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_ALPDouble_Range1024,
+    double,
+    encodeWithSelection<ALPEncoding<double>>(
+        EncodingType::ALP,
+        alpData<double>()))
 MATERIALIZE_BENCHMARK(
     Materialize_ALPFloat_Random130,
     float,
@@ -747,6 +888,10 @@ VIEW_BENCHMARK(
     uint32_t,
     encodeWithSelection<ForEncoding<uint32_t>>(EncodingType::FOR, pforData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_FORUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<ForEncoding<uint32_t>>(EncodingType::FOR, pforData()))
 BENCHMARK(Materialize_FORUint32_Random130, iters) {
   std::string encoded;
   std::vector<uint32_t> positions;
@@ -765,6 +910,10 @@ VIEW_BENCHMARK(
     uint32_t,
     encodeWithSelection<PFOREncoding<uint32_t>>(EncodingType::PFOR, pforData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_PFORUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<PFOREncoding<uint32_t>>(EncodingType::PFOR, pforData()))
 MATERIALIZE_BENCHMARK(
     Materialize_PFORUint32_Random130,
     uint32_t,
@@ -777,6 +926,12 @@ VIEW_BENCHMARK(
         EncodingType::Huffman,
         huffmanSkewedData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_HuffmanUint32_SkewedRange1024,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanSkewedData()))
 MATERIALIZE_BENCHMARK(
     Materialize_HuffmanUint32_SkewedRandom130,
     uint32_t,
@@ -791,6 +946,12 @@ VIEW_BENCHMARK(
         EncodingType::Huffman,
         huffmanUniformData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_HuffmanUint32_UniformRange1024,
+    uint32_t,
+    encodeWithSelection<HuffmanEncoding<uint32_t>>(
+        EncodingType::Huffman,
+        huffmanUniformData()))
 MATERIALIZE_BENCHMARK(
     Materialize_HuffmanUint32_UniformRandom130,
     uint32_t,
@@ -805,6 +966,12 @@ VIEW_BENCHMARK(
         EncodingType::SimdForBitpack,
         makeNarrow<uint32_t>(10, kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_SimdForBitpackUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<SimdForBitpackEncoding<uint32_t>>(
+        EncodingType::SimdForBitpack,
+        makeNarrow<uint32_t>(10, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_SimdForBitpackUint32_Random130,
     uint32_t,
@@ -819,6 +986,12 @@ VIEW_BENCHMARK(
         EncodingType::SimdForBitpack,
         makeNarrow<uint16_t>(10, kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_SimdForBitpackUint16_Range1024,
+    uint16_t,
+    encodeWithSelection<SimdForBitpackEncoding<uint16_t>>(
+        EncodingType::SimdForBitpack,
+        makeNarrow<uint16_t>(10, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_SimdForBitpackUint16_Random130,
     uint16_t,
@@ -833,6 +1006,12 @@ VIEW_BENCHMARK(
         EncodingType::SimdForBitpack,
         makeNarrow<uint8_t>(10, kRows)),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_SimdForBitpackUint8_Range1024,
+    uint8_t,
+    encodeWithSelection<SimdForBitpackEncoding<uint8_t>>(
+        EncodingType::SimdForBitpack,
+        makeNarrow<uint8_t>(10, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_SimdForBitpackUint8_Random130,
     uint8_t,
@@ -847,6 +1026,24 @@ VIEW_BENCHMARK(
         EncodingType::BlockBitPacking,
         pforData()),
     randomPositions(kRows))
+RANGE_VIEW_BENCHMARK(
+    RangeView_BlockBitPackingUint32_Range1024,
+    uint32_t,
+    encodeWithSelection<BlockBitPackingEncoding<uint32_t>>(
+        EncodingType::BlockBitPacking,
+        pforData()))
+UNALIGNED_RANGE_VIEW_BENCHMARK(
+    RangeView_BlockBitPackingUint32_UnalignedRange1024,
+    uint32_t,
+    encodeWithSelection<BlockBitPackingEncoding<uint32_t>>(
+        EncodingType::BlockBitPacking,
+        pforData()))
+UNALIGNED_RANGE_VIEW_BENCHMARK(
+    RangeView_BlockBitPackingUint16_UnalignedRange1024,
+    uint16_t,
+    encodeWithSelection<BlockBitPackingEncoding<uint16_t>>(
+        EncodingType::BlockBitPacking,
+        makeNarrow<uint16_t>(10, kRows)))
 MATERIALIZE_BENCHMARK(
     Materialize_BlockBitPackingUint32_Random130,
     uint32_t,
@@ -856,6 +1053,8 @@ MATERIALIZE_BENCHMARK(
     randomPositions(kRows))
 
 #undef VIEW_BENCHMARK
+#undef RANGE_VIEW_BENCHMARK
+#undef UNALIGNED_RANGE_VIEW_BENCHMARK
 #undef MATERIALIZE_BENCHMARK
 
 } // namespace
