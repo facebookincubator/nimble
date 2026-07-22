@@ -59,7 +59,7 @@ class Config : public velox::config::ConfigBase {
   static Entry<bool> ENABLE_CHUNKING;
   // EXPERIMENTAL: Not production-ready. Do not enable for production tables
   // without consulting the Nimble team (oncall: dwios).
-  static Entry<bool> ENABLE_CHUNK_INDEX;
+  static Entry<bool> ENABLE_CHUNK_STATS;
   static Entry<uint64_t> CHUNKING_WRITER_MEMORY_HIGH_THRESHOLD;
   static Entry<uint64_t> CHUNKING_WRITER_MEMORY_LOW_THRESHOLD;
   static Entry<uint64_t> CHUNKING_WRITER_TARGET_STRIPE_STORAGE_SIZE;

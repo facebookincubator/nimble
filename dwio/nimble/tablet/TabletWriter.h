@@ -20,7 +20,7 @@
 #include "dwio/nimble/common/Checksum.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/Chunk.h"
-#include "dwio/nimble/tablet/ChunkIndexWriter.h"
+#include "dwio/nimble/tablet/ChunkStatsWriter.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -180,7 +180,7 @@ class TabletWriter {
   void writeStreamWithChecksum(const Stream& stream);
 
   // Starts chunk index writing for a new stripe.
-  void finishStripeChunkIndex(size_t streamCount);
+  void finishStripeChunkStats(size_t streamCount);
 
   // Adds chunk-level index data for a stream.
   void addStreamChunkIndex(
@@ -188,7 +188,7 @@ class TabletWriter {
       const std::vector<Chunk>& chunks);
 
   // Writes the chunk index group for a completed stripe group.
-  void writeChunkIndexGroup(size_t streamCount, size_t stripeCount);
+  void writeChunkStatsGroup(size_t streamCount, size_t stripeCount);
 
   // Writes the chunk index root.
   void writeChunkIndexRoot();
@@ -198,7 +198,7 @@ class TabletWriter {
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
   // Chunk-level position index.
-  const std::unique_ptr<ChunkIndexWriter> chunkIndexWriter_;
+  const std::unique_ptr<ChunkStatsWriter> chunkIndexWriter_;
 
   // Number of rows in each stripe.
   std::vector<uint32_t> stripeRowCounts_;

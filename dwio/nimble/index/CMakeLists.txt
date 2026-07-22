@@ -14,8 +14,8 @@
 add_library(
   nimble_index
   BloomFilter.cpp
-  ChunkIndex.cpp
-  ChunkIndexGroup.cpp
+  ChunkStats.cpp
+  ChunkStatsGroup.cpp
   ClusterIndex.cpp
   ClusterIndexFactory.cpp
   ClusterIndexWriter.cpp
@@ -41,7 +41,7 @@ target_link_libraries(
   nimble_encodings
   nimble_tablet_common
   nimble_cluster_index_fb
-  nimble_chunk_index_fb
+  nimble_chunk_stats_fb
   nimble_hash_index_fb
   nimble_index_fb
   nimble_bloom_filter_fb
