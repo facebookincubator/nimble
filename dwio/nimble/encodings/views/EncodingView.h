@@ -33,8 +33,12 @@ class EncodingView {
  public:
   virtual ~EncodingView() = default;
 
-  /// Reads the decoded value at the given row index into a typed output buffer.
+  /// Reads the physical value at the given row index into a typed output
+  /// buffer.
   virtual void readAt(uint32_t index, void* output) const = 0;
+
+  /// Reads physical values in the given row range into a typed output buffer.
+  virtual void read(uint32_t offset, uint32_t length, void* output) const = 0;
 
   /// Returns the number of rows in the encoded stream.
   uint32_t rowCount() const {
@@ -70,7 +74,7 @@ class EncodingView {
   }
 
   template <typename V>
-  Vector<V> getVectorBuffer() {
+  Vector<V> getVectorBuffer() const {
     if (auto* bufferPool = options_.bufferPool) {
       if (auto buffer = bufferPool->get()) {
         return Vector<V>{std::move(buffer)};
@@ -79,10 +83,15 @@ class EncodingView {
     return Vector<V>{pool_};
   }
 
-  void releaseVectorBuffer(auto& vector) {
+  void releaseVectorBuffer(auto& vector) const {
     if (auto* bufferPool = options_.bufferPool) {
       bufferPool->release(vector.releaseBuffer());
     }
+  }
+
+  void checkReadRange(uint32_t offset, uint32_t length) const {
+    NIMBLE_CHECK_LE(offset, rowCount_);
+    NIMBLE_CHECK_LE(length, rowCount_ - offset);
   }
 
   std::string_view data_;
@@ -100,13 +109,20 @@ class TypedEncodingView : public EncodingView {
   using physicalType = typename TypeTraits<T>::physicalType;
 
   T readAt(uint32_t index) const {
-    T value;
-    readAt(index, &value);
-    return value;
+    return readTypedAt(index);
+  }
+
+  void read(uint32_t offset, uint32_t length, physicalType* output) const {
+    read(offset, length, static_cast<void*>(output));
   }
 
   void readAt(uint32_t index, void* output) const final {
-    *static_cast<T*>(output) = readTypedAt(index);
+    *static_cast<physicalType*>(output) =
+        castToPhysicalType(readTypedAt(index));
+  }
+
+  void read(uint32_t offset, uint32_t length, void* output) const final {
+    readPhysical(offset, length, static_cast<physicalType*>(output));
   }
 
  protected:
@@ -116,7 +132,21 @@ class TypedEncodingView : public EncodingView {
       const Encoding::Options& options)
       : EncodingView{data, pool, options} {}
 
+  virtual void readPhysical(
+      uint32_t offset,
+      uint32_t length,
+      physicalType* output) const = 0;
+
   virtual T readTypedAt(uint32_t index) const = 0;
+
+  static physicalType castToPhysicalType(T value) {
+    if constexpr (isFloatingPointType<T>()) {
+      static_assert(sizeof(T) == sizeof(physicalType));
+      return reinterpret_cast<const physicalType&>(value);
+    } else {
+      return value;
+    }
+  }
 };
 
 } // namespace facebook::nimble

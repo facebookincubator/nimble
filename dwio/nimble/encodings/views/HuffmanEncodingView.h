@@ -143,6 +143,35 @@ class HuffmanEncodingView final : public TypedEncodingView<T> {
     NIMBLE_UNREACHABLE("Invalid Huffman row {}", index);
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (length == 0) {
+      return;
+    }
+
+    const uint32_t checkpoint = offset / HuffmanEncoding<T>::kCheckpointStride;
+    uint32_t bitOffset = checkpoints_[checkpoint];
+    uint32_t current = checkpoint * HuffmanEncoding<T>::kCheckpointStride;
+    const auto end = offset + length;
+    while (current < end) {
+      uint32_t lookahead = 0;
+      const uint32_t byteOffset = bitOffset >> 3;
+      NIMBLE_CHECK_LT(byteOffset, bitstreamBytes_);
+      const uint32_t available =
+          std::min<uint32_t>(4, bitstreamBytes_ - byteOffset);
+      std::memcpy(&lookahead, bitstream_ + byteOffset, available);
+      lookahead >>= bitOffset & 7;
+      const auto entry = decodeTable_[lookahead & ((1u << tableLog_) - 1)];
+      NIMBLE_CHECK_GT(entry.bits, 0);
+      bitOffset += entry.bits;
+      if (current >= offset) {
+        output[current - offset] = alphabet_[entry.symbol];
+      }
+      ++current;
+    }
+  }
+
   Vector<physicalType> alphabet_;
   Vector<DecodeEntry> decodeTable_;
   Vector<uint32_t> checkpoints_;

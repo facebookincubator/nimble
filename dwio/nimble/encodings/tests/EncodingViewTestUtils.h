@@ -73,6 +73,15 @@ class EncodingViewTest : public ::testing::Test {
         view->readAt(position, &value);
         EXPECT_EQ(value, values[position]);
       }
+      const auto rowCount = static_cast<uint32_t>(values.size());
+      expectRangeRead(*view, values, /*offset=*/0, /*length=*/0);
+      expectRangeRead(*view, values, rowCount, /*length=*/0);
+      expectRangeRead(
+          *view, values, /*offset=*/0, std::min<uint32_t>(rowCount, 3));
+      if (rowCount > 0) {
+        const auto tailLength = std::min<uint32_t>(rowCount, 3);
+        expectRangeRead(*view, values, rowCount - tailLength, tailLength);
+      }
     }
   }
 
@@ -139,6 +148,23 @@ class EncodingViewTest : public ::testing::Test {
     nimble::Vector<int32_t> values{pool_.get()};
     values.resize(kConcurrentRows, value);
     return values;
+  }
+
+  template <typename T>
+  void expectRangeRead(
+      const nimble::EncodingView& view,
+      const nimble::Vector<T>& values,
+      uint32_t offset,
+      uint32_t length) {
+    SCOPED_TRACE(fmt::format("offset={}, length={}", offset, length));
+    using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+    nimble::Vector<PhysicalType> actual{pool_.get(), length};
+    view.read(offset, length, actual.data());
+    const auto* expected =
+        reinterpret_cast<const PhysicalType*>(values.data()) + offset;
+    EXPECT_EQ(
+        std::vector<PhysicalType>(actual.begin(), actual.end()),
+        std::vector<PhysicalType>(expected, expected + length));
   }
 
   nimble::Vector<int32_t> randomInt32(uint32_t seed) {

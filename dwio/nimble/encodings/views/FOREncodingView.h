@@ -193,6 +193,36 @@ class FOREncodingView final : public TypedEncodingView<T> {
     return detail::castFromPhysicalType<T>(addResidual(reference, residual));
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto frame = offset / frameSize_;
+      const auto positionInFrame = offset % frameSize_;
+      const auto count = std::min<uint32_t>(
+          length - outputOffset, frameSize_ - positionInFrame);
+      readFrameRange(frame, positionInFrame, count, output + outputOffset);
+      outputOffset += count;
+      offset += count;
+    }
+  }
+
+  void readFrameRange(
+      uint32_t frame,
+      uint32_t positionInFrame,
+      uint32_t length,
+      physicalType* output) const {
+    const auto bitWidth = bitWidths_[frame];
+    NIMBLE_CHECK_LE(bitWidth, sizeof(physicalType) * 8);
+    const auto reference = references_[frame];
+    auto rowBitOffset = bitOffset(frame) + positionInFrame * bitWidth;
+    for (uint32_t i = 0; i < length; ++i) {
+      output[i] = addResidual(reference, residualAt(rowBitOffset, bitWidth));
+      rowBitOffset += bitWidth;
+    }
+  }
+
   uint32_t frameSize_{0};
   uint32_t numFrames_{0};
   bool enableBitOffsets_{false};

@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <algorithm>
+
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
@@ -81,6 +83,28 @@ class MainlyConstantEncodingView final : public TypedEncodingView<T> {
       return detail::castFromPhysicalType<T>(commonValue_);
     }
     return otherValues_->readAt(otherValueIndex(index));
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto row = offset + outputOffset;
+      const bool isCommon = isCommon_[row];
+      uint32_t count{1};
+      while (outputOffset + count < length &&
+             isCommon_[row + count] == isCommon) {
+        ++count;
+      }
+      if (isCommon) {
+        std::fill(
+            output + outputOffset, output + outputOffset + count, commonValue_);
+      } else {
+        otherValues_->read(otherValueIndex(row), count, output + outputOffset);
+      }
+      outputOffset += count;
+    }
   }
 
   Vector<bool> isCommon_;

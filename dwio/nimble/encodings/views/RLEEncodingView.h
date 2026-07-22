@@ -69,6 +69,28 @@ class RLEEncodingView final : public TypedEncodingView<T> {
     return values_->readAt(static_cast<uint32_t>(it - runEnds_.begin()));
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (length == 0) {
+      return;
+    }
+    auto it = std::upper_bound(runEnds_.begin(), runEnds_.end(), offset);
+    NIMBLE_CHECK(it != runEnds_.end());
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto runIndex = static_cast<uint32_t>(it - runEnds_.begin());
+      const auto runEnd = *it;
+      const auto count = std::min(length - outputOffset, runEnd - offset);
+      physicalType value;
+      values_->readAt(runIndex, &value);
+      std::fill(output + outputOffset, output + outputOffset + count, value);
+      outputOffset += count;
+      offset += count;
+      ++it;
+    }
+  }
+
   Vector<uint32_t> runEnds_;
   std::unique_ptr<TypedEncodingView<T>> values_;
 };
@@ -114,6 +136,29 @@ class RLEEncodingView<bool> final : public TypedEncodingView<bool> {
     NIMBLE_CHECK(it != runEnds_.end());
     const auto runIndex = static_cast<uint32_t>(it - runEnds_.begin());
     return runIndex % 2 == 0 ? initialValue_ : !initialValue_;
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, bool* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (length == 0) {
+      return;
+    }
+    auto it = std::upper_bound(runEnds_.begin(), runEnds_.end(), offset);
+    NIMBLE_CHECK(it != runEnds_.end());
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto runIndex = static_cast<uint32_t>(it - runEnds_.begin());
+      const auto runEnd = *it;
+      const auto count = std::min(length - outputOffset, runEnd - offset);
+      std::fill(
+          output + outputOffset,
+          output + outputOffset + count,
+          runIndex % 2 == 0 ? initialValue_ : !initialValue_);
+      outputOffset += count;
+      offset += count;
+      ++it;
+    }
   }
 
   Vector<uint32_t> runEnds_;

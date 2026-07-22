@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <type_traits>
+
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/compression/Compression.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -51,6 +54,12 @@ class TrivialEncodingView final : public TypedEncodingView<T> {
     return detail::castFromPhysicalType<T>(values_[index]);
   }
 
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    std::copy(values_ + offset, values_ + offset + length, output);
+  }
+
   const physicalType* values_;
 };
 
@@ -78,6 +87,15 @@ class TrivialEncodingView<bool> final : public TypedEncodingView<bool> {
     NIMBLE_CHECK_LT(index, this->rowCount_);
     return velox::bits::isBitSet(
         reinterpret_cast<const uint8_t*>(bitmap_), index);
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, bool* output)
+      const final {
+    this->checkReadRange(offset, length);
+    const auto* bitmap = reinterpret_cast<const uint8_t*>(bitmap_);
+    for (uint32_t i = 0; i < length; ++i) {
+      output[i] = velox::bits::isBitSet(bitmap, offset + i);
+    }
   }
 
   const char* bitmap_{nullptr};
@@ -124,6 +142,16 @@ class TrivialEncodingView<std::string_view> final
   std::string_view readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
     return {blob_ + offsets_[index], offsets_[index + 1] - offsets_[index]};
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, std::string_view* output)
+      const final {
+    this->checkReadRange(offset, length);
+    for (uint32_t i = 0; i < length; ++i) {
+      output[i] = {
+          blob_ + offsets_[offset + i],
+          offsets_[offset + i + 1] - offsets_[offset + i]};
+    }
   }
 
   const char* blob_{nullptr};

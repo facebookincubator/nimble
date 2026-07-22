@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <algorithm>
+
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingView.h"
@@ -52,6 +54,16 @@ class FixedBitWidthEncodingView final : public TypedEncodingView<T> {
     const auto value =
         static_cast<physicalType>(fixedBitArray_.get(index) + baseline_);
     return detail::castFromPhysicalType<T>(value);
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (bitWidth_ == 0) {
+      std::fill(output, output + length, baseline_);
+      return;
+    }
+    fixedBitArray_.bulkGetWithBaseline(offset, length, output, baseline_);
   }
 
   physicalType baseline_;

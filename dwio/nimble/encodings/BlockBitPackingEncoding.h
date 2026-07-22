@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <span>
@@ -43,6 +44,9 @@
 // approach for better compression when value ranges vary across the stream.
 
 namespace facebook::nimble {
+
+template <typename T>
+class BlockBitPackingEncodingView;
 
 template <typename T>
 class BlockBitPackingEncoding final
@@ -143,6 +147,8 @@ class BlockBitPackingEncoding final
   std::string debugString(int offset) const final;
 
  private:
+  friend class BlockBitPackingEncodingView<T>;
+
   // Fixed metadata header written before the three nested sub-streams:
   // compressionType + blockSize + numBlocks + three 4-byte sub-stream size
   // prefixes. Shared by encode() and estimateSize() so the two stay in sync.

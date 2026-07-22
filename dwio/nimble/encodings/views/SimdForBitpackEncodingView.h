@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <array>
 
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -53,6 +54,31 @@ class SimdForBitpackEncodingView final : public TypedEncodingView<T> {
     unpackGroup(groupIndex, group.data());
     return detail::castFromPhysicalType<T>(
         static_cast<physicalType>(group[index % kGroupSize] + baseline_));
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    if (bitWidth_ == 0) {
+      std::fill(output, output + length, baseline_);
+      return;
+    }
+
+    uint32_t outputOffset{0};
+    while (outputOffset < length) {
+      const auto groupIndex = offset / kGroupSize;
+      const auto groupOffset = offset % kGroupSize;
+      const auto count =
+          std::min<uint32_t>(length - outputOffset, kGroupSize - groupOffset);
+      std::array<physicalType, kGroupSize> group{};
+      unpackGroup(groupIndex, group.data());
+      for (uint32_t i = 0; i < count; ++i) {
+        output[outputOffset + i] =
+            static_cast<physicalType>(group[groupOffset + i] + baseline_);
+      }
+      outputOffset += count;
+      offset += count;
+    }
   }
 
   static constexpr uint32_t kGroupSize = SimdForBitpackEncoding<T>::kGroupSize;

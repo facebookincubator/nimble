@@ -17,6 +17,7 @@
 
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingViewFactory.h"
+#include "folly/ScopeGuard.h"
 
 namespace facebook::nimble {
 
@@ -46,6 +47,20 @@ class DictionaryEncodingView final : public TypedEncodingView<T> {
   T readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
     return alphabet_->readAt(indices_->readAt(index));
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
+      const final {
+    this->checkReadRange(offset, length);
+    auto indices = this->template getVectorBuffer<uint32_t>();
+    SCOPE_EXIT {
+      this->releaseVectorBuffer(indices);
+    };
+    indices.resize(length);
+    indices_->read(offset, length, indices.data());
+    for (uint32_t i = 0; i < length; ++i) {
+      alphabet_->readAt(indices[i], output + i);
+    }
   }
 
   std::unique_ptr<TypedEncodingView<T>> alphabet_;

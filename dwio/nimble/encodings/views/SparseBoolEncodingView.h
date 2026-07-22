@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <algorithm>
+
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingViewFactory.h"
 
@@ -39,7 +41,7 @@ class SparseBoolEncodingView final : public TypedEncodingView<bool> {
   }
 
  private:
-  bool containsSparseIndex(uint32_t index) const {
+  inline uint32_t lowerBoundSparseIndex(uint32_t index) const {
     uint32_t begin{0};
     uint32_t end{indices_->rowCount()};
     while (begin < end) {
@@ -50,12 +52,34 @@ class SparseBoolEncodingView final : public TypedEncodingView<bool> {
         end = mid;
       }
     }
-    return begin < indices_->rowCount() && indices_->readAt(begin) == index;
+    return begin;
+  }
+
+  inline bool containsSparseIndex(uint32_t index) const {
+    const auto position = lowerBoundSparseIndex(index);
+    return position < indices_->rowCount() &&
+        indices_->readAt(position) == index;
   }
 
   bool readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
     return containsSparseIndex(index) ? sparseValue_ : !sparseValue_;
+  }
+
+  void readPhysical(uint32_t offset, uint32_t length, bool* output)
+      const final {
+    this->checkReadRange(offset, length);
+    std::fill(output, output + length, !sparseValue_);
+    auto sparseIndex = lowerBoundSparseIndex(offset);
+    const auto end = offset + length;
+    while (sparseIndex < indices_->rowCount()) {
+      const auto row = indices_->readAt(sparseIndex);
+      if (row >= end) {
+        break;
+      }
+      output[row - offset] = sparseValue_;
+      ++sparseIndex;
+    }
   }
 
   bool sparseValue_{false};
