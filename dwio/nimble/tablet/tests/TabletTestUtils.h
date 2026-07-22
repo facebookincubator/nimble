@@ -72,7 +72,7 @@ class TabletReaderTestHelper {
   }
 
   /// Returns the number of cached chunk index groups.
-  size_t cachedChunkIndexGroupCount() const {
+  size_t cachedChunkStatsGroupCount() const {
     return tabletReader_->chunkIndexCache_.testingCacheCount();
   }
 
@@ -82,7 +82,7 @@ class TabletReaderTestHelper {
   }
 
   /// Returns true if the chunk index group at the given index is cached.
-  bool hasChunkIndexGroupCached(uint32_t groupIndex) const {
+  bool hasChunkStatsGroupCached(uint32_t groupIndex) const {
     return tabletReader_->chunkIndexCache_.hasCacheEntry(groupIndex);
   }
 
@@ -90,8 +90,8 @@ class TabletReaderTestHelper {
   /// one. This is useful for verifying that when the chunk index is covered by
   /// footer IO, the first chunk index group is pre-populated in the cache
   /// without additional reads.
-  bool hasOnlyFirstChunkIndexGroupCached() const {
-    return cachedChunkIndexGroupCount() == 1 && hasChunkIndexGroupCached(0);
+  bool hasOnlyFirstChunkStatsGroupCached() const {
+    return cachedChunkStatsGroupCount() == 1 && hasChunkStatsGroupCached(0);
   }
 
   /// Returns the stripe offsets array.

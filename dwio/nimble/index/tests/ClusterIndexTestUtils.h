@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
@@ -134,12 +134,16 @@ struct StreamStats {
   std::vector<uint32_t> chunkRows;
   /// Byte offset of each chunk within its stream.
   std::vector<uint32_t> chunkOffsets;
+  /// Per-chunk null-value count for this stream. Empty when per-chunk null
+  /// statistics are absent from the section.
+  std::vector<uint32_t> chunkNullCounts;
 };
 
 /// Specification for a single chunk in a stream (for test data creation).
 struct ChunkSpec {
-  uint32_t rowCount;
-  uint32_t size;
+  uint32_t rowCount{};
+  uint32_t size{};
+  uint32_t nullCount{0};
 };
 
 /// Specification for a single stream (for test data creation).
@@ -242,29 +246,29 @@ class ClusterIndexTestHelper {
   const ClusterIndex* const clusterIndex_;
 };
 
-/// Test helper class for ChunkIndexGroup.
-class ChunkIndexTestHelper {
+/// Test helper class for ChunkStatsGroup.
+class ChunkStatsTestHelper {
  public:
-  explicit ChunkIndexTestHelper(const ChunkIndexGroup* chunkIndex)
-      : chunkIndex_(chunkIndex) {}
+  explicit ChunkStatsTestHelper(const ChunkStatsGroup* chunkIndex)
+      : chunkStats_(chunkIndex) {}
 
   uint32_t firstStripe() const {
-    return chunkIndex_->firstStripe_;
+    return chunkStats_->firstStripe_;
   }
 
   uint32_t stripeCount() const {
-    return chunkIndex_->stripeCount_;
+    return chunkStats_->stripeCount_;
   }
 
   uint32_t streamCount() const {
-    return chunkIndex_->streamCount_;
+    return chunkStats_->streamCount_;
   }
 
   /// Returns stream position index statistics for the specified stream.
   StreamStats streamStats(uint32_t streamId) const;
 
  private:
-  const ChunkIndexGroup* const chunkIndex_;
+  const ChunkStatsGroup* const chunkStats_;
 };
 
 /// Test-only cluster index metadata writer for tablet-level tests.
@@ -300,14 +304,14 @@ class TestClusterIndexMetadataWriter {
   TabletWriter::CloseCallback createCloseCallback();
 
  private:
-  struct ChunkIndex {
+  struct ChunkStats {
     std::vector<uint32_t> chunkRows;
     std::vector<uint32_t> chunkOffsets;
     std::vector<std::string_view> chunkKeys;
   };
 
   struct IndexPartition {
-    ChunkIndex chunks;
+    ChunkStats chunks;
     std::unique_ptr<Buffer> encodingBuffer;
     // File-level offset and size after flushKeyStream() writes the key data
     // blob.
