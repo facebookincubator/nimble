@@ -17,6 +17,7 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/dwio/common/TypeUtils.h"
@@ -29,6 +30,17 @@ namespace facebook::nimble {
 namespace {
 
 using namespace facebook::velox;
+
+VeloxWriterOptions makeForcedEncodingWriterOptions(EncodingType encodingType) {
+  VeloxWriterOptions writerOptions;
+  writerOptions.encodingSelectionPolicyCreator =
+      [encodingType](DataType dataType) {
+        ManualEncodingSelectionPolicyFactory factory{
+            {{encodingType, 1.0}}, std::nullopt};
+        return factory.createPolicy(dataType);
+      };
+  return writerOptions;
+}
 
 // Tests for ByteColumnReader, IntegerColumnReader, and
 // FloatingPointColumnReader.
@@ -170,6 +182,36 @@ class ScalarColumnReaderTest : public ::testing::Test,
     ASSERT_EQ(0, rowReader.next(1, result));
   }
 
+  static int64_t deltaBlockFilterValue(int row) {
+    return int64_t{10} + row / 8;
+  }
+
+  template <typename T>
+  void testDeltaBlockWithFilter(bool stringDecoderZeroCopy) {
+    auto input = makeRowVector({
+        makeFlatVector<T>(
+            513,
+            [](auto row) {
+              return static_cast<T>(deltaBlockFilterValue(row));
+            }),
+    });
+
+    auto scanSpec = std::make_shared<common::ScanSpec>("root");
+    scanSpec->addAllChildFields(*input->type());
+    scanSpec->childByName("c0")->setFilter(
+        std::make_unique<common::BigintRange>(30, 60, false));
+
+    auto file = test::createNimbleFile(
+        *rootPool(),
+        input,
+        makeForcedEncodingWriterOptions(EncodingType::DeltaBlock));
+    auto readers = makeReaders(input, file, scanSpec, stringDecoderZeroCopy);
+    validateWithFilter(*input, *readers.rowReader, 29, [](auto row) {
+      const auto value = deltaBlockFilterValue(row);
+      return value >= 30 && value <= 60;
+    });
+  }
+
   const std::shared_ptr<io::IoStatistics> dataIoStats_{
       std::make_shared<io::IoStatistics>()};
   const std::shared_ptr<io::IoStatistics> metadataIoStats_{
@@ -271,6 +313,42 @@ TEST_P(ScalarColumnReaderTest, integerWithFilter) {
   validateWithFilter(*input, *readers.rowReader, 31, [](auto i) {
     return i * 7 >= 100 && i * 7 <= 500;
   });
+}
+
+TEST_P(ScalarColumnReaderTest, integerDeltaBlockWithFilter) {
+  const bool stringDecoderZeroCopy = GetParam();
+  {
+    SCOPED_TRACE("int8_t");
+    testDeltaBlockWithFilter<int8_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("uint8_t");
+    testDeltaBlockWithFilter<uint8_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("int16_t");
+    testDeltaBlockWithFilter<int16_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("uint16_t");
+    testDeltaBlockWithFilter<uint16_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("int32_t");
+    testDeltaBlockWithFilter<int32_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("uint32_t");
+    testDeltaBlockWithFilter<uint32_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("int64_t");
+    testDeltaBlockWithFilter<int64_t>(stringDecoderZeroCopy);
+  }
+  {
+    SCOPED_TRACE("uint64_t");
+    testDeltaBlockWithFilter<uint64_t>(stringDecoderZeroCopy);
+  }
 }
 
 TEST_P(ScalarColumnReaderTest, bigintWithNulls) {

@@ -78,6 +78,38 @@ Vector<T> makeSingleValueData(
 }
 
 template <typename T, typename RNG>
+Vector<T> makeDeltaBlockSortedData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+    if constexpr (std::is_signed_v<T>) {
+      int64_t current{0};
+      constexpr int64_t kMaxValue{
+          static_cast<int64_t>(std::numeric_limits<T>::max())};
+      for (uint32_t i = 0; i < rowCount; ++i) {
+        data.push_back(static_cast<T>(current));
+        const auto step = static_cast<int64_t>(folly::Random::rand32(rng) % 4);
+        current = std::min<int64_t>(current + step, kMaxValue);
+      }
+    } else {
+      uint64_t current{0};
+      constexpr uint64_t kMaxValue{
+          static_cast<uint64_t>(std::numeric_limits<T>::max())};
+      for (uint32_t i = 0; i < rowCount; ++i) {
+        data.push_back(static_cast<T>(current));
+        const auto step = static_cast<uint64_t>(folly::Random::rand32(rng) % 4);
+        current = kMaxValue - current < step ? kMaxValue : current + step;
+      }
+    }
+  }
+  return data;
+}
+
+template <typename T, typename RNG>
 Vector<T> makeBoundaryMixedData(
     velox::memory::MemoryPool& pool,
     RNG& rng,
@@ -315,6 +347,19 @@ class EncodingFuzzer {
   std::vector<Vector<T>> generateDatasets(std::mt19937& rng) {
     std::vector<Vector<T>> datasets;
     uint32_t rowCount = 1 + folly::Random::rand32(rng) % maxRows_;
+
+    if constexpr (
+        Encoder<EncodingClass>::encodingType() == EncodingType::DeltaBlock) {
+      datasets.push_back(
+          makeDeltaBlockSortedData<T>(*pool_, rng, rowCount, buffer_.get()));
+      datasets.push_back(
+          makeSingleValueData<T>(*pool_, rng, rowCount, buffer_.get()));
+      for (uint32_t sz : {1u, 2u, 3u}) {
+        datasets.push_back(
+            makeDeltaBlockSortedData<T>(*pool_, rng, sz, buffer_.get()));
+      }
+      return datasets;
+    }
 
     // Random data.
     {

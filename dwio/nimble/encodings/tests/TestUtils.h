@@ -18,6 +18,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -66,6 +67,12 @@ template <typename T>
 struct EncodingTypeTraits<nimble::DeltaEncoding<T>> {
   static constexpr inline nimble::EncodingType encodingType =
       nimble::EncodingType::Delta;
+};
+
+template <typename T>
+struct EncodingTypeTraits<nimble::DeltaBlockEncoding<T>> {
+  static constexpr inline nimble::EncodingType encodingType =
+      nimble::EncodingType::DeltaBlock;
 };
 
 template <typename T>

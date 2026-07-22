@@ -30,6 +30,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -180,6 +181,30 @@ class DeltaFuzzerTest : public ::testing::Test {};
 TYPED_TEST_SUITE(DeltaFuzzerTest, DeltaTypes);
 
 TYPED_TEST(DeltaFuzzerTest, correctness) {
+  EncodingFuzzer<TypeParam> fuzzer(
+      FLAGS_fuzzer_iterations,
+      FLAGS_fuzzer_max_rows,
+      FLAGS_fuzzer_seed,
+      FLAGS_fuzzer_compression);
+  fuzzer.run();
+}
+
+// DeltaBlock: integer types
+using DeltaBlockTypes = ::testing::Types<
+    DeltaBlockEncoding<int8_t>,
+    DeltaBlockEncoding<uint8_t>,
+    DeltaBlockEncoding<int16_t>,
+    DeltaBlockEncoding<uint16_t>,
+    DeltaBlockEncoding<int32_t>,
+    DeltaBlockEncoding<uint32_t>,
+    DeltaBlockEncoding<int64_t>,
+    DeltaBlockEncoding<uint64_t>>;
+
+template <typename E>
+class DeltaBlockFuzzerTest : public ::testing::Test {};
+TYPED_TEST_SUITE(DeltaBlockFuzzerTest, DeltaBlockTypes);
+
+TYPED_TEST(DeltaBlockFuzzerTest, correctness) {
   EncodingFuzzer<TypeParam> fuzzer(
       FLAGS_fuzzer_iterations,
       FLAGS_fuzzer_max_rows,

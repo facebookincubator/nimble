@@ -15,6 +15,7 @@
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -214,40 +215,40 @@ std::unique_ptr<Encoding> EncodingFactory::create(
           toString(dataType));                              \
   }
 
-#define RETURN_ENCODING_BY_INTEGRAL_TYPE(Encoding, dataType)                  \
-  switch (dataType) {                                                         \
-    case DataType::Int8:                                                      \
-      return std::make_unique<Encoding<int8_t>>(                              \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Uint8:                                                     \
-      return std::make_unique<Encoding<uint8_t>>(                             \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Int16:                                                     \
-      return std::make_unique<Encoding<int16_t>>(                             \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Uint16:                                                    \
-      return std::make_unique<Encoding<uint16_t>>(                            \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Int32:                                                     \
-      return std::make_unique<Encoding<int32_t>>(                             \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Uint32:                                                    \
-      return std::make_unique<Encoding<uint32_t>>(                            \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Int64:                                                     \
-      return std::make_unique<Encoding<int64_t>>(                             \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Uint64:                                                    \
-      return std::make_unique<Encoding<uint64_t>>(                            \
-          memoryPool, data, stringBufferFactory);                             \
-    case DataType::Undefined:                                                 \
-    case DataType::Float:                                                     \
-    case DataType::Double:                                                    \
-    case DataType::Bool:                                                      \
-    case DataType::String:                                                    \
-    default:                                                                  \
-      NIMBLE_UNREACHABLE(                                                     \
-          "HuffmanEncoding only supports integral types, got {}.", dataType); \
+#define RETURN_ENCODING_BY_INTEGRAL_TYPE(Encoding, dataType)               \
+  switch (dataType) {                                                      \
+    case DataType::Int8:                                                   \
+      return std::make_unique<Encoding<int8_t>>(                           \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Uint8:                                                  \
+      return std::make_unique<Encoding<uint8_t>>(                          \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Int16:                                                  \
+      return std::make_unique<Encoding<int16_t>>(                          \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Uint16:                                                 \
+      return std::make_unique<Encoding<uint16_t>>(                         \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Int32:                                                  \
+      return std::make_unique<Encoding<int32_t>>(                          \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Uint32:                                                 \
+      return std::make_unique<Encoding<uint32_t>>(                         \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Int64:                                                  \
+      return std::make_unique<Encoding<int64_t>>(                          \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Uint64:                                                 \
+      return std::make_unique<Encoding<uint64_t>>(                         \
+          memoryPool, data, stringBufferFactory);                          \
+    case DataType::Undefined:                                              \
+    case DataType::Float:                                                  \
+    case DataType::Double:                                                 \
+    case DataType::Bool:                                                   \
+    case DataType::String:                                                 \
+    default:                                                               \
+      NIMBLE_INCOMPATIBLE_ENCODING(                                        \
+          "{} only supports integer types, got {}.", #Encoding, dataType); \
   }
 
   switch (encodingType) {
@@ -285,6 +286,10 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Delta: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(DeltaEncoding, dataType);
+    }
+    case EncodingType::DeltaBlock: {
+      RETURN_ENCODING_BY_INTEGRAL_TYPE(
+          ::facebook::nimble::DeltaBlockEncoding, dataType);
     }
     // SubIntSplit integration commented out (disabled):
     /*

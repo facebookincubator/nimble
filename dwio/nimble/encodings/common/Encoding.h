@@ -141,6 +141,16 @@ class Encoding {
     /// reads it back from the stream (self-describing).
     uint16_t blockBitPackingBlockSize = kBlockBitPackingBlockSize;
 
+    /// Number of rows per independently encoded DeltaBlock block.
+    ///
+    /// Each block stores one base value plus fixed-width deltas between
+    /// adjacent sorted values inside that block. Smaller blocks adapt better
+    /// when local gap widths change, but pay more per-block metadata. Larger
+    /// blocks reduce metadata, but one large gap can widen every delta in the
+    /// block. The value is serialized in the stream header, so readers are
+    /// self-describing.
+    uint16_t deltaBlockSize{256};
+
     /// When true, FOR-family payloads use the exact required bit width. When
     /// false, FixedBitWidth and PFOR round to byte or bucket boundaries.
     bool fixedBitWidthUseExactBits{false};

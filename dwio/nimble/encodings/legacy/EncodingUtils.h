@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/DeltaBlockEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -120,6 +121,15 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
           static_cast<facebook::nimble::BlockBitPackingEncoding<T>&>(encoding));
     // New Encoding has no legacy-specialised class; legacy reads dispatch into
     // the modern Encoding classes
+    case EncodingType::DeltaBlock:
+      if constexpr (isIntegralType<T>()) {
+        return f(
+            static_cast<::facebook::nimble::DeltaBlockEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(
+            "DeltaBlock encoding only supports integral data types, got {}.",
+            encoding.dataType());
+      }
     case EncodingType::PFOR:
       if constexpr (isIntegralType<T>()) {
         return f(static_cast<::facebook::nimble::PFOREncoding<T>&>(encoding));

@@ -18,6 +18,7 @@
 #include "dwio/nimble/encodings/views/ALPEncodingView.h"
 #include "dwio/nimble/encodings/views/BlockBitPackingEncodingView.h"
 #include "dwio/nimble/encodings/views/ConstantEncodingView.h"
+#include "dwio/nimble/encodings/views/DeltaBlockEncodingView.h"
 #include "dwio/nimble/encodings/views/DictionaryEncodingView.h"
 #include "dwio/nimble/encodings/views/FOREncodingView.h"
 #include "dwio/nimble/encodings/views/FixedBitWidthEncodingView.h"
@@ -87,6 +88,13 @@ std::unique_ptr<TypedEncodingView<T>> createTypedEncodingView(
       }
       NIMBLE_INCOMPATIBLE_ENCODING(
           "FOR encoding should not be selected for non-integral data type: {}.",
+          TypeTraits<T>::dataType);
+    case EncodingType::DeltaBlock:
+      if constexpr (isIntegralType<T>()) {
+        return std::make_unique<DeltaBlockEncodingView<T>>(data, pool, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "DeltaBlock encoding only supports integral data types, got {}.",
           TypeTraits<T>::dataType);
     case EncodingType::Huffman:
       if constexpr (
