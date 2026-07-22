@@ -106,6 +106,8 @@ class NimbleData : public velox::dwio::common::FormatData {
     return nimblePreserveDictionaryEncoding_;
   }
 
+  void loadLazyInputStreams() override;
+
  private:
   std::unique_ptr<ChunkedDecoder> makeDecoder(
       const StreamDescriptor& descriptor,

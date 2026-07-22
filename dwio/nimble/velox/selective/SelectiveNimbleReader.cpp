@@ -421,8 +421,8 @@ void SelectiveNimbleRowReader::initReadRange() {
 
 // Computes the set of top-level columns eligible for lazy I/O. A column
 // qualifies if it has no pushdown filter, is not referenced by the remaining
-// filter, has no extraction transform, has no delta update, and is projected
-// in the output. Returns empty set when lazy I/O is disabled.
+// filter, and is projected in the output. Returns empty set when lazy I/O is
+// disabled.
 folly::F14FastSet<std::string> SelectiveNimbleRowReader::computeLazyIoColumns(
     const dwio::common::RowReaderOptions& options) {
   folly::F14FastSet<std::string> lazyIoColumns;
@@ -440,13 +440,10 @@ folly::F14FastSet<std::string> SelectiveNimbleRowReader::computeLazyIoColumns(
     NIMBLE_DCHECK(
         childSpec->hasFilter() || childSpec->projectOut(),
         "Column with no filter should be projected");
-    // A column is eligible for lazy I/O if it has no pushdown filter, is not
-    // referenced by the remaining filter (must be eager for filter eval), has
-    // no extraction transform, has no delta update, and is projected in the
-    // output. Transform and delta-updated columns are excluded because their
-    // loaders read through the eager input and never call LazyInput::load().
+    // Being lazy only defers a column's stream I/O; it does not change which
+    // loader decodes the column, so transform and delta columns are eligible
+    // too, not just plain projected ones.
     if (!childSpec->hasFilter() && remainingFilterColumns.count(name) == 0 &&
-        !childSpec->hasTransform() && !childSpec->deltaUpdate() &&
         childSpec->projectOut()) {
       lazyIoColumns.insert(name);
     }
