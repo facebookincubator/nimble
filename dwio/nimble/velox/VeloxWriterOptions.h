@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/tablet/StripeGroup.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
@@ -75,6 +76,22 @@ struct VeloxWriterOptions {
   // of chunks per stream is below this threshold. 0 disables chunk index
   // skipping.
   float chunkIndexMinAvgChunks{2};
+
+  /// NOTE: !!! This is under experimentation and please do not turn on in
+  /// production use case !!!
+  /// Selects how per-stripe-group stream offsets/sizes are serialized:
+  /// - kRaw: flat stripe-major uint32 arrays (default; all readers).
+  /// - kStreamMajor: one encoding per stream.
+  StripeGroup::EncodingLayout experimentalStripeGroupEncodingLayout{
+      StripeGroup::EncodingLayout::kRaw};
+
+  /// Candidate encodings (with read-cost weights) the writer considers when
+  /// encoding per-stripe-group stream offsets/sizes (kStreamMajor). Only
+  /// encodings with O(1) stateless point access (via EncodingView) are valid.
+  /// Empty (default) lets the writer pick its own candidate set (Constant,
+  /// Trivial, FixedBitWidth).
+  std::vector<std::pair<EncodingType, float>>
+      experimentalStripeGroupEncodingLayoutReadFactors{};
 
   /// If set, the cluster index on the specified columns will be built during
   /// writing. The index stores the per-chunk min and max key for each stripe.

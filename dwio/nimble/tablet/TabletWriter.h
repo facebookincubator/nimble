@@ -18,12 +18,14 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Checksum.h"
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/tablet/Chunk.h"
 #include "dwio/nimble/tablet/ChunkIndexWriter.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
+#include "dwio/nimble/tablet/StripeGroup.h"
 #include "velox/common/file/File.h"
 #include "velox/vector/TypeAliases.h"
 
@@ -75,6 +77,16 @@ class TabletWriter {
     // of chunks per stream is below this threshold. 0 disables chunk index
     // skipping.
     float chunkIndexMinAvgChunks{2};
+    // Selects how per-stripe-group stream offsets/sizes are serialized (default
+    // kRaw); see StripeGroup::EncodingLayout.
+    StripeGroup::EncodingLayout stripeGroupEncodingLayout{
+        StripeGroup::EncodingLayout::kRaw};
+    // Candidate encodings (with read-cost weights) considered when encoding
+    // per-stripe-group offsets/sizes in the encoded layouts. Only O(1)
+    // point-access encodings are valid. Empty (default) lets the writer pick
+    // its own candidate set (Constant, Trivial, FixedBitWidth).
+    std::vector<std::pair<EncodingType, float>>
+        stripeGroupEncodingLayoutReadFactors{};
     // Callback invoked at stripe group flush boundaries. Used by index
     // writers (e.g., ClusterIndexWriter) to write partition data aligned
     // with stripe groups.
@@ -162,7 +174,19 @@ class TabletWriter {
   // exceeds metadata flush size.
   void tryWriteStripeGroup(bool force = false);
   bool shouldWriteStripeGroup(bool force) const;
+  // Serialize the current stripe group's metadata, dispatching to the
+  // layout-specific helper below per options_.stripeGroupEncodingLayout.
   void writeStripeGroup(size_t streamCount, size_t stripeCount);
+  // Serialize the current stripe group's per-stream offsets/sizes into
+  // `builder` using the kRaw / kStreamMajor layout respectively.
+  void writeStripeGroupWithRawLayout(
+      flatbuffers::FlatBufferBuilder& builder,
+      size_t streamCount,
+      size_t stripeCount);
+  void writeStripeGroupWithStreamMajorLayout(
+      flatbuffers::FlatBufferBuilder& builder,
+      size_t streamCount,
+      size_t stripeCount);
   void finishStripeGroup();
 
   // Write stripes metadata section

@@ -16,9 +16,13 @@
 
 #include "dwio/nimble/tablet/TabletWriter.h"
 
+#include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"
+#include "dwio/nimble/tablet/StripeGroup.h"
 
 namespace facebook::nimble {
 
@@ -497,16 +501,130 @@ bool TabletWriter::shouldWriteStripeGroup(bool force) const {
   return true;
 }
 
-void TabletWriter::writeStripeGroup(size_t streamCount, size_t stripeCount) {
-  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+namespace {
+// Build an encoding policy restricted to the given read factors. Read factors
+// must list only encodings with O(1) stateless point access (the EncodingView
+// requirement); the selector picks the smallest predicted size among them,
+// biased by each candidate's read weight. When `readFactors` is empty the
+// writer falls back to `kDefaultReadFactors` below.
+template <typename T>
+std::unique_ptr<EncodingSelectionPolicy<T>> makeMetadataEncodingPolicy(
+    const std::vector<std::pair<EncodingType, float>>& readFactors) {
+  static const std::vector<std::pair<EncodingType, float>> kDefaultReadFactors{
+      {EncodingType::Constant, 1.0},
+      {EncodingType::Trivial, 1.0},
+      {EncodingType::FixedBitWidth, 1.0},
+  };
+  ManualEncodingSelectionPolicyFactory factory{
+      readFactors.empty() ? kDefaultReadFactors : readFactors,
+      /*compressionOptions=*/std::nullopt};
+  auto base = factory.createPolicy(TypeTraits<T>::dataType);
+  return std::unique_ptr<EncodingSelectionPolicy<T>>(
+      static_cast<EncodingSelectionPolicy<T>*>(base.release()));
+}
+
+// Transposes the per-stripe vectors `source` into a single per-stream vector
+// of length `stripeCount`, gathering `source[stripe][streamId]` for one fixed
+// streamId across every stripe. Stripes whose recorded streamCount is less
+// than `streamId + 1` contribute 0 (the writer's default for absent streams).
+std::vector<uint32_t> transposeStreamMetadata(
+    uint32_t streamId,
+    size_t stripeCount,
+    const std::vector<std::vector<uint32_t>>& source) {
+  std::vector<uint32_t> streamValues(stripeCount, 0);
+  for (size_t stripe = 0; stripe < stripeCount; ++stripe) {
+    if (streamId < source[stripe].size()) {
+      streamValues[stripe] = source[stripe][streamId];
+    }
+  }
+  return streamValues;
+}
+} // namespace
+
+void TabletWriter::writeStripeGroupWithRawLayout(
+    flatbuffers::FlatBufferBuilder& builder,
+    size_t streamCount,
+    size_t stripeCount) {
+  // Flattened stripe-major arrays — the original wire layout every reader
+  // understands. Short stripes are padded to streamCount with 0; the reader
+  // derives streamCount from the array length.
   auto streamOffsets = createFlattenedVector<uint32_t, uint32_t>(
       builder, streamCount, streamOffsets_, 0);
   auto streamSizes = createFlattenedVector<uint32_t, uint32_t>(
       builder, streamCount, streamSizes_, 0);
-
   builder.Finish(
       serialization::CreateStripeGroup(
-          builder, stripeCount, streamOffsets, streamSizes));
+          builder,
+          static_cast<uint32_t>(stripeCount),
+          streamOffsets,
+          streamSizes));
+}
+
+void TabletWriter::writeStripeGroupWithStreamMajorLayout(
+    flatbuffers::FlatBufferBuilder& builder,
+    size_t streamCount,
+    size_t stripeCount) {
+  // For each leaf streamId, gather that stream's values across every stripe and
+  // encode the resulting stripeCount-length array independently. The per-stream
+  // bit width is tight to that stream's value range.
+  std::vector<flatbuffers::Offset<serialization::EncodedStream>> encodedOffsets;
+  std::vector<flatbuffers::Offset<serialization::EncodedStream>> encodedSizes;
+  encodedOffsets.reserve(streamCount);
+  encodedSizes.reserve(streamCount);
+
+  // Encodes one array, copies it into the flatbuffer, then rewinds the scratch
+  // buffer so peak memory stays bounded to a single stream.
+  Buffer encodingBuffer{*pool_};
+  auto encodeStream = [&](const std::vector<uint32_t>& values) {
+    const auto encoded = EncodingFactory::encode<uint32_t>(
+        makeMetadataEncodingPolicy<uint32_t>(
+            options_.stripeGroupEncodingLayoutReadFactors),
+        std::span<const uint32_t>(values),
+        encodingBuffer);
+    auto encodedStream = serialization::CreateEncodedStream(
+        builder,
+        builder.CreateVector(
+            reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size()));
+    encodingBuffer.reset();
+    return encodedStream;
+  };
+
+  for (uint32_t streamId = 0; streamId < streamCount; ++streamId) {
+    encodedOffsets.push_back(encodeStream(
+        transposeStreamMetadata(streamId, stripeCount, streamOffsets_)));
+    encodedSizes.push_back(encodeStream(
+        transposeStreamMetadata(streamId, stripeCount, streamSizes_)));
+  }
+
+  // Tag the blob with the kStreamMajor file identifier so the reader detects
+  // the layout from the buffer itself (kRaw blobs are written bare).
+  builder.Finish(
+      serialization::CreateStreamMajorStripeGroup(
+          builder,
+          static_cast<uint32_t>(stripeCount),
+          static_cast<uint32_t>(streamCount),
+          builder.CreateVector(encodedOffsets),
+          builder.CreateVector(encodedSizes)),
+      StripeGroup::kStreamMajorLayoutIdentifier.data());
+}
+
+void TabletWriter::writeStripeGroup(size_t streamCount, size_t stripeCount) {
+  flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+
+  switch (options_.stripeGroupEncodingLayout) {
+    case StripeGroup::EncodingLayout::kRaw:
+      writeStripeGroupWithRawLayout(builder, streamCount, stripeCount);
+      break;
+    case StripeGroup::EncodingLayout::kStreamMajor:
+      writeStripeGroupWithStreamMajorLayout(builder, streamCount, stripeCount);
+      break;
+    default:
+      NIMBLE_UNREACHABLE(
+          fmt::format(
+              "Unknown StripeGroup encoding layout: {}",
+              static_cast<int>(options_.stripeGroupEncodingLayout)));
+  }
+
   stripeGroups_.emplace_back(createMetadataSection(asView(builder)));
 }
 
@@ -576,8 +694,8 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
   const auto streamCount = maxStreamCountIt->size();
 
   // Each stripe may have different stream count recorded.
-  // We need to pad shorter stripes to the full length of stream count. All
-  // these is handled by the |createFlattenedVector| function.
+  // We need to pad shorter stripes to the full length of stream count.
+  // Handled by the |transposeStreamMetadata| helper inside writeStripeGroup.
   writeStripeGroup(streamCount, stripeCount);
 
   writeChunkIndexGroup(streamCount, stripeCount);

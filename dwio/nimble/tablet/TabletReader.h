@@ -21,7 +21,9 @@
 #include <span>
 #include <vector>
 
+#include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/views/EncodingView.h"
 #include "dwio/nimble/index/ChunkIndex.h"
 #include "dwio/nimble/index/ChunkIndexGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
@@ -33,6 +35,7 @@
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
 #include "dwio/nimble/tablet/MetadataInput.h"
+#include "dwio/nimble/tablet/StripeGroup.h"
 #include "folly/Synchronized.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/file/File.h"
@@ -69,42 +72,6 @@ class StreamLoader {
  public:
   virtual ~StreamLoader() = default;
   virtual const std::string_view getStream() const = 0;
-};
-
-class StripeGroup {
- public:
-  StripeGroup(
-      uint32_t stripeGroupIndex,
-      const MetadataBuffer& stripes,
-      std::unique_ptr<MetadataBuffer> metadata);
-
-  uint32_t index() const {
-    return index_;
-  }
-
-  uint32_t streamCount() const {
-    return streamCount_;
-  }
-
-  uint32_t firstStripe() const {
-    return firstStripe_;
-  }
-
-  uint32_t stripeCount() const {
-    return stripeCount_;
-  }
-
-  std::span<const uint32_t> streamOffsets(uint32_t stripe) const;
-  std::span<const uint32_t> streamSizes(uint32_t stripe) const;
-
- private:
-  const std::unique_ptr<MetadataBuffer> metadata_;
-  const uint32_t index_;
-  uint32_t streamCount_;
-  uint32_t stripeCount_;
-  uint32_t firstStripe_;
-  const uint32_t* streamOffsets_;
-  const uint32_t* streamSizes_;
 };
 
 using index::ChunkIndex;
@@ -374,21 +341,29 @@ class TabletReader {
     return stripeOffsets_[stripe];
   }
 
-  /// Returns stream offsets for the specified stripe. Number of streams is
-  /// determined by schema node count at the time when stripe is written, so
-  /// it may have fewer number of items than the final schema node count
-  std::span<const uint32_t> streamOffsets(const StripeIdentifier& stripe) const;
+  /// Returns the byte offset of `streamId` within `stripe` (relative to the
+  /// stripe's start). O(1) point read into the per-stream FBW-encoded blob
+  /// held by the StripeGroup. Callers must ensure
+  /// `streamId < streamCount(stripe)`.
+  uint32_t streamOffset(const StripeIdentifier& stripe, uint32_t streamId)
+      const;
 
-  /// Returns stream sizes for the specified stripe. Has same constraint as
-  /// `streamOffsets()`.
-  std::span<const uint32_t> streamSizes(const StripeIdentifier& stripe) const;
-
-  /// Returns the byte size of a single stream in the specified stripe.
-  /// Returns 0 if the stream does not exist in this stripe.
+  /// Returns the byte size of `streamId` within `stripe`. Returns 0 if the
+  /// stream does not exist in this stripe. O(1) point read.
   uint32_t streamSize(const StripeIdentifier& stripe, uint32_t streamId) const;
 
-  /// Returns stream count for the specified stripe. Has same constraint as
-  /// `streamOffsets()`.
+  /// Bulk decode of all `streamCount(stripe)` byte offsets for `stripe` into
+  /// the caller-provided buffer. Intended for cold-path callers (file layout
+  /// dump tools) that need to scan every stream.
+  void streamOffsets(const StripeIdentifier& stripe, std::span<uint32_t> out)
+      const;
+
+  /// Bulk decode of all `streamCount(stripe)` byte sizes for `stripe`.
+  void streamSizes(const StripeIdentifier& stripe, std::span<uint32_t> out)
+      const;
+
+  /// Returns the schema's leaf-stream count at the time `stripe`'s stripe
+  /// group was written. May be less than the final schema's node count.
   uint32_t streamCount(const StripeIdentifier& stripe) const;
 
   StripeIdentifier stripeIdentifier(uint32_t stripeIndex) const;

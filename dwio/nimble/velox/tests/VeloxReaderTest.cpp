@@ -394,7 +394,8 @@ size_t streamsReadCount(
       makeTestTabletOptions(&pool));
   NIMBLE_CHECK_GE(tablet->stripeCount(), 1);
   auto stripeIdentifier = tablet->stripeIdentifier(0);
-  auto offsets = tablet->streamOffsets(stripeIdentifier);
+  std::vector<uint32_t> offsets(tablet->streamCount(stripeIdentifier));
+  tablet->streamOffsets(stripeIdentifier, offsets);
   std::unordered_set<uint32_t> streamOffsets;
   LOG(INFO) << "Number of streams: " << offsets.size();
   for (auto offset : offsets) {
@@ -427,9 +428,11 @@ std::unordered_set<nimble::offset_size> existingStreamOffsets(
       makeTestTabletOptions(&pool));
   NIMBLE_CHECK_LT(stripeIndex, tablet->stripeCount(), "Stripe out of range");
   auto stripeId = tablet->stripeIdentifier(stripeIndex);
-  auto streamSizes = tablet->streamSizes(stripeId);
+  const auto streamCount = tablet->streamCount(stripeId);
+  std::vector<uint32_t> streamSizes(streamCount);
+  tablet->streamSizes(stripeId, streamSizes);
   std::unordered_set<nimble::offset_size> result;
-  for (nimble::offset_size i = 0; i < streamSizes.size(); ++i) {
+  for (nimble::offset_size i = 0; i < streamCount; ++i) {
     if (streamSizes[i] > 0) {
       result.insert(i);
     }
@@ -1386,7 +1389,27 @@ nimble::EncodingLayout makeFsstEncodingLayout() {
           nimble::CompressionType::Uncompressed}}};
 }
 
-TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
+// Exercises read-path stream-selection across every StripeGroup metadata
+// format. Parameterized on the format alone (independent of VeloxReaderTest's
+// cache/pin matrix) because these tests only assert which streams are read.
+class VeloxReaderStripeGroupFormatTest
+    : public ::testing::TestWithParam<nimble::StripeGroup::EncodingLayout> {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+  }
+
+  void SetUp() override {
+    rootPool_ = velox::memory::memoryManager()->addRootPool("default_root");
+    leafPool_ = rootPool_->addLeafChild("default_leaf");
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  std::shared_ptr<velox::memory::MemoryPool> leafPool_;
+};
+
+TEST_P(VeloxReaderStripeGroupFormatTest, dontReadUnselectedColumnsFromFile) {
   auto type = velox::ROW({
       {"tinyint_val", velox::TINYINT()},
       {"smallint_val", velox::SMALLINT()},
@@ -1406,9 +1429,10 @@ TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
   velox::VectorFuzzer fuzzer({.vectorSize = batchSize}, leafPool_.get());
   auto vector = fuzzer.fuzzInputFlatRow(type);
 
-  auto file = nimble::test::createNimbleFile(*rootPool_, vector);
-
   uint32_t readSize = 1;
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.experimentalStripeGroupEncodingLayout = GetParam();
+  auto file = nimble::test::createNimbleFile(*rootPool_, vector, writerOptions);
   for (auto useChainedBuffers : {false, true}) {
     nimble::testing::InMemoryTrackableReadFile readFile(
         file, useChainedBuffers);
@@ -1419,7 +1443,7 @@ TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
         std::dynamic_pointer_cast<const velox::RowType>(vector->type()),
         selectedColumnNames);
     nimble::VeloxReader reader(
-        &readFile, *leafPool_, std::move(selector), createReadParams());
+        &readFile, *leafPool_, std::move(selector), nimble::VeloxReadParams{});
 
     velox::VectorPtr result;
     reader.next(readSize, result);
@@ -1436,7 +1460,7 @@ TEST_P(VeloxReaderTest, dontReadUnselectedColumnsFromFile) {
   }
 }
 
-TEST_P(VeloxReaderTest, dontReadUnprojectedFeaturesFromFile) {
+TEST_P(VeloxReaderStripeGroupFormatTest, dontReadUnprojectedFeaturesFromFile) {
   auto type = velox::ROW({
       {"float_features", velox::MAP(velox::INTEGER(), velox::REAL())},
   });
@@ -1459,6 +1483,7 @@ TEST_P(VeloxReaderTest, dontReadUnprojectedFeaturesFromFile) {
 
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.flatMapColumns["float_features"];
+  writerOptions.experimentalStripeGroupEncodingLayout = GetParam();
 
   auto file = nimble::test::createNimbleFile(
       *rootPool_, vector, std::move(writerOptions));
@@ -1472,7 +1497,7 @@ TEST_P(VeloxReaderTest, dontReadUnprojectedFeaturesFromFile) {
     auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(
         std::dynamic_pointer_cast<const velox::RowType>(vector->type()));
 
-    nimble::VeloxReadParams params = createReadParams();
+    nimble::VeloxReadParams params;
     params.readFlatMapFieldAsStruct.insert("float_features");
     auto& selectedFeatures =
         params.flatMapFeatureSelector["float_features"].features;
@@ -1546,6 +1571,23 @@ TEST_P(VeloxReaderTest, dontReadUnprojectedFeaturesFromFile) {
         expectedNonEmptyStreamsCount);
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    VeloxReaderStripeGroupFormatTestSuite,
+    VeloxReaderStripeGroupFormatTest,
+    ::testing::Values(
+        nimble::StripeGroup::EncodingLayout::kRaw,
+        nimble::StripeGroup::EncodingLayout::kStreamMajor),
+    [](const ::testing::TestParamInfo<nimble::StripeGroup::EncodingLayout>&
+           info) {
+      switch (info.param) {
+        case nimble::StripeGroup::EncodingLayout::kRaw:
+          return "Raw";
+        case nimble::StripeGroup::EncodingLayout::kStreamMajor:
+          return "StreamMajor";
+      }
+      return "Unknown";
+    });
 
 TEST_P(VeloxReaderTest, readComplexData) {
   auto type = velox::ROW({

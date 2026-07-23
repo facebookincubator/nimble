@@ -898,8 +898,11 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
     }
 
     auto stripeId = tablet->stripeIdentifier(0);
-    auto offsets = tablet->streamOffsets(stripeId);
-    auto sizes = tablet->streamSizes(stripeId);
+    const auto streamCount = tablet->streamCount(stripeId);
+    std::vector<uint32_t> offsets(streamCount);
+    std::vector<uint32_t> sizes(streamCount);
+    tablet->streamOffsets(stripeId, offsets);
+    tablet->streamSizes(stripeId, sizes);
 
     nimble::VeloxReader reader(readFile.get(), *leafPool_);
     const auto& flatMap =
@@ -2074,9 +2077,9 @@ TEST_F(VeloxWriterTest, omitsAllNonNullRowNullStreams) {
     const auto rootNullOffset = root.nullsDescriptor().offset();
     const auto nestedNullOffset = nested.nullsDescriptor().offset();
     const auto stripeIdentifier = tablet->stripeIdentifier(0);
-    const auto streamSizes = tablet->streamSizes(stripeIdentifier);
-    ASSERT_GT(streamSizes.size(), static_cast<size_t>(rootNullOffset));
-    ASSERT_GT(streamSizes.size(), static_cast<size_t>(nestedNullOffset));
+    const auto streamCount = tablet->streamCount(stripeIdentifier);
+    ASSERT_GT(streamCount, static_cast<uint32_t>(rootNullOffset));
+    ASSERT_GT(streamCount, static_cast<uint32_t>(nestedNullOffset));
 
     std::array<uint32_t, 2> nullStreamOffsets{rootNullOffset, nestedNullOffset};
     auto streamLoaders = tablet->load(stripeIdentifier, nullStreamOffsets);
@@ -2087,13 +2090,13 @@ TEST_F(VeloxWriterTest, omitsAllNonNullRowNullStreams) {
     // or top-level nulls ignored); otherwise it is written and round-trips the
     // top-level nulls. The always-non-null nested row null stream is omitted.
     if (testCase.expectRootNullStreamOmitted) {
-      EXPECT_EQ(0, streamSizes[rootNullOffset]);
+      EXPECT_EQ(0, tablet->streamSize(stripeIdentifier, rootNullOffset));
       EXPECT_EQ(nullptr, streamLoaders[0]);
     } else {
-      EXPECT_GT(streamSizes[rootNullOffset], 0);
+      EXPECT_GT(tablet->streamSize(stripeIdentifier, rootNullOffset), 0);
       EXPECT_NE(nullptr, streamLoaders[0]);
     }
-    EXPECT_EQ(0, streamSizes[nestedNullOffset]);
+    EXPECT_EQ(0, tablet->streamSize(stripeIdentifier, nestedNullOffset));
     EXPECT_EQ(nullptr, streamLoaders[1]);
 
     velox::VectorPtr result;
@@ -2128,7 +2131,7 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsNoChunks) {
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
         ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
@@ -2164,7 +2167,7 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsWithChunksMinSizeBig) {
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
         ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
@@ -2201,7 +2204,7 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowAllNullsWithChunksMinSizeZero) {
         // However, when writing stripes, we do not write empty streams.
         // In this case, the integer column is empty, and therefore, omitted.
         ASSERT_EQ(1, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 1>{0});
@@ -2243,8 +2246,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsNoChunks) {
 
         // We have values in stream 2, so it is not optimized away.
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2291,8 +2294,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsWithChunksMinSizeBig) {
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2341,8 +2344,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
         ASSERT_EQ(1, tablet.stripeCount());
 
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2385,8 +2388,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsNoChunks) {
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2425,8 +2428,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsWithChunksMinSizeBig) {
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2466,8 +2469,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsWithChunksMinSizeZero) {
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
 
         // When there are no nulls, the nulls stream is omitted.
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2594,8 +2597,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsNoChunks) {
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2638,8 +2641,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsWithChunksMinSizeBig) {
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2683,8 +2686,8 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapAllNullsWithChunksMinSizeZero) {
         // 0: Row nulls stream (expected empty, as all values are not null)
         // 1: Flatmap nulls stream
         ASSERT_EQ(2, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 2>{0, 1});
@@ -2741,10 +2744,10 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsNoChunks) {
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
         ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 2));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 3));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
@@ -2820,10 +2823,10 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeBig) {
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
         ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 2));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 3));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
@@ -2902,10 +2905,10 @@ TEST_F(VeloxWriterTest, chunkedStreamsFlatmapSomeNullsWithChunksMinSizeZero) {
         // 2: Scalar stream (flatmap value for key 5)
         // 3: Scalar stream (flatmap in-map for key 5)
         ASSERT_EQ(4, tablet.streamCount(stripeIdentifier));
-        EXPECT_EQ(0, tablet.streamSizes(stripeIdentifier)[0]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[1]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[2]);
-        EXPECT_LT(0, tablet.streamSizes(stripeIdentifier)[3]);
+        EXPECT_EQ(0, tablet.streamSize(stripeIdentifier, 0));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 1));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 2));
+        EXPECT_LT(0, tablet.streamSize(stripeIdentifier, 3));
 
         auto streamLoaders =
             tablet.load(stripeIdentifier, std::array<uint32_t, 4>{0, 1, 2, 3});
@@ -3952,8 +3955,11 @@ class VeloxWriterIndexTest
     for (uint32_t stripeIndex = 0; stripeIndex < tablet.stripeCount();
          ++stripeIndex) {
       const auto stripeIdentifier = tablet.stripeIdentifier(stripeIndex);
-      const auto offsets = tablet.streamOffsets(stripeIdentifier);
-      const auto sizes = tablet.streamSizes(stripeIdentifier);
+      const auto streamCount = tablet.streamCount(stripeIdentifier);
+      std::vector<uint32_t> offsets(streamCount);
+      std::vector<uint32_t> sizes(streamCount);
+      tablet.streamOffsets(stripeIdentifier, offsets);
+      tablet.streamSizes(stripeIdentifier, sizes);
 
       std::map<std::pair<uint32_t, uint32_t>, uint64_t> duplicateGroups;
       for (size_t streamIndex = 0; streamIndex < sizes.size(); ++streamIndex) {

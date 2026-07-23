@@ -23,8 +23,10 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
+#include "dwio/nimble/tablet/StripeGroup.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
+#include "flatbuffers/flatbuffers.h"
 #include "folly/io/Cursor.h"
 
 #include <algorithm>
@@ -174,51 +176,6 @@ size_t copyTo(const folly::IOBuf& source, void* target, size_t size) {
 }
 
 } // namespace
-
-StripeGroup::StripeGroup(
-    uint32_t stripeGroupIndex,
-    const MetadataBuffer& stripes,
-    std::unique_ptr<MetadataBuffer> stripeGroup)
-    : metadata_{std::move(stripeGroup)}, index_{stripeGroupIndex} {
-  const auto* metadataRoot =
-      asFlatBuffersRoot<serialization::StripeGroup>(metadata_->content());
-  const auto* stripesParsed = stripesRoot(stripes);
-
-  const auto streamCount = metadataRoot->stream_offsets()->size();
-  NIMBLE_CHECK_EQ(
-      streamCount,
-      metadataRoot->stream_sizes()->size(),
-      "Unexpected stream metadata");
-
-  stripeCount_ = metadataRoot->stripe_count();
-  NIMBLE_CHECK_GT(stripeCount_, 0, "Unexpected stripe count");
-  streamCount_ = streamCount / stripeCount_;
-
-  streamOffsets_ = metadataRoot->stream_offsets()->data();
-  streamSizes_ = metadataRoot->stream_sizes()->data();
-
-  // Find the first stripe that use this stripe group
-  auto* groupIndices = stripesParsed->group_indices()->data();
-  for (uint32_t stripeIndex = 0,
-                groupIndicesSize = stripesParsed->group_indices()->size();
-       stripeIndex < groupIndicesSize;
-       ++stripeIndex) {
-    if (groupIndices[stripeIndex] == stripeGroupIndex) {
-      firstStripe_ = stripeIndex;
-      return;
-    }
-  }
-  NIMBLE_UNREACHABLE("No stripe found for stripe group");
-}
-
-std::span<const uint32_t> StripeGroup::streamOffsets(uint32_t stripe) const {
-  return {
-      streamOffsets_ + (stripe - firstStripe_) * streamCount_, streamCount_};
-}
-
-std::span<const uint32_t> StripeGroup::streamSizes(uint32_t stripe) const {
-  return {streamSizes_ + (stripe - firstStripe_) * streamCount_, streamCount_};
-}
 
 TabletReader::TabletReader(
     std::shared_ptr<velox::ReadFile> readFile,
@@ -686,7 +643,7 @@ void TabletReader::initStripes(
       stripeGroupCache_.pin(
           0,
           std::make_shared<StripeGroup>(
-              0, *stripes_, std::move(metadataBuffer)));
+              0, *stripes_, std::move(metadataBuffer), pool_));
     }
   }
 }
@@ -843,7 +800,7 @@ std::shared_ptr<StripeGroup> TabletReader::loadStripeGroup(
 
   const auto section = toMetadataSection(stripeGroupInfo);
   return std::make_shared<StripeGroup>(
-      stripeGroupIndex, *stripes_, readMetadata(section));
+      stripeGroupIndex, *stripes_, readMetadata(section), pool_);
 }
 
 std::shared_ptr<StripeGroup> TabletReader::stripeGroup(
@@ -871,7 +828,7 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
 
   StripeGroupMetadata result;
   result.stripeGroup = std::make_shared<StripeGroup>(
-      stripeGroupIndex, *stripes_, std::move(groupMetadata));
+      stripeGroupIndex, *stripes_, std::move(groupMetadata), pool_);
   if (hasChunkIndex) {
     auto chunkIndexMetadata =
         std::make_unique<MetadataBuffer>(std::move(*results[1]));
@@ -883,23 +840,34 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   return result;
 }
 
-std::span<const uint32_t> TabletReader::streamOffsets(
-    const StripeIdentifier& stripe) const {
+uint32_t TabletReader::streamOffset(
+    const StripeIdentifier& stripe,
+    uint32_t streamId) const {
   NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
-  return stripe.stripeGroup()->streamOffsets(stripe.stripeId());
-}
-
-std::span<const uint32_t> TabletReader::streamSizes(
-    const StripeIdentifier& stripe) const {
-  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
-  return stripe.stripeGroup()->streamSizes(stripe.stripeId());
+  return stripe.stripeGroup()->streamOffset(stripe.stripeId(), streamId);
 }
 
 uint32_t TabletReader::streamSize(
     const StripeIdentifier& stripe,
     uint32_t streamId) const {
-  const auto sizes = streamSizes(stripe);
-  return streamId < sizes.size() ? sizes[streamId] : 0;
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
+  // Mirrors streamOffset: StripeGroup::streamSize already returns 0 for an
+  // out-of-range streamId, so delegate without a redundant guard here.
+  return stripe.stripeGroup()->streamSize(stripe.stripeId(), streamId);
+}
+
+void TabletReader::streamOffsets(
+    const StripeIdentifier& stripe,
+    std::span<uint32_t> out) const {
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
+  stripe.stripeGroup()->streamOffsets(stripe.stripeId(), out);
+}
+
+void TabletReader::streamSizes(
+    const StripeIdentifier& stripe,
+    std::span<uint32_t> out) const {
+  NIMBLE_DCHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
+  stripe.stripeGroup()->streamSizes(stripe.stripeId(), out);
 }
 
 uint32_t TabletReader::streamCount(const StripeIdentifier& stripe) const {
@@ -957,9 +925,7 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
 
   const uint64_t stripeOffset = this->stripeOffset(stripe.stripeId());
   const auto& stripeGroup = stripe.stripeGroup();
-  const auto stripeStreamOffsets =
-      stripeGroup->streamOffsets(stripe.stripeId());
-  const auto stripeStreamSizes = stripeGroup->streamSizes(stripe.stripeId());
+  const uint32_t stripeId = stripe.stripeId();
   const uint32_t streamsToLoad = streamIdentifiers.size();
 
   std::vector<std::unique_ptr<StreamLoader>> streams(streamsToLoad);
@@ -980,14 +946,15 @@ std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
       continue;
     }
 
-    const uint32_t streamSize = stripeStreamSizes[streamIdentifier];
+    const uint32_t streamSize =
+        stripeGroup->streamSize(stripeId, streamIdentifier);
     if (streamSize == 0) {
       streams[i] = nullptr;
       continue;
     }
 
     const auto streamStart =
-        stripeOffset + stripeStreamOffsets[streamIdentifier];
+        stripeOffset + stripeGroup->streamOffset(stripeId, streamIdentifier);
 
     auto it = regionToStreamIndices.emplace(
         velox::common::Region{streamStart, streamSize},
@@ -1024,14 +991,13 @@ uint64_t TabletReader::totalStreamSize(
     std::span<const uint32_t> streamIdentifiers) const {
   NIMBLE_CHECK_LT(stripe.stripeId(), stripeCount_, "Stripe is out of range.");
   const auto& stripeGroup = stripe.stripeGroup();
-
+  const uint32_t stripeId = stripe.stripeId();
   uint64_t streamSizeSum{0};
-  const auto stripeStreamSizes = stripeGroup->streamSizes(stripe.stripeId());
   for (const auto streamId : streamIdentifiers) {
     if (streamId >= stripeGroup->streamCount()) {
       continue;
     }
-    streamSizeSum += stripeStreamSizes[streamId];
+    streamSizeSum += stripeGroup->streamSize(stripeId, streamId);
   }
   return streamSizeSum;
 }

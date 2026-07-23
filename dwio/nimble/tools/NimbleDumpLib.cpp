@@ -625,10 +625,13 @@ void NimbleDumpLib::emitStripes(bool noHeader) {
   // stripe groups. We must hold on to it across loop iterations in order to
   // maintain the items in the cache.
   std::optional<StripeIdentifier> stripeIdentifier;
+  std::vector<uint32_t> sizesScratch;
   for (auto i = 0; i < tabletReader->stripeCount(); ++i) {
     stripeIdentifier = tabletReader->stripeIdentifier(i);
-    auto sizes = tabletReader->streamSizes(stripeIdentifier.value());
-    auto stripeSize = std::accumulate(sizes.begin(), sizes.end(), 0UL);
+    sizesScratch.resize(tabletReader->streamCount(stripeIdentifier.value()));
+    tabletReader->streamSizes(stripeIdentifier.value(), sizesScratch);
+    auto stripeSize =
+        std::accumulate(sizesScratch.begin(), sizesScratch.end(), 0UL);
     formatter.writeRow({
         folly::to<std::string>(i),
         commaSeparated(tabletReader->stripeOffset(i)),
@@ -714,10 +717,10 @@ void NimbleDumpLib::emitStreams(
         values.push_back(folly::to<std::string>(streamId));
         values.push_back(
             folly::to<std::string>(
-                tabletReader->streamOffsets(stripeIdentifier)[streamId]));
+                tabletReader->streamOffset(stripeIdentifier, streamId)));
         values.push_back(
             folly::to<std::string>(
-                tabletReader->streamSizes(stripeIdentifier)[streamId]));
+                tabletReader->streamSize(stripeIdentifier, streamId)));
         if (showStreamRawSize) {
           values.push_back(folly::to<std::string>(rawStreamSize));
         }

@@ -224,7 +224,8 @@ INSTANTIATE_TEST_CASE_P(
       return info.param == CreationMode::kDirect ? "direct" : "cached";
     });
 
-class StripeStreamsMultiStripeTest : public ::testing::Test {
+class StripeStreamsMultiStripeTest
+    : public ::testing::TestWithParam<StripeGroup::EncodingLayout> {
  protected:
   static void SetUpTestSuite() {
     velox::memory::MemoryManager::testingSetInstance({});
@@ -240,6 +241,7 @@ class StripeStreamsMultiStripeTest : public ::testing::Test {
     velox::test::VectorMaker vectorMaker(pool_.get());
 
     VeloxWriterOptions writerOptions;
+    writerOptions.experimentalStripeGroupEncodingLayout = GetParam();
     writerOptions.flushPolicyFactory = []() {
       return std::make_unique<LambdaFlushPolicy>(
           [](const StripeProgress&) { return true; });
@@ -288,7 +290,7 @@ class StripeStreamsMultiStripeTest : public ::testing::Test {
       std::make_shared<velox::io::IoStatistics>()};
 };
 
-TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
+TEST_P(StripeStreamsMultiStripeTest, locateStreams) {
   auto readFile = std::make_shared<velox::InMemoryReadFile>(fileData_);
   auto opts = makeReaderOptions();
 
@@ -312,8 +314,6 @@ TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
 
     const auto stripeId = tablet.stripeIdentifier(stripe);
     const auto stripeOffset = tablet.stripeOffset(stripe);
-    const auto& streamOffsets = tablet.streamOffsets(stripeId);
-    const auto& streamSizes = tablet.streamSizes(stripeId);
     const auto& stripeInfo = layout.stripesInfo[stripe];
 
     for (size_t i = 0; i < locations.size(); ++i) {
@@ -322,8 +322,10 @@ TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
       EXPECT_EQ(locations[i]->streamId, streamIds[i]);
       EXPECT_EQ(
           locations[i]->region.offset,
-          stripeOffset + streamOffsets[streamIds[i]]);
-      EXPECT_EQ(locations[i]->region.length, streamSizes[streamIds[i]]);
+          stripeOffset + tablet.streamOffset(stripeId, streamIds[i]));
+      EXPECT_EQ(
+          locations[i]->region.length,
+          tablet.streamSize(stripeId, streamIds[i]));
       EXPECT_GE(locations[i]->region.offset, stripeInfo.offset);
       EXPECT_LE(
           locations[i]->region.offset + locations[i]->region.length,
@@ -332,7 +334,7 @@ TEST_F(StripeStreamsMultiStripeTest, locateStreams) {
   }
 }
 
-TEST_F(StripeStreamsMultiStripeTest, preloadCollapsesStripeReads) {
+TEST_P(StripeStreamsMultiStripeTest, preloadCollapsesStripeReads) {
   constexpr uint32_t kStripeCount = 3;
 
   auto preadsReadingAllStripes = [&](uint64_t preloadThreshold) {
@@ -364,3 +366,14 @@ TEST_F(StripeStreamsMultiStripeTest, preloadCollapsesStripeReads) {
   EXPECT_EQ(preadsReadingAllStripes(fileData_.size() + 1), 1);
   EXPECT_GE(preadsReadingAllStripes(0), kStripeCount);
 }
+
+INSTANTIATE_TEST_CASE_P(
+    MetadataFormats,
+    StripeStreamsMultiStripeTest,
+    ::testing::Values(
+        StripeGroup::EncodingLayout::kRaw,
+        StripeGroup::EncodingLayout::kStreamMajor),
+    [](const ::testing::TestParamInfo<StripeGroup::EncodingLayout>& info) {
+      return info.param == StripeGroup::EncodingLayout::kRaw ? "raw"
+                                                             : "streamMajor";
+    });

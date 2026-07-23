@@ -2920,13 +2920,16 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
   };
 
   // Write data with optional feature reordering.
-  auto writeFile = [&](bool enableReordering) {
+  auto writeFile = [&](bool enableReordering,
+                       StripeGroup::EncodingLayout metadataFormat =
+                           StripeGroup::EncodingLayout::kRaw) {
     sinkData_.clear();
     auto file = std::make_unique<InMemoryWriteFile>(&sinkData_);
 
     VeloxWriterOptions options;
     options.enableChunking = true;
     options.flatMapColumns = {{"features", {}}};
+    options.experimentalStripeGroupEncodingLayout = metadataFormat;
 
     ClusterIndexConfig clusterIndexConfig;
     clusterIndexConfig.columns = {"key"};
@@ -2978,9 +2981,14 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
         *tabletReaderCache_, fileHandle, subfields, readerOptions);
   };
 
-  // Part 1: Verify stream adjacency on disk with feature reordering.
-  {
-    writeFile(/*enableReordering=*/true);
+  // Part 1: Verify stream adjacency on disk with feature reordering, for each
+  // stripe-group metadata format.
+  for (auto metadataFormat :
+       {StripeGroup::EncodingLayout::kRaw,
+        StripeGroup::EncodingLayout::kStreamMajor}) {
+    SCOPED_TRACE(
+        fmt::format("metadataFormat={}", static_cast<int>(metadataFormat)));
+    writeFile(/*enableReordering=*/true, metadataFormat);
     auto readFile =
         std::make_shared<InMemoryReadFile>(std::string_view(sinkData_));
     auto tablet = TabletReader::create(
@@ -2988,8 +2996,11 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     ASSERT_GE(tablet->stripeCount(), 1);
 
     auto stripeId = tablet->stripeIdentifier(0);
-    auto offsets = tablet->streamOffsets(stripeId);
-    auto sizes = tablet->streamSizes(stripeId);
+    const auto streamCount = tablet->streamCount(stripeId);
+    std::vector<uint32_t> offsets(streamCount);
+    std::vector<uint32_t> sizes(streamCount);
+    tablet->streamOffsets(stripeId, offsets);
+    tablet->streamSizes(stripeId, sizes);
 
     VeloxReader reader(readFile.get(), *leafPool_);
     const auto& flatMap = reader.schema()->asRow().childAt(1)->asFlatMap();
