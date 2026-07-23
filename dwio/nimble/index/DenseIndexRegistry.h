@@ -16,32 +16,29 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
+#include "dwio/nimble/index/DenseIndexFactory.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
-#include "dwio/nimble/tablet/MetadataCache.h"
 
 namespace facebook::nimble::index {
 
-class HashIndex;
-class SortedIndex;
-
-/// Unified registry for dense indices (hash and sorted) on a Nimble file.
+/// Unified registry for built-in and registered dense indices on a Nimble file.
 ///
-/// Loads dense index payloads referenced by the common index manifest and
-/// validates no duplicate column sets across index types.
+/// Loads index payloads referenced by the common index manifest.
 class DenseIndexRegistry {
  public:
-  /// Creates a registry from optional hash and sorted index sections.
-  /// Returns nullptr if both sections are empty.
-  /// Creates with Options — indexes create their own MetadataInput
-  /// internally with index-specific IO stats.
+  struct Entry {
+    std::string name;
+    Section section;
+  };
+
+  /// Creates readers by dispatching each named root section to its registered
+  /// factory. Returns nullptr if entries is empty.
   static std::unique_ptr<DenseIndexRegistry> create(
-      std::optional<Section> hashSection,
-      std::optional<Section> sortedSection,
+      std::vector<Entry> entries,
       const IndexLookup::Options& options,
       velox::memory::MemoryPool* pool);
 
@@ -49,46 +46,19 @@ class DenseIndexRegistry {
   const IndexLookup* findIndex(
       const std::vector<std::string>& queryColumns) const;
 
+  /// Finds the dense index with the given implementation name and columns.
+  const IndexLookup* findIndex(
+      std::string_view name,
+      const std::vector<std::string>& queryColumns) const;
+
  private:
   DenseIndexRegistry() = default;
 
-  void registerHashIndices(
-      Section directorySection,
-      std::shared_ptr<MetadataInput> metadataInput,
-      velox::memory::MemoryPool* pool);
-
-  void registerSortedIndices(
-      Section directorySection,
-      std::shared_ptr<MetadataInput> metadataInput,
-      std::shared_ptr<velox::dwio::common::BufferedInput> dataInput,
-      velox::memory::MemoryPool* pool);
-
-  struct IndexDescriptor {
-    std::vector<std::string> columns;
-    MetadataSection section;
+  struct DenseIndex {
+    std::string name;
+    std::unique_ptr<DenseIndexReader> reader;
   };
-
-  const HashIndex* findHashIndex(
-      const std::vector<std::string>& queryColumns) const;
-
-  const SortedIndex* findSortedIndex(
-      const std::vector<std::string>& queryColumns) const;
-
-  void validate() const;
-
-  template <typename FbDirectory>
-  static std::vector<IndexDescriptor> parseDescriptors(
-      const Section& directorySection,
-      const std::string& indexTypeName);
-
-  // Hash index state.
-  std::vector<IndexDescriptor> hashDescriptors_;
-  mutable std::unique_ptr<MetadataCache<uint32_t, HashIndex>> hashIndexCache_;
-
-  // Sorted index state.
-  std::vector<IndexDescriptor> sortedDescriptors_;
-  mutable std::unique_ptr<MetadataCache<uint32_t, SortedIndex>>
-      sortedIndexCache_;
+  std::vector<DenseIndex> denseIndices_;
 };
 
 } // namespace facebook::nimble::index

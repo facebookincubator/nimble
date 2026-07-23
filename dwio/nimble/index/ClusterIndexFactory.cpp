@@ -15,29 +15,20 @@
  */
 #include "dwio/nimble/index/ClusterIndexFactory.h"
 
-#include <mutex>
 #include <optional>
 
-#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
-#include "folly/container/F14Map.h"
+#include "dwio/nimble/index/IndexFactoryRegistry.h"
 
 namespace facebook::nimble::index {
 
 namespace {
 
-using FactoryMap =
-    folly::F14FastMap<std::string, std::shared_ptr<const ClusterIndexFactory>>;
-
-FactoryMap& factories() {
-  static auto* map = new FactoryMap();
-  return *map;
-}
-
-std::mutex& factoriesMutex() {
-  static auto* mutex = new std::mutex();
-  return *mutex;
+IndexFactoryRegistry<ClusterIndexFactory>& factoryRegistry() {
+  static auto* registry =
+      new IndexFactoryRegistry<ClusterIndexFactory>{IndexFamily::Cluster};
+  return *registry;
 }
 
 class NimbleClusterIndexFactory final : public ClusterIndexFactory {
@@ -72,7 +63,7 @@ class NimbleClusterIndexFactory final : public ClusterIndexFactory {
 
 void ensureBuiltInFactoriesRegistered() {
   static const bool registered = [] {
-    registerClusterIndexFactory(
+    factoryRegistry().registerFactory(
         std::make_shared<const NimbleClusterIndexFactory>());
     return true;
   }();
@@ -83,21 +74,13 @@ void ensureBuiltInFactoriesRegistered() {
 
 void registerClusterIndexFactory(
     std::shared_ptr<const ClusterIndexFactory> factory) {
-  NIMBLE_CHECK_NOT_NULL(factory);
-  const auto name = std::string{factory->name()};
-  NIMBLE_CHECK(!name.empty(), "Cluster index factory name cannot be empty");
-  std::lock_guard lock(factoriesMutex());
-  auto [_, inserted] = factories().emplace(name, std::move(factory));
-  NIMBLE_CHECK(inserted, "Cluster index factory already registered: {}", name);
+  ensureBuiltInFactoriesRegistered();
+  factoryRegistry().registerFactory(std::move(factory));
 }
 
 const ClusterIndexFactory& clusterIndexFactory(std::string_view name) {
   ensureBuiltInFactoriesRegistered();
-  std::lock_guard lock(factoriesMutex());
-  auto it = factories().find(name);
-  NIMBLE_CHECK(
-      it != factories().end(), "Unknown cluster index factory: {}", name);
-  return *it->second;
+  return factoryRegistry().get(name);
 }
 
 } // namespace facebook::nimble::index

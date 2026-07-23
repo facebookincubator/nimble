@@ -16,15 +16,12 @@
 #pragma once
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/index/ClusterIndexWriter.h"
-#include "dwio/nimble/index/HashIndexWriter.h"
-#include "dwio/nimble/index/SortedIndexWriter.h"
+#include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/file/File.h"
-#include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/DecodedVector.h"
@@ -99,27 +96,24 @@ class VeloxWriter {
   Stats stats() const;
 
  private:
-  inline bool hasClusterIndex() const;
-  inline bool hasHashIndex() const;
-  inline bool hasSortedIndex() const;
+  struct IndexWriterEntry {
+    index::IndexFamily family;
+    std::string name;
+    std::unique_ptr<index::IndexWriter> writer;
+  };
 
-  // Adds index keys to all configured index writers. If barrier is provided,
-  // the processing will be added to the barrier for parallel execution.
-  void addIndexKey(
-      const velox::VectorPtr& input,
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
+  static std::optional<IndexWriterEntry> createClusterIndexWriter(
+      const VeloxWriterOptions& options,
+      const velox::TypePtr& type,
+      velox::memory::MemoryPool* pool);
 
-  void addClusterIndexKey(
-      const velox::VectorPtr& input,
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
+  static std::vector<IndexWriterEntry> createDenseIndexWriters(
+      const VeloxWriterOptions& options,
+      const velox::TypePtr& type,
+      velox::memory::MemoryPool* pool);
 
-  void addHashIndexKey(
-      const velox::VectorPtr& input,
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
-
-  void addSortedIndexKey(
-      const velox::VectorPtr& input,
-      velox::dwio::common::ExecutorBarrier* barrier = nullptr);
+  // Adds index keys to all configured index writers.
+  void addIndexKey(const velox::VectorPtr& input);
 
   bool shouldFlush(FlushPolicy* policy) const;
 
@@ -212,9 +206,8 @@ class VeloxWriter {
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
-  const std::unique_ptr<index::IndexWriter> clusterIndexWriter_;
-  const std::unique_ptr<index::IndexWriter> hashIndexWriter_;
-  const std::unique_ptr<index::IndexWriter> sortedIndexWriter_;
+  const std::optional<IndexWriterEntry> clusterIndexWriter_;
+  const std::vector<IndexWriterEntry> denseIndexWriters_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
   std::unique_ptr<FieldWriter> rootWriter_;

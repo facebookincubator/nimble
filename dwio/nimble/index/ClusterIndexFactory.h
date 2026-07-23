@@ -53,9 +53,13 @@ class ClusterIndexFactory {
       const IndexLookup::Options& options) const = 0;
 };
 
+/// Registers a process-wide factory. Call during process initialization,
+/// before concurrent factory lookups begin.
 void registerClusterIndexFactory(
     std::shared_ptr<const ClusterIndexFactory> factory);
 
+/// Returns a process-lifetime reference. Concurrent access after registration
+/// is supported.
 const ClusterIndexFactory& clusterIndexFactory(std::string_view name);
 
 } // namespace facebook::nimble::index

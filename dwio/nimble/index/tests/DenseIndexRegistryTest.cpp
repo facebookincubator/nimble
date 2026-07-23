@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 #include <deque>
 
-#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/DenseIndexRegistry.h"
 #include "dwio/nimble/index/HashIndex.h"
 #include "dwio/nimble/index/IndexConfig.h"
@@ -128,8 +127,7 @@ TEST_F(DenseIndexRegistryTest, emptyRegistry) {
   ioOptions.setMetadataIoStats(ioStats);
   ioOptions.setIndexIoStats(std::make_shared<velox::io::IoStatistics>());
   IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
-  auto registry = DenseIndexRegistry::create(
-      std::nullopt, std::nullopt, options, leafPool_.get());
+  auto registry = DenseIndexRegistry::create({}, options, leafPool_.get());
   EXPECT_EQ(registry, nullptr);
 }
 
@@ -225,7 +223,7 @@ TEST_F(DenseIndexRegistryTest, indexCacheRetention) {
   EXPECT_EQ(tablet->denseIndex({"nonexistent"}), nullptr);
 }
 
-TEST_F(DenseIndexRegistryTest, crossTypeDuplicateColumns) {
+TEST_F(DenseIndexRegistryTest, firstIndexWinsForDuplicateColumns) {
   std::vector<velox::VectorPtr> batches;
   batches.push_back(makeBatch(0, 50));
 
@@ -234,14 +232,16 @@ TEST_F(DenseIndexRegistryTest, crossTypeDuplicateColumns) {
   options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
   options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"id"}});
 
-  // The writer does not validate across index types, so writing succeeds.
   writeFile(filePath, rowType(), batches, std::move(options));
 
-  // Opening the file should throw because the registry detects duplicate
-  // column sets across hash and sorted index types.
-  NIMBLE_ASSERT_THROW(
-      openTablet(filePath),
-      "Duplicate dense index columns across hash and sorted");
+  auto tablet = openTablet(filePath);
+  const auto* index = tablet->denseIndex({"id"});
+  ASSERT_NE(index, nullptr);
+  EXPECT_EQ(index->type(), IndexType::Hash);
+
+  const auto* sortedIndex = tablet->denseIndex(kDenseSortedIndexName, {"id"});
+  ASSERT_NE(sortedIndex, nullptr);
+  EXPECT_EQ(sortedIndex->type(), IndexType::Sorted);
 }
 
 } // namespace

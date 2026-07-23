@@ -24,7 +24,9 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/HashIndexWriter.h"
 #include "dwio/nimble/index/IndexSerialization.h"
+#include "dwio/nimble/index/SortedIndexWriter.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
@@ -44,6 +46,7 @@
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/common/time/Timer.h"
+#include "velox/dwio/common/ExecutorBarrier.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble {
@@ -228,17 +231,6 @@ class WriterContext : public FieldWriterContext {
 } // namespace detail
 
 namespace {
-
-std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
-    const std::optional<index::ClusterIndexConfig>& config,
-    const velox::TypePtr& type,
-    velox::memory::MemoryPool* pool) {
-  if (!config.has_value()) {
-    return nullptr;
-  }
-  return index::clusterIndexFactory(config->indexName)
-      .createWriter(config.value(), type, pool);
-}
 
 std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
   return {
@@ -816,6 +808,53 @@ void initializeEncodingLayouts(
 }
 } // namespace
 
+std::optional<VeloxWriter::IndexWriterEntry>
+VeloxWriter::createClusterIndexWriter(
+    const VeloxWriterOptions& options,
+    const velox::TypePtr& type,
+    velox::memory::MemoryPool* pool) {
+  std::optional<IndexWriterEntry> result;
+  if (options.clusterIndexConfig.has_value()) {
+    const auto& config = options.clusterIndexConfig.value();
+    auto writer = index::clusterIndexFactory(config.indexName)
+                      .createWriter(config, type, pool);
+    NIMBLE_CHECK_NOT_NULL(
+        writer,
+        "Cluster index factory returned a null writer: {}",
+        config.indexName);
+    result.emplace(
+        IndexWriterEntry{
+            index::IndexFamily::Cluster, config.indexName, std::move(writer)});
+  }
+  return result;
+}
+
+std::vector<VeloxWriter::IndexWriterEntry> VeloxWriter::createDenseIndexWriters(
+    const VeloxWriterOptions& options,
+    const velox::TypePtr& type,
+    velox::memory::MemoryPool* pool) {
+  std::vector<IndexWriterEntry> writers;
+  writers.reserve(
+      !options.hashIndexConfigs.empty() + !options.sortedIndexConfigs.empty());
+  if (!options.hashIndexConfigs.empty()) {
+    writers.emplace_back(
+        IndexWriterEntry{
+            index::IndexFamily::Dense,
+            std::string{index::kDenseHashIndexName},
+            index::HashIndexWriter::create(
+                options.hashIndexConfigs, type, pool)});
+  }
+  if (!options.sortedIndexConfigs.empty()) {
+    writers.emplace_back(
+        IndexWriterEntry{
+            index::IndexFamily::Dense,
+            std::string{index::kDenseSortedIndexName},
+            index::SortedIndexWriter::create(
+                options.sortedIndexConfigs, type, pool)});
+  }
+  return writers;
+}
+
 VeloxWriter::VeloxWriter(
     const velox::TypePtr& type,
     std::unique_ptr<velox::WriteFile> file,
@@ -840,15 +879,11 @@ VeloxWriter::VeloxWriter(
           std::move(options))},
       file_{std::move(file)},
       clusterIndexWriter_{createClusterIndexWriter(
-          context_->options().clusterIndexConfig,
+          context_->options(),
           type,
           &(*context_->bufferMemoryPool()))},
-      hashIndexWriter_{index::HashIndexWriter::create(
-          context_->options().hashIndexConfigs,
-          type,
-          &(*context_->bufferMemoryPool()))},
-      sortedIndexWriter_{index::SortedIndexWriter::create(
-          context_->options().sortedIndexConfigs,
+      denseIndexWriters_{createDenseIndexWriters(
+          context_->options(),
           type,
           &(*context_->bufferMemoryPool()))},
       tabletWriter_{TabletWriter::create(
@@ -871,13 +906,19 @@ VeloxWriter::VeloxWriter(
            .stripeGroupEncodingLayoutReadFactors =
                context_->options()
                    .experimentalStripeGroupEncodingLayoutReadFactors,
-           .stripeGroupFlushCallback = clusterIndexWriter_ != nullptr
+           .stripeGroupFlushCallback =
+               (clusterIndexWriter_.has_value() || !denseIndexWriters_.empty())
                ? TabletWriter::StripeGroupFlushCallback(
                      [this](
                          const WriteDataFn& writeDataFn,
                          const CreateMetadataSectionFn& createMetadataFn) {
-                       clusterIndexWriter_->flush(
-                           writeDataFn, createMetadataFn);
+                       if (clusterIndexWriter_.has_value()) {
+                         clusterIndexWriter_->writer->flush(
+                             writeDataFn, createMetadataFn);
+                       }
+                       for (const auto& entry : denseIndexWriters_) {
+                         entry.writer->flush(writeDataFn, createMetadataFn);
+                       }
                      })
                : nullptr,
            .closeCallback = [this](
@@ -1042,62 +1083,12 @@ void VeloxWriter::writeSchema() {
       serializer.serialize(context_->schemaBuilder()));
 }
 
-bool VeloxWriter::hasClusterIndex() const {
-  return clusterIndexWriter_ != nullptr;
-}
-
-bool VeloxWriter::hasHashIndex() const {
-  return hashIndexWriter_ != nullptr;
-}
-
-bool VeloxWriter::hasSortedIndex() const {
-  return sortedIndexWriter_ != nullptr;
-}
-
-void VeloxWriter::addIndexKey(
-    const velox::VectorPtr& input,
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  addClusterIndexKey(input, barrier);
-  addHashIndexKey(input, barrier);
-  addSortedIndexKey(input, barrier);
-}
-
-void VeloxWriter::addClusterIndexKey(
-    const velox::VectorPtr& input,
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasClusterIndex()) {
-    return;
+void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
+  if (clusterIndexWriter_.has_value()) {
+    clusterIndexWriter_->writer->write(input);
   }
-  if (barrier != nullptr) {
-    barrier->add([&]() { clusterIndexWriter_->write(input); });
-  } else {
-    clusterIndexWriter_->write(input);
-  }
-}
-
-void VeloxWriter::addHashIndexKey(
-    const velox::VectorPtr& input,
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasHashIndex()) {
-    return;
-  }
-  if (barrier != nullptr) {
-    barrier->add([&]() { hashIndexWriter_->write(input); });
-  } else {
-    hashIndexWriter_->write(input);
-  }
-}
-
-void VeloxWriter::addSortedIndexKey(
-    const velox::VectorPtr& input,
-    velox::dwio::common::ExecutorBarrier* barrier) {
-  if (!hasSortedIndex()) {
-    return;
-  }
-  if (barrier != nullptr) {
-    barrier->add([&]() { sortedIndexWriter_->write(input); });
-  } else {
-    sortedIndexWriter_->write(input);
+  for (const auto& entry : denseIndexWriters_) {
+    entry.writer->write(input);
   }
 }
 
@@ -1106,21 +1097,34 @@ void VeloxWriter::writeIndexes(
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
   std::vector<index::IndexDescriptor> descriptors;
-  if (hasHashIndex()) {
-    if (auto descriptor =
-            hashIndexWriter_->close(writeDataFn, createMetadataFn)) {
+  for (const auto& entry : denseIndexWriters_) {
+    if (auto descriptor = entry.writer->close(writeDataFn, createMetadataFn)) {
+      NIMBLE_CHECK_EQ(
+          descriptor->family,
+          entry.family,
+          "Index writer returned an unexpected family for {}",
+          entry.name);
+      NIMBLE_CHECK_EQ(
+          descriptor->name,
+          entry.name,
+          "Index writer returned an unexpected name for {}",
+          entry.name);
       descriptors.emplace_back(std::move(descriptor.value()));
     }
   }
-  if (hasSortedIndex()) {
-    if (auto descriptor =
-            sortedIndexWriter_->close(writeDataFn, createMetadataFn)) {
-      descriptors.emplace_back(std::move(descriptor.value()));
-    }
-  }
-  if (hasClusterIndex()) {
-    if (auto descriptor =
-            clusterIndexWriter_->close(writeDataFn, createMetadataFn)) {
+  if (clusterIndexWriter_.has_value()) {
+    const auto& entry = clusterIndexWriter_.value();
+    if (auto descriptor = entry.writer->close(writeDataFn, createMetadataFn)) {
+      NIMBLE_CHECK_EQ(
+          descriptor->family,
+          entry.family,
+          "Index writer returned an unexpected family for {}",
+          entry.name);
+      NIMBLE_CHECK_EQ(
+          descriptor->name,
+          entry.name,
+          "Index writer returned an unexpected name for {}",
+          entry.name);
       descriptors.emplace_back(std::move(descriptor.value()));
     }
   }
