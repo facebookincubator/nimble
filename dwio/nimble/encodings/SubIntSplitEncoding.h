@@ -773,6 +773,14 @@ std::string_view SubIntSplitEncoding<T>::encode(
   std::vector<std::string_view> sectionData;
   sectionData.reserve(splitCount);
 
+  // Pack each section at its exact bit width instead of rounding up to a byte,
+  // so e.g. a 12-bit section costs 12 bits/value rather than 16. Sections
+  // dominate the encoded size for multi-field values, where byte rounding
+  // wasted up to 7 bits/value per section. FixedBitWidth records its own bit
+  // width, so the decode path is unaffected.
+  Encoding::Options sectionOptions = options;
+  sectionOptions.fixedBitWidthUseExactBits = true;
+
   for (uint8_t s = 0; s < splitCount; ++s) {
     const auto& seg = segments[s];
     const int bitStart = seg.bitStart;
@@ -796,7 +804,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint8_t>(
                 sectionValues.data(), sectionValues.size()),
             sectionBuffer,
-            options);
+            sectionOptions);
         break;
       }
       case 2: {
@@ -811,7 +819,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint16_t>(
                 sectionValues.data(), sectionValues.size()),
             sectionBuffer,
-            options);
+            sectionOptions);
         break;
       }
       case 4: {
@@ -826,7 +834,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint32_t>(
                 sectionValues.data(), sectionValues.size()),
             sectionBuffer,
-            options);
+            sectionOptions);
         break;
       }
       case 8: {
@@ -841,7 +849,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
             std::span<const uint64_t>(
                 sectionValues.data(), sectionValues.size()),
             sectionBuffer,
-            options);
+            sectionOptions);
         break;
       }
       default: {
