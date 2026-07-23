@@ -192,9 +192,16 @@ void Statistics<T, InputType>::populateRepeats(bool collectRunValues) const {
 template <typename T, typename InputType>
 void Statistics<T, InputType>::populateMinMax() const {
   if constexpr (nimble::isNumericType<InputType>()) {
-    const auto [min, max] = std::minmax_element(data_.begin(), data_.end());
-    min_ = *min;
-    max_ = *max;
+    if constexpr (kIntegralMinMaxType<InputType>) {
+      const auto minMax = findMinMax(data_);
+      min_ = minMax.min;
+      max_ = minMax.max;
+    } else {
+      // Floating point uses std::minmax_element to preserve NaN ordering.
+      const auto [min, max] = std::minmax_element(data_.begin(), data_.end());
+      min_ = *min;
+      max_ = *max;
+    }
   } else if constexpr (nimble::isStringType<InputType>()) {
     populateStringLength();
   }
@@ -215,13 +222,15 @@ void Statistics<T, InputType>::populateUniques() const {
     }
   } else if constexpr (
       nimble::isIntegralType<T>() && std::is_same_v<T, InputType>) {
-    const auto minMax = findMinMax(data_);
-    min_ = minMax.min;
-    max_ = minMax.max;
+    if (!min_.has_value() || !max_.has_value()) {
+      populateMinMax();
+    }
+    const T minValue = min_.value();
+    const T maxValue = max_.value();
     if (const auto rangeSize =
-            denseRangeSize(minMax.min, minMax.max, data_.size())) {
+            denseRangeSize(minValue, maxValue, data_.size())) {
       uniqueCounts =
-          populateRangeUniqueCounts<T>(data_, minMax.min, rangeSize.value());
+          populateRangeUniqueCounts<T>(data_, minValue, rangeSize.value());
     } else {
       uniqueCounts = populateHashUniqueCounts<T, InputType>(data_);
     }
