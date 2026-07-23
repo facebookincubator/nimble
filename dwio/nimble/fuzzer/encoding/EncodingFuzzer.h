@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <iterator>
@@ -255,6 +256,192 @@ Vector<T> makeFloatingPointMixedExceptionData(
   return data;
 }
 
+// A sorted (non-decreasing by bit pattern) run built by accumulating small
+// random steps, including 0 so values repeat and can wrap. Complements
+// makeMonotonicData (strictly increasing) and, for float/double, sorts on the
+// physical bit pattern so the roundtrip stays bit-exact.
+template <typename T, typename RNG>
+Vector<T> makeSortedData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+    using UintType = std::conditional_t<
+        sizeof(T) == 1,
+        uint8_t,
+        std::conditional_t<
+            sizeof(T) == 2,
+            uint16_t,
+            std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>>>;
+    UintType accumulator = 0;
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      accumulator = static_cast<UintType>(
+          accumulator + (folly::Random::rand32(rng) % 256));
+      data.push_back(std::bit_cast<T>(accumulator));
+    }
+  }
+  return data;
+}
+
+// A handful of distinct values repeated throughout, exercising low-cardinality
+// encoders (Dictionary/RLE). Works for every type.
+template <typename T, typename RNG>
+Vector<T> makeLowCardinalityData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  constexpr uint32_t kPoolSize = 4;
+  Vector<T> valuePool(&pool);
+  valuePool.reserve(kPoolSize);
+  nimble::testing::addRandomData<T>(rng, kPoolSize, &valuePool, buffer);
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    data.push_back(valuePool[folly::Random::rand32(rng) % kPoolSize]);
+  }
+  return data;
+}
+
+// One dominant value (~90%) with a high-cardinality random exception tail
+// (~10%). Unlike makeMainlyConstantData (which uses a single other value), the
+// exceptions here are all distinct, stressing MainlyConstant's exception path.
+template <typename T, typename RNG>
+Vector<T> makeDominantValueData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  Vector<T> dominant(&pool);
+  dominant.reserve(1);
+  nimble::testing::addRandomData<T>(rng, 1, &dominant, buffer);
+  Vector<T> exceptions(&pool);
+  exceptions.reserve(rowCount);
+  nimble::testing::addRandomData<T>(rng, rowCount, &exceptions, buffer);
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    data.push_back(
+        folly::Random::rand32(rng) % 10 == 0 ? exceptions[i] : dominant[0]);
+  }
+  return data;
+}
+
+// Realistic composite (snowflake) IDs, LSB-first [sequence | worker |
+// timestamp] with the top bit left 0: a near-constant high timestamp prefix, a
+// few worker ids in the middle bits, and a cyclic low sequence counter. This is
+// SubIntSplitEncoding's flagship target -- distinct structure in disjoint bit
+// ranges -- but also stresses other encoders on composite integer data. Only
+// meaningful for 32-/64-bit numeric types.
+template <typename T, typename RNG>
+Vector<T> makeSnowflakeData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    [[maybe_unused]] Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  if constexpr (
+      std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
+    using UintType = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
+    // 32-bit uses a scaled analog (6/5/20) of the classic 64-bit snowflake
+    // (12/10/41) so both widths get a valid composite id.
+    constexpr int kSequenceBits = sizeof(T) == 4 ? 6 : 12;
+    constexpr int kWorkerBits = sizeof(T) == 4 ? 5 : 10;
+    constexpr int kTimestampBits = sizeof(T) == 4 ? 20 : 41;
+    const UintType sequenceMask =
+        static_cast<UintType>((UintType{1} << kSequenceBits) - 1);
+    const UintType workerMask =
+        static_cast<UintType>((UintType{1} << kWorkerBits) - 1);
+    const UintType timestampMask =
+        static_cast<UintType>((UintType{1} << kTimestampBits) - 1);
+    const int workerShift = kSequenceBits;
+    const int timestampShift = kSequenceBits + kWorkerBits;
+
+    UintType workers[4];
+    for (auto& worker : workers) {
+      worker = static_cast<UintType>(folly::Random::rand64(rng)) & workerMask;
+    }
+    UintType timestamp =
+        static_cast<UintType>(folly::Random::rand64(rng)) & timestampMask;
+    UintType sequence = 0;
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      const UintType worker = workers[folly::Random::rand32(rng) % 4];
+      const UintType bits = static_cast<UintType>(
+          (static_cast<UintType>(timestamp & timestampMask) << timestampShift) |
+          (static_cast<UintType>(worker) << workerShift) |
+          static_cast<UintType>(sequence & sequenceMask));
+      data.push_back(std::bit_cast<T>(bits));
+
+      if (sequence == sequenceMask) {
+        sequence = 0;
+        timestamp = static_cast<UintType>((timestamp + 1) & timestampMask);
+      } else {
+        ++sequence;
+      }
+      // Occasionally jump the timestamp forward (an idle gap) to vary the
+      // high-bit run lengths.
+      if (folly::Random::rand32(rng) % 16 == 0) {
+        timestamp = static_cast<UintType>(
+            (timestamp + (folly::Random::rand32(rng) % 16) + 1) &
+            timestampMask);
+        sequence = 0;
+      }
+    }
+  }
+  return data;
+}
+
+// A stream stitched from contiguous runs of several base patterns, so its
+// statistics shift across the row range (regime shifts). Stresses samplers and
+// selectors on non-homogeneous data. Uses only the all-type generators so it
+// stays valid for every T.
+template <typename T, typename RNG>
+Vector<T> makeMixedRegimeData(
+    velox::memory::MemoryPool& pool,
+    RNG& rng,
+    uint32_t rowCount,
+    Buffer* buffer) {
+  Vector<T> data(&pool);
+  data.reserve(rowCount);
+  const uint32_t segmentCount =
+      std::min<uint32_t>(2 + folly::Random::rand32(rng) % 4, rowCount);
+  uint32_t remaining = rowCount;
+  for (uint32_t segment = 0; segment < segmentCount; ++segment) {
+    const uint32_t segmentsLeft = segmentCount - segment;
+    const uint32_t segmentLength = (segmentsLeft == 1)
+        ? remaining
+        : std::max<uint32_t>(1, remaining / segmentsLeft);
+    Vector<T> run(&pool);
+    switch (folly::Random::rand32(rng) % 5) {
+      case 0:
+        run = makeSingleValueData<T>(pool, rng, segmentLength, buffer);
+        break;
+      case 1:
+        run = makeLowCardinalityData<T>(pool, rng, segmentLength, buffer);
+        break;
+      case 2:
+        run = makeMainlyConstantData<T>(pool, rng, segmentLength, buffer);
+        break;
+      case 3:
+        run = makeDominantValueData<T>(pool, rng, segmentLength, buffer);
+        break;
+      default:
+        run.reserve(segmentLength);
+        nimble::testing::addRandomData<T>(rng, segmentLength, &run, buffer);
+        break;
+    }
+    for (const auto& value : run) {
+      data.push_back(value);
+    }
+    remaining -= segmentLength;
+  }
+  return data;
+}
+
 // ============================================================================
 // Fuzzer operations
 // ============================================================================
@@ -286,14 +473,18 @@ class EncodingFuzzer {
       bool testCompression,
       const Encoding::Options& options = {},
       uint32_t minDistinctValues = 1,
-      uint32_t maxDistinctValues = std::numeric_limits<uint32_t>::max())
+      uint32_t maxDistinctValues = std::numeric_limits<uint32_t>::max(),
+      uint32_t largeInputRows = 0,
+      bool realNestedSelection = false)
       : iterations_{iterations},
         maxRows_{maxRows},
         seed_{seed},
         testCompression_{testCompression},
         options_{options},
         minDistinctValues_{minDistinctValues},
-        maxDistinctValues_{maxDistinctValues} {
+        maxDistinctValues_{maxDistinctValues},
+        largeInputRows_{largeInputRows},
+        realNestedSelection_{realNestedSelection} {
     pool_ = velox::memory::deprecatedAddDefaultLeafMemoryPool();
     buffer_ = std::make_unique<Buffer>(*pool_);
   }
@@ -326,9 +517,72 @@ class EncodingFuzzer {
         }
       }
     }
+
+    if (largeInputRows_ > 0) {
+      runLargeInput(rng);
+    }
   }
 
  private:
+  // Generic large-input coverage: encode a few big datasets (crossing the
+  // 4096-value decode-chunk boundary many times) and verify chunked, variable-
+  // block, and skip traversals. Enabled via the largeInputRows constructor arg.
+  void runLargeInput(std::mt19937& rng) {
+    std::vector<Vector<T>> datasets;
+    {
+      Vector<T> data(pool_.get());
+      data.reserve(largeInputRows_);
+      nimble::testing::addRandomData<T>(
+          rng, largeInputRows_, &data, buffer_.get());
+      datasets.push_back(std::move(data));
+    }
+    datasets.push_back(
+        makeMixedRegimeData<T>(*pool_, rng, largeInputRows_, buffer_.get()));
+    if constexpr (
+        std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
+      datasets.push_back(
+          makeSnowflakeData<T>(*pool_, rng, largeInputRows_, buffer_.get()));
+    }
+
+    for (auto& data : datasets) {
+      if (data.empty()) {
+        continue;
+      }
+      Buffer encodeBuffer(*pool_);
+      std::vector<velox::BufferPtr> stringBuffers;
+      auto stringBufferFactory = [&](uint32_t totalLength) {
+        auto& buf = stringBuffers.emplace_back(
+            velox::AlignedBuffer::allocate<char>(totalLength, pool_.get()));
+        return buf->template asMutable<void>();
+      };
+      std::string_view encoded;
+      try {
+        encoded = Encoder<EncodingClass>::encode(
+            encodeBuffer,
+            data,
+            CompressionType::Uncompressed,
+            options_,
+            realNestedSelection_);
+      } catch (const NimbleUserError& e) {
+        if (e.errorCode() == error_code::IncompatibleEncoding) {
+          continue;
+        }
+        throw;
+      }
+
+      auto encoding =
+          std::make_unique<EncodingClass>(*pool_, encoded, stringBufferFactory);
+      EXPECT_EQ(encoding->rowCount(), data.size());
+
+      encoding->reset();
+      verifyMaterializeVariableBlocks(*encoding, data);
+      encoding->reset();
+      verifyMaterializeChunked(rng, *encoding, data);
+      encoding->reset();
+      verifySkipAndMaterialize(rng, *encoding, data);
+    }
+  }
+
   bool hasSupportedCardinality(const Vector<T>& data) const {
     if (minDistinctValues_ == 1 &&
         maxDistinctValues_ == std::numeric_limits<uint32_t>::max()) {
@@ -385,6 +639,12 @@ class EncodingFuzzer {
           makeMonotonicData<T>(*pool_, rng, rowCount, buffer_.get()));
     }
 
+    // Sorted-by-bit-pattern data (non-decreasing, with repeats and wrap).
+    if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+      datasets.push_back(
+          makeSortedData<T>(*pool_, rng, rowCount, buffer_.get()));
+    }
+
     // Mainly constant data (good for MainlyConstant encoding).
     datasets.push_back(
         makeMainlyConstantData<T>(*pool_, rng, rowCount, buffer_.get()));
@@ -393,6 +653,25 @@ class EncodingFuzzer {
     if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
       datasets.push_back(
           makeBitStructuredData<T>(*pool_, rng, rowCount, buffer_.get()));
+    }
+
+    // Low-cardinality data (good for Dictionary/RLE).
+    datasets.push_back(
+        makeLowCardinalityData<T>(*pool_, rng, rowCount, buffer_.get()));
+
+    // Dominant value with a high-cardinality random exception tail.
+    datasets.push_back(
+        makeDominantValueData<T>(*pool_, rng, rowCount, buffer_.get()));
+
+    // Regime-shifting mixed stream (non-homogeneous statistics).
+    datasets.push_back(
+        makeMixedRegimeData<T>(*pool_, rng, rowCount, buffer_.get()));
+
+    // Composite (snowflake) IDs: distinct structure in disjoint bit ranges.
+    if constexpr (
+        std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) >= 4) {
+      datasets.push_back(
+          makeSnowflakeData<T>(*pool_, rng, rowCount, buffer_.get()));
     }
 
     if constexpr (std::is_floating_point_v<T>) {
@@ -434,7 +713,7 @@ class EncodingFuzzer {
     std::string_view encoded;
     try {
       encoded = Encoder<EncodingClass>::encode(
-          encodeBuffer, data, compressionType, options_);
+          encodeBuffer, data, compressionType, options_, realNestedSelection_);
     } catch (const NimbleUserError& e) {
       if (e.errorCode() == error_code::IncompatibleEncoding) {
         return;
@@ -616,6 +895,8 @@ class EncodingFuzzer {
   Encoding::Options options_;
   uint32_t minDistinctValues_;
   uint32_t maxDistinctValues_;
+  uint32_t largeInputRows_;
+  bool realNestedSelection_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<Buffer> buffer_;
 };
