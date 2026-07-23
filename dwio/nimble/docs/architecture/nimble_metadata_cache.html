@@ -544,36 +544,7 @@ ensureInput() copies across boundary.
         <div style="font-size:0.6rem;color:var(--text-muted)">Directory of pointers (MetadataSection) to data elsewhere in the file</div>
       </div>
     </div>
-    <div style="display:flex;align-items:flex-start;padding-left:1rem">
-      <div style="background:var(--code-bg);border:1px dashed var(--border);border-radius:6px;padding:0.6rem 0.8rem;font-family:var(--mono);font-size:0.62rem;line-height:1.6;color:var(--text-secondary)">
-        <div style="font-weight:600;color:var(--text-primary);font-size:0.7rem;margin-bottom:0.3rem">MetadataSection — two forms:</div>
-        <div style="display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem">
-          <span style="color:var(--accent-blue)">On disk</span>
-          <span>FlatBuffers table {offset, size, comp, uncomp_size}</span>
-          <span style="color:var(--accent-green)">In memory</span>
-          <span>C++ class with <em>optional</em>&lt;uint32&gt; uncompressedSize<br>(nullopt for old files — FlatBuffers default 0 → nullopt)</span>
-        </div>
-        <div style="margin-top:0.4rem;border-top:1px dashed var(--border);padding-top:0.4rem">
-          <div style="font-weight:600;color:var(--text-primary);font-size:0.7rem;margin-bottom:0.3rem">Metadata cache (what gets cached):</div>
-          <div style="display:grid;grid-template-columns:auto auto auto;gap:0.15rem 0.6rem">
-            <span style="width:16px;text-align:center">—</span><span>Footer + PostScript</span><span style="color:var(--text-muted)">{fileId, fileSize}</span>
-            <span class="ref-num">2</span><span>Stripes</span><span style="color:var(--text-muted)">{fileId, stripes.offset}</span>
-            <span class="ref-num">1</span><span>StripeGroup[0]</span><span style="color:var(--text-muted)">{fileId, sg[0].offset}</span>
-            <span class="ref-num">3</span><span>ClusterIndex root</span><span style="color:var(--text-muted)">{fileId, cli.offset}</span>
-            <span class="ref-num">3</span><span>ChunkIndex root</span><span style="color:var(--text-muted)">{fileId, ci.offset}</span>
-            <span class="ref-num">4</span><span>ChunkIndex group[0]</span><span style="color:var(--text-muted)">{fileId, cig[0].offset}</span>
-          </div>
-          <div style="margin-top:0.3rem;display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem">
-            <span style="color:var(--accent-green)">Value</span>
-            <span><strong>decompressed</strong> bytes (contiguous malloc'd)</span>
-            <span style="color:var(--accent-green)">Size</span>
-            <span>uncomp_size (allocate + validate)</span>
-            <span style="color:var(--accent-red)">Old files</span>
-            <span>uncomp_size=nullopt → skip items ①–④</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <div></div>
   </div>
 
   <!-- PostScript row -->
@@ -599,9 +570,122 @@ ensureInput() copies across boundary.
         <div style="font-size:0.6rem;color:var(--text-muted)">footerSize, compressionType, checksum, version, magic</div>
       </div>
     </div>
-    <div></div>
+    <div style="display:flex;align-items:flex-start;padding-left:3.5rem;margin-top:-4.5rem">
+      <div class="card" style="padding:0.5rem 0.6rem;margin:0;border-left:3px solid var(--text-muted);font-size:0.6rem">
+        <div style="font-family:var(--font-display);font-weight:600;font-size:0.65rem;color:var(--text-primary);margin-bottom:0.2rem">Metadata compression is per-section</div>
+        <div style="font-size:0.55rem;color:var(--text-secondary);margin-bottom:0.25rem">Each section independently compressed when &gt; 64KB (default threshold).</div>
+        <div class="diagram" style="margin:0 0 0.25rem;padding:0.25rem 0.4rem;font-size:0.48rem;line-height:1.5">TabletWriter::writeMetadata(section_data):
+  if section_data.size() &gt; 64KB:
+    compressed = Zstd(section_data)
+    write compressed bytes → file
+    return CompressionType::Zstd
+  else:
+    write raw bytes → file
+    return CompressionType::Uncompressed</div>
+        <table style="font-size:0.52rem;margin:0;border-collapse:collapse;width:auto">
+          <tr><th style="padding:0.1rem 0.3rem;font-size:0.46rem">Section</th><th style="padding:0.1rem 0.3rem;font-size:0.46rem;text-align:right">Size</th><th style="padding:0.1rem 0.3rem;font-size:0.46rem">Compressed?</th><th style="padding:0.1rem 0.3rem;font-size:0.46rem">Why</th></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">StripeGroup 0</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">80KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--primary);font-weight:600">Zstd</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">80KB &gt; 64KB</td></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">StripeGroup 1</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">40KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">No</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">40KB &lt; 64KB</td></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">Stripes</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">120KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--primary);font-weight:600">Zstd</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">120KB &gt; 64KB</td></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">Schema</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">2KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">No</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">2KB &lt; 64KB</td></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">ChunkIndex Root</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">90KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--primary);font-weight:600">Zstd</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">90KB &gt; 64KB</td></tr>
+          <tr><td style="padding:0.05rem 0.3rem;border:none">Footer</td><td style="padding:0.05rem 0.3rem;border:none;text-align:right">50KB</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">No</td><td style="padding:0.05rem 0.3rem;border:none;color:var(--text-muted)">50KB &lt; 64KB</td></tr>
+        </table>
+      </div>
+    </div>
   </div>
 
+</div>
+
+<div class="card" style="padding:0.8rem 1rem;margin:1rem 0">
+  <div style="font-family:var(--font-display);font-weight:600;font-size:0.8rem;color:var(--primary);margin-bottom:0.4rem">MetadataSection — two forms:</div>
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem;font-size:0.78rem">
+    <span style="color:var(--primary);font-weight:500">On disk</span>
+    <span>FlatBuffers table <code>{offset, size, comp, uncomp_size}</code></span>
+    <span style="color:var(--accent-green);font-weight:500">In memory</span>
+    <span>C++ class with <code>optional&lt;uint32&gt; uncompressedSize</code> (nullopt for old files — FlatBuffers default 0 → nullopt)</span>
+  </div>
+  <div style="margin-top:0.5rem;border-top:1px dashed var(--border);padding-top:0.5rem">
+    <div style="font-family:var(--font-display);font-weight:600;font-size:0.8rem;color:var(--primary);margin-bottom:0.3rem">Metadata cache (what gets cached):</div>
+    <table style="font-size:0.75rem;margin:0;border-collapse:collapse;line-height:1.3;width:100%">
+      <tr style="border-bottom:2px solid var(--border)"><th style="padding:0.3rem 0.5rem;width:1.5rem">#</th><th style="padding:0.3rem 0.5rem;white-space:nowrap">Section</th><th style="padding:0.3rem 0.5rem;white-space:nowrap">Cache Key</th><th style="padding:0.3rem 0.5rem">Value (FlatBuffer fields)</th></tr>
+      <tr style="background:var(--surface);border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem">—</td>
+        <td style="padding:0.3rem 0.4rem">Footer + PostScript</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, fileSize}</td>
+        <td style="padding:0.3rem 0.4rem">
+          <table style="margin:0;border-collapse:collapse;font-size:inherit;font-family:inherit;border:none;width:auto">
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">row_count:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none" colspan="2">57000</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stripe_groups:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none">[{0x8000, 256, Zstd, 1024}, ...]</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none"><span class="ref-num">1</span></td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stripes:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none">{0xA000, 512, Zstd, 2048}</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none"><span class="ref-num">2</span></td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">optional_sections:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none">[{0xB000, 256, Zstd, 800}, ...]</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none"><span class="ref-num">3</span></td></tr>
+            <tr><td colspan="3" style="padding:0.05rem 0;border:none;color:var(--text-muted)">+ serialized postscript</td></tr>
+          </table></td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">1</span></td>
+        <td style="padding:0.3rem 0.4rem">StripeGroup[0]</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, sg[0].offset}</td>
+        <td style="padding:0.3rem 0.4rem">
+          <table style="margin:0;border-collapse:collapse;font-size:inherit;font-family:inherit;border:none;width:auto">
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stripe_count:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none" colspan="6">2 <span style="color:var(--text-muted)">(covers stripes 0-1)</span></td></tr>
+            <tr style="color:var(--text-muted)"><td style="padding:0.05rem 0;border:none"></td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-bottom:1px solid var(--border);text-align:center" colspan="3">stripe 0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;border-bottom:1px solid var(--border);text-align:center" colspan="3">stripe 1</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stream_offsets:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-left:1px solid var(--border);text-align:right;width:2.5rem">0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">200</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">380</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;border-left:1px solid var(--border);text-align:right;width:2.5rem">200</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">380</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">550</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stream_sizes:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-left:1px solid var(--border);text-align:right">200</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">180</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">170</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;border-left:1px solid var(--border);text-align:right">180</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">170</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">160</td></tr>
+          </table></td>
+      </tr>
+      <tr style="background:var(--surface);border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">1</span></td>
+        <td style="padding:0.3rem 0.4rem">StripeGroup[1]</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, sg[1].offset}</td>
+        <td style="padding:0.3rem 0.4rem">
+          <table style="margin:0;border-collapse:collapse;font-size:inherit;font-family:inherit;border:none;width:auto">
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stripe_count:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none" colspan="3">1 <span style="color:var(--text-muted)">(covers stripe 2)</span></td></tr>
+            <tr style="color:var(--text-muted)"><td style="padding:0.05rem 0;border:none"></td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-bottom:1px solid var(--border);text-align:center" colspan="3">stripe 2</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stream_offsets:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-left:1px solid var(--border);text-align:right;width:2.5rem">0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">210</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:2.5rem">400</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">stream_sizes:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;border-left:1px solid var(--border);text-align:right">210</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">190</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">180</td></tr>
+          </table></td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">2</span></td>
+        <td style="padding:0.3rem 0.4rem">Stripes</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, stripes.offset}</td>
+        <td style="padding:0.3rem 0.4rem">
+          <table style="margin:0;border-collapse:collapse;font-size:inherit;font-family:inherit;border:none;width:auto">
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">row_counts:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;text-align:right;width:3rem">1000</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:3rem">1000</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right;width:3rem">1000</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">offsets:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;text-align:right">0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">5000</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">9800</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">sizes:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;text-align:right">5000</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">4800</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">5200</td></tr>
+            <tr><td style="padding:0.05rem 0;border:none;white-space:nowrap">group_indices:</td><td style="padding:0.05rem 0 0.05rem 0.4rem;border:none;text-align:right">0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">0</td><td style="padding:0.05rem 0 0.05rem 0.3rem;border:none;text-align:right">1</td></tr>
+          </table></td>
+      </tr>
+      <tr style="background:var(--surface);border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">3</span></td>
+        <td style="padding:0.3rem 0.4rem">ClusterIndex root</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, cli.offset}</td>
+        <td style="padding:0.3rem 0.4rem">partitions: [MetadataSection{off, sz, comp, uncomp}, ...]</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">3</span></td>
+        <td style="padding:0.3rem 0.4rem">ChunkIndex root</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, ci.offset}</td>
+        <td style="padding:0.3rem 0.4rem">stripe_indexes: [MetadataSection{off, sz, comp, uncomp}, ...]</td>
+      </tr>
+      <tr style="background:var(--surface)">
+        <td style="padding:0.3rem 0.4rem"><span class="ref-num">4</span></td>
+        <td style="padding:0.3rem 0.4rem">ChunkIndex group[0]</td>
+        <td style="padding:0.3rem 0.4rem;color:var(--text-muted)">{fileId, cig[0].offset}</td>
+        <td style="padding:0.3rem 0.4rem">Per-chunk stream boundaries within stripe group 0</td>
+      </tr>
+    </table>
+    <div style="margin-top:0.5rem;display:grid;grid-template-columns:auto 1fr;gap:0.15rem 0.5rem;font-size:0.78rem">
+      <span style="color:var(--accent-green);font-weight:500">Value</span>
+      <span><strong>decompressed</strong> bytes (contiguous malloc'd)</span>
+      <span style="color:var(--accent-green);font-weight:500">Size</span>
+      <span><code>uncomp_size</code> (allocate + validate)</span>
+      <span style="color:var(--accent-red);font-weight:500">Old files</span>
+      <span><code>uncomp_size=nullopt</code> → skip items ①–④</span>
+    </div>
+  </div>
 </div>
 
 
@@ -794,61 +878,173 @@ StripeGroup    — flushed incrementally at metadata threshold.
 <!-- Section 7: TabletReader -->
 <h2><span class="sec-num">7</span> TabletReader Init Flow</h2>
 
-<div class="callout" style="margin:0.5rem 0">
-  <strong>Metadata compression is per-section</strong> — each section independently compressed when &gt; 64KB (default threshold).
-</div>
-
-<div class="diagram" style="font-size:0.66rem;line-height:1.5">TabletWriter::writeMetadata(section_data):
-  if section_data.size() &gt; 64KB:
-    compressed = Zstd(section_data)
-    write compressed bytes → file
-    return CompressionType::Zstd
-  else:
-    write raw bytes → file
-    return CompressionType::Uncompressed</div>
-
-<table style="font-size:0.72rem;margin:0.5rem 0">
-  <tr><th>Section</th><th>Example Size</th><th>Compressed?</th><th>Why</th></tr>
-  <tr><td>StripeGroup 0</td><td>80KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>80KB &gt; 64KB</td></tr>
-  <tr><td>StripeGroup 1</td><td>40KB</td><td style="color:var(--text-muted)">No</td><td>40KB &lt; 64KB</td></tr>
-  <tr><td>Stripes</td><td>120KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>120KB &gt; 64KB</td></tr>
-  <tr><td>Schema</td><td>2KB</td><td style="color:var(--text-muted)">No</td><td>2KB &lt; 64KB</td></tr>
-  <tr><td>ChunkIndex Root</td><td>90KB</td><td style="color:var(--primary);font-weight:600">Zstd</td><td>90KB &gt; 64KB</td></tr>
-  <tr><td>Footer</td><td>50KB</td><td style="color:var(--text-muted)">No</td><td>50KB &lt; 64KB</td></tr>
-</table>
-
+<!-- Entry: init() → initFromCache() -->
 <div class="card" style="padding:0.5rem 0.7rem;margin:0.5rem 0;text-align:center">
-  <div style="font-family:var(--font-display);font-weight:600;font-size:0.8rem;color:var(--primary)">initFromCache()?</div>
-  <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem"><code>cached()</code> false → Cold &nbsp;|&nbsp; <code>findCachedMetadata(fileSize_)</code> miss → Cold &nbsp;|&nbsp; hit → Warm</div>
+  <div class="diagram" style="margin:0;padding:0.3rem 0.5rem;font-size:0.65rem;line-height:1.7;text-align:left"><strong>init()</strong>
+└─ <strong>initFromCache()</strong>
+   ├─ cached() false?  ────────────────────→ <span class="r">Cold Path ↓</span>  <em>// no CachedMetadataInput</em>
+   ├─ findCachedMetadata(fileSize_) miss? ─→ <span class="r">Cold Path ↓</span>  <em>// Footer+PS not in AsyncDataCache</em>
+   └─ hit ─────────────────────────────────→ <span class="g">Warm Path ↓</span>
+   <em>Note: "cold" = footer loaded from file. Other sections (Stripes, StripeGroup)
+   may still hit cache individually via loadSections → CachedMetadataInput::load().</em></div>
 </div>
 
-<div class="two-col" style="margin-top:0.5rem">
-  <div style="display:flex;flex-direction:column;gap:0.3rem">
-    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--accent-red);text-align:center;margin-bottom:0.1rem">Cold Path</div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-red)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadFooter()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">rawRead last 128KB → parse PostScript → decompress Footer</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initOptionalSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">Parse Footer's parallel arrays → build lookup map. No I/O.</span>
-      <div style="font-family:var(--mono);font-size:0.52rem;color:var(--text-muted);margin-top:0.15rem;line-height:1.4;background:var(--code-bg);padding:0.2rem 0.3rem;border-radius:3px">
-        optionalSections_:<br>
-        &nbsp;"columnar.schema" → {0xB000, 256, Zstd}<br>
-        &nbsp;"columnar.chunk.index" → {0xC000, 1024, Zstd}<br>
-        &nbsp;...
+<!-- Arrow down -->
+<div style="text-align:center;font-size:1.2rem;line-height:1;margin:-0.15rem 0">
+  <span style="color:var(--accent-red)">▼</span>
+  <span style="color:var(--text-muted);margin:0 2rem">│</span>
+  <span style="color:var(--accent-green)">▼</span>
+</div>
+
+<!-- Cold / Warm side by side -->
+<div class="two-col" style="margin-top:0.2rem;gap:0.8rem">
+
+  <!-- Cold Path -->
+  <div>
+    <div class="card" style="padding:0.5rem 0.7rem;margin:0;border-left:3px solid var(--accent-red)">
+      <div style="font-family:var(--font-display);font-weight:700;font-size:0.82rem;color:var(--accent-red);margin-bottom:0.3rem">Cold Path</div>
+      <table style="border:none;border-collapse:collapse;width:100%;margin:0">
+        <!-- Row 1: loadFooter -->
+        <tr>
+          <td style="border:none;padding:0;vertical-align:top">
+            <div class="diagram" style="margin:0;padding:0.3rem 0.4rem;font-size:0.6rem;line-height:1.7"><strong>loadFooter(maxFooterIoBytes)</strong> <span class="badge badge-red" style="font-size:0.55rem">1 pread</span>
+│  ONE speculative read of last 128KB
+│  → <strong class="r">buf</strong>, extract PostScript,
+│  decompress Footer
+│</div>
+          </td>
+          <td style="border:none;padding:0;vertical-align:top"></td>
+        </tr>
+        <!-- Row 2: initOptionalSections + Footer box -->
+        <tr>
+          <td style="border:none;padding:0;vertical-align:top">
+            <div class="diagram" style="margin:0;padding:0 0.4rem;font-size:0.6rem;line-height:1.7">├─ <strong>initOptionalSections()</strong>  <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  parse optional_sections()
+│  build optionalSections_:
+│  &nbsp; name → {off, sz, comp}
+│</div>
+          </td>
+          <td style="border:none;padding:0 0 0 0.5rem;vertical-align:middle">
+            <div style="padding:0.25rem 0.4rem;background:var(--code-bg);border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:0.42rem;line-height:1.65">
+              <div style="font-weight:600;font-size:0.45rem;color:var(--primary);margin-bottom:0.1rem">Footer (decompressed)</div>
+              row_count: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;57000<br>
+              <em style="color:var(--text-muted);font-size:0.38rem">each ptr = MetadataSection{off, sz, comp, uncomp}</em><br>
+              stripe_groups: &nbsp;&nbsp;→ [{0x8000, 256, Zstd, 1024}, ...] <span style="display:inline-block;width:0.95em;height:0.95em;line-height:0.95em;text-align:center;border-radius:50%;background:#8b4513;color:#fff;font-size:0.4rem;font-weight:700;vertical-align:middle">1</span> ptr[]<br>
+              stripes: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ {0xA000, 512, Zstd, 2048} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="display:inline-block;width:0.95em;height:0.95em;line-height:0.95em;text-align:center;border-radius:50%;background:#8b4513;color:#fff;font-size:0.4rem;font-weight:700;vertical-align:middle">2</span> ptr<br>
+              optional_sections: → [{0xB000, 256, Zstd, 800}, ...] &nbsp;<span style="display:inline-block;width:0.95em;height:0.95em;line-height:0.95em;text-align:center;border-radius:50%;background:#8b4513;color:#fff;font-size:0.4rem;font-weight:700;vertical-align:middle">3</span> ptr[] (named)
+            </div>
+          </td>
+        </tr>
+        <!-- Row 3: collectStripes + collectOptional + tryExtractFromBuffer box -->
+        <tr>
+          <td style="border:none;padding:0;vertical-align:top">
+            <div class="diagram" style="margin:0;padding:0 0.4rem;font-size:0.6rem;line-height:1.7">├─ <strong>collectStripesSection()</strong> <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  Stripes ptr from ②
+│  &nbsp; <span class="g">→ tryExtractFromBuffer(ptr)</span>
+│
+├─ <strong>collectOptionalSections</strong>
+│  each ptr from ③:
+│  &nbsp; ClusterIdx, ChunkIdx <em style="font-size:0.5rem;color:var(--text-muted)">(stored by cacheMetadata)</em>
+│  &nbsp; Schema, Stats <em style="font-size:0.5rem;color:var(--text-muted)">(stored on 1st miss by load())</em>
+│  &nbsp; <span class="g">→ tryExtractFromBuffer(ptr)</span>
+│</div>
+          </td>
+          <td style="border:none;padding:0 0 0 0.5rem;vertical-align:middle">
+            <div style="padding:0.3rem 0.6rem;background:var(--code-bg);border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:0.48rem;line-height:1.6;white-space:nowrap">
+              <strong style="color:var(--accent-green)">tryExtractFromBuffer(ptr)</strong><br>
+              &nbsp;├─ in <strong style="color:var(--accent-red)">buf</strong> → decompress<br>
+              &nbsp;└─ not in <strong style="color:var(--accent-red)">buf</strong> → enqueue to loadSections list
+            </div>
+          </td>
+        </tr>
+        <!-- Row 4: rest of call tree -->
+        <tr>
+          <td style="border:none;padding:0;vertical-align:top">
+            <div class="diagram" style="margin:0;padding:0 0.4rem;font-size:0.6rem;line-height:1.7">├─ <strong>loadSections(list)</strong>      <span class="badge badge-amber" style="font-size:0.55rem">IO if needed</span>
+│  metadataInput_->load(sections)
+│  <em style="font-size:0.5rem;color:var(--text-muted)">(CachedMetadataInput or DirectMetadataInput)</em>
+│  ├─ RAM hit → done
+│  ├─ SSD hit → done
+│  └─ miss → collect, coalesce nearby,
+│     preadv from file → decompress
+│     → store in cache
+│
+├─ <strong>initStripes(<strong class="r">buf</strong>)</strong>        <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  wire up stripeOffsets_ (raw ptr),
+│  stripeRows_ (prefix sum for row lookup)
+│  if 1 stripe group AND in <strong class="r">buf</strong>:
+│    └─ eagerly pin StripeGroup[0]
+│       into stripeGroupCache_
+│
+├─ <strong>initClusterIndex() /</strong>    <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  <strong>initChunkIndex(<strong class="r">buf</strong>)</strong>
+│  parse index roots from cache
+│  if chunk idx grp 0 in <strong class="r">buf</strong>: pin it
+│
+└─ <strong style="color:var(--accent-green)">cacheMetadata(<strong class="r">buf</strong>)</strong> <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+   decompress → AsyncDataCache
+   <span class="g">populates for warm path</span></div>
+          </td>
+        </tr>
+      </table>
+      <div class="callout" style="padding:0.3rem 0.5rem;margin:0.3rem 0 0;font-size:0.6rem">
+        Small file: <strong>1 pread</strong> &nbsp;|&nbsp; Large file: <strong>1 pread + 1 coalesced preadv</strong>
       </div>
     </div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">collectSections(footerBuf)</span><br><span style="font-size:0.65rem;color:var(--text-muted)">tryExtractFromBuffer for: Stripes ②, Schema ③, ChunkIndex, ClusterIndex<br>in buf → extract + decompress, else → list</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadSections(list)</span><br><span style="font-size:0.65rem;color:var(--text-muted)">CachedMetadataInput::load() for sections not in speculative buf</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initStripes() + initIndexes()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">parse Stripes → stripe count, offsets, row counts<br>parse ClusterIndex, ChunkIndex → predicate pushdown</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green);background:color-mix(in srgb, var(--accent-green) 8%, var(--surface))"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600;color:var(--accent-green)">cacheMetadata(footerBuf)</span><br><span style="font-size:0.65rem;color:var(--accent-green)"><strong>Store decompressed metadata in cache</strong> (see Section 6 for full list)</span></div>
   </div>
 
-  <div style="display:flex;flex-direction:column;gap:0.3rem">
-    <div style="font-family:var(--font-display);font-weight:600;font-size:0.82rem;color:var(--accent-green);text-align:center;margin-bottom:0.1rem">Warm Path</div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadFooterFromCache()</span><br><span style="font-size:0.65rem;color:var(--text-muted)"><strong>RAM only</strong> at {fileId, fileSize_} → footer_ + ps_<br>miss = fall back to full cold path (no SSD)</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initOptionalSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">same — parse cached Footer → build lookup map. No I/O.</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">collectSections()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">no footerBuf → Stripes ②, Schema ③, indexes all → list</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;border-left:3px solid var(--accent-green)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">loadSections(list)</span><br><span style="font-size:0.65rem;color:var(--accent-green)">RAM hit (typical)</span> <span style="font-size:0.65rem;color:var(--text-muted)">→ SSD fallback → file fallback<br>file fallback reads into cache pin → <strong style="color:var(--accent-green)">auto-populates cache</strong></span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600">initStripes() + initIndexes()</span><br><span style="font-size:0.65rem;color:var(--text-muted)">parse Stripes, ClusterIndex, ChunkIndex FlatBuffers</span></div>
-    <div class="card" style="padding:0.35rem 0.6rem;margin:0;background:var(--code-bg)"><span style="font-family:var(--mono);font-size:0.68rem;font-weight:600;color:var(--text-muted)">cacheMetadata() — not called</span></div>
+  <!-- Warm Path -->
+  <div>
+    <div class="card" style="padding:0.5rem 0.7rem;margin:0;border-left:3px solid var(--accent-green)">
+      <div style="font-family:var(--font-display);font-weight:700;font-size:0.82rem;color:var(--accent-green);margin-bottom:0.3rem">Warm Path</div>
+      <div class="diagram" style="margin:0;padding:0.3rem 0.4rem;font-size:0.6rem;line-height:1.7"><strong>loadFooterFromCache()</strong>                 <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  findCachedMetadata(fileSize_) → footer_ + ps_
+│
+├─ <strong>initOptionalSections()</strong>                <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  same — parse cached Footer → build optionalSections_ map
+│
+├─ <strong>collectStripesSection() +</strong>              <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  <strong>collectOptionalSections()</strong>
+│  no footerBuf → all sections enqueued to loadSections
+│
+├─ <strong>loadSections(list)</strong>                     <span class="badge badge-green" style="font-size:0.55rem">cache hit</span>
+│  CachedMetadataInput::load() per section:
+│  RAM hit → done | SSD hit → done | miss → preadv
+│  <span class="g">file fallback auto-populates cache via store()</span>
+│
+├─ <strong>initStripes() + initIndexes()</strong>          <span class="badge badge-green" style="font-size:0.55rem">no IO</span>
+│  wire up members from loaded FlatBuffers
+│  no footerBuf → stripe group <strong>NOT</strong> eagerly pinned
+│
+└─ <span style="color:var(--text-muted)">cacheMetadata() — not called</span></div>
+      <div class="callout" style="padding:0.3rem 0.5rem;margin:0.3rem 0 0;font-size:0.6rem">
+        All in RAM: <strong>0 IO</strong> &nbsp;|&nbsp; Evicted: SSD &nbsp;|&nbsp; Full miss: <strong>1 coalesced preadv</strong>
+      </div>
+    </div>
   </div>
+
+</div>
+
+<!-- Arrow down to lazy path -->
+<div style="text-align:center;font-size:1rem;line-height:1;margin:0.3rem 0">
+  <span style="color:var(--text-muted)">── both paths complete init ──</span>
+</div>
+<div style="text-align:center;font-size:1.2rem;line-height:1;margin:0 0 0.2rem">▼</div>
+
+<!-- Lazy Path -->
+<div class="card" style="padding:0.5rem 0.7rem;margin:0 0 0.5rem;border-left:3px solid var(--accent)">
+  <div style="font-family:var(--font-display);font-weight:700;font-size:0.82rem;color:var(--accent);margin-bottom:0.3rem">Lazy Path <span style="font-weight:400;font-size:0.7rem;color:var(--text-muted)">— per stripe, after init</span></div>
+  <div class="diagram" style="margin:0;padding:0.3rem 0.4rem;font-size:0.6rem;line-height:1.7"><strong>stripeIdentifier(N)</strong>
+├─ stripeGroupCache_ hit? ──<span class="g">yes</span>──→ return <span class="g">(zero IO, zero cache lookup)</span>
+│  <em>(eagerly pinned by initStripes on cold path, or previously loaded)</em>
+└─ no
+   └─ <strong>loadStripeGroupMetadata(N)</strong>
+      └─ CachedMetadataInput::load([sg[N], cig[N]])
+         ├─ RAM hit   → done <span class="g">(zero IO)</span>
+         ├─ SSD hit   → done <span class="g">(SSD read only)</span>
+         └─ file miss → <strong>coalesced preadv</strong> <em>(sg + cig adjacent → 1 read)</em>
+            └─ store() → AsyncDataCache
+      └─ result stored in stripeGroupCache_ (weak ptr)</div>
 </div>
 
 
