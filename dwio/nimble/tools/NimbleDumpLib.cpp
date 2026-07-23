@@ -603,6 +603,20 @@ void NimbleDumpLib::emitSchema(bool collapseFlatMap) {
             ostream_ << "<" << toString(type.asFlatMap().keyScalarKind())
                      << ">";
           }
+
+          // Surface per-node schema attributes (e.g. Iceberg `iceberg.id`
+          // field-ids) so they are visible when inspecting a dumped schema.
+          const auto& attributes = type.attributes();
+          if (!attributes.empty()) {
+            ostream_ << " {";
+            for (size_t i = 0; i < attributes.size(); ++i) {
+              if (i > 0) {
+                ostream_ << ", ";
+              }
+              ostream_ << attributes[i].first << "=" << attributes[i].second;
+            }
+            ostream_ << "}";
+          }
           ostream_ << std::endl;
         }
       });

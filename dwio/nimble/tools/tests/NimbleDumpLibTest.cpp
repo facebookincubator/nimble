@@ -189,3 +189,39 @@ TEST_F(NimbleDumpLibTest, EmitStats_NoStats) {
   auto result = output.str();
   EXPECT_NE(result.find("No stats section found"), std::string::npos);
 }
+
+TEST_F(NimbleDumpLibTest, EmitSchema_PrintsColumnAttributes) {
+  auto type = velox::ROW({"id", "name"}, {velox::BIGINT(), velox::VARCHAR()});
+
+  auto idVector =
+      velox::BaseVector::create(velox::BIGINT(), 1, leafPool_.get());
+  idVector->asFlatVector<int64_t>()->set(0, 42);
+  auto nameVector =
+      velox::BaseVector::create(velox::VARCHAR(), 1, leafPool_.get());
+  nameVector->asFlatVector<velox::StringView>()->set(0, velox::StringView("a"));
+
+  auto rowVector = std::make_shared<velox::RowVector>(
+      leafPool_.get(),
+      type,
+      nullptr,
+      1,
+      std::vector<velox::VectorPtr>{idVector, nameVector});
+
+  // Stamp Iceberg field-ids onto the top-level columns (as the write path does)
+  // and confirm the dumped schema round-trips and surfaces them.
+  VeloxWriterOptions writerOptions;
+  writerOptions.attributesByColumn = {
+      {"id", {{"iceberg.id", "1"}}}, {"name", {{"iceberg.id", "2"}}}};
+
+  auto fileContent =
+      test::createNimbleFile(*leafPool_, rowVector, writerOptions);
+  auto readFile = makeReadFile(fileContent);
+
+  std::ostringstream output;
+  tools::NimbleDumpLib dumpLib{readFile, false, output};
+  dumpLib.emitSchema(/*collapseFlatMap=*/false);
+
+  auto result = output.str();
+  EXPECT_NE(result.find("iceberg.id=1"), std::string::npos);
+  EXPECT_NE(result.find("iceberg.id=2"), std::string::npos);
+}
