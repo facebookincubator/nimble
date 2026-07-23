@@ -19,6 +19,7 @@ add_library(
   ClusterIndex.cpp
   ClusterIndexFactory.cpp
   ClusterIndexWriter.cpp
+  DenseIndexFactory.cpp
   DenseIndexRegistry.cpp
   HashIndex.cpp
   HashIndexWriter.cpp

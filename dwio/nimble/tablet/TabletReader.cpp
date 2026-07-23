@@ -24,6 +24,7 @@
 #include "dwio/nimble/tablet/FooterGenerated.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/StripeGroup.h"
+#include "folly/container/F14Map.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 
 #include "flatbuffers/flatbuffers.h"
@@ -279,7 +280,7 @@ void TabletReader::init(const Options& options) {
   loadSections(sections);
 
   initStripes(footerView, footerOffset);
-  initIndexes();
+  initIndexDescriptors();
   initClusterIndex();
   initChunkIndex(footerView, footerOffset);
   initDenseIndexes();
@@ -404,7 +405,7 @@ bool TabletReader::initFromCache(const Options& options) {
   loadSections(sections);
 
   initStripes();
-  initIndexes();
+  initIndexDescriptors();
   initClusterIndex();
   initChunkIndex();
   initDenseIndexes();
@@ -1073,22 +1074,15 @@ const index::IndexDescriptor* TabletReader::findIndexDescriptor(
     index::IndexFamily family,
     std::string_view indexName) const {
   NIMBLE_CHECK(!indexName.empty(), "Index name cannot be empty");
-  const index::IndexDescriptor* result = nullptr;
   for (const auto& descriptor : indexDescriptors_) {
-    if (descriptor.family != family || descriptor.name != indexName) {
-      continue;
+    if (descriptor.family == family && descriptor.name == indexName) {
+      return &descriptor;
     }
-    NIMBLE_CHECK(
-        result == nullptr,
-        "Nimble file contains multiple indexes for family {} and name '{}'",
-        static_cast<int>(family),
-        indexName);
-    result = &descriptor;
   }
-  return result;
+  return nullptr;
 }
 
-void TabletReader::initIndexes() {
+void TabletReader::initIndexDescriptors() {
   if (!loadClusterIndex_ && !loadDenseIndexes_) {
     return;
   }
@@ -1105,6 +1099,7 @@ void TabletReader::initIndexes() {
   NIMBLE_CHECK_NOT_NULL(root);
   const auto* indexes = root->indexes();
   NIMBLE_CHECK_NOT_NULL(indexes);
+  NIMBLE_CHECK_GT(indexes->size(), 0u, "Index section contains no descriptors");
 
   for (const auto* descriptor : *indexes) {
     NIMBLE_CHECK_NOT_NULL(descriptor);
@@ -1112,11 +1107,20 @@ void TabletReader::initIndexes() {
     NIMBLE_CHECK_NOT_NULL(name, "Index descriptor name is missing");
     const auto* indexRoot = descriptor->root();
     NIMBLE_CHECK_NOT_NULL(indexRoot, "Index descriptor root is missing");
-    indexDescriptors_.emplace_back(
-        index::IndexDescriptor{
-            .family = index::toIndexFamily(descriptor->family()),
-            .name = name->str(),
-            .root = toMetadataSection(indexRoot)});
+    auto indexDescriptor = index::IndexDescriptor{
+        .family = index::toIndexFamily(descriptor->family()),
+        .name = name->str(),
+        .root = toMetadataSection(indexRoot)};
+    if (indexDescriptor.family == index::IndexFamily::Cluster) {
+      for (const auto& existing : indexDescriptors_) {
+        NIMBLE_CHECK(
+            existing.family != index::IndexFamily::Cluster ||
+                existing.name != indexDescriptor.name,
+            "Nimble file contains multiple cluster indexes named '{}'",
+            indexDescriptor.name);
+      }
+    }
+    indexDescriptors_.emplace_back(std::move(indexDescriptor));
   }
 }
 
@@ -1151,23 +1155,31 @@ const index::IndexLookup* TabletReader::denseIndex(
   return denseIndexRegistry_->findIndex(columns);
 }
 
+const index::IndexLookup* TabletReader::denseIndex(
+    std::string_view name,
+    const std::vector<std::string>& columns) const {
+  if (denseIndexRegistry_ == nullptr) {
+    return nullptr;
+  }
+  return denseIndexRegistry_->findIndex(name, columns);
+}
+
 void TabletReader::initDenseIndexes() {
   if (!loadDenseIndexes_) {
     return;
   }
-  const auto* hashIndex = findIndexDescriptor(
-      index::IndexFamily::Dense, index::kDenseHashIndexName);
-  const auto* sortedIndex = findIndexDescriptor(
-      index::IndexFamily::Dense, index::kDenseSortedIndexName);
+  std::vector<index::DenseIndexRegistry::Entry> entries;
+  for (const auto& descriptor : indexDescriptors_) {
+    if (descriptor.family != index::IndexFamily::Dense) {
+      continue;
+    }
+    entries.emplace_back(
+        index::DenseIndexRegistry::Entry{
+            descriptor.name,
+            Section{std::move(*readMetadata(descriptor.root))}});
+  }
   denseIndexRegistry_ = index::DenseIndexRegistry::create(
-      hashIndex == nullptr ? std::nullopt
-                           : std::optional<Section>{Section{
-                                 std::move(*readMetadata(hashIndex->root))}},
-      sortedIndex == nullptr ? std::nullopt
-                             : std::optional<Section>{Section{std::move(
-                                   *readMetadata(sortedIndex->root))}},
-      indexOptions_,
-      pool_);
+      std::move(entries), indexOptions_, pool_);
 }
 
 void TabletReader::initChunkIndex(

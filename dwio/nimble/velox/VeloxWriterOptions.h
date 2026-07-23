@@ -32,17 +32,15 @@
 #include "velox/common/base/SpillConfig.h"
 #include "velox/type/Type.h"
 
-// Options used by Velox writer that affect the output file format
-
 namespace facebook::nimble {
 
 namespace detail {
 std::unordered_map<std::string, std::string> defaultMetadata();
 } // namespace detail
 
-// NOTE: the object could be large when encodingOverrides are
-// supplied. It's strongly advised to move instead of copying
-// it.
+/// Options used by Velox writer that affect the output file format.
+/// NOTE: The object could be large when encodingOverrides are supplied. It's
+/// strongly advised to move instead of copying it.
 struct VeloxWriterOptions {
   /// Builds Encoding::Options from VeloxWriterOptions fields.
   Encoding::Options buildEncodingOptions() const {
@@ -53,28 +51,28 @@ struct VeloxWriterOptions {
         .fsstCompressionTargetRatio = fsstCompressionTargetRatio};
   }
 
-  // Property bag for storing user metadata in the file.
+  /// Property bag for storing user metadata in the file.
   std::unordered_map<std::string, std::string> metadata =
       detail::defaultMetadata();
 
-  // Enable column statistics collection. When false, the writer skips
-  // collecting per-column statistics, reducing write CPU cost.
+  /// Enable column statistics collection. When false, the writer skips
+  /// collecting per-column statistics, reducing write CPU cost.
   bool enableStatsCollection{true};
 
-  // Enable vectorized stats for applicable schema shapes.
+  /// Enable vectorized stats for applicable schema shapes.
   bool enableVectorizedStats{true};
 
-  // When true, chunk-level position index is built for all streams,
-  // enabling O(1) chunk-level seeking within stripes. Independent of
-  // the cluster index (clusterIndexConfig). When clusterIndexConfig is set,
-  // chunk index is always enabled regardless of this flag.
-  // EXPERIMENTAL: Not production-ready. Do not enable for production tables
-  // without consulting the Nimble team (oncall: dwios).
+  /// When true, chunk-level position index is built for all streams,
+  /// enabling O(1) chunk-level seeking within stripes. Independent of
+  /// the cluster index (clusterIndexConfig). When clusterIndexConfig is set,
+  /// chunk index is always enabled regardless of this flag.
+  /// EXPERIMENTAL: Not production-ready. Do not enable for production tables
+  /// without consulting the Nimble team (oncall: dwios).
   bool enableChunkIndex{false};
 
-  // Skip writing chunk index for a stripe group if the average number
-  // of chunks per stream is below this threshold. 0 disables chunk index
-  // skipping.
+  /// Skip writing chunk index for a stripe group if the average number
+  /// of chunks per stream is below this threshold. 0 disables chunk index
+  /// skipping.
   float chunkIndexMinAvgChunks{2};
 
   /// NOTE: !!! This is under experimentation and please do not turn on in
@@ -94,26 +92,28 @@ struct VeloxWriterOptions {
       experimentalStripeGroupEncodingLayoutReadFactors{};
 
   /// If set, the cluster index on the specified columns will be built during
-  /// writing. The index stores the per-chunk min and max key for each stripe.
-  // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
-  // production tables without consulting the Nimble team (oncall: dwios).
+  /// writing. It is the primary index over key-ordered data and stores
+  /// per-chunk boundary keys per stripe-group partition for binary-search
+  /// pruning.
+  /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+  /// production tables without consulting the Nimble team (oncall: dwios).
   std::optional<index::ClusterIndexConfig> clusterIndexConfig;
 
   /// Hash index configurations. Each config builds an independent hash-based
   /// point lookup index on the specified columns. Unlike cluster index, hash
   /// index does not require sorted data.
-  // EXPERIMENTAL: Hash index is not production-ready. Do not enable for
-  // production tables without consulting the Nimble team (oncall: dwios).
+  /// EXPERIMENTAL: Hash index is not production-ready. Do not enable for
+  /// production tables without consulting the Nimble team (oncall: dwios).
   std::vector<index::HashIndexConfig> hashIndexConfigs;
 
   /// Sorted index configurations. Each config builds an independent sorted
   /// key stream index supporting both point lookups and range scans on
   /// unsorted data.
-  // EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
-  // production tables without consulting the Nimble team (oncall: dwios).
+  /// EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
+  /// production tables without consulting the Nimble team (oncall: dwios).
   std::vector<index::SortedIndexConfig> sortedIndexConfigs;
 
-  // Columns that should be encoded as flat maps. Maps column name to a set
+  /// Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is
   /// treated as a flat map with dynamic key discovery. When non-empty, keys
   /// are predefined in sorted order to ensure all writers produce
@@ -121,36 +121,36 @@ struct VeloxWriterOptions {
   /// the set will cause an error during writing.
   folly::F14FastMap<std::string, std::set<std::string>> flatMapColumns;
 
-  // Maximum number of distinct flat-map keys allowed per file; 0 means
-  // unlimited. Writing fails when exceeded, bounding the per-key native memory
-  // the flat-map writer holds.
+  /// Maximum number of distinct flat-map keys allowed per file; 0 means
+  /// unlimited. Writing fails when exceeded, bounding the per-key native memory
+  /// the flat-map writer holds.
   uint32_t maxFlatMapKeys{kDefaultMaxFlatMapKeys};
 
   /// Per-column string-keyed attributes to stamp onto the NIMBLE schema.
-  // Keyed by a dotted path of `RowType` child names that resolves to a node
-  // in the input `RowType`. The empty key (`""`) targets the root.
-  // Examples:
-  //   "id"              -> top-level column `id`
-  //   "user.name"       -> field `name` inside top-level struct column
-  //                        `user`
-  // Each value is the attribute bag forwarded verbatim to
-  // `TypeBuilder::setAttributes(...)` on the matching node and preserves
-  // insertion order end-to-end through schema serialization.
-  //
-  // Paths that do not resolve to a node in the input `RowType` are silently
-  // ignored so that callers can submit a superset of attributes and let
-  // schema evolution drop entries that no longer apply. Paths walking
-  // through non-`RowType` parents are not supported in this diff; callers
-  // currently emit flat top-level / nested-struct keys only, and richer
-  // addressing can be added in a follow-up if needed.
-  //
-  // Empty map (default) is a no-op: every existing NIMBLE writer produces
-  // byte-identical files.
+  /// Keyed by a dotted path of `RowType` child names that resolves to a node
+  /// in the input `RowType`. The empty key (`""`) targets the root.
+  /// Examples:
+  ///   "id"              -> top-level column `id`
+  ///   "user.name"       -> field `name` inside top-level struct column
+  ///                        `user`
+  /// Each value is the attribute bag forwarded verbatim to
+  /// `TypeBuilder::setAttributes(...)` on the matching node and preserves
+  /// insertion order end-to-end through schema serialization.
+  ///
+  /// Paths that do not resolve to a node in the input `RowType` are silently
+  /// ignored so that callers can submit a superset of attributes and let
+  /// schema evolution drop entries that no longer apply. Paths walking
+  /// through non-`RowType` parents are not supported in this diff; callers
+  /// currently emit flat top-level / nested-struct keys only, and richer
+  /// addressing can be added in a follow-up if needed.
+  ///
+  /// Empty map (default) is a no-op: every existing NIMBLE writer produces
+  /// byte-identical files.
   folly::
       F14FastMap<std::string, std::vector<std::pair<std::string, std::string>>>
           attributesByColumn;
 
-  // When true, the writer skips encoding flat map in-map boolean streams that
+  /// When true, the writer skips encoding flat map in-map boolean streams that
   /// are all-true (every row has the key) or all-false (no row has the key).
   /// The reader infers the in-map state from value stream presence: all-true
   /// keys have value streams, all-false keys do not.
@@ -256,37 +256,37 @@ struct VeloxWriterOptions {
   /// wideSchemaMaxStreamChunkRawSize in place of maxStreamChunkRawSize.
   size_t largeSchemaThreshold{500};
 
-  // Number of streams to try chunking between memory pressure evaluations.
-  // Note: this is ignored when it is time to flush a stripe.
+  /// Number of streams to try chunking between memory pressure evaluations.
+  /// Note: this is ignored when it is time to flush a stripe.
   size_t chunkedStreamBatchSize{1024};
 
-  // The factory function that produces the root encoding selection policy.
-  // Encoding selection policy is the way to balance the tradeoffs of
-  // different performance factors (at both read and write times). Heuristics
-  // based, ML based or specialized policies can be specified.
+  /// The factory function that produces the root encoding selection policy.
+  /// Encoding selection policy is the way to balance the tradeoffs of
+  /// different performance factors (at both read and write times). Heuristics
+  /// based, ML based or specialized policies can be specified.
   EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = ManualEncodingSelectionPolicyFactory{}](
           DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
     return encodingFactory.createPolicy(dataType);
   };
 
-  // Provides policy that controls stripe sizes and memory footprint.
+  /// Provides policy that controls stripe sizes and memory footprint.
   std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = []() {
     // Buffering 256MB data before encoding stripes.
     return std::make_unique<StripeRawSizeFlushPolicy>(256 << 20);
   };
 
-  // When the writer needs to buffer data, and internal buffers don't have
-  // enough capacity, the writer is using this policy to claculate the the new
-  // capacity for the vuffers.
+  /// When the writer needs to buffer data, and internal buffers don't have
+  /// enough capacity, the writer is using this policy to claculate the the new
+  /// capacity for the vuffers.
   std::function<std::unique_ptr<InputBufferGrowthPolicy>()>
       inputGrowthPolicyFactory =
           []() -> std::unique_ptr<InputBufferGrowthPolicy> {
     return DefaultInputBufferGrowthPolicy::withDefaultRanges();
   };
 
-  // When per-stream string buffers are enabled (disableSharedStringBuffers),
-  // this policy controls how the string buffer vectors grow.
+  /// When per-stream string buffers are enabled (disableSharedStringBuffers),
+  /// this policy controls how the string buffer vectors grow.
   std::function<std::unique_ptr<InputBufferGrowthPolicy>()>
       stringBufferGrowthPolicyFactory =
           []() -> std::unique_ptr<InputBufferGrowthPolicy> {
@@ -298,33 +298,33 @@ struct VeloxWriterOptions {
 
   const velox::common::SpillConfig* spillConfig{nullptr};
 
-  // If provided, internal encoding operations will happen in parallel using
-  // the specified executor.
-  //
-  // The KeepAlive wrapper ensures that the executor object will be kept alive
-  // (allocated), and that the pool will be open for receiving new tasks. A
-  // shared_ptr would only guarantee that the object is still allocated, but not
-  // necessarily open for new task (e.g. it could have been .join()'ed through a
-  // different reference). Because of that, many libraries only provide
-  // KeepAlive references to executors, not shared_ptr, so taking a KeepAlive
-  // also makes it more convenient to clients.
-  //
-  // As a result, if a KeepAlive is still being held, clients trying to destruct
-  // the last reference of a shared_ptr to that executor will block until all
-  // KeepAlive references are destructed.
+  /// If provided, internal encoding operations will happen in parallel using
+  /// the specified executor.
+  ///
+  /// The KeepAlive wrapper ensures that the executor object will be kept alive
+  /// (allocated), and that the pool will be open for receiving new tasks. A
+  /// shared_ptr would only guarantee that the object is still allocated, but
+  /// not necessarily open for new task (e.g. it could have been .join()'ed
+  /// through a different reference). Because of that, many libraries only
+  /// provide KeepAlive references to executors, not shared_ptr, so taking a
+  /// KeepAlive also makes it more convenient to clients.
+  ///
+  /// As a result, if a KeepAlive is still being held, clients trying to
+  /// destruct the last reference of a shared_ptr to that executor will block
+  /// until all KeepAlive references are destructed.
   folly::Executor::KeepAlive<> encodingExecutor;
 
-  // When maxEncodeParallelism > 0 and encodingExecutor is set,
-  // FieldWriter::write() operations will be parallelized using coroutines
-  // scheduled on encodingExecutor.
+  /// When maxEncodeParallelism > 0 and encodingExecutor is set,
+  /// FieldWriter::write() operations will be parallelized using coroutines
+  /// scheduled on encodingExecutor.
   uint32_t maxEncodeParallelism{0};
   uint32_t minStreamsPerEncodeUnit{1};
 
   bool enableChunking{true};
 
-  // This callback will be visited on access to getDecodedVector in order to
-  // monitor usage of decoded vectors vs. data that is passed-through in the
-  // writer. Default function is no-op since its used for tests only.
+  /// This callback will be visited on access to getDecodedVector in order to
+  /// monitor usage of decoded vectors vs. data that is passed-through in the
+  /// writer. Default function is no-op since its used for tests only.
   std::function<void(void)> vectorDecoderVisitor{[]() {}};
 
   /// Whether writer should ignore the top level nulls in the input.
@@ -332,15 +332,15 @@ struct VeloxWriterOptions {
 
   bool enableStreamDeduplication{true};
 
-  // When true, string fields use per-field buffers instead of a shared buffer.
-  // This enables incremental memory reclamation during chunking.
+  /// When true, string fields use per-field buffers instead of a shared buffer.
+  /// This enables incremental memory reclamation during chunking.
   bool disableSharedStringBuffers{false};
 
-  // When true, enables consistency check between fileRawSize (accumulated via
-  // RawSizeUtils) and the root column statistics during file close.
-  // This is used to validate that column statistics accurately track raw sizes,
-  // with the goal of eventually replacing RawSizeUtils accumulation with column
-  // statistics for non-deduplicated columns.
+  /// When true, enables consistency check between fileRawSize (accumulated via
+  /// RawSizeUtils) and the root column statistics during file close.
+  /// This is used to validate that column statistics accurately track raw
+  /// sizes, with the goal of eventually replacing RawSizeUtils accumulation
+  /// with column statistics for non-deduplicated columns.
   bool enableStatsConsistencyCheck{true};
 };
 

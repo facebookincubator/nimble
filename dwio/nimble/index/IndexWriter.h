@@ -35,6 +35,8 @@ namespace facebook::nimble::index {
 ///   2. For each batch: write(batch)
 ///   3. At stripe group boundaries: flush() to write index data
 ///   4. At file close: close() to finalize, serialize, and release resources
+/// Calls are serialized by the owning VeloxWriter; implementations do not need
+/// to support concurrent lifecycle calls.
 class IndexWriter {
  public:
   virtual ~IndexWriter() = default;

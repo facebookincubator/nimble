@@ -16,11 +16,18 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <thread>
+
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/DenseIndexFactory.h"
+#include "dwio/nimble/index/DenseIndexRegistry.h"
 #include "dwio/nimble/index/IndexKeyEncoder.h"
+#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
@@ -34,6 +41,7 @@ namespace facebook::nimble::index::test {
 namespace {
 
 constexpr std::string_view kCustomClusterIndexName{"test.cluster.v1"};
+constexpr std::string_view kCustomDenseIndexName{"test.dense.v1"};
 
 class RenamedIndexWriter final : public IndexWriter {
  public:
@@ -101,6 +109,38 @@ class TestClusterIndexFactory final : public ClusterIndexFactory {
   }
 };
 
+class TestDenseIndexReader final : public DenseIndexReader {
+ public:
+  const IndexLookup* findIndex(const std::vector<std::string>&) const override {
+    return nullptr;
+  }
+
+  std::vector<std::vector<std::string>> indexColumns() const override {
+    return {{"id"}};
+  }
+};
+
+class TestDenseIndexFactory final : public DenseIndexFactory {
+ public:
+  explicit TestDenseIndexFactory(
+      std::string name = std::string{kCustomDenseIndexName})
+      : name_{std::move(name)} {}
+
+  std::string_view name() const override {
+    return name_;
+  }
+
+  std::unique_ptr<DenseIndexReader> createReader(
+      Section,
+      const IndexLookup::Options&,
+      velox::memory::MemoryPool*) const override {
+    return std::make_unique<TestDenseIndexReader>();
+  }
+
+ private:
+  const std::string name_;
+};
+
 class IndexFactoryTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -108,6 +148,7 @@ class IndexFactoryTest : public testing::Test {
     velox::memory::MemoryManager::testingSetInstance({});
     registerClusterIndexFactory(
         std::make_shared<const TestClusterIndexFactory>());
+    registerDenseIndexFactory(std::make_shared<const TestDenseIndexFactory>());
   }
 
   void SetUp() override {
@@ -136,6 +177,19 @@ class IndexFactoryTest : public testing::Test {
         std::vector<velox::VectorPtr>{ids});
   }
 
+  std::unique_ptr<VeloxWriter> makeWriter(
+      std::string_view pathSuffix,
+      VeloxWriterOptions options) {
+    const auto path = tempDirectory_->getPath() + "/" + std::string{pathSuffix};
+    auto fileSystem = velox::filesystems::getFileSystem(path, {});
+    auto file = fileSystem->openFileForWrite(
+        path,
+        {.shouldCreateParentDirectories = true,
+         .shouldThrowOnFileAlreadyExists = false});
+    return std::make_unique<VeloxWriter>(
+        rowType(), std::move(file), *rootPool_, std::move(options));
+  }
+
   std::string writeFile() {
     const auto path = tempDirectory_->getPath() + "/custom_indexes";
     auto fileSystem = velox::filesystems::getFileSystem(path, {});
@@ -161,6 +215,7 @@ class IndexFactoryTest : public testing::Test {
     auto fileSystem = velox::filesystems::getFileSystem(path, {});
     TabletReader::Options options;
     options.loadClusterIndex = true;
+    options.loadDenseIndexes = true;
     options.clusterIndexName = std::move(clusterIndexName);
     options.ioOptions.emplace(leafPool_.get())
         .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>())
@@ -215,17 +270,132 @@ TEST_F(IndexFactoryTest, builtInClusterFactoryIsRegistered) {
   EXPECT_EQ(clusterIndexFactory(kClusterIndexName).name(), kClusterIndexName);
 }
 
+TEST_F(IndexFactoryTest, builtInDenseFactoriesAreRegistered) {
+  EXPECT_EQ(
+      denseIndexFactory(kDenseHashIndexName)->name(), kDenseHashIndexName);
+  EXPECT_EQ(
+      denseIndexFactory(kDenseSortedIndexName)->name(), kDenseSortedIndexName);
+}
+
 TEST_F(IndexFactoryTest, rejectDuplicateClusterFactoryRegistration) {
   NIMBLE_ASSERT_THROW(
       registerClusterIndexFactory(
           std::make_shared<const TestClusterIndexFactory>()),
-      "Cluster index factory already registered: test.cluster.v1");
+      "Index factory 'test.cluster.v1' is already registered for family 'cluster'");
+}
+
+TEST_F(IndexFactoryTest, rejectDuplicateDenseFactoryRegistration) {
+  NIMBLE_ASSERT_THROW(
+      registerDenseIndexFactory(
+          std::make_shared<const TestDenseIndexFactory>()),
+      "Index factory 'test.dense.v1' is already registered for family 'dense'");
 }
 
 TEST_F(IndexFactoryTest, rejectUnknownClusterFactory) {
   NIMBLE_ASSERT_THROW(
       clusterIndexFactory("test.missing.cluster.v1"),
-      "Unknown cluster index factory: test.missing.cluster.v1");
+      "Unknown index factory 'test.missing.cluster.v1' for family 'cluster'");
+}
+
+TEST_F(IndexFactoryTest, rejectUnknownDenseFactory) {
+  EXPECT_EQ(denseIndexFactory("test.missing.dense.v1"), nullptr);
+}
+
+TEST_F(IndexFactoryTest, rejectDuplicateDenseIndex) {
+  auto file = std::make_shared<velox::InMemoryReadFile>(std::string{});
+  auto ioStats = std::make_shared<velox::io::IoStatistics>();
+  velox::io::ReaderOptions ioOptions{leafPool_.get()};
+  ioOptions.setMetadataIoStats(ioStats);
+  ioOptions.setIndexIoStats(ioStats);
+  IndexLookup::Options options{.file = file, .ioOptions = &ioOptions};
+
+  auto makeSection = [&] {
+    return Section{MetadataBuffer{
+        velox::AlignedBuffer::allocate<char>(1, leafPool_.get())}};
+  };
+  std::vector<DenseIndexRegistry::Entry> entries;
+  entries.emplace_back(
+      DenseIndexRegistry::Entry{
+          std::string{kCustomDenseIndexName}, makeSection()});
+  entries.emplace_back(
+      DenseIndexRegistry::Entry{
+          std::string{kCustomDenseIndexName}, makeSection()});
+
+  NIMBLE_ASSERT_THROW(
+      DenseIndexRegistry::create(std::move(entries), options, leafPool_.get()),
+      "Duplicate dense index 'test.dense.v1' columns");
+}
+
+TEST_F(IndexFactoryTest, concurrentFactoryAccess) {
+  constexpr size_t kFactoryCount = 32;
+  constexpr size_t kReaderCount = 8;
+  std::vector<std::shared_ptr<const TestDenseIndexFactory>> factories;
+  factories.reserve(kFactoryCount);
+  for (size_t i = 0; i < kFactoryCount; ++i) {
+    factories.emplace_back(
+        std::make_shared<const TestDenseIndexFactory>(
+            "test.concurrent.dense." + std::to_string(i)));
+  }
+
+  std::vector<std::thread> threads;
+  threads.reserve(kFactoryCount);
+  for (const auto& factory : factories) {
+    threads.emplace_back([factory] { registerDenseIndexFactory(factory); });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  std::atomic_bool lookupFailed{false};
+  threads.clear();
+  threads.reserve(kReaderCount);
+  for (size_t i = 0; i < kReaderCount; ++i) {
+    threads.emplace_back([&factories, &lookupFailed] {
+      for (const auto& factory : factories) {
+        if (denseIndexFactory(factory->name()) != factory.get()) {
+          lookupFailed = true;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_FALSE(lookupFailed);
+}
+
+TEST_F(IndexFactoryTest, preserveTypedIndexDescriptorOrder) {
+  VeloxWriterOptions options;
+  options.hashIndexConfigs.emplace_back(HashIndexConfig{.columns = {"id"}});
+  options.sortedIndexConfigs.emplace_back(SortedIndexConfig{.columns = {"id"}});
+  options.clusterIndexConfig =
+      ClusterIndexConfig{.columns = {"id"}, .enforceKeyOrder = true};
+  auto writer = makeWriter("typed_descriptor_order", std::move(options));
+  writer->write(makeBatch());
+  writer->close();
+
+  const auto path = tempDirectory_->getPath() + "/typed_descriptor_order";
+  auto fileSystem = velox::filesystems::getFileSystem(path, {});
+  TabletReader::Options readerOptions;
+  readerOptions.ioOptions.emplace(leafPool_.get())
+      .setMetadataIoStats(std::make_shared<velox::io::IoStatistics>());
+  auto tablet = TabletReader::create(
+      fileSystem->openFileForRead(path), leafPool_.get(), readerOptions);
+  auto section = tablet->loadOptionalSection(std::string{kIndexSection});
+  ASSERT_TRUE(section.has_value());
+  const auto* root =
+      flatbuffers::GetRoot<serialization::IndexRoot>(section->content().data());
+  ASSERT_NE(root->indexes(), nullptr);
+  std::vector<std::string> names;
+  for (const auto* descriptor : *root->indexes()) {
+    names.emplace_back(descriptor->name()->str());
+  }
+  EXPECT_EQ(
+      names,
+      (std::vector<std::string>{
+          std::string{kDenseHashIndexName},
+          std::string{kDenseSortedIndexName},
+          std::string{kClusterIndexName}}));
 }
 
 } // namespace

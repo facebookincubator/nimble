@@ -261,6 +261,11 @@ class TabletReader {
   const index::IndexLookup* denseIndex(
       const std::vector<std::string>& columns) const;
 
+  /// Finds the dense index with the given implementation name and columns.
+  const index::IndexLookup* denseIndex(
+      std::string_view name,
+      const std::vector<std::string>& columns) const;
+
   uint64_t fileSize() const {
     return fileSize_;
   }
@@ -456,7 +461,7 @@ class TabletReader {
   std::shared_ptr<StripeGroup> loadStripeGroup(uint32_t stripeGroupIndex) const;
 
   // Parses the shared index section and caches its runtime descriptors.
-  void initIndexes();
+  void initIndexDescriptors();
 
   // Finds the unique descriptor matching the family and name.
   // Returns nullptr when no descriptor matches.
