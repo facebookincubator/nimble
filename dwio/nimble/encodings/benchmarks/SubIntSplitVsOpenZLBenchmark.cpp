@@ -414,6 +414,18 @@ void decodeNimble(const std::string& encoded, uint32_t n) {
   folly::doNotOptimizeAway(out);
 }
 
+// SubIntSplit is not wired into EncodingFactory dispatch, so decode it by
+// constructing the encoding directly. This is driver-only: the production
+// EncodingFactory is unchanged. Nested (possibly Zstd/OpenZL-compressed)
+// sections are still built through the constructor's internal factory.
+void decodeSubIntSplit(const std::string& encoded, uint32_t n) {
+  auto& pool = benchmarkPool();
+  std::vector<T> out(n);
+  SubIntSplitEncoding<T> enc{*pool, encoded, nullFactory()};
+  enc.materialize(n, out.data());
+  folly::doNotOptimizeAway(out);
+}
+
 std::vector<Method> makeMethods() {
   std::vector<Method> methods;
   methods.push_back(
@@ -424,21 +436,21 @@ std::vector<Method> makeMethods() {
              ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
              CompressionType::Uncompressed);
        },
-       decodeNimble});
+       decodeSubIntSplit});
   methods.push_back(
       {"SubIntSplitTuned",
        [](const Vector<T>& d) {
          return encodeSubIntSplitWith(
              d, tunedReadFactors(), CompressionType::Zstd);
        },
-       decodeNimble});
+       decodeSubIntSplit});
   methods.push_back(
       {"SubIntSplitOpenZL",
        [](const Vector<T>& d) {
          return encodeSubIntSplitWith(
              d, tunedReadFactors(), CompressionType::OpenZL);
        },
-       decodeNimble});
+       decodeSubIntSplit});
   methods.push_back(
       {"OpenZL",
        [](const Vector<T>& d) {
