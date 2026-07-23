@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <optional>
+
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
@@ -207,8 +210,11 @@ class Encoder {
     using physicalType = typename nimble::TypeTraits<TInner>::physicalType;
 
    public:
-    explicit TestTrivialEncodingSelectionPolicy(CompressionType compressionType)
-        : compressionType_{compressionType} {}
+    explicit TestTrivialEncodingSelectionPolicy(
+        CompressionType compressionType,
+        bool realNestedSelection = false)
+        : compressionType_{compressionType},
+          realNestedSelection_{realNestedSelection} {}
 
     nimble::EncodingSelectionResult select(
         std::span<const physicalType> /* values */,
@@ -235,12 +241,36 @@ class Encoder {
         nimble::EncodingType /* encodingType */,
         nimble::NestedEncodingIdentifier /* identifier */,
         nimble::DataType type) override {
+      // When realNestedSelection_ is set, nested (sub-stream) encodings are
+      // chosen by the normal cost-based factory instead of being forced to
+      // Trivial -- e.g. so SubIntSplit exercises its diverse per-section
+      // encoders. SubIntSplit is removed from the candidates to avoid infinite
+      // recursion (it is also not registered in EncodingFactory dispatch).
+      if (realNestedSelection_) {
+        auto readFactors = nimble::ManualEncodingSelectionPolicyFactory::
+            defaultEncodingReadFactors();
+        readFactors.erase(
+            std::remove_if(
+                readFactors.begin(),
+                readFactors.end(),
+                [](const auto& factor) {
+                  return factor.first == nimble::EncodingType::SubIntSplit;
+                }),
+            readFactors.end());
+        return nimble::ManualEncodingSelectionPolicyFactory{
+            std::move(readFactors), std::nullopt}
+            .createPolicy(type);
+      }
       UNIQUE_PTR_FACTORY(
-          type, TestTrivialEncodingSelectionPolicy, compressionType_);
+          type,
+          TestTrivialEncodingSelectionPolicy,
+          compressionType_,
+          realNestedSelection_);
     }
 
    private:
     CompressionType compressionType_;
+    bool realNestedSelection_;
   };
 
  public:
@@ -252,7 +282,8 @@ class Encoder {
       nimble::Buffer& buffer,
       const nimble::Vector<T>& values,
       CompressionType compressionType = CompressionType::Uncompressed,
-      const nimble::Encoding::Options& options = {}) {
+      const nimble::Encoding::Options& options = {},
+      bool realNestedSelection = false) {
     using physicalType = typename nimble::TypeTraits<T>::physicalType;
 
     auto physicalValues = std::span<const physicalType>(
@@ -265,7 +296,7 @@ class Encoder {
              }},
         nimble::Statistics<physicalType>::create(physicalValues),
         std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(
-            compressionType)};
+            compressionType, realNestedSelection)};
 
     return E::encode(selection, physicalValues, buffer, options);
   }
