@@ -444,35 +444,79 @@ class ChunkedDecoder {
       }
     };
 
-    while (visitor.rowIndex() < numRows) {
-      // Check for chunk exhaustion before computing the next row range.
-      // This is done unconditionally (for both kHasNulls and !kHasNulls)
-      // to avoid the testNulls path in computeNextRowIndex loading a new
-      // chunk mid-count, which would produce numNonNulls spanning two
-      // chunks and incorrect index reads.
-      if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-        loadNextChunk(/*preserveDictionaryEncoding=*/true);
-        if (!onChunkBoundary()) {
-          // The new chunk is not dictionary-compatible. readOffset_ has not
-          // moved during this read, so it still holds the read's start offset;
-          // adding params.numScanned (the rows consumed up to this chunk
-          // boundary) advances it to the boundary, where the flat encoding
-          // fallback resumes the decode.
-          //
-          // TODO: Make the decoder the single owner of readOffset_ — also
-          // advance it on the full-read path here instead of readWithDictionary
-          // doing readOffset_ += endReadRow, so the update is not split across
-          // the reader and the decoder.
-          visitor.reader().setReadOffset(
-              visitor.reader().readOffset() + params.numScanned);
-          return false;
-        }
+    // For kHasNulls, count the value-stream rows this read will consume, once
+    // up front, so the per-chunk-exhaustion guard below is an O(1) decrement
+    // rather than a bitmap re-scan each time a chunk runs out.
+    //
+    // The nulls bitmap here carries only structural nulls (incoming struct
+    // nulls plus flatmap in-map), populated whole-range by
+    // prepareRead()/readNulls() before this read. NullableEncoding merges
+    // value-level nulls only into the already-decoded prefix
+    // (materializeNullsForVisitor), never the remaining range, so over
+    // [numScanned, endRow) every structural non-null is exactly one
+    // value-stream row to consume; countNonNulls is thus an exact total.
+    //
+    // The !kHasNulls path has no null bitmap: every remaining row is a value,
+    // so it always loads (like the flat !kHasNulls path) and does not use this
+    // counter.
+    int64_t remainingValues = 0;
+    if constexpr (kHasNulls) {
+      const auto endRow = V::dense
+          ? params.numScanned + (numRows - visitor.rowIndex())
+          : visitor.rowAt(numRows - 1) + 1;
+      remainingValues = static_cast<int64_t>(
+          velox::bits::countNonNulls(nulls, params.numScanned, endRow));
+    }
 
-        // onChunkBoundary() rebuilt the per-chunk filter dictionary in the
-        // reader's scan state. Re-snapshot it into the visitor so the next
-        // chunk's filter evaluation uses this chunk's dictionary, not the
-        // stale copy captured when the visitor was constructed.
-        visitor.refreshScanState();
+    while (visitor.rowIndex() < numRows) {
+      // Load the next chunk only when a value-stream row still remains in this
+      // read range, mirroring the flat path's testNulls guard
+      // (c > 0 && remainingValues_ == 0). An all-null run leaves
+      // remainingValues == 0: skip the load; computeNextRowIndex then
+      // emits the null rows with numNonNulls == 0. If a value is expected but
+      // no chunk remains, loadNextChunk throws on the metadata/bitmap mismatch
+      // (corruption).
+      //
+      // The load is driven from this loop (computeNextRowIndex runs with
+      // kReadAllChunks=false) rather than reused from the flat testNulls path.
+      // Both paths read one chunk per pass and stop at its boundary; the
+      // difference is where the boundary load lives. In the flat path it lives
+      // inside the testNulls bit-scan and is bare: no
+      // preserveDictionaryEncoding, and no seam at which to run onChunkBoundary
+      // (merge the per-chunk alphabet
+      // + refresh scan state) or to abandon to the flat fallback when the next
+      // chunk is not dictionary-compatible. Hoisting the load here gives those
+      // a clean seam.
+      if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
+        // With nulls, load only if a value-stream row still remains; without a
+        // null bitmap every remaining row is a value, so always load (as the
+        // flat !kHasNulls path does).
+        const bool needMoreValues = kHasNulls ? (remainingValues > 0) : true;
+        if (needMoreValues) {
+          loadNextChunk(/*preserveDictionaryEncoding=*/true);
+          if (!onChunkBoundary()) {
+            // The new chunk is not dictionary-compatible. readOffset_ has not
+            // moved during this read, so it still holds the read's start
+            // offset; adding params.numScanned (the rows consumed up to this
+            // chunk boundary) advances it to the boundary, where the flat
+            // encoding fallback resumes the decode.
+            //
+            // TODO: Make the decoder the single owner of readOffset_ — also
+            // advance it on the full-read path here instead of
+            // readWithDictionary doing readOffset_ += endReadRow, so the update
+            // is not split across the reader and the decoder.
+            visitor.reader().setReadOffset(
+                visitor.reader().readOffset() + params.numScanned);
+            return false;
+          }
+
+          // onChunkBoundary() rebuilt the per-chunk filter dictionary in the
+          // reader's scan state. Re-snapshot it into the visitor so the next
+          // chunk's filter evaluation uses this chunk's dictionary, not the
+          // stale copy captured when the visitor was constructed.
+          visitor.refreshScanState();
+        }
+        // Otherwise all remaining rows are null; no chunk is needed.
       }
 
       velox::vector_size_t numNulls{0};
@@ -509,6 +553,9 @@ class ChunkedDecoder {
       }
       advancePosition(numNonNulls);
       params.numScanned += numNulls + numNonNulls;
+      if constexpr (kHasNulls) {
+        remainingValues -= numNonNulls;
+      }
 
       if (stringDecoderZeroCopy_) {
         stringBuffers.reserve(
