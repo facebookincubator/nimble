@@ -17,6 +17,7 @@
 
 #include <optional>
 
+#include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexFactoryRegistry.h"
@@ -38,11 +39,15 @@ class NimbleClusterIndexFactory final : public ClusterIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const ClusterIndexConfig& config,
+      const IndexConfig& config,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const override {
+    NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Cluster);
+    NIMBLE_USER_CHECK_EQ(config.name, name());
     return ClusterIndexWriter::create(
-        std::optional<ClusterIndexConfig>{config}, inputType, pool);
+        std::optional<ClusterIndexConfig>{toClusterIndexConfig(config)},
+        inputType,
+        pool);
   }
 
   std::unique_ptr<IndexKeyEncoder> createKeyEncoder(

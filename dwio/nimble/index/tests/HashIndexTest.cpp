@@ -97,7 +97,7 @@ class HashIndexTestBase {
       HashIndexConfig indexConfig,
       std::optional<uint64_t> flushSize = std::nullopt) {
     VeloxWriterOptions options;
-    options.hashIndexConfigs.push_back(std::move(indexConfig));
+    options.denseIndexConfigs.push_back(toIndexConfig(std::move(indexConfig)));
     if (flushSize.has_value()) {
       options.flushPolicyFactory = [size = flushSize.value()]() {
         return std::make_unique<StripeRawSizeFlushPolicy>(size);
@@ -469,9 +469,10 @@ TEST_F(HashIndexTest, multipleIndices) {
   const auto filePath = tempFilePath("multi_indices");
   {
     VeloxWriterOptions options;
-    options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"col_a"}});
-    options.hashIndexConfigs.push_back(
-        HashIndexConfig{.columns = {"col_b", "col_c"}});
+    options.denseIndexConfigs.push_back(
+        toIndexConfig(HashIndexConfig{.columns = {"col_a"}}));
+    options.denseIndexConfigs.push_back(
+        toIndexConfig(HashIndexConfig{.columns = {"col_b", "col_c"}}));
     writeFile(filePath, colAType, {batch}, std::move(options));
   }
 

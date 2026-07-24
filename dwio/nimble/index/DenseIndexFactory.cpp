@@ -153,6 +153,16 @@ class HashIndexFactory final : public DenseIndexFactory {
     return kDenseHashIndexName;
   }
 
+  std::unique_ptr<IndexWriter> createWriter(
+      const IndexConfig& config,
+      const velox::TypePtr& inputType,
+      velox::memory::MemoryPool* pool) const override {
+    NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Dense);
+    NIMBLE_USER_CHECK_EQ(config.name, name());
+    return HashIndexWriter::create(
+        {toHashIndexConfig(config)}, inputType, pool);
+  }
+
   std::unique_ptr<DenseIndexReader> createReader(
       Section rootSection,
       const IndexLookup::Options& options,
@@ -177,6 +187,16 @@ class SortedIndexFactory final : public DenseIndexFactory {
  public:
   std::string_view name() const override {
     return kDenseSortedIndexName;
+  }
+
+  std::unique_ptr<IndexWriter> createWriter(
+      const IndexConfig& config,
+      const velox::TypePtr& inputType,
+      velox::memory::MemoryPool* pool) const override {
+    NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Dense);
+    NIMBLE_USER_CHECK_EQ(config.name, name());
+    return SortedIndexWriter::create(
+        {toSortedIndexConfig(config)}, inputType, pool);
   }
 
   std::unique_ptr<DenseIndexReader> createReader(
