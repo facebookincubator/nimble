@@ -88,11 +88,12 @@ inline double fixedBitWidthCostBits(
       m.range == 0 ? uint8_t{0} : static_cast<uint8_t>(std::bit_width(m.range));
   const uint8_t packedBits =
       std::min<uint8_t>(static_cast<uint8_t>(bitWidth), rangeWidth);
-  // Round up to byte boundary (matches nimble's current FixedBitWidth impl).
-  const uint8_t roundedBits = (packedBits + 7u) & ~7u;
+  // Sections are packed at their exact bit width (SubIntSplit encodes nested
+  // sections with fixedBitWidthUseExactBits), so there is no byte-boundary
+  // rounding: a 12-bit section costs 12 bits/value, not 16.
 
   return headerBits +
-      static_cast<double>(roundedBits) * static_cast<double>(numValues);
+      static_cast<double>(packedBits) * static_cast<double>(numValues);
 }
 
 // Constant: zero cost when all values are equal, infinity otherwise.
