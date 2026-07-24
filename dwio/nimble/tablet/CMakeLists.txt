@@ -155,10 +155,16 @@ target_link_libraries(
   Folly::folly
 )
 
-add_library(nimble_tablet_reader FileLayout.cpp TabletReader.cpp)
+add_library(
+  nimble_tablet_reader
+  FileLayout.cpp
+  StripeGroup.cpp
+  TabletReader.cpp
+)
 target_link_libraries(
   nimble_tablet_reader
   PUBLIC
+    nimble_encodings
     nimble_index
     nimble_tablet_common
     nimble_cluster_index_fb
@@ -186,6 +192,7 @@ target_link_libraries(
 add_library(nimble_tablet_writer ChunkIndexWriter.cpp TabletWriter.cpp)
 target_link_libraries(
   nimble_tablet_writer
+  nimble_encodings
   nimble_tablet_common
   nimble_encodings
   nimble_cluster_index_fb
