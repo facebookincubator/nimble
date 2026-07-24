@@ -17,8 +17,10 @@
 
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
+#include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/type/Type.h"
 
 namespace facebook::nimble::index {
 
@@ -43,6 +45,12 @@ class DenseIndexFactory {
   virtual ~DenseIndexFactory() = default;
 
   virtual std::string_view name() const = 0;
+
+  /// Creates a non-null writer for one index configuration.
+  virtual std::unique_ptr<IndexWriter> createWriter(
+      const IndexConfig& config,
+      const velox::TypePtr& inputType,
+      velox::memory::MemoryPool* pool) const = 0;
 
   /// Creates a non-null reader. The reader's index column topology must remain
   /// immutable for its lifetime.

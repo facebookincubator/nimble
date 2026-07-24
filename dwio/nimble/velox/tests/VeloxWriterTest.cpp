@@ -445,7 +445,7 @@ TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
       type,
       std::move(writeFile),
       *rootPool_,
-      {.clusterIndexConfig = clusterIndexConfig});
+      {.clusterIndexConfig = nimble::index::toIndexConfig(clusterIndexConfig)});
   writer.close();
 
   // Verify FileLayout for empty file with index enabled using
@@ -880,7 +880,8 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
             nimble::EncodingType::Prefix,
             {},
             nimble::CompressionType::Uncompressed};
-        options.clusterIndexConfig = std::move(clusterIndexConfig);
+        options.clusterIndexConfig = facebook::nimble::index::toIndexConfig(
+            std::move(clusterIndexConfig));
       }
 
       nimble::VeloxWriter writer(
@@ -3777,7 +3778,8 @@ class VeloxWriterIndexTest
       const std::function<std::unique_ptr<nimble::FlushPolicy>()>&
           flushPolicyFactory = nullptr) {
     nimble::VeloxWriterOptions options{
-        .clusterIndexConfig = std::move(clusterIndexConfig),
+        .clusterIndexConfig =
+            nimble::index::toIndexConfig(std::move(clusterIndexConfig)),
     };
     if (enableChunking()) {
       options.minStreamChunkRawSize = 1 << 10; // 1KB
@@ -4494,7 +4496,8 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
           type,
           std::move(writeFile),
           *rootPool_,
-          {.clusterIndexConfig = clusterIndexConfig});
+          {.clusterIndexConfig =
+               nimble::index::toIndexConfig(clusterIndexConfig)});
 
       velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
@@ -4985,7 +4988,8 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
         type,
         std::move(writeFile),
         *rootPool_,
-        {.clusterIndexConfig = clusterIndexConfig});
+        {.clusterIndexConfig =
+             nimble::index::toIndexConfig(clusterIndexConfig)});
 
     velox::test::VectorMaker vectorMaker{leafPool_.get()};
 

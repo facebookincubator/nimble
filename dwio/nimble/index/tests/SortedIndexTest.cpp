@@ -95,7 +95,7 @@ class SortedIndexTestBase {
       SortedIndexConfig indexConfig,
       std::optional<uint64_t> flushSize = std::nullopt) {
     VeloxWriterOptions options;
-    options.sortedIndexConfigs.push_back(std::move(indexConfig));
+    options.denseIndexConfigs.push_back(toIndexConfig(std::move(indexConfig)));
     if (flushSize.has_value()) {
       options.flushPolicyFactory = [size = flushSize.value()]() {
         return std::make_unique<StripeRawSizeFlushPolicy>(size);
@@ -425,9 +425,10 @@ TEST_F(SortedIndexTest, multipleIndices) {
   const auto filePath = tempFilePath("multi_indices");
   {
     VeloxWriterOptions options;
-    options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"id"}});
-    options.sortedIndexConfigs.push_back(
-        SortedIndexConfig{.columns = {"id", "value"}});
+    options.denseIndexConfigs.push_back(
+        toIndexConfig(SortedIndexConfig{.columns = {"id"}}));
+    options.denseIndexConfigs.push_back(
+        toIndexConfig(SortedIndexConfig{.columns = {"id", "value"}}));
     writeFile(filePath, rowType(), batches, std::move(options));
   }
 
@@ -468,7 +469,7 @@ TEST_P(SortedIndexParamTest, duplicateKeys) {
 
   const auto filePath = tempFilePath("duplicate_keys");
   VeloxWriterOptions options;
-  options.sortedIndexConfigs.push_back(indexConfig());
+  options.denseIndexConfigs.push_back(toIndexConfig(indexConfig()));
   writeFile(filePath, rowType(), {batch}, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -560,7 +561,7 @@ TEST_F(SortedIndexTest, duplicateKeysAcrossChunks) {
   const auto filePath = tempFilePath("dup_across_chunks");
   VeloxWriterOptions options;
   SortedIndexConfig config{.columns = {"id"}, .maxRowsPerKeyChunk = 3};
-  options.sortedIndexConfigs.push_back(std::move(config));
+  options.denseIndexConfigs.push_back(toIndexConfig(std::move(config)));
   writeFile(filePath, rowType(), {batch}, std::move(options));
 
   auto tablet = openTablet(filePath);

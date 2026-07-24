@@ -95,8 +95,6 @@ struct ClusterIndexConfig {
   /// not compress its own output, so this is the only way to block-compress a
   /// Prefix key index. Only Uncompressed, Zstd, and Lz4 are supported.
   CompressionType keyChunkCompressionType{CompressionType::Uncompressed};
-  /// Configuration options for a custom cluster index implementation.
-  std::shared_ptr<const velox::config::ConfigBase> customOptions;
 };
 
 /// Configuration for bloom filter.
@@ -158,5 +156,35 @@ struct SortedIndexConfig {
   /// 0 means no splitting (one chunk per partition).
   uint64_t maxRowsPerKeyChunk{0};
 };
+
+/// Configures one named index implementation.
+struct IndexConfig {
+  /// Selects the index factory registry.
+  IndexFamily family;
+  /// Names the registered index factory.
+  std::string name;
+  /// Provides implementation-specific configuration options.
+  std::shared_ptr<const velox::config::ConfigBase> options;
+};
+
+/// Converts built-in cluster index options to the generic factory
+/// configuration.
+IndexConfig toIndexConfig(ClusterIndexConfig config);
+
+/// Converts built-in hash index options to the generic factory configuration.
+IndexConfig toIndexConfig(HashIndexConfig config);
+
+/// Converts built-in sorted index options to the generic factory
+/// configuration.
+IndexConfig toIndexConfig(SortedIndexConfig config);
+
+/// Parses generic options for the built-in cluster index implementation.
+ClusterIndexConfig toClusterIndexConfig(const IndexConfig& config);
+
+/// Parses generic options for the built-in hash index implementation.
+HashIndexConfig toHashIndexConfig(const IndexConfig& config);
+
+/// Parses generic options for the built-in sorted index implementation.
+SortedIndexConfig toSortedIndexConfig(const IndexConfig& config);
 
 } // namespace facebook::nimble::index
