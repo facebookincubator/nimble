@@ -15,10 +15,16 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <glog/logging.h>
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <random>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include "dwio/nimble/common/Constants.h"
@@ -48,49 +54,49 @@ using EncodingSelectionPolicyCreator =
 #endif
 
 #define COMMA ,
-#define UNIQUE_PTR_FACTORY_EXTRA(data_type, class, extra_types, ...)        \
-  switch (data_type) {                                                      \
-    case facebook::nimble::DataType::Uint8: {                               \
-      return std::make_unique<class<uint8_t extra_types>>(__VA_ARGS__);     \
-    }                                                                       \
-    case facebook::nimble::DataType::Int8: {                                \
-      return std::make_unique<class<int8_t extra_types>>(__VA_ARGS__);      \
-    }                                                                       \
-    case facebook::nimble::DataType::Uint16: {                              \
-      return std::make_unique<class<uint16_t extra_types>>(__VA_ARGS__);    \
-    }                                                                       \
-    case facebook::nimble::DataType::Int16: {                               \
-      return std::make_unique<class<int16_t extra_types>>(__VA_ARGS__);     \
-    }                                                                       \
-    case facebook::nimble::DataType::Uint32: {                              \
-      return std::make_unique<class<uint32_t extra_types>>(__VA_ARGS__);    \
-    }                                                                       \
-    case facebook::nimble::DataType::Int32: {                               \
-      return std::make_unique<class<int32_t extra_types>>(__VA_ARGS__);     \
-    }                                                                       \
-    case facebook::nimble::DataType::Uint64: {                              \
-      return std::make_unique<class<uint64_t extra_types>>(__VA_ARGS__);    \
-    }                                                                       \
-    case facebook::nimble::DataType::Int64: {                               \
-      return std::make_unique<class<int64_t extra_types>>(__VA_ARGS__);     \
-    }                                                                       \
-    case facebook::nimble::DataType::Float: {                               \
-      return std::make_unique<class<float extra_types>>(__VA_ARGS__);       \
-    }                                                                       \
-    case facebook::nimble::DataType::Double: {                              \
-      return std::make_unique<class<double extra_types>>(__VA_ARGS__);      \
-    }                                                                       \
-    case facebook::nimble::DataType::Bool: {                                \
-      return std::make_unique<class<bool extra_types>>(__VA_ARGS__);        \
-    }                                                                       \
-    case facebook::nimble::DataType::String: {                              \
-      return std::make_unique<class<std::string_view extra_types>>(         \
-          __VA_ARGS__);                                                     \
-    }                                                                       \
-    default: {                                                              \
-      NIMBLE_UNREACHABLE("Unsupported data type {}.", toString(data_type)); \
-    }                                                                       \
-  }
+#define UNIQUE_PTR_FACTORY_EXTRA(data_type, class, extra_types, ...)     \
+  switch (data_type) {                                                   \
+    case facebook::nimble::DataType::Uint8: {                            \
+      return std::make_unique<class<uint8_t extra_types>>(__VA_ARGS__);  \
+    }                                                                    \
+    case facebook::nimble::DataType::Int8: {                             \
+      return std::make_unique<class<int8_t extra_types>>(__VA_ARGS__);   \
+    }                                                                    \
+    case facebook::nimble::DataType::Uint16: {                           \
+      return std::make_unique<class<uint16_t extra_types>>(__VA_ARGS__); \
+    }                                                                    \
+    case facebook::nimble::DataType::Int16: {                            \
+      return std::make_unique<class<int16_t extra_types>>(__VA_ARGS__);  \
+    }                                                                    \
+    case facebook::nimble::DataType::Uint32: {                           \
+      return std::make_unique<class<uint32_t extra_types>>(__VA_ARGS__); \
+    }                                                                    \
+    case facebook::nimble::DataType::Int32: {                            \
+      return std::make_unique<class<int32_t extra_types>>(__VA_ARGS__);  \
+    }                                                                    \
+    case facebook::nimble::DataType::Uint64: {                           \
+      return std::make_unique<class<uint64_t extra_types>>(__VA_ARGS__); \
+    }                                                                    \
+    case facebook::nimble::DataType::Int64: {                            \
+      return std::make_unique<class<int64_t extra_types>>(__VA_ARGS__);  \
+    }                                                                    \
+    case facebook::nimble::DataType::Float: {                            \
+      return std::make_unique<class<float extra_types>>(__VA_ARGS__);    \
+    }                                                                    \
+    case facebook::nimble::DataType::Double: {                           \
+      return std::make_unique<class<double extra_types>>(__VA_ARGS__);   \
+    }                                                                    \
+    case facebook::nimble::DataType::Bool: {                             \
+      return std::make_unique<class<bool extra_types>>(__VA_ARGS__);     \
+    }                                                                    \
+    case facebook::nimble::DataType::String: {                           \
+      return std::make_unique<class<std::string_view extra_types>>(      \
+          __VA_ARGS__);                                                  \
+    }                                                                    \
+    case facebook::nimble::DataType::Undefined:                          \
+      break;                                                             \
+  }                                                                      \
+  NIMBLE_UNREACHABLE("Unsupported data type {}.", toString(data_type))
 
 #define UNIQUE_PTR_FACTORY(data_type, class, ...) \
   UNIQUE_PTR_FACTORY_EXTRA(data_type, class, , __VA_ARGS__)
@@ -288,9 +294,11 @@ class ManualEncodingSelectionPolicyFactory {
   std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
       DataType dataType) const;
 
- private:
+  /// All encodings the string-config parsers accept (production +
+  /// experimental). Also used to resolve encoding names to EncodingType.
   static std::vector<EncodingType> possibleEncodings();
 
+ private:
   const std::vector<std::pair<EncodingType, float>> encodingReadFactors_;
   const std::optional<CompressionOptions> compressionOptions_;
 };
@@ -426,6 +434,166 @@ EncodingSelectionResult LearnedEncodingSelectionPolicy<T>::select(
       .encodingType = EncodingType::Trivial,
   };
 }
+
+/// Randomized encoding selection for fuzz/stress testing. For each stream it
+/// picks uniformly at random among the encodings that are compatible with the
+/// data. Compatibility is defined exactly as encoding-size estimability:
+/// EncodingSizeEstimation returns nullopt for any encoding that cannot encode
+/// the given physical type or data statistics (e.g. Dictionary/FixedBitWidth/
+/// Varint on bool, Varint on non-integers, Constant on non-constant data), so
+/// reusing that signal keeps the random pick compatible without a
+/// hand-maintained rule table, and the writer's one-shot IncompatibleEncoding
+/// fallback is never relied upon.
+template <typename T>
+class RandomEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
+  using physicalType = typename TypeTraits<T>::physicalType;
+
+ public:
+  RandomEncodingSelectionPolicy(
+      std::vector<EncodingType> encodingChoices,
+      uint64_t seed,
+      std::optional<CompressionOptions> compressionOptions =
+          CompressionOptions{})
+      : encodingChoices_{std::move(encodingChoices)},
+        seed_{seed},
+        compressionOptions_{std::move(compressionOptions)} {}
+
+  EncodingSelectionResult select(
+      std::span<const physicalType> values,
+      const Statistics<physicalType>& statistics,
+      const Encoding::Options& options) override {
+    // Empty streams (e.g. the values of an all-null column, or an empty nested
+    // stream) can only be encoded trivially; several encodings hard-fail on
+    // zero rows. Matches Manual/Learned selection.
+    if (values.empty()) {
+      return {
+          .encodingType = EncodingType::Trivial,
+      };
+    }
+
+    // Keep only encodings that can estimate a size for this data. An absent
+    // estimate means the encoding is incompatible with the physical type or the
+    // data's statistics, so excluding it here is what keeps the random pick
+    // compatible.
+    std::vector<EncodingType> compatibleEncodings;
+    compatibleEncodings.reserve(encodingChoices_.size());
+    for (const auto& encodingType : encodingChoices_) {
+      if (detail::EncodingSizeEstimation<T>::estimateSize(
+              encodingType, values, statistics, options)
+              .has_value()) {
+        compatibleEncodings.push_back(encodingType);
+      }
+    }
+
+    if (compatibleEncodings.empty()) {
+      return {
+          .encodingType = EncodingType::Trivial,
+      };
+    }
+
+    // Seed a fresh generator from this policy's derived seed so the single pick
+    // is deterministic and independent of encode thread order.
+    std::mt19937_64 generator{seed_};
+    std::uniform_int_distribution<size_t> distribution(
+        0, compatibleEncodings.size() - 1);
+    const auto selectedEncoding = compatibleEncodings[distribution(generator)];
+
+    if (!compressionOptions_.has_value()) {
+      return {.encodingType = selectedEncoding};
+    }
+    // Encoding selection optimizes the in-memory layout. Compression is still
+    // attempted for leaf data streams to reduce persistent storage size.
+    return {
+        .encodingType = selectedEncoding,
+        .compressionPolicyFactory = [compressionOptions =
+                                         compressionOptions_.value(),
+                                     selectedEncoding]() {
+          return std::make_unique<ConfiguredCompressionPolicy>(
+              compressionOptions, selectedEncoding);
+        }};
+  }
+
+  EncodingSelectionResult selectNullable(
+      std::span<const physicalType> /* values */,
+      std::span<const bool> /* nulls */,
+      const Statistics<physicalType>& /* statistics */,
+      const Encoding::Options& /* options */) override {
+    return {
+        .encodingType = EncodingType::Nullable,
+    };
+  }
+
+ protected:
+  std::unique_ptr<EncodingSelectionPolicyBase> createImpl(
+      EncodingType parentEncodingType,
+      NestedEncodingIdentifier nestedEncodingIdentifier,
+      DataType nestedDataType) override {
+    // Exclude the parent encoding from nested choices so the recursive
+    // selection always converges (mirrors Manual/Learned).
+    std::vector<EncodingType> nestedEncodingChoices;
+    nestedEncodingChoices.reserve(encodingChoices_.size());
+    for (const auto& encodingType : encodingChoices_) {
+      if (encodingType != parentEncodingType) {
+        nestedEncodingChoices.push_back(encodingType);
+      }
+    }
+    // Fold this policy's seed with the parent encoding and the child slot so
+    // every node in the tree gets a distinct seed that depends only on its
+    // structural path, never on encode timing. This keeps the whole random
+    // layout reproducible from the single base seed even when streams are
+    // encoded concurrently.
+    const uint64_t nestedSeed = folly::hash::hash_combine(
+        seed_,
+        static_cast<std::underlying_type_t<EncodingType>>(parentEncodingType),
+        nestedEncodingIdentifier);
+    UNIQUE_PTR_FACTORY(
+        nestedDataType,
+        RandomEncodingSelectionPolicy,
+        std::move(nestedEncodingChoices),
+        nestedSeed,
+        compressionOptions_);
+  }
+
+ private:
+  std::vector<EncodingType> encodingChoices_;
+  uint64_t seed_;
+  std::optional<CompressionOptions> compressionOptions_;
+};
+
+/// Produces RandomEncodingSelectionPolicy instances seeded deterministically
+/// from a single base seed, so an entire file's random encoding tree is
+/// reproducible from that seed. Intended for fuzz/stress testing only.
+class RandomEncodingSelectionPolicyFactory {
+ public:
+  /// The candidate encodings the random policy draws from (the production
+  /// Learned/Manual default set). EncodingSizeEstimation filters this per
+  /// stream down to the encodings compatible with the actual data.
+  static std::vector<EncodingType> defaultEncodingChoices();
+
+  /// Parses a "seed:<n>[,encodings:<E1>;<E2>;...]" config string into a factory
+  /// (mirrors FlushPolicyFactoryFactory). 'seed' is required; 'encodings' is an
+  /// optional ';'-separated subset that defaults to defaultEncodingChoices().
+  /// Returns nullopt for an empty string; throws NimbleUserError on malformed
+  /// input. Intended for test-only config wiring.
+  static std::optional<RandomEncodingSelectionPolicyFactory> create(
+      std::string_view configStr,
+      std::optional<CompressionOptions> compressionOptions =
+          CompressionOptions{});
+
+  explicit RandomEncodingSelectionPolicyFactory(
+      uint64_t seed,
+      std::vector<EncodingType> encodingChoices = defaultEncodingChoices(),
+      std::optional<CompressionOptions> compressionOptions =
+          CompressionOptions{});
+
+  std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
+      DataType dataType) const;
+
+ private:
+  uint64_t seed_;
+  std::vector<EncodingType> encodingChoices_;
+  std::optional<CompressionOptions> compressionOptions_;
+};
 
 template <typename T>
 class ReplayedEncodingSelectionPolicy

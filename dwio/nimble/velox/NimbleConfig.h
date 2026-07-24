@@ -82,6 +82,19 @@ class Config : public velox::config::ConfigBase {
   // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
   static Entry<std::string> FLUSH_POLICY_CONFIG;
 
+  /// Configures encoding selection. A comma-separated key:value config; the set
+  /// of supported keys will grow. Currently supported:
+  ///   seed:<n>                (required) enable random encoding selection,
+  ///                           compatible with the data and reproducible from
+  ///                           this seed. Test/fuzz only; not for production.
+  ///   encodings:<E1>;<E2>;... (optional) restrict the random candidate set
+  ///                           (';'-separated names; defaults to the standard
+  ///                           set).
+  /// Empty/unset keeps the default (manual) policy. See
+  /// RandomEncodingSelectionPolicy. E.g. "seed:42,encodings:Dictionary;RLE".
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<std::string> ENCODING_SELECTION_CONFIG;
+
   // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   // production tables without consulting the Nimble team (oncall: dwios).
 
