@@ -118,29 +118,21 @@ struct VeloxWriterOptions {
   /// the flat-map writer holds.
   uint32_t maxFlatMapKeys{kDefaultMaxFlatMapKeys};
 
-  /// Per-column string-keyed attributes to stamp onto the NIMBLE schema.
-  /// Keyed by a dotted path of `RowType` child names that resolves to a node
-  /// in the input `RowType`. The empty key (`""`) targets the root.
-  /// Examples:
-  ///   "id"              -> top-level column `id`
-  ///   "user.name"       -> field `name` inside top-level struct column
-  ///                        `user`
-  /// Each value is the attribute bag forwarded verbatim to
+  /// Per-type string attributes (e.g. Iceberg "iceberg.id") keyed by pre-order
+  /// schema node id (matching `TypeWithId::id()`: root = 0, then depth-first --
+  /// ROW children in field order, ARRAY element, MAP key then value). Each
+  /// value is the attribute bag forwarded verbatim to
   /// `TypeBuilder::setAttributes(...)` on the matching node and preserves
   /// insertion order end-to-end through schema serialization.
   ///
-  /// Paths that do not resolve to a node in the input `RowType` are silently
-  /// ignored so that callers can submit a superset of attributes and let
-  /// schema evolution drop entries that no longer apply. Paths walking
-  /// through non-`RowType` parents are not supported in this diff; callers
-  /// currently emit flat top-level / nested-struct keys only, and richer
-  /// addressing can be added in a follow-up if needed.
+  /// Node ids that do not correspond to a node in the input schema are ignored,
+  /// so callers may submit a superset and let schema evolution drop entries
+  /// that no longer apply.
   ///
   /// Empty map (default) is a no-op: every existing NIMBLE writer produces
   /// byte-identical files.
-  folly::
-      F14FastMap<std::string, std::vector<std::pair<std::string, std::string>>>
-          attributesByColumn;
+  folly::F14FastMap<uint32_t, std::vector<std::pair<std::string, std::string>>>
+      schemaAttributes;
 
   /// When true, the writer skips encoding flat map in-map boolean streams that
   /// are all-true (every row has the key) or all-false (no row has the key).

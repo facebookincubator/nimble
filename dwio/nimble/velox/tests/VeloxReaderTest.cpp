@@ -7533,11 +7533,10 @@ TEST_P(VeloxReaderTest, openZLCompressionRoundTrip) {
 // ---------------------------------------------------------------------------
 // End-to-end attributes propagation through the writer/reader pipeline.
 //
-// Validates VeloxWriterOptions::attributesByColumn round-trips through the
+// Validates VeloxWriterOptions::schemaAttributes round-trips through the
 // writer pipeline, the schema flatbuffer, and back through VeloxReader to
-// the deserialized Type tree exposed by reader.schema(). Top-level and
-// nested-struct dotted-path keys are covered; unresolved paths must be
-// silently dropped per the documented contract.
+// the deserialized Type tree exposed by reader.schema(). Node ids are pre-order
+// (TypeWithId::id()); ids with no matching node must be ignored.
 // ---------------------------------------------------------------------------
 TEST_P(VeloxReaderTest, attributesByColumnRoundTrip) {
   facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
@@ -7548,22 +7547,22 @@ TEST_P(VeloxReaderTest, attributesByColumnRoundTrip) {
   auto type = velox::ROW({"id", "user"}, {velox::BIGINT(), userType});
 
   facebook::nimble::VeloxWriterOptions writerOptions;
-  // Top-level leaf and a nested-struct leaf via dotted path. The bogus path
-  // "user.does_not_exist" must be silently dropped.
-  writerOptions.attributesByColumn["id"] = {
+  // Pre-order node ids: id=1, user=2, user.name=3, user.age=4. Node 99 has no
+  // matching schema node and must be ignored.
+  writerOptions.schemaAttributes[1] = {
       {"key.a", "1"},
       {"key.b", "true"},
       {"key.c", "LONG"},
   };
-  writerOptions.attributesByColumn["user"] = {
+  writerOptions.schemaAttributes[2] = {
       {"key.a", "2"},
       {"key.b", "false"},
   };
-  writerOptions.attributesByColumn["user.name"] = {
+  writerOptions.schemaAttributes[3] = {
       {"key.a", "3"},
       {"key.b", "true"},
   };
-  writerOptions.attributesByColumn["user.does_not_exist"] = {
+  writerOptions.schemaAttributes[99] = {
       {"key.a", "999"},
   };
 
@@ -7632,7 +7631,81 @@ TEST_P(VeloxReaderTest, attributesByColumnRoundTrip) {
   EXPECT_TRUE(ageType->attributes().empty());
 }
 
-// Backward-compat: a writer that does NOT set attributesByColumn must
+// ---------------------------------------------------------------------------
+// Node-id addressing of ARRAY / MAP children through schemaAttributes.
+//
+// Validates that the list element and map key/value nodes (pre-order ids)
+// round-trip their attributes. Ids with no matching node must be ignored.
+// ---------------------------------------------------------------------------
+TEST_P(VeloxReaderTest, attributesByColumnRoundTripCollections) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  // ROW{tags ARRAY<INTEGER>, props MAP<INTEGER, BIGINT>}
+  auto type = velox::ROW(
+      {"tags", "props"},
+      {velox::ARRAY(velox::INTEGER()),
+       velox::MAP(velox::INTEGER(), velox::BIGINT())});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  // Pre-order node ids: tags=1, element=2, props=3, key=4, value=5.
+  writerOptions.schemaAttributes[1] = {{"iceberg.id", "1"}};
+  writerOptions.schemaAttributes[2] = {{"iceberg.id", "2"}};
+  writerOptions.schemaAttributes[3] = {{"iceberg.id", "3"}};
+  writerOptions.schemaAttributes[4] = {{"iceberg.id", "4"}};
+  writerOptions.schemaAttributes[5] = {{"iceberg.id", "5"}};
+  // A node id past the end of the schema must be ignored.
+  writerOptions.schemaAttributes[99] = {{"iceberg.id", "999"}};
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  auto tags = vectorMaker.arrayVector<int32_t>({{1, 2}, {3}});
+  auto props = vectorMaker.mapVector<int32_t, int64_t>(
+      /*size*/
+      2,
+      /*sizeAt*/ [](auto /*row*/) { return 1; },
+      /*keyAt*/ [](auto row) { return row; },
+      /*valueAt*/ [](auto row) { return row; });
+  auto vector = vectorMaker.rowVector({"tags", "props"}, {tags, props});
+  writer.write(vector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& root = reader.schema();
+  const auto& rowSchema = root->asRow();
+  ASSERT_EQ(2, rowSchema.childrenCount());
+
+  // List: attributes on the array node and on its element.
+  const auto& tagsType = rowSchema.childAt(0);
+  ASSERT_EQ(nimble::Kind::Array, tagsType->kind());
+  const std::vector<std::pair<std::string, std::string>> kTagsAttrs = {
+      {"iceberg.id", "1"}};
+  EXPECT_EQ(kTagsAttrs, tagsType->attributes());
+  const auto& elementType = tagsType->asArray().elements();
+  const std::vector<std::pair<std::string, std::string>> kElementAttrs = {
+      {"iceberg.id", "2"}};
+  EXPECT_EQ(kElementAttrs, elementType->attributes());
+
+  // Map: attributes on the map node and on its key / value.
+  const auto& propsType = rowSchema.childAt(1);
+  ASSERT_EQ(nimble::Kind::Map, propsType->kind());
+  const std::vector<std::pair<std::string, std::string>> kPropsAttrs = {
+      {"iceberg.id", "3"}};
+  EXPECT_EQ(kPropsAttrs, propsType->attributes());
+  const auto& mapType = propsType->asMap();
+  const std::vector<std::pair<std::string, std::string>> kKeyAttrs = {
+      {"iceberg.id", "4"}};
+  EXPECT_EQ(kKeyAttrs, mapType.keys()->attributes());
+  const std::vector<std::pair<std::string, std::string>> kValueAttrs = {
+      {"iceberg.id", "5"}};
+  EXPECT_EQ(kValueAttrs, mapType.values()->attributes());
+}
+
+// Backward-compat: a writer that does NOT set schemaAttributes must
 // produce a NIMBLE file whose deserialized Type tree exposes empty
 // attributes on every node. Pins the no-op upgrade path for every
 // existing NIMBLE writer.
