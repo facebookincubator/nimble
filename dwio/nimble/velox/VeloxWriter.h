@@ -96,18 +96,13 @@ class VeloxWriter {
   Stats stats() const;
 
  private:
-  struct IndexWriterEntry {
-    index::IndexFamily family;
-    std::string name;
-    std::unique_ptr<index::IndexWriter> writer;
-  };
-
-  static std::optional<IndexWriterEntry> createClusterIndexWriter(
+  static std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
       const VeloxWriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
 
-  static std::vector<IndexWriterEntry> createDenseIndexWriters(
+  static std::vector<std::unique_ptr<index::IndexWriter>>
+  createDenseIndexWriters(
       const VeloxWriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
@@ -206,8 +201,8 @@ class VeloxWriter {
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
-  const std::optional<IndexWriterEntry> clusterIndexWriter_;
-  const std::vector<IndexWriterEntry> denseIndexWriters_;
+  const std::unique_ptr<index::IndexWriter> clusterIndexWriter_;
+  const std::vector<std::unique_ptr<index::IndexWriter>> denseIndexWriters_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
 
   std::unique_ptr<FieldWriter> rootWriter_;

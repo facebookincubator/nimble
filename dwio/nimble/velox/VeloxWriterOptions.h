@@ -97,21 +97,13 @@ struct VeloxWriterOptions {
   /// pruning.
   /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   /// production tables without consulting the Nimble team (oncall: dwios).
-  std::optional<index::ClusterIndexConfig> clusterIndexConfig;
+  std::optional<index::IndexConfig> clusterIndexConfig;
 
-  /// Hash index configurations. Each config builds an independent hash-based
-  /// point lookup index on the specified columns. Unlike cluster index, hash
-  /// index does not require sorted data.
-  /// EXPERIMENTAL: Hash index is not production-ready. Do not enable for
+  /// Dense index configurations. Each configuration creates one independent
+  /// index through its named factory.
+  /// EXPERIMENTAL: Dense indexes are not production-ready. Do not enable for
   /// production tables without consulting the Nimble team (oncall: dwios).
-  std::vector<index::HashIndexConfig> hashIndexConfigs;
-
-  /// Sorted index configurations. Each config builds an independent sorted
-  /// key stream index supporting both point lookups and range scans on
-  /// unsorted data.
-  /// EXPERIMENTAL: Sorted index is not production-ready. Do not enable for
-  /// production tables without consulting the Nimble team (oncall: dwios).
-  std::vector<index::SortedIndexConfig> sortedIndexConfigs;
+  std::vector<index::IndexConfig> denseIndexConfigs;
 
   /// Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is

@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/DenseIndexFactory.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
 #include "dwio/nimble/index/IndexSerialization.h"
 #include "dwio/nimble/index/SortedIndexWriter.h"
@@ -808,49 +809,46 @@ void initializeEncodingLayouts(
 }
 } // namespace
 
-std::optional<VeloxWriter::IndexWriterEntry>
-VeloxWriter::createClusterIndexWriter(
+std::unique_ptr<index::IndexWriter> VeloxWriter::createClusterIndexWriter(
     const VeloxWriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
-  std::optional<IndexWriterEntry> result;
-  if (options.clusterIndexConfig.has_value()) {
-    const auto& config = options.clusterIndexConfig.value();
-    auto writer = index::clusterIndexFactory(config.indexName)
-                      .createWriter(config, type, pool);
-    NIMBLE_CHECK_NOT_NULL(
-        writer,
-        "Cluster index factory returned a null writer: {}",
-        config.indexName);
-    result.emplace(
-        IndexWriterEntry{
-            index::IndexFamily::Cluster, config.indexName, std::move(writer)});
+  if (!options.clusterIndexConfig.has_value()) {
+    return nullptr;
   }
-  return result;
+  const auto& config = options.clusterIndexConfig.value();
+  NIMBLE_USER_CHECK_EQ(
+      config.family,
+      index::IndexFamily::Cluster,
+      "Cluster index configuration must use the cluster family: {}",
+      config.name);
+  auto writer =
+      index::clusterIndexFactory(config.name).createWriter(config, type, pool);
+  NIMBLE_CHECK_NOT_NULL(
+      writer, "Cluster index factory returned a null writer: {}", config.name);
+  return writer;
 }
 
-std::vector<VeloxWriter::IndexWriterEntry> VeloxWriter::createDenseIndexWriters(
+std::vector<std::unique_ptr<index::IndexWriter>>
+VeloxWriter::createDenseIndexWriters(
     const VeloxWriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
-  std::vector<IndexWriterEntry> writers;
-  writers.reserve(
-      !options.hashIndexConfigs.empty() + !options.sortedIndexConfigs.empty());
-  if (!options.hashIndexConfigs.empty()) {
-    writers.emplace_back(
-        IndexWriterEntry{
-            index::IndexFamily::Dense,
-            std::string{index::kDenseHashIndexName},
-            index::HashIndexWriter::create(
-                options.hashIndexConfigs, type, pool)});
-  }
-  if (!options.sortedIndexConfigs.empty()) {
-    writers.emplace_back(
-        IndexWriterEntry{
-            index::IndexFamily::Dense,
-            std::string{index::kDenseSortedIndexName},
-            index::SortedIndexWriter::create(
-                options.sortedIndexConfigs, type, pool)});
+  std::vector<std::unique_ptr<index::IndexWriter>> writers;
+  writers.reserve(options.denseIndexConfigs.size());
+  for (const auto& config : options.denseIndexConfigs) {
+    NIMBLE_USER_CHECK_EQ(
+        config.family,
+        index::IndexFamily::Dense,
+        "Dense index configuration must use the dense family: {}",
+        config.name);
+    const auto* factory = index::denseIndexFactory(config.name);
+    NIMBLE_USER_CHECK_NOT_NULL(
+        factory, "Unknown dense index factory: {}", config.name);
+    auto writer = factory->createWriter(config, type, pool);
+    NIMBLE_USER_CHECK_NOT_NULL(
+        writer, "Dense index factory returned a null writer: {}", config.name);
+    writers.emplace_back(std::move(writer));
   }
   return writers;
 }
@@ -907,17 +905,17 @@ VeloxWriter::VeloxWriter(
                context_->options()
                    .experimentalStripeGroupEncodingLayoutReadFactors,
            .stripeGroupFlushCallback =
-               (clusterIndexWriter_.has_value() || !denseIndexWriters_.empty())
+               (clusterIndexWriter_ != nullptr || !denseIndexWriters_.empty())
                ? TabletWriter::StripeGroupFlushCallback(
                      [this](
                          const WriteDataFn& writeDataFn,
                          const CreateMetadataSectionFn& createMetadataFn) {
-                       if (clusterIndexWriter_.has_value()) {
-                         clusterIndexWriter_->writer->flush(
+                       if (clusterIndexWriter_ != nullptr) {
+                         clusterIndexWriter_->flush(
                              writeDataFn, createMetadataFn);
                        }
-                       for (const auto& entry : denseIndexWriters_) {
-                         entry.writer->flush(writeDataFn, createMetadataFn);
+                       for (const auto& writer : denseIndexWriters_) {
+                         writer->flush(writeDataFn, createMetadataFn);
                        }
                      })
                : nullptr,
@@ -1084,11 +1082,11 @@ void VeloxWriter::writeSchema() {
 }
 
 void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
-  if (clusterIndexWriter_.has_value()) {
-    clusterIndexWriter_->writer->write(input);
+  if (clusterIndexWriter_ != nullptr) {
+    clusterIndexWriter_->write(input);
   }
-  for (const auto& entry : denseIndexWriters_) {
-    entry.writer->write(input);
+  for (const auto& writer : denseIndexWriters_) {
+    writer->write(input);
   }
 }
 
@@ -1097,34 +1095,37 @@ void VeloxWriter::writeIndexes(
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
   std::vector<index::IndexDescriptor> descriptors;
-  for (const auto& entry : denseIndexWriters_) {
-    if (auto descriptor = entry.writer->close(writeDataFn, createMetadataFn)) {
+  for (size_t i = 0; i < denseIndexWriters_.size(); ++i) {
+    if (auto descriptor =
+            denseIndexWriters_[i]->close(writeDataFn, createMetadataFn)) {
+      const auto& config = context_->options().denseIndexConfigs[i];
       NIMBLE_CHECK_EQ(
           descriptor->family,
-          entry.family,
+          index::IndexFamily::Dense,
           "Index writer returned an unexpected family for {}",
-          entry.name);
+          config.name);
       NIMBLE_CHECK_EQ(
           descriptor->name,
-          entry.name,
+          config.name,
           "Index writer returned an unexpected name for {}",
-          entry.name);
+          config.name);
       descriptors.emplace_back(std::move(descriptor.value()));
     }
   }
-  if (clusterIndexWriter_.has_value()) {
-    const auto& entry = clusterIndexWriter_.value();
-    if (auto descriptor = entry.writer->close(writeDataFn, createMetadataFn)) {
+  if (clusterIndexWriter_ != nullptr) {
+    if (auto descriptor =
+            clusterIndexWriter_->close(writeDataFn, createMetadataFn)) {
+      const auto& config = context_->options().clusterIndexConfig.value();
       NIMBLE_CHECK_EQ(
           descriptor->family,
-          entry.family,
+          index::IndexFamily::Cluster,
           "Index writer returned an unexpected family for {}",
-          entry.name);
+          config.name);
       NIMBLE_CHECK_EQ(
           descriptor->name,
-          entry.name,
+          config.name,
           "Index writer returned an unexpected name for {}",
-          entry.name);
+          config.name);
       descriptors.emplace_back(std::move(descriptor.value()));
     }
   }

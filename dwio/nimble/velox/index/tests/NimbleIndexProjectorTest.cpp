@@ -217,7 +217,8 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
         indexColumns.size(), SortOrder{.ascending = true});
     clusterIndexConfig.enforceKeyOrder = true;
     clusterIndexConfig.noDuplicateKey = true;
-    options.clusterIndexConfig = std::move(clusterIndexConfig);
+    options.clusterIndexConfig =
+        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
 
     options.flushPolicyFactory = [stripeSize]() {
       return std::make_unique<LambdaFlushPolicy>(
@@ -2936,7 +2937,8 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     clusterIndexConfig.sortOrders = {SortOrder{.ascending = true}};
     clusterIndexConfig.enforceKeyOrder = true;
     clusterIndexConfig.noDuplicateKey = true;
-    options.clusterIndexConfig = std::move(clusterIndexConfig);
+    options.clusterIndexConfig =
+        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
 
     if (enableReordering) {
       // Ordinal 1 = "features" column (after "key").

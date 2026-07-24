@@ -151,6 +151,16 @@ TEST_F(ClusterIndexWriterTest, createWithInvalidConfig) {
         ClusterIndexWriter::create(config, type, pool_.get()),
         "Key stream encoding only supports Prefix or Trivial encoding");
   }
+
+  {
+    SCOPED_TRACE("non-supported key chunk compression");
+    ClusterIndexConfig config{
+        .columns = {"col0"},
+        .keyChunkCompressionType = CompressionType::MetaInternal};
+    NIMBLE_ASSERT_THROW(
+        ClusterIndexWriter::create(config, type, pool_.get()),
+        "Key chunk compression only supports Uncompressed, Zstd, or Lz4");
+  }
 }
 
 TEST_F(ClusterIndexWriterTest, keyChunkCompressionProducesRequestedChunkCodec) {

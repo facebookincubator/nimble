@@ -303,7 +303,8 @@ class E2EIndexTestBase : public ::testing::Test {
     if (encodingLayout.has_value()) {
       clusterIndexConfig.encodingLayout = std::move(encodingLayout).value();
     }
-    options.clusterIndexConfig = std::move(clusterIndexConfig);
+    options.clusterIndexConfig =
+        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
 
     // Use small stripe and chunk sizes to generate multiple stripes and write
     // groups for better index test coverage.

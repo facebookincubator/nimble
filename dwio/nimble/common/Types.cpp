@@ -15,63 +15,71 @@
  */
 #include "dwio/nimble/common/Types.h"
 
+#include <array>
+
 #include "dwio/nimble/common/Exceptions.h"
 
 namespace facebook::nimble {
+namespace {
+
+constexpr auto kEncodingTypes =
+    std::to_array<std::pair<EncodingType, std::string_view>>({
+        {EncodingType::Trivial, "Trivial"},
+        {EncodingType::RLE, "RLE"},
+        {EncodingType::Dictionary, "Dictionary"},
+        {EncodingType::FixedBitWidth, "FixedBitWidth"},
+        {EncodingType::Sentinel, "Sentinel"},
+        {EncodingType::Nullable, "Nullable"},
+        {EncodingType::SparseBool, "SparseBool"},
+        {EncodingType::Varint, "Varint"},
+        {EncodingType::Delta, "Delta"},
+        {EncodingType::Constant, "Constant"},
+        {EncodingType::MainlyConstant, "MainlyConstant"},
+        {EncodingType::Prefix, "Prefix"},
+        {EncodingType::ALP, "ALP"},
+        {EncodingType::PFOR, "PFOR"},
+        {EncodingType::SimdForBitpack, "SimdForBitpack"},
+        {EncodingType::BlockBitPacking, "BlockBitPacking"},
+        {EncodingType::SubIntSplit, "SubIntSplit"},
+        {EncodingType::FrequencyPartition, "FrequencyPartition"},
+        {EncodingType::FOR, "FOR"},
+        {EncodingType::Fsst, "Fsst"},
+        {EncodingType::Huffman, "Huffman"},
+        {EncodingType::DeltaBlock, "DeltaBlock"},
+    });
+
+constexpr auto kCompressionTypes =
+    std::to_array<std::pair<CompressionType, std::string_view>>({
+        {CompressionType::Uncompressed, "Uncompressed"},
+        {CompressionType::Zstd, "Zstd"},
+        {CompressionType::MetaInternal, "MetaInternal"},
+        {CompressionType::Lz4, "Lz4"},
+        {CompressionType::OpenZL, "OpenZL"},
+    });
+
+} // namespace
 
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType) {
   return out << toString(encodingType);
 }
 
 std::string toString(EncodingType encodingType) {
-  switch (encodingType) {
-    case EncodingType::Trivial:
-      return "Trivial";
-    case EncodingType::RLE:
-      return "RLE";
-    case EncodingType::Dictionary:
-      return "Dictionary";
-    case EncodingType::FixedBitWidth:
-      return "FixedBitWidth";
-    case EncodingType::Nullable:
-      return "Nullable";
-    case EncodingType::SparseBool:
-      return "SparseBool";
-    case EncodingType::Varint:
-      return "Varint";
-    case EncodingType::Delta:
-      return "Delta";
-    case EncodingType::Constant:
-      return "Constant";
-    case EncodingType::MainlyConstant:
-      return "MainlyConstant";
-    case EncodingType::FrequencyPartition:
-      return "FrequencyPartition";
-    case EncodingType::FOR:
-      return "FOR";
-    case EncodingType::Sentinel:
-      return "Sentinel";
-    case EncodingType::Prefix:
-      return "Prefix";
-    case EncodingType::ALP:
-      return "ALP";
-    case EncodingType::Fsst:
-      return "Fsst";
-    case EncodingType::Huffman:
-      return "Huffman";
-    case EncodingType::PFOR:
-      return "PFOR";
-    case EncodingType::SimdForBitpack:
-      return "SimdForBitpack";
-    case EncodingType::SubIntSplit:
-      return "SubIntSplit";
-    case EncodingType::BlockBitPacking:
-      return "BlockBitPacking";
-    case EncodingType::DeltaBlock:
-      return "DeltaBlock";
+  for (const auto& [type, name] : kEncodingTypes) {
+    if (encodingType == type) {
+      return std::string{name};
+    }
   }
   return fmt::format(
       "Unknown encoding type: {}", static_cast<int32_t>(encodingType));
+}
+
+std::optional<EncodingType> encodingTypeFromString(std::string_view name) {
+  for (const auto& [type, candidate] : kEncodingTypes) {
+    if (name == candidate) {
+      return type;
+    }
+  }
+  return std::nullopt;
 }
 
 std::ostream& operator<<(std::ostream& out, DataType dataType) {
@@ -111,22 +119,23 @@ std::string toString(DataType dataType) {
 }
 
 std::string toString(CompressionType compressionType) {
-  switch (compressionType) {
-    case CompressionType::Uncompressed:
-      return "Uncompressed";
-    case CompressionType::Zstd:
-      return "Zstd";
-    case CompressionType::MetaInternal:
-      return "MetaInternal";
-    case CompressionType::Lz4:
-      return "Lz4";
-    case CompressionType::OpenZL:
-      return "OpenZL";
-    default:
-      return fmt::format(
-          "Unknown compression type: {}",
-          static_cast<int32_t>(compressionType));
+  for (const auto& [type, name] : kCompressionTypes) {
+    if (compressionType == type) {
+      return std::string{name};
+    }
   }
+  return fmt::format(
+      "Unknown compression type: {}", static_cast<int32_t>(compressionType));
+}
+
+std::optional<CompressionType> compressionTypeFromString(
+    std::string_view name) {
+  for (const auto& [type, candidate] : kCompressionTypes) {
+    if (name == candidate) {
+      return type;
+    }
+  }
+  return std::nullopt;
 }
 
 std::ostream& operator<<(std::ostream& out, CompressionType compressionType) {

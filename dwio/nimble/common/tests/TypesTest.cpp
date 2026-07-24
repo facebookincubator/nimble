@@ -25,26 +25,45 @@ namespace facebook::nimble::test {
 
 // --- toString for EncodingType ---
 
-TEST(TypesTest, EncodingTypeToString) {
-  EXPECT_EQ(toString(EncodingType::Trivial), "Trivial");
-  EXPECT_EQ(toString(EncodingType::RLE), "RLE");
-  EXPECT_EQ(toString(EncodingType::Dictionary), "Dictionary");
-  EXPECT_EQ(toString(EncodingType::FixedBitWidth), "FixedBitWidth");
-  EXPECT_EQ(toString(EncodingType::Sentinel), "Sentinel");
-  EXPECT_EQ(toString(EncodingType::Nullable), "Nullable");
-  EXPECT_EQ(toString(EncodingType::SparseBool), "SparseBool");
-  EXPECT_EQ(toString(EncodingType::Varint), "Varint");
-  EXPECT_EQ(toString(EncodingType::Delta), "Delta");
-  EXPECT_EQ(toString(EncodingType::Constant), "Constant");
-  EXPECT_EQ(toString(EncodingType::MainlyConstant), "MainlyConstant");
-  EXPECT_EQ(toString(EncodingType::Prefix), "Prefix");
-  EXPECT_EQ(toString(EncodingType::ALP), "ALP");
-  EXPECT_EQ(toString(EncodingType::BlockBitPacking), "BlockBitPacking");
+TEST(TypesTest, EncodingTypeStringConversion) {
+  const std::vector<std::pair<EncodingType, std::string_view>> testCases{
+      {EncodingType::Trivial, "Trivial"},
+      {EncodingType::RLE, "RLE"},
+      {EncodingType::Dictionary, "Dictionary"},
+      {EncodingType::FixedBitWidth, "FixedBitWidth"},
+      {EncodingType::Sentinel, "Sentinel"},
+      {EncodingType::Nullable, "Nullable"},
+      {EncodingType::SparseBool, "SparseBool"},
+      {EncodingType::Varint, "Varint"},
+      {EncodingType::Delta, "Delta"},
+      {EncodingType::Constant, "Constant"},
+      {EncodingType::MainlyConstant, "MainlyConstant"},
+      {EncodingType::Prefix, "Prefix"},
+      {EncodingType::ALP, "ALP"},
+      {EncodingType::PFOR, "PFOR"},
+      {EncodingType::SimdForBitpack, "SimdForBitpack"},
+      {EncodingType::BlockBitPacking, "BlockBitPacking"},
+      {EncodingType::SubIntSplit, "SubIntSplit"},
+      {EncodingType::FrequencyPartition, "FrequencyPartition"},
+      {EncodingType::FOR, "FOR"},
+      {EncodingType::Fsst, "Fsst"},
+      {EncodingType::Huffman, "Huffman"},
+      {EncodingType::DeltaBlock, "DeltaBlock"},
+  };
+  for (const auto& [type, name] : testCases) {
+    SCOPED_TRACE(name);
+    EXPECT_EQ(toString(type), name);
+    EXPECT_EQ(encodingTypeFromString(name), type);
+  }
 }
 
 TEST(TypesTest, EncodingTypeToStringUnknown) {
   auto result = toString(static_cast<EncodingType>(255));
   EXPECT_NE(result.find("Unknown"), std::string::npos);
+}
+
+TEST(TypesTest, EncodingTypeFromStringUnknown) {
+  EXPECT_EQ(encodingTypeFromString("unknown"), std::nullopt);
 }
 
 TEST(TypesTest, EncodingTypeStreamOperator) {
@@ -88,16 +107,28 @@ TEST(TypesTest, DataTypeFmtFormat) {
 
 // --- toString for CompressionType ---
 
-TEST(TypesTest, CompressionTypeToString) {
-  EXPECT_EQ(toString(CompressionType::Uncompressed), "Uncompressed");
-  EXPECT_EQ(toString(CompressionType::Zstd), "Zstd");
-  EXPECT_EQ(toString(CompressionType::MetaInternal), "MetaInternal");
-  EXPECT_EQ(toString(CompressionType::Lz4), "Lz4");
+TEST(TypesTest, CompressionTypeStringConversion) {
+  const std::vector<std::pair<CompressionType, std::string_view>> testCases{
+      {CompressionType::Uncompressed, "Uncompressed"},
+      {CompressionType::Zstd, "Zstd"},
+      {CompressionType::MetaInternal, "MetaInternal"},
+      {CompressionType::Lz4, "Lz4"},
+      {CompressionType::OpenZL, "OpenZL"},
+  };
+  for (const auto& [type, name] : testCases) {
+    SCOPED_TRACE(name);
+    EXPECT_EQ(toString(type), name);
+    EXPECT_EQ(compressionTypeFromString(name), type);
+  }
 }
 
 TEST(TypesTest, CompressionTypeToStringUnknown) {
   auto result = toString(static_cast<CompressionType>(200));
   EXPECT_NE(result.find("Unknown"), std::string::npos);
+}
+
+TEST(TypesTest, CompressionTypeFromStringUnknown) {
+  EXPECT_EQ(compressionTypeFromString("unknown"), std::nullopt);
 }
 
 TEST(TypesTest, CompressionTypeStreamOperator) {
