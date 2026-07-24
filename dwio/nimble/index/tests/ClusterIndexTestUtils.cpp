@@ -76,7 +76,8 @@ void writeFile(
 
   VeloxWriterOptions options;
   options.enableChunking = true;
-  options.clusterIndexConfig = std::move(clusterIndexConfig);
+  options.clusterIndexConfig =
+      facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
   if (flushPolicyFactory) {
     options.flushPolicyFactory = std::move(flushPolicyFactory);
   }

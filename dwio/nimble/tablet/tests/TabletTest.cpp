@@ -4171,10 +4171,12 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
-  writerOptions.hashIndexConfigs.push_back(
-      nimble::index::HashIndexConfig{.columns = {"id"}});
-  writerOptions.sortedIndexConfigs.push_back(
-      nimble::index::SortedIndexConfig{.columns = {"value"}});
+  writerOptions.denseIndexConfigs.push_back(
+      nimble::index::toIndexConfig(
+          nimble::index::HashIndexConfig{.columns = {"id"}}));
+  writerOptions.denseIndexConfigs.push_back(
+      nimble::index::toIndexConfig(
+          nimble::index::SortedIndexConfig{.columns = {"value"}}));
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
@@ -4219,8 +4221,9 @@ TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
-  writerOptions.hashIndexConfigs.push_back(
-      nimble::index::HashIndexConfig{.columns = {"id"}});
+  writerOptions.denseIndexConfigs.push_back(
+      nimble::index::toIndexConfig(
+          nimble::index::HashIndexConfig{.columns = {"id"}}));
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);

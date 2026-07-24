@@ -137,7 +137,8 @@ TEST_F(DenseIndexRegistryTest, hashOnlyRegistry) {
 
   const auto filePath = tempFilePath("hash_only");
   VeloxWriterOptions options;
-  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(HashIndexConfig{.columns = {"id"}}));
   writeFile(filePath, rowType(), batches, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -158,7 +159,8 @@ TEST_F(DenseIndexRegistryTest, sortedOnlyRegistry) {
 
   const auto filePath = tempFilePath("sorted_only");
   VeloxWriterOptions options;
-  options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"value"}});
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(SortedIndexConfig{.columns = {"value"}}));
   writeFile(filePath, rowType(), batches, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -179,8 +181,10 @@ TEST_F(DenseIndexRegistryTest, hashAndSortedLookup) {
 
   const auto filePath = tempFilePath("hash_and_sorted");
   VeloxWriterOptions options;
-  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
-  options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"value"}});
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(HashIndexConfig{.columns = {"id"}}));
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(SortedIndexConfig{.columns = {"value"}}));
   writeFile(filePath, rowType(), batches, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -205,7 +209,8 @@ TEST_F(DenseIndexRegistryTest, indexCacheRetention) {
 
   const auto filePath = tempFilePath("cache_retention");
   VeloxWriterOptions options;
-  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(HashIndexConfig{.columns = {"id"}}));
   writeFile(filePath, rowType(), batches, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -229,8 +234,10 @@ TEST_F(DenseIndexRegistryTest, firstIndexWinsForDuplicateColumns) {
 
   const auto filePath = tempFilePath("cross_type_duplicate");
   VeloxWriterOptions options;
-  options.hashIndexConfigs.push_back(HashIndexConfig{.columns = {"id"}});
-  options.sortedIndexConfigs.push_back(SortedIndexConfig{.columns = {"id"}});
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(HashIndexConfig{.columns = {"id"}}));
+  options.denseIndexConfigs.push_back(
+      toIndexConfig(SortedIndexConfig{.columns = {"id"}}));
 
   writeFile(filePath, rowType(), batches, std::move(options));
 

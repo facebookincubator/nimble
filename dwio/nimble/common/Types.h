@@ -16,6 +16,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -157,6 +158,8 @@ enum class EncodingType {
   DeltaBlock = 21,
 };
 std::string toString(EncodingType encodingType);
+/// Returns the encoding type for 'name'. Throws if 'name' is unknown.
+EncodingType toEncodingType(std::string_view name);
 std::ostream& operator<<(std::ostream& out, EncodingType encodingType);
 
 enum class DataType : uint8_t {
@@ -190,6 +193,8 @@ enum class CompressionType : uint8_t {
 };
 
 std::string toString(CompressionType compressionType);
+/// Returns the compression type for 'name'. Throws if 'name' is unknown.
+CompressionType toCompressionType(std::string_view name);
 std::ostream& operator<<(std::ostream& out, CompressionType compressionType);
 
 enum class ChecksumType : uint8_t { XXH3_64 = 0 };

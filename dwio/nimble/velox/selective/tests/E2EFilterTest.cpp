@@ -385,7 +385,8 @@ class E2EFilterTest
       ClusterIndexConfig clusterIndexConfig;
       clusterIndexConfig.columns = indexColumns;
       clusterIndexConfig.enforceKeyOrder = true;
-      options.clusterIndexConfig = std::move(clusterIndexConfig);
+      options.clusterIndexConfig =
+          facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     // Branch on whether we need forced dictionary encoding, since

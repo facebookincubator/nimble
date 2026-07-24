@@ -37,7 +37,7 @@ class ClusterIndexFactory {
   virtual std::string_view name() const = 0;
 
   virtual std::unique_ptr<IndexWriter> createWriter(
-      const ClusterIndexConfig& config,
+      const IndexConfig& config,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const = 0;
 
