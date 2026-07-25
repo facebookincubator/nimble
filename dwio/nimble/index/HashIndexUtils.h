@@ -18,9 +18,15 @@
 #include <cstdint>
 #include <string_view>
 
-#include "folly/hash/Hash.h"
+#include "folly/hash/FnvHash.h"
+#include "velox/common/base/XxHashInline.h"
 
 namespace facebook::nimble::index {
+
+/// Computes the hash stored in a hash index bloom filter.
+inline uint64_t bloomFilterHash(std::string_view key) {
+  return XXH64(key.data(), key.size(), /*seed=*/0);
+}
 
 /// Computes the bucket index for an encoded key using FNV-1a hash.
 /// Used by both HashIndexWriter (write path) and HashIndex (read path).

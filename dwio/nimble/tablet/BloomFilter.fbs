@@ -16,14 +16,8 @@
 
 namespace facebook.nimble.serialization;
 
-/// Split block bloom filter for fast negative lookups.
-/// Uses 256-bit blocks with multiple hash probes per block,
-/// following the Parquet bloom filter design for cache efficiency.
+/// Serialized Velox BloomFilter for fast negative lookups.
 table BloomFilter {
-  /// Number of 256-bit blocks in the filter.
-  num_blocks:uint32;
-  /// Bits per key used during construction (for diagnostics/rebuild).
-  bits_per_key:float;
-  /// Raw filter data. Size = num_blocks * 32 bytes.
+  /// Serialized bytes produced by velox::BloomFilter::serialize().
   data:[uint8];
 }

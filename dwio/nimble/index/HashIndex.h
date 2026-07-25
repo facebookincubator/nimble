@@ -17,13 +17,13 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <fmt/format.h>
 
-#include "dwio/nimble/index/BloomFilter.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
@@ -142,15 +142,15 @@ class HashIndex : public IndexLookup {
   const std::vector<std::string> columns_;
   // Owns the loaded FlatBuffer data for this index.
   const std::unique_ptr<MetadataBuffer> indexMetadata_;
-  velox::memory::MemoryPool* const pool_;
 
   const uint32_t numBuckets_;
   const uint32_t bucketMask_;
   const std::string_view minKey_;
   const std::string_view maxKey_;
 
-  // Constructed from FlatBuffer data during initialization.
-  const std::unique_ptr<BloomFilter> bloomFilter_;
+  // Stores the optional serialized Bloom filter used for fast negative point
+  // lookups.
+  std::optional<std::string_view> serializedBloomFilter_;
 
   // Partition descriptors and lazily loaded partition data.
   // Always has at least one partition.
