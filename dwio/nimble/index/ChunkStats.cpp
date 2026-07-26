@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/index/ChunkIndex.h"
+#include "dwio/nimble/index/ChunkStats.h"
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 
 namespace facebook::nimble::index {
 
-std::unique_ptr<ChunkIndex> ChunkIndex::create(Section indexSection) {
-  const auto* root = flatbuffers::GetRoot<serialization::ChunkIndex>(
+std::unique_ptr<ChunkStats> ChunkStats::create(Section indexSection) {
+  const auto* root = flatbuffers::GetRoot<serialization::ChunkStats>(
       indexSection.content().data());
   NIMBLE_CHECK_NOT_NULL(root);
 
@@ -44,17 +44,17 @@ std::unique_ptr<ChunkIndex> ChunkIndex::create(Section indexSection) {
                                 : std::nullopt);
   }
 
-  return std::unique_ptr<ChunkIndex>(
-      new ChunkIndex(std::move(indexSection), std::move(groupSections)));
+  return std::unique_ptr<ChunkStats>(
+      new ChunkStats(std::move(indexSection), std::move(groupSections)));
 }
 
-ChunkIndex::ChunkIndex(
+ChunkStats::ChunkStats(
     Section indexSection,
     std::vector<MetadataSection> groupSections)
     : indexSection_{std::move(indexSection)},
       groupSections_{std::move(groupSections)} {}
 
-const MetadataSection& ChunkIndex::groupMetadata(uint32_t groupIndex) const {
+const MetadataSection& ChunkStats::groupMetadata(uint32_t groupIndex) const {
   NIMBLE_CHECK_LT(
       groupIndex, groupSections_.size(), "Chunk index group out of range");
   return groupSections_[groupIndex];

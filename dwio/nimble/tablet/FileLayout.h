@@ -67,7 +67,7 @@ namespace facebook::nimble {
 /// |  Optional: "columnar.indexes" (root index manifest with named     |
 /// |            cluster and dense index payloads)                      |
 /// +-------------------------------------------------------------------+
-/// |  Optional: "columnar.chunk.index" (root ChunkIndex flatbuffer     |
+/// |  Optional: "columnar.chunk.stats" (root ChunkStats flatbuffer     |
 /// |            with stripe_indexes)                                   |
 /// +-------------------------------------------------------------------+
 /// |  Optional: "schema", "stats", etc.                                |
@@ -113,11 +113,11 @@ namespace facebook::nimble {
 ///   | stripe_row_counts: row count per stripe                        |
 ///   +---------------------------------------------------------------+
 ///
-/// Chunk Index ("columnar.chunk.index"):
-///   Root ChunkIndex flatbuffer (see ChunkIndex.fbs) containing:
-///   - stripe_indexes: refs to per-group StripeChunkIndex metadata
+/// Chunk Stats ("columnar.chunk.stats"):
+///   Root ChunkStats flatbuffer (see ChunkStats.fbs) containing:
+///   - stripe_indexes: refs to per-group StripeChunkStats metadata
 ///
-///   StripeChunkIndex (per stripe group):
+///   StripeChunkStats (per stripe group):
 ///   +---------------------------------------------------------------+
 ///   | stream_count: total number of indexed streams                   |
 ///   | stream_chunk_counts: accumulated chunks per (stripe, stream)   |

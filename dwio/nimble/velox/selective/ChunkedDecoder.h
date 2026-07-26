@@ -24,7 +24,7 @@
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/legacy/EncodingTrait.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/velox/selective/NimbleData.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"

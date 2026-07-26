@@ -20,7 +20,7 @@
 #include <span>
 #include <vector>
 
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
@@ -182,7 +182,7 @@ class StripeStreams {
   void setStripe(int stripe) {
     stripe_ = stripe;
     lazyInput_.reset();
-    // Keep previous stripe's shared_ptrs (StripeGroup, ChunkIndexGroup)
+    // Keep previous stripe's shared_ptrs (StripeGroup, ChunkStatsGroup)
     // alive while loading the new stripe. This prevents the weak-pointer
     // cache entries from expiring when consecutive stripes share the same
     // group index, avoiding redundant metadata re-reads and re-parses.
