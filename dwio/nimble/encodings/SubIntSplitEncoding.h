@@ -58,12 +58,20 @@
 //
 // Binary layout (after the standard Encoding prefix):
 //   [1 byte]  splitCount (number of sections, 1..64)
-//   [1 byte]  reserved (future: BitSplitOrder; currently 0)
+//   [1 byte]  flags (bit 0: has out-of-line exceptions)
 //   [splitCount × 6 bytes]  {bitStart(1B), bitEnd(1B), encodedSize(4B)}
+//   [if flags.hasExceptions] exceptionCount(4B), indexEncodedSize(4B),
+//                            valueEncodedSize(4B)
 //   [section_0_bytes][section_1_bytes]...[section_{N-1}_bytes]
+//   [if flags.hasExceptions] [index_encoding_bytes][value_encoding_bytes]
 //
 // Sections are stored in LSB-first order (section 0 covers the lowest bits).
 // Section identifiers equal the section index (0, 1, …, splitCount-1).
+//
+// Exceptions (ALP-style): rare rows whose value does not fit the common bit
+// structure are stored out-of-line as a (sorted index, value) pair of nested
+// encodings; the section streams hold a zero placeholder at those rows and the
+// true value is patched back on decode.
 
 namespace facebook::nimble {
 
@@ -137,6 +145,24 @@ class SubIntSplitEncoding
   // physical values before they are gathered/widened into the reader output.
   Vector<physicalType> decodeBuf_;
 
+  // ALP-style exceptions. A rare outlier whose value does not fit the common
+  // bit structure would otherwise force every section wider; instead such rows
+  // are stored out-of-line. The section streams hold a placeholder (zero) at
+  // those rows and the true value is patched back on decode. exceptionIndices_
+  // is sorted ascending and parallel to exceptionValues_; both are empty when
+  // the encoding carries no exceptions.
+  std::vector<uint32_t> exceptionIndices_;
+  std::vector<physicalType> exceptionValues_;
+
+  bool hasExceptions() const noexcept {
+    return !exceptionIndices_.empty();
+  }
+
+  // Patch exception values over the decoded output covering the absolute row
+  // range [rowStart, rowStart + count). No-op when there are no exceptions.
+  void patchExceptions(physicalType* output, uint32_t rowStart, uint32_t count)
+      const;
+
   // Return the storage byte width for a section of the given bit width.
   static constexpr uint8_t sectionStorageBytes(int bitWidth) noexcept {
     if (bitWidth <= 8)
@@ -169,6 +195,16 @@ class SubIntSplitEncoding
       uint32_t count,
       uint64_t mask,
       int shift) noexcept;
+
+  // Detect rare outlier rows for the ALP-style exception path (recompute mode).
+  // Fills `indices` (ascending) with positions whose value has bits above the
+  // common range, and `cleaned` with a copy of `values` where those rows are
+  // zeroed. Leaves both empty when there are no outliers or too many for the
+  // out-of-line encoding to pay off.
+  static void extractExceptions(
+      std::span<const physicalType> values,
+      std::vector<uint32_t>& indices,
+      Vector<physicalType>& cleaned);
 };
 
 //
@@ -178,6 +214,21 @@ class SubIntSplitEncoding
 namespace detail {
 inline constexpr uint32_t kSubIntSplitSectionHeaderSize =
     6; // bitStart+bitEnd+size
+
+// Flags byte (second byte of the SubIntSplit-specific header). Bit 0 marks the
+// presence of an out-of-line exception block after the section data.
+inline constexpr uint8_t kSubIntSplitFlagHasExceptions = 0x01;
+
+// Size of the exception meta appended to the header when exceptions are
+// present: exceptionCount(4) + indexEncodedSize(4) + valueEncodedSize(4).
+inline constexpr uint32_t kSubIntSplitExceptionMetaSize = 12;
+
+// Test/benchmark hook: when set to false, encode() skips the exception path
+// entirely (used for A/B measurement of the exception optimization).
+inline bool& subIntSplitExceptionsEnabled() {
+  static bool enabled = true;
+  return enabled;
+}
 
 inline uint32_t subIntSplitSpecificHeaderSize(uint8_t splitCount) noexcept {
   return 2u + static_cast<uint32_t>(splitCount) * kSubIntSplitSectionHeaderSize;
@@ -198,7 +249,9 @@ SubIntSplitEncoding<T>::SubIntSplitEncoding(
   const auto* pos = data.data() + this->dataOffset();
 
   const uint8_t splitCount = encoding::read<uint8_t>(pos);
-  encoding::read<uint8_t>(pos); // reserved order byte
+  const uint8_t flags = encoding::read<uint8_t>(pos);
+  const bool hasExceptions =
+      (flags & detail::kSubIntSplitFlagHasExceptions) != 0;
 
   struct SectionMeta {
     uint8_t bitStart;
@@ -212,6 +265,15 @@ SubIntSplitEncoding<T>::SubIntSplitEncoding(
     meta[s].encodedSize = encoding::readUint32(pos);
   }
 
+  uint32_t exceptionCount = 0;
+  uint32_t indexEncodedSize = 0;
+  uint32_t valueEncodedSize = 0;
+  if (hasExceptions) {
+    exceptionCount = encoding::readUint32(pos);
+    indexEncodedSize = encoding::readUint32(pos);
+    valueEncodedSize = encoding::readUint32(pos);
+  }
+
   sections_.resize(splitCount);
   for (uint8_t s = 0; s < splitCount; ++s) {
     auto& sec = sections_[s];
@@ -223,6 +285,23 @@ SubIntSplitEncoding<T>::SubIntSplitEncoding(
     sec.encoding = factory.create(
         *this->pool_, {pos, meta[s].encodedSize}, stringBufferFactory);
     pos += meta[s].encodedSize;
+  }
+
+  // Exception block (index stream, then value stream), decoded eagerly into
+  // sorted parallel arrays so decode can patch outliers over the section
+  // output.
+  if (hasExceptions) {
+    auto indexEncoding = factory.create(
+        *this->pool_, {pos, indexEncodedSize}, stringBufferFactory);
+    pos += indexEncodedSize;
+    auto valueEncoding = factory.create(
+        *this->pool_, {pos, valueEncodedSize}, stringBufferFactory);
+    pos += valueEncodedSize;
+
+    exceptionIndices_.resize(exceptionCount);
+    indexEncoding->materialize(exceptionCount, exceptionIndices_.data());
+    exceptionValues_.resize(exceptionCount);
+    valueEncoding->materialize(exceptionCount, exceptionValues_.data());
   }
 }
 
@@ -529,7 +608,30 @@ void SubIntSplitEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
     }
   }
 
+  // Overwrite outlier rows (stored as placeholders in the sections) with their
+  // true values.
+  patchExceptions(output, row_, rowCount);
+
   row_ += rowCount;
+}
+
+template <typename T>
+void SubIntSplitEncoding<T>::patchExceptions(
+    physicalType* output,
+    uint32_t rowStart,
+    uint32_t count) const {
+  if (exceptionIndices_.empty()) {
+    return;
+  }
+  const uint32_t rowEnd = rowStart + count;
+  // exceptionIndices_ is sorted, so seek the first outlier in range and walk
+  // until we pass the end of the requested window.
+  auto it = std::lower_bound(
+      exceptionIndices_.begin(), exceptionIndices_.end(), rowStart);
+  for (; it != exceptionIndices_.end() && *it < rowEnd; ++it) {
+    const size_t k = static_cast<size_t>(it - exceptionIndices_.begin());
+    output[*it - rowStart] = exceptionValues_[k];
+  }
 }
 
 template <typename T>
@@ -557,7 +659,10 @@ void SubIntSplitEncoding<T>::readWithVisitor(
           velox::dwio::common::ExtractToReader> &&
       kIsFluidCast) {
     auto* nulls = visitor.reader().rawNullsInReadRange();
-    if (velox::dwio::common::useFastPath(visitor, nulls)) {
+    // The bulk fast path decodes sections straight into the reader buffer and
+    // has no place to patch out-of-line exceptions, so fall back to the
+    // per-value slow path when any are present.
+    if (!hasExceptions() && velox::dwio::common::useFastPath(visitor, nulls)) {
       detail::readWithVisitorFast(*this, visitor, params, nulls);
       return;
     }
@@ -605,9 +710,20 @@ void SubIntSplitEncoding<T>::readWithVisitor(
             }
           }
         }
+        const uint32_t curRow = row_;
         // Keep row_ in sync so a subsequent fast-path chunk maps rows
         // correctly.
         ++row_;
+        // Outlier rows carry a placeholder in the sections; substitute the true
+        // value.
+        if (!exceptionIndices_.empty()) {
+          auto it = std::lower_bound(
+              exceptionIndices_.begin(), exceptionIndices_.end(), curRow);
+          if (it != exceptionIndices_.end() && *it == curRow) {
+            value = exceptionValues_[static_cast<size_t>(
+                it - exceptionIndices_.begin())];
+          }
+        }
         return value;
       });
 }
@@ -716,6 +832,82 @@ void SubIntSplitEncoding<T>::bulkScan(
 }
 
 template <typename T>
+void SubIntSplitEncoding<T>::extractExceptions(
+    std::span<const physicalType> values,
+    std::vector<uint32_t>& indices,
+    Vector<physicalType>& cleaned) {
+  constexpr int kBits = static_cast<int>(sizeof(physicalType) * 8);
+  const uint32_t valueCount = static_cast<uint32_t>(values.size());
+
+  // A bit is "structural" if it is set in at least kBitFraction of a stride
+  // sample; rarer set bits belong to outliers. The common range keeps every bit
+  // up to the highest structural bit; a value with any bit above it is an
+  // outlier that would otherwise force the top sections wide.
+  constexpr double kBitFraction = 0.05;
+  // Out-of-line storage only pays off when outliers are genuinely rare.
+  constexpr double kMaxExceptionFraction = 0.02;
+  constexpr uint32_t kMaxSamples = 4096;
+
+  const uint32_t stride = std::max<uint32_t>(1, valueCount / kMaxSamples);
+  uint32_t setCount[64] = {};
+  uint32_t sampled = 0;
+  for (uint32_t i = 0; i < valueCount; i += stride) {
+    uint64_t bits = 0;
+    __builtin_memcpy(&bits, &values[i], sizeof(physicalType));
+    for (int b = 0; b < kBits; ++b) {
+      setCount[b] += static_cast<uint32_t>((bits >> b) & 1u);
+    }
+    ++sampled;
+  }
+  if (sampled == 0) {
+    return;
+  }
+
+  const uint32_t threshold =
+      static_cast<uint32_t>(kBitFraction * static_cast<double>(sampled));
+  int robustHi = -1;
+  for (int b = 0; b < kBits; ++b) {
+    if (setCount[b] >= threshold) {
+      robustHi = b;
+    }
+  }
+  // Every set bit is structural: no outlier bits, nothing to extract.
+  if (robustHi >= kBits - 1) {
+    return;
+  }
+  const uint64_t commonMask = (robustHi < 0)
+      ? uint64_t{0}
+      : ((robustHi >= 63) ? ~uint64_t{0}
+                          : ((uint64_t{1} << (robustHi + 1)) - 1));
+
+  const uint32_t maxExceptions = static_cast<uint32_t>(
+      kMaxExceptionFraction * static_cast<double>(valueCount));
+  for (uint32_t i = 0; i < valueCount; ++i) {
+    uint64_t bits = 0;
+    __builtin_memcpy(&bits, &values[i], sizeof(physicalType));
+    if ((bits & ~commonMask) != 0) {
+      indices.push_back(i);
+      if (indices.size() > maxExceptions) {
+        // Too many outliers -- fall back to the plain (no-exception) path.
+        indices.clear();
+        return;
+      }
+    }
+  }
+  if (indices.empty()) {
+    return;
+  }
+
+  // Copy the stream with outlier rows zeroed so the sections encode the common
+  // structure only; the true values are restored from the exception streams.
+  cleaned.resize(valueCount);
+  std::memcpy(cleaned.data(), values.data(), valueCount * sizeof(physicalType));
+  for (const uint32_t idx : indices) {
+    cleaned[idx] = physicalType{0};
+  }
+}
+
+template <typename T>
 std::string_view SubIntSplitEncoding<T>::encode(
     EncodingSelection<physicalType>& selection,
     std::span<const physicalType> values,
@@ -730,11 +922,28 @@ std::string_view SubIntSplitEncoding<T>::encode(
 
   constexpr int kBits = static_cast<int>(sizeof(physicalType) * 8);
 
-  std::vector<detail::subintsplit::SegmentPlan> segments;
   const auto modeConfig = selection.getConfig(
       std::string(detail::subintsplit::kSplitModeConfigKey));
-  if (modeConfig.has_value() &&
-      *modeConfig == detail::subintsplit::kSplitModePreserve) {
+  const bool preserveMode = modeConfig.has_value() &&
+      *modeConfig == detail::subintsplit::kSplitModePreserve;
+
+  // ALP-style exceptions (recompute mode only): pull rare high-bit outliers out
+  // of line so the sections encode only the common structure. srcValues is the
+  // stream the sections are built from -- the cleaned copy when there are
+  // exceptions, otherwise the input unchanged.
+  std::vector<uint32_t> exceptionIndices;
+  Vector<physicalType> cleanedValues{&buffer.getMemoryPool()};
+  std::span<const physicalType> srcValues = values;
+  if (!preserveMode && detail::subIntSplitExceptionsEnabled()) {
+    extractExceptions(values, exceptionIndices, cleanedValues);
+    if (!exceptionIndices.empty()) {
+      srcValues = std::span<const physicalType>(
+          cleanedValues.data(), cleanedValues.size());
+    }
+  }
+
+  std::vector<detail::subintsplit::SegmentPlan> segments;
+  if (preserveMode) {
     const auto boundaryConfig = selection.getConfig(
         std::string(detail::subintsplit::kSplitBoundariesConfigKey));
     NIMBLE_CHECK(
@@ -748,7 +957,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
     // Default behavior: recompute the split boundaries from the sampled data.
     std::vector<uint64_t> sampleBuf;
     detail::subintsplit::sampleIntoU64<physicalType>(
-        values, sampleBuf, detail::subintsplit::defaultSamplerConfig());
+        srcValues, sampleBuf, detail::subintsplit::defaultSamplerConfig());
 
     auto selectorResult = detail::subintsplit::selectSplits(
         sampleBuf,
@@ -796,7 +1005,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
         Vector<uint8_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
-          __builtin_memcpy(&v, &values[i], sizeof(physicalType));
+          __builtin_memcpy(&v, &srcValues[i], sizeof(physicalType));
           sectionValues[i] = static_cast<uint8_t>((v >> bitStart) & mask);
         }
         encoded = selection.template encodeNested<uint8_t>(
@@ -811,7 +1020,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
         Vector<uint16_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
-          __builtin_memcpy(&v, &values[i], sizeof(physicalType));
+          __builtin_memcpy(&v, &srcValues[i], sizeof(physicalType));
           sectionValues[i] = static_cast<uint16_t>((v >> bitStart) & mask);
         }
         encoded = selection.template encodeNested<uint16_t>(
@@ -826,7 +1035,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
         Vector<uint32_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
-          __builtin_memcpy(&v, &values[i], sizeof(physicalType));
+          __builtin_memcpy(&v, &srcValues[i], sizeof(physicalType));
           sectionValues[i] = static_cast<uint32_t>((v >> bitStart) & mask);
         }
         encoded = selection.template encodeNested<uint32_t>(
@@ -841,7 +1050,7 @@ std::string_view SubIntSplitEncoding<T>::encode(
         Vector<uint64_t> sectionValues{sectionPool, valueCount};
         for (uint32_t i = 0; i < valueCount; ++i) {
           uint64_t v = 0;
-          __builtin_memcpy(&v, &values[i], sizeof(physicalType));
+          __builtin_memcpy(&v, &srcValues[i], sizeof(physicalType));
           sectionValues[i] = (v >> bitStart) & mask;
         }
         encoded = selection.template encodeNested<uint64_t>(
@@ -859,16 +1068,50 @@ std::string_view SubIntSplitEncoding<T>::encode(
     sectionData.push_back(encoded);
   }
 
+  // Encode the out-of-line exception streams (recompute mode only), reusing the
+  // nested-encoding machinery so the sorted indices and the outlier values are
+  // themselves compressed.
+  const bool hasExc = !exceptionIndices.empty();
+  const uint32_t exceptionCount =
+      static_cast<uint32_t>(exceptionIndices.size());
+  std::string_view indexEncoded;
+  std::string_view valueEncoded;
+  if (hasExc) {
+    Vector<uint32_t> indexVec{sectionPool, exceptionCount};
+    Vector<physicalType> valueVec{sectionPool, exceptionCount};
+    for (uint32_t k = 0; k < exceptionCount; ++k) {
+      const uint32_t idx = exceptionIndices[k];
+      indexVec[k] = idx;
+      valueVec[k] = values[idx];
+    }
+    indexEncoded = selection.template encodeNested<uint32_t>(
+        static_cast<NestedEncodingIdentifier>(splitCount),
+        std::span<const uint32_t>(indexVec.data(), indexVec.size()),
+        sectionBuffer,
+        sectionOptions);
+    valueEncoded = selection.template encodeNested<physicalType>(
+        static_cast<NestedEncodingIdentifier>(splitCount + 1),
+        std::span<const physicalType>(valueVec.data(), valueVec.size()),
+        sectionBuffer,
+        sectionOptions);
+  }
+
   // Write final encoding to main buffer.
   const uint32_t prefixSize =
       Encoding::serializePrefixSize(valueCount, useVarint);
-  const uint32_t specificHeader =
-      detail::subIntSplitSpecificHeaderSize(splitCount);
+  uint32_t specificHeader = detail::subIntSplitSpecificHeaderSize(splitCount);
+  if (hasExc) {
+    specificHeader += detail::kSubIntSplitExceptionMetaSize;
+  }
   uint32_t sectionsSize = 0;
   for (const auto& sv : sectionData) {
     sectionsSize += static_cast<uint32_t>(sv.size());
   }
-  const uint32_t encodingSize = prefixSize + specificHeader + sectionsSize;
+  const uint32_t exceptionBytes = hasExc
+      ? static_cast<uint32_t>(indexEncoded.size() + valueEncoded.size())
+      : 0;
+  const uint32_t encodingSize =
+      prefixSize + specificHeader + sectionsSize + exceptionBytes;
 
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
@@ -881,7 +1124,8 @@ std::string_view SubIntSplitEncoding<T>::encode(
       pos);
 
   encoding::write<uint8_t>(splitCount, pos);
-  encoding::write<uint8_t>(uint8_t{0}, pos); // reserved / order
+  encoding::write<uint8_t>(
+      hasExc ? detail::kSubIntSplitFlagHasExceptions : uint8_t{0}, pos);
 
   for (uint8_t s = 0; s < splitCount; ++s) {
     const auto& seg = segments[s];
@@ -889,8 +1133,17 @@ std::string_view SubIntSplitEncoding<T>::encode(
     encoding::write<uint8_t>(static_cast<uint8_t>(seg.bitEnd), pos);
     encoding::writeUint32(static_cast<uint32_t>(sectionData[s].size()), pos);
   }
+  if (hasExc) {
+    encoding::writeUint32(exceptionCount, pos);
+    encoding::writeUint32(static_cast<uint32_t>(indexEncoded.size()), pos);
+    encoding::writeUint32(static_cast<uint32_t>(valueEncoded.size()), pos);
+  }
   for (const auto& sv : sectionData) {
     encoding::writeBytes(sv, pos);
+  }
+  if (hasExc) {
+    encoding::writeBytes(indexEncoded, pos);
+    encoding::writeBytes(valueEncoded, pos);
   }
 
   NIMBLE_DCHECK_EQ(
@@ -905,7 +1158,11 @@ template <typename T>
 std::string SubIntSplitEncoding<T>::debugString(int offset) const {
   std::string indent(offset, ' ');
   std::string result = indent +
-      "SubIntSplitEncoding sections=" + std::to_string(sections_.size()) + "\n";
+      "SubIntSplitEncoding sections=" + std::to_string(sections_.size());
+  if (hasExceptions()) {
+    result += " exceptions=" + std::to_string(exceptionIndices_.size());
+  }
+  result += "\n";
   for (size_t s = 0; s < sections_.size(); ++s) {
     const auto& sec = sections_[s];
     result += indent + "  [" + std::to_string(sec.bitStart) + ".." +
