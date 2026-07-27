@@ -22,6 +22,7 @@
 #include "dwio/nimble/common/NimbleException.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -166,6 +167,20 @@ std::string_view sliceConstant(
       ConstantEncoding<T>::slice(encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceFixedBitWidth(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_NUMERIC_DATA_TYPE(
+      dataType,
+      T,
+      FixedBitWidthEncoding<T>::slice(
+          encoded, offset, length, buffer, options));
+}
+
 } // namespace
 
 std::string_view EncodingSliceFactory::slice(
@@ -191,6 +206,9 @@ std::string_view EncodingSliceFactory::slice(
       return sliceTrivial(encoded, dataType, offset, length, buffer, options);
     case EncodingType::RLE:
       return sliceRLE(encoded, dataType, offset, length, buffer, options);
+    case EncodingType::FixedBitWidth:
+      return sliceFixedBitWidth(
+          encoded, dataType, offset, length, buffer, options);
     case EncodingType::Nullable:
       return sliceNullable(encoded, dataType, offset, length, buffer, options);
     case EncodingType::SparseBool:

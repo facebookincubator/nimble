@@ -208,6 +208,102 @@ TYPED_TEST(FixedBitWidthEncodingTest, decodesByteRoundedPayload) {
   EXPECT_EQ(result, std::vector<uint32_t>(values.begin(), values.end()));
 }
 
+TYPED_TEST(FixedBitWidthEncodingTest, slice) {
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  for (const bool useExactBits : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useExactBits=" << useExactBits);
+    nimble::Encoding::Options options{
+        .useVarintRowCount = TypeParam::useVarint};
+    options.fixedBitWidthUseExactBits = useExactBits;
+
+    nimble::Vector<uint32_t> values{this->pool_.get()};
+    for (uint32_t i = 0; i < 32; ++i) {
+      values.push_back(1000 + (i * 7) % 64);
+    }
+
+    nimble::Buffer sourceBuffer{*this->pool_};
+    const auto encoded =
+        nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::encode(
+            sourceBuffer,
+            values,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    for (const auto range :
+         {Range{/*offset=*/0, /*length=*/0},
+          Range{/*offset=*/0, /*length=*/5},
+          Range{/*offset=*/1, /*length=*/7},
+          Range{/*offset=*/4, /*length=*/8},
+          Range{/*offset=*/27, /*length=*/5}}) {
+      SCOPED_TRACE(
+          testing::Message()
+          << "offset=" << range.offset << " length=" << range.length);
+      nimble::Buffer sliceBuffer{*this->pool_};
+      const auto sliced = nimble::EncodingFactory::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+
+      EXPECT_EQ(
+          nimble::EncodingPrefix::encodingType(sliced),
+          nimble::EncodingType::FixedBitWidth);
+      EXPECT_EQ(
+          nimble::EncodingPrefix::readRowCount(
+              sliced, options.useVarintRowCount),
+          range.length);
+
+      auto encoding = nimble::EncodingFactory{options}.create(
+          *this->pool_, sliced, this->stringBufferFactory());
+      std::vector<uint32_t> result(range.length);
+      encoding->materialize(range.length, result.data());
+
+      const std::vector<uint32_t> expected{
+          values.begin() + range.offset,
+          values.begin() + range.offset + range.length};
+      EXPECT_EQ(result, expected);
+    }
+  }
+}
+
+TYPED_TEST(FixedBitWidthEncodingTest, sliceCompressedSource) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  nimble::Vector<uint32_t> values{this->pool_.get()};
+  for (uint32_t i = 0; i < 512; ++i) {
+    values.push_back(1000 + i % 128);
+  }
+
+  nimble::Buffer sourceBuffer{*this->pool_};
+  const auto encoded =
+      nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::encode(
+          sourceBuffer, values, nimble::CompressionType::Zstd, options);
+
+  constexpr uint32_t kOffset{17};
+  constexpr uint32_t kLength{65};
+  nimble::Buffer sliceBuffer{*this->pool_};
+  const auto sliced = nimble::EncodingFactory::slice(
+      encoded, kOffset, kLength, sliceBuffer, options);
+
+  const auto prefixSize =
+      nimble::EncodingPrefix::prefixSize(sliced, TypeParam::useVarint);
+  EXPECT_EQ(
+      static_cast<nimble::CompressionType>(
+          static_cast<uint8_t>(sliced[prefixSize])),
+      nimble::CompressionType::Uncompressed);
+
+  auto encoding = nimble::EncodingFactory{options}.create(
+      *this->pool_, sliced, this->stringBufferFactory());
+  std::vector<uint32_t> result(kLength);
+  encoding->materialize(kLength, result.data());
+
+  const std::vector<uint32_t> expected{
+      values.begin() + kOffset, values.begin() + kOffset + kLength};
+  EXPECT_EQ(result, expected);
+}
+
 TYPED_TEST(FixedBitWidthEncodingTest, singleValue) {
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
