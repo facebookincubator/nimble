@@ -80,6 +80,259 @@ class VeloxWriterTest : public ::testing::Test {
     leafPool_ = rootPool_->addLeafChild("default_leaf");
   }
 
+  // Builds chunkCount chunks of rowsPerChunk int64 values where chunk 0 is
+  // high-entropy random data (which selection encodes as a flat layout that can
+  // re-encode any later chunk on replay) and every later chunk repeats a single
+  // value (a constant layout). Without caching the chunks select different
+  // encodings, so the cached-replay assertions are not vacuous. The fixed seed
+  // makes the cached and control writers see identical data.
+  static std::vector<std::vector<int64_t>>
+  makeDivergentInt64Chunks(int chunkCount, int rowsPerChunk, uint32_t seed) {
+    std::mt19937 rng{seed};
+    std::vector<std::vector<int64_t>> chunkData(chunkCount);
+    for (int chunk = 0; chunk < chunkCount; ++chunk) {
+      if (chunk == 0) {
+        chunkData[chunk].reserve(rowsPerChunk);
+        for (int row = 0; row < rowsPerChunk; ++row) {
+          chunkData[chunk].push_back(static_cast<int64_t>(rng()));
+        }
+      } else {
+        chunkData[chunk].assign(rowsPerChunk, static_cast<int64_t>(rng()));
+      }
+    }
+    return chunkData;
+  }
+
+  // Captures, in file order across all stripes, the EncodingLayout of every
+  // chunk of the given top-level scalar column, asserting the file holds
+  // expectedStripeCount stripes.
+  std::vector<nimble::EncodingLayout> captureColumnChunkLayouts(
+      const std::shared_ptr<velox::InMemoryReadFile>& readFile,
+      int columnIndex,
+      uint32_t expectedStripeCount) {
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+    auto section =
+        tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+    NIMBLE_CHECK(section.has_value(), "Schema not found.");
+    auto schema =
+        nimble::SchemaDeserializer::deserialize(section->content().data());
+    auto offset = schema->asRow()
+                      .childAt(columnIndex)
+                      ->asScalar()
+                      .scalarDescriptor()
+                      .offset();
+
+    EXPECT_EQ(tablet->stripeCount(), expectedStripeCount);
+    std::vector<nimble::EncodingLayout> chunkLayouts;
+    for (uint32_t stripe = 0; stripe < tablet->stripeCount(); ++stripe) {
+      auto streams = tablet->load(
+          tablet->stripeIdentifier(stripe), std::vector<uint32_t>{offset});
+      nimble::InMemoryChunkedStream chunkedStream{
+          *leafPool_, std::move(streams[0])};
+      while (chunkedStream.hasNext()) {
+        chunkLayouts.push_back(
+            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk()));
+      }
+    }
+    return chunkLayouts;
+  }
+
+  // Structurally compares two captured EncodingLayouts, recursing into every
+  // nested sub-encoding (e.g. a Dictionary's Alphabet/Indices), so a match
+  // means the full encoding tree is identical, not just the top-level encoding
+  // type.
+  static bool encodingLayoutsEqual(
+      const nimble::EncodingLayout& a,
+      const nimble::EncodingLayout& b) {
+    if (a.encodingType() != b.encodingType() ||
+        a.compressionType() != b.compressionType() ||
+        a.config().values() != b.config().values() ||
+        a.childrenCount() != b.childrenCount()) {
+      return false;
+    }
+    for (nimble::NestedEncodingIdentifier i = 0; i < a.childrenCount(); ++i) {
+      const auto& childA = a.child(i);
+      const auto& childB = b.child(i);
+      if (childA.has_value() != childB.has_value()) {
+        return false;
+      }
+      if (childA.has_value() && !encodingLayoutsEqual(*childA, *childB)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Wraps each inner vector of chunkData (one per chunk) into a single BIGINT
+  // column "c0" RowVector batch, for the BIGINT-specific cached-encoding tests.
+  std::vector<velox::RowVectorPtr> bigintBatches(
+      const std::vector<std::vector<int64_t>>& chunkData) {
+    velox::test::VectorMaker vectorMaker{leafPool_.get()};
+    std::vector<velox::RowVectorPtr> batches;
+    batches.reserve(chunkData.size());
+    for (const auto& chunkValues : chunkData) {
+      batches.push_back(vectorMaker.rowVector(
+          {"c0"}, {vectorMaker.flatVector<int64_t>(chunkValues)}));
+    }
+    return batches;
+  }
+
+  // Flush-policy factory for the cache tests: one chunk per batch, with a
+  // stripe closed after every chunksPerStripe batches, so a single write
+  // exercises the cache across both chunk and stripe boundaries (the default
+  // expectation). With N batches this yields ceil(N / chunksPerStripe) stripes,
+  // each holding multiple chunks. The batch counter lives in the returned
+  // factory's closure because the writer invokes the factory afresh on every
+  // write() (flush policies are stateful, see
+  // VeloxWriter::evaluateFlushPolicy).
+  static std::function<std::unique_ptr<nimble::FlushPolicy>()>
+  chunkAndStripeFlushPolicyFactory(int chunksPerStripe) {
+    auto batchesSinceFlush = std::make_shared<int>(0);
+    return [batchesSinceFlush, chunksPerStripe]() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/
+          [batchesSinceFlush, chunksPerStripe](const nimble::StripeProgress&) {
+            if (++(*batchesSinceFlush) >= chunksPerStripe) {
+              *batchesSinceFlush = 0;
+              return true;
+            }
+            return false;
+          },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+  }
+
+  // A row of every scalar type Nimble encodes as a top-level scalar stream, for
+  // the AllDataTypes variants. (TIMESTAMP is intentionally excluded: Nimble
+  // does not represent it as a scalar node, so the scalar-stream capture idiom
+  // in captureColumnChunkLayouts does not apply to it.)
+  static velox::RowTypePtr allScalarTypesRow() {
+    return velox::ROW({
+        {"c_bool", velox::BOOLEAN()},
+        {"c_tinyint", velox::TINYINT()},
+        {"c_smallint", velox::SMALLINT()},
+        {"c_int", velox::INTEGER()},
+        {"c_bigint", velox::BIGINT()},
+        {"c_real", velox::REAL()},
+        {"c_double", velox::DOUBLE()},
+        {"c_varchar", velox::VARCHAR()},
+        {"c_varbinary", velox::VARBINARY()},
+    });
+  }
+
+  // Builds chunkCount divergent batches of the given scalar-typed row schema:
+  // chunk 0 is fuzzed random data (with some nulls, exercising the nullable
+  // path), and every later chunk is constant (all rows identical, no nulls), so
+  // without caching the chunks select different encodings per column.
+  std::vector<velox::RowVectorPtr> makeDivergentBatches(
+      const velox::RowTypePtr& type,
+      int chunkCount,
+      int rowsPerChunk,
+      uint32_t seed) {
+    velox::VectorFuzzer randomFuzzer(
+        {.vectorSize = static_cast<size_t>(rowsPerChunk), .nullRatio = 0.1},
+        leafPool_.get(),
+        seed);
+    velox::VectorFuzzer constantFuzzer(
+        {.vectorSize = 1, .nullRatio = 0.0}, leafPool_.get(), seed + 1);
+
+    std::vector<velox::RowVectorPtr> batches;
+    batches.reserve(chunkCount);
+    batches.push_back(randomFuzzer.fuzzInputFlatRow(type));
+
+    const auto constantSeed = constantFuzzer.fuzzInputFlatRow(type);
+    for (int chunk = 1; chunk < chunkCount; ++chunk) {
+      std::vector<velox::VectorPtr> constantChildren;
+      constantChildren.reserve(type->size());
+      for (size_t column = 0; column < type->size(); ++column) {
+        constantChildren.push_back(
+            velox::BaseVector::wrapInConstant(
+                rowsPerChunk,
+                /*index=*/0,
+                constantSeed->childAt(
+                    static_cast<velox::column_index_t>(column))));
+      }
+      batches.push_back(
+          std::make_shared<velox::RowVector>(
+              leafPool_.get(),
+              type,
+              /*nulls=*/nullptr,
+              rowsPerChunk,
+              std::move(constantChildren)));
+    }
+    return batches;
+  }
+
+  // Writes each RowVector batch (one per chunk) of the given schema using
+  // options, verifies every row round-trips via the Velox vector comparator
+  // (replaying a layout onto divergent data must not corrupt values), and
+  // returns the per-chunk EncodingLayouts captured for the given scalar column
+  // across all stripes.
+  std::vector<nimble::EncodingLayout> writeAndCaptureChunkLayouts(
+      const velox::RowTypePtr& type,
+      const std::vector<velox::RowVectorPtr>& batches,
+      nimble::VeloxWriterOptions options,
+      uint32_t expectedStripeCount,
+      int columnIndex = 0) {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+    // Every output row must equal the corresponding input row, across all
+    // columns (BaseVector::equalValueAt is type-agnostic and null-aware).
+    {
+      nimble::VeloxReader reader(readFile.get(), *leafPool_);
+      velox::VectorPtr result;
+      size_t batchIndex = 0;
+      velox::vector_size_t rowInBatch = 0;
+      while (reader.next(/*rowCount=*/1024, result)) {
+        for (velox::vector_size_t row = 0; row < result->size(); ++row) {
+          while (batchIndex < batches.size() &&
+                 rowInBatch == batches[batchIndex]->size()) {
+            ++batchIndex;
+            rowInBatch = 0;
+          }
+          NIMBLE_CHECK(
+              batchIndex < batches.size(), "More rows read than written.");
+          EXPECT_TRUE(
+              result->equalValueAt(batches[batchIndex].get(), row, rowInBatch))
+              << "row mismatch: chunk " << batchIndex << " row " << rowInBatch;
+          ++rowInBatch;
+        }
+      }
+      while (batchIndex < batches.size() &&
+             rowInBatch == batches[batchIndex]->size()) {
+        ++batchIndex;
+        rowInBatch = 0;
+      }
+      EXPECT_EQ(batchIndex, batches.size()) << "Fewer rows read than written.";
+    }
+
+    return captureColumnChunkLayouts(
+        readFile, columnIndex, expectedStripeCount);
+  }
+
+  // Convenience overload for the single-BIGINT-column tests: wraps raw int64
+  // chunk data into RowVector batches and delegates to the vector-based helper.
+  std::vector<nimble::EncodingLayout> writeAndCaptureChunkLayouts(
+      const std::vector<std::vector<int64_t>>& chunkData,
+      nimble::VeloxWriterOptions options,
+      uint32_t expectedStripeCount) {
+    return writeAndCaptureChunkLayouts(
+        velox::ROW({{"c0", velox::BIGINT()}}),
+        bigintBatches(chunkData),
+        std::move(options),
+        expectedStripeCount);
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
@@ -3618,6 +3871,1059 @@ TEST_F(VeloxWriterTest, chunkSizeStatsEmptyWhenChunkingNotTriggered) {
   writer.close();
 
   EXPECT_EQ(writer.stats().chunkSizeBytes.count, 0);
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutAcrossChunks) {
+  // Isolation test: a single stripe holding multiple chunks, so a failure here
+  // points at the chunk-boundary replay path specifically. The default
+  // multi-stripe-and-multi-chunk coverage lives in the other cache tests.
+  constexpr int kChunkCount = 5;
+  constexpr int kRowsPerChunk = 1000;
+  // Fixed seed so the cached and control writers generate identical data and
+  // the test is reproducible across runs.
+  constexpr uint32_t kSeed = 0xC0FFEE;
+  auto chunkData = makeDivergentInt64Chunks(kChunkCount, kRowsPerChunk, kSeed);
+
+  // One chunk per batch (chunkLambda true) with no stripe flush, so the file is
+  // a single stripe holding kChunkCount chunks.
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = []() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  // Precondition: without caching, the divergent data selects different
+  // encodings across chunks. If this regresses, the cached assertion below
+  // would be vacuous, so fail hard here.
+  auto uncached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/false),
+      /*expectedStripeCount=*/1);
+  ASSERT_EQ(uncached.size(), static_cast<size_t>(kChunkCount));
+  ASSERT_NE(uncached.front().encodingType(), uncached[1].encodingType());
+
+  // With caching, every chunk replays the first chunk's encoding.
+  auto cached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/true),
+      /*expectedStripeCount=*/1);
+  ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+  for (const auto& layout : cached) {
+    EXPECT_EQ(layout.encodingType(), cached.front().encodingType());
+  }
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutMultiType) {
+  // Applies the divergent-data replay invariant to every column of a multi-type
+  // schema (BIGINT, VARCHAR, REAL, BIGINT) simultaneously, across both chunk
+  // and stripe boundaries. All columns are non-nullable so the captured
+  // top-level EncodingType of each column's stream is directly comparable
+  // across chunks (a nullable column would wrap the data encoding in a Nullable
+  // encoding).
+  auto type = velox::ROW({
+      {"c0", velox::BIGINT()},
+      {"c1", velox::VARCHAR()},
+      {"c2", velox::REAL()},
+      {"c3", velox::BIGINT()},
+  });
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  constexpr int kColumnCount = 4;
+  constexpr int kChunkCount = 8;
+  constexpr int kChunksPerStripe = 3;
+  constexpr uint32_t kExpectedStripeCount = 3; // ceil(8 / 3)
+  constexpr int kRowsPerChunk = 1000;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+
+  // Returns, per column, the top-level EncodingType captured for each chunk of
+  // that column's stream. Outer index is column, inner index is chunk.
+  auto writeAndCaptureChunkEncodings = [&](bool enableEncodingSelectionCache)
+      -> std::vector<std::vector<nimble::EncodingType>> {
+    // Re-seeded identically each call. For every column, chunk 0 holds
+    // high-entropy random values (a flat layout that re-encodes anything on
+    // replay) and each later chunk repeats a single seeded value (a constant
+    // layout), guaranteeing divergent encodings without caching.
+    std::mt19937 rng{kSeed};
+    std::vector<std::vector<int64_t>> c0Data(kChunkCount);
+    std::vector<std::vector<std::string>> c1Data(kChunkCount);
+    std::vector<std::vector<float>> c2Data(kChunkCount);
+    std::vector<std::vector<int64_t>> c3Data(kChunkCount);
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      if (chunk == 0) {
+        for (int row = 0; row < kRowsPerChunk; ++row) {
+          c0Data[chunk].push_back(static_cast<int64_t>(rng()));
+          c1Data[chunk].push_back(fmt::format("s_{}", rng()));
+          c2Data[chunk].push_back(static_cast<float>(rng()));
+          c3Data[chunk].push_back(static_cast<int64_t>(rng()));
+        }
+      } else {
+        c0Data[chunk].assign(kRowsPerChunk, static_cast<int64_t>(rng()));
+        c1Data[chunk].assign(kRowsPerChunk, fmt::format("s_{}", rng()));
+        c2Data[chunk].assign(kRowsPerChunk, static_cast<float>(rng()));
+        c3Data[chunk].assign(kRowsPerChunk, static_cast<int64_t>(rng()));
+      }
+    }
+
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory =
+        chunkAndStripeFlushPolicyFactory(kChunksPerStripe);
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      std::vector<velox::StringView> c1Views;
+      c1Views.reserve(kRowsPerChunk);
+      for (const auto& value : c1Data[chunk]) {
+        c1Views.push_back(velox::StringView{value});
+      }
+      writer.write(vectorMaker.rowVector(
+          {"c0", "c1", "c2", "c3"},
+          {vectorMaker.flatVector<int64_t>(c0Data[chunk]),
+           vectorMaker.flatVector<velox::StringView>(c1Views),
+           vectorMaker.flatVector<float>(c2Data[chunk]),
+           vectorMaker.flatVector<int64_t>(c3Data[chunk])}));
+    }
+    writer.close();
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+    // Verify every column round-trips: replaying a cached layout onto divergent
+    // data must not corrupt values.
+    std::vector<int64_t> actualC0;
+    std::vector<std::string> actualC1;
+    std::vector<float> actualC2;
+    std::vector<int64_t> actualC3;
+    {
+      nimble::VeloxReader reader(readFile.get(), *leafPool_);
+      velox::VectorPtr result;
+      while (reader.next(kRowsPerChunk, result)) {
+        auto* row = result->as<velox::RowVector>();
+        auto* c0 = row->childAt(0)->asFlatVector<int64_t>();
+        auto* c1 = row->childAt(1)->asFlatVector<velox::StringView>();
+        auto* c2 = row->childAt(2)->asFlatVector<float>();
+        auto* c3 = row->childAt(3)->asFlatVector<int64_t>();
+        for (auto i = 0; i < result->size(); ++i) {
+          actualC0.push_back(c0->valueAt(i));
+          actualC1.emplace_back(c1->valueAt(i));
+          actualC2.push_back(c2->valueAt(i));
+          actualC3.push_back(c3->valueAt(i));
+        }
+      }
+    }
+    std::vector<int64_t> expectedC0;
+    std::vector<std::string> expectedC1;
+    std::vector<float> expectedC2;
+    std::vector<int64_t> expectedC3;
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      expectedC0.insert(
+          expectedC0.end(), c0Data[chunk].begin(), c0Data[chunk].end());
+      expectedC1.insert(
+          expectedC1.end(), c1Data[chunk].begin(), c1Data[chunk].end());
+      expectedC2.insert(
+          expectedC2.end(), c2Data[chunk].begin(), c2Data[chunk].end());
+      expectedC3.insert(
+          expectedC3.end(), c3Data[chunk].begin(), c3Data[chunk].end());
+    }
+    EXPECT_EQ(actualC0, expectedC0);
+    EXPECT_EQ(actualC1, expectedC1);
+    EXPECT_EQ(actualC2, expectedC2);
+    EXPECT_EQ(actualC3, expectedC3);
+
+    std::vector<std::vector<nimble::EncodingType>> columnChunkEncodings(
+        kColumnCount);
+    for (int column = 0; column < kColumnCount; ++column) {
+      for (const auto& layout :
+           captureColumnChunkLayouts(readFile, column, kExpectedStripeCount)) {
+        columnChunkEncodings[column].push_back(layout.encodingType());
+      }
+    }
+    return columnChunkEncodings;
+  };
+
+  // Precondition: without caching, every column's divergent data selects
+  // different encodings across chunks, so the cached assertions are not
+  // vacuous.
+  auto uncachedEncodings =
+      writeAndCaptureChunkEncodings(/*enableEncodingSelectionCache=*/false);
+  ASSERT_EQ(uncachedEncodings.size(), static_cast<size_t>(kColumnCount));
+  for (int column = 0; column < kColumnCount; ++column) {
+    ASSERT_EQ(
+        uncachedEncodings[column].size(), static_cast<size_t>(kChunkCount));
+    ASSERT_NE(uncachedEncodings[column].front(), uncachedEncodings[column][1]);
+  }
+
+  // With caching, every chunk of every column replays that column's first
+  // chunk encoding.
+  auto cachedEncodings =
+      writeAndCaptureChunkEncodings(/*enableEncodingSelectionCache=*/true);
+  ASSERT_EQ(cachedEncodings.size(), static_cast<size_t>(kColumnCount));
+  for (int column = 0; column < kColumnCount; ++column) {
+    ASSERT_EQ(cachedEncodings[column].size(), static_cast<size_t>(kChunkCount));
+    for (auto encoding : cachedEncodings[column]) {
+      EXPECT_EQ(encoding, cachedEncodings[column].front());
+    }
+  }
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutNullableEncoding) {
+  // Reviewer @783: when a chunk has nulls the writer wraps its data encoding in
+  // a Nullable encoding (EncodingType::Nullable), and the cache stores only the
+  // data encoding -- EncodingLayoutCapture::capture() strips the Nullable
+  // wrapper. So a chunk whose nullability differs from the chunk that populated
+  // the cache must (a) replay the cached data encoding and (b) re-apply the
+  // Nullable wrapper based on its own nulls, decided per chunk by encode<T> in
+  // VeloxWriter.cpp, not baked into the cache.
+  //
+  // capture() always strips the Nullable wrapper, so the wrapper is observed by
+  // reading byte 0 (the EncodingType) of the raw encoded chunk, while the
+  // stripped data encoding comes from capture().
+  auto type = velox::ROW({{"c0", velox::BIGINT()}});
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  constexpr int kChunkCount = 4;
+  constexpr int kRowsPerChunk = 1000;
+  constexpr uint32_t kSeed = 0xF00D;
+
+  // Chunk 0: high-entropy random values (a flat data layout that replays onto
+  // any data) with nulls. Later chunks: a single repeated constant (a Constant
+  // data layout when freshly selected), alternating nullability. So without
+  // caching the data encodings diverge across chunks, and the null-bearing
+  // chunks are Nullable-wrapped while the others are bare.
+  auto makeChunkData = [&] {
+    std::mt19937 rng{kSeed};
+    std::vector<std::vector<std::optional<int64_t>>> data(kChunkCount);
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      const bool withNulls = (chunk % 2 == 0); // chunks 0, 2 have nulls
+      for (int row = 0; row < kRowsPerChunk; ++row) {
+        if (withNulls && row % 5 == 0) {
+          data[chunk].push_back(std::nullopt);
+        } else {
+          data[chunk].push_back(
+              chunk == 0 ? static_cast<int64_t>(rng()) : int64_t{42});
+        }
+      }
+    }
+    return data;
+  };
+
+  struct ChunkEncoding {
+    // The on-disk wrapper: byte 0 (EncodingType) of the raw chunk. Nullable for
+    // a chunk with nulls, otherwise the bare data encoding.
+    nimble::EncodingType wrapper;
+    // The data encoding, with any Nullable wrapper stripped by capture().
+    nimble::EncodingLayout dataLayout;
+  };
+
+  auto writeAndCapture =
+      [&](bool enableEncodingSelectionCache) -> std::vector<ChunkEncoding> {
+    const auto data = makeChunkData();
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = [] {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      writer.write(vectorMaker.rowVector(
+          {"c0"}, {vectorMaker.flatVectorNullable<int64_t>(data[chunk])}));
+    }
+    writer.close();
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+
+    // Replaying a cached layout onto divergent data/nullability must not
+    // corrupt values or nulls.
+    std::vector<std::optional<int64_t>> actual;
+    {
+      nimble::VeloxReader reader(readFile.get(), *leafPool_);
+      velox::VectorPtr result;
+      while (reader.next(kRowsPerChunk, result)) {
+        auto* c0 =
+            result->as<velox::RowVector>()->childAt(0)->asFlatVector<int64_t>();
+        for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+          actual.push_back(
+              c0->isNullAt(i) ? std::nullopt
+                              : std::optional<int64_t>{c0->valueAt(i)});
+        }
+      }
+    }
+    std::vector<std::optional<int64_t>> expected;
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      expected.insert(expected.end(), data[chunk].begin(), data[chunk].end());
+    }
+    EXPECT_EQ(actual, expected);
+
+    // Capture, per chunk, both the raw on-disk wrapper (byte 0) and the
+    // Nullable-stripped data encoding.
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+    auto section =
+        tablet->loadOptionalSection(std::string(nimble::kSchemaSection));
+    NIMBLE_CHECK(section.has_value(), "Schema not found.");
+    auto schema =
+        nimble::SchemaDeserializer::deserialize(section->content().data());
+    const auto offset =
+        schema->asRow().childAt(0)->asScalar().scalarDescriptor().offset();
+
+    EXPECT_EQ(tablet->stripeCount(), 1U);
+    std::vector<ChunkEncoding> chunkEncodings;
+    auto streams = tablet->load(
+        tablet->stripeIdentifier(0), std::vector<uint32_t>{offset});
+    nimble::InMemoryChunkedStream chunkedStream{
+        *leafPool_, std::move(streams[0])};
+    while (chunkedStream.hasNext()) {
+      const auto rawChunk = chunkedStream.nextChunk();
+      auto dataLayout = nimble::EncodingLayoutCapture::capture(rawChunk);
+      const auto wrapper =
+          static_cast<nimble::EncodingType>(static_cast<uint8_t>(rawChunk[0]));
+      chunkEncodings.push_back(ChunkEncoding{wrapper, std::move(dataLayout)});
+    }
+    return chunkEncodings;
+  };
+
+  // Precondition: without caching the data encodings diverge across chunks (so
+  // the cached data-replay assertion is not vacuous), and the null-bearing
+  // chunks are Nullable-wrapped on disk while the others are bare.
+  const auto uncached = writeAndCapture(/*enableEncodingSelectionCache=*/false);
+  ASSERT_EQ(uncached.size(), static_cast<size_t>(kChunkCount));
+  EXPECT_NE(
+      uncached[0].dataLayout.encodingType(),
+      uncached[1].dataLayout.encodingType());
+  EXPECT_EQ(uncached[0].wrapper, nimble::EncodingType::Nullable);
+  EXPECT_NE(uncached[1].wrapper, nimble::EncodingType::Nullable);
+
+  // With caching, every chunk replays chunk 0's data encoding regardless of its
+  // own nullability...
+  const auto cached = writeAndCapture(/*enableEncodingSelectionCache=*/true);
+  ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+  for (const auto& chunk : cached) {
+    EXPECT_EQ(
+        chunk.dataLayout.encodingType(), cached[0].dataLayout.encodingType());
+  }
+
+  // ...while the on-disk Nullable wrapper is still re-applied per chunk from
+  // its own nulls (decided by encode<T>, not baked into the cached data
+  // layout): a null-bearing chunk wraps the replayed data encoding in a
+  // Nullable, a null-free chunk uses it bare.
+  EXPECT_EQ(cached[0].wrapper, nimble::EncodingType::Nullable);
+  EXPECT_NE(cached[1].wrapper, nimble::EncodingType::Nullable);
+  EXPECT_EQ(cached[2].wrapper, nimble::EncodingType::Nullable);
+  EXPECT_NE(cached[3].wrapper, nimble::EncodingType::Nullable);
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutWithEncodingExecutor) {
+  // Same divergent-data replay invariant across chunks and stripes, but with a
+  // parallel encoding executor wired in to exercise the encoding selection
+  // cache on encoding-executor pool threads.
+  constexpr int kChunkCount = 8;
+  constexpr int kChunksPerStripe = 3;
+  constexpr uint32_t kExpectedStripeCount = 3; // ceil(8 / 3)
+  constexpr int kRowsPerChunk = 1000;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+  auto chunkData = makeDivergentInt64Chunks(kChunkCount, kRowsPerChunk, kSeed);
+
+  folly::CPUThreadPoolExecutor executor{4};
+  auto makeOptions = [&](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.encodingExecutor = folly::getKeepAliveToken(executor);
+    options.flushPolicyFactory =
+        chunkAndStripeFlushPolicyFactory(kChunksPerStripe);
+    return options;
+  };
+
+  // Precondition: without caching, the divergent data selects different
+  // encodings across chunks, so the cached assertion is not vacuous.
+  auto uncached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/false),
+      kExpectedStripeCount);
+  ASSERT_EQ(uncached.size(), static_cast<size_t>(kChunkCount));
+  ASSERT_NE(uncached.front().encodingType(), uncached[1].encodingType());
+
+  // With caching, every chunk across all stripes replays the first chunk's
+  // encoding.
+  auto cached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/true),
+      kExpectedStripeCount);
+  ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+  for (const auto& layout : cached) {
+    EXPECT_EQ(layout.encodingType(), cached.front().encodingType());
+  }
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutReplay) {
+  // The default cache expectation: divergent data written as organically-formed
+  // stripes that each hold multiple chunks (one chunk per batch, a stripe
+  // closed after every kChunksPerStripe batches). The cached layout from the
+  // very first chunk of the file must be replayed onto every later chunk,
+  // across all chunk and stripe boundaries.
+  constexpr int kChunkCount = 20;
+  constexpr int kRowsPerChunk = 1000;
+  // Close a stripe after every 6 batches: stripes close after batches 6, 12, 18
+  // and the trailing 2 batches form the final stripe at close, giving 4 stripes
+  // (sizes 6, 6, 6, 2), each with multiple chunks.
+  constexpr int kChunksPerStripe = 6;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+  constexpr uint32_t kExpectedStripeCount = 4;
+  auto chunkData = makeDivergentInt64Chunks(kChunkCount, kRowsPerChunk, kSeed);
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory =
+        chunkAndStripeFlushPolicyFactory(kChunksPerStripe);
+    return options;
+  };
+
+  // Precondition: without caching, the divergent data selects different
+  // encodings across chunks, so the cached assertion is not vacuous.
+  auto uncached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/false),
+      kExpectedStripeCount);
+  ASSERT_EQ(uncached.size(), static_cast<size_t>(kChunkCount));
+  ASSERT_NE(uncached.front().encodingType(), uncached[1].encodingType());
+
+  // With caching, every chunk across all stripes replays the first chunk's
+  // encoding.
+  auto cached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/true),
+      kExpectedStripeCount);
+  ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+  for (const auto& layout : cached) {
+    EXPECT_EQ(layout.encodingType(), cached.front().encodingType());
+  }
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutFuzz) {
+  // Seeds that previously triggered a failure are replayed first as fixed
+  // regressions; afterwards a single random seed is drawn per process. Drive
+  // repetition with `--stress-runs N`, never an in-process loop.
+  static constexpr std::array<uint32_t, 0> kRegressionSeeds{};
+
+  constexpr int kChunkCount = 8;
+  constexpr int kRowsPerChunk = 1000;
+
+  // One chunk per batch, single stripe.
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = []() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  auto runOneSeed = [&](uint32_t seed) {
+    LOG(INFO) << "cachedEncodingLayoutFuzz seed: " << seed;
+    std::mt19937 rng{seed};
+
+    // Generate random per-chunk data with varied shapes: each chunk is either
+    // constant, low-cardinality, or high-cardinality random. This mixes data
+    // that selection encodes very differently per chunk.
+    std::vector<std::vector<int64_t>> chunkData(kChunkCount);
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      const int shape = std::uniform_int_distribution<int>(0, 2)(rng);
+      chunkData[chunk].reserve(kRowsPerChunk);
+      if (shape == 0) {
+        // Constant.
+        const int64_t value = static_cast<int64_t>(rng());
+        chunkData[chunk].assign(kRowsPerChunk, value);
+      } else if (shape == 1) {
+        // Low cardinality (small set of repeated values).
+        const int cardinality = std::uniform_int_distribution<int>(2, 8)(rng);
+        std::vector<int64_t> alphabet(cardinality);
+        for (auto& value : alphabet) {
+          value = static_cast<int64_t>(rng());
+        }
+        for (int row = 0; row < kRowsPerChunk; ++row) {
+          chunkData[chunk].push_back(
+              alphabet[std::uniform_int_distribution<int>(
+                  0, cardinality - 1)(rng)]);
+        }
+      } else {
+        // High cardinality / random.
+        for (int row = 0; row < kRowsPerChunk; ++row) {
+          chunkData[chunk].push_back(static_cast<int64_t>(rng()));
+        }
+      }
+    }
+
+    // The cached write must not throw for valid input.
+    std::vector<nimble::EncodingLayout> controlLayouts;
+    std::vector<nimble::EncodingLayout> cachedLayouts;
+    ASSERT_NO_THROW(
+        controlLayouts = writeAndCaptureChunkLayouts(
+            chunkData,
+            makeOptions(/*enableEncodingSelectionCache=*/false),
+            /*expectedStripeCount=*/1));
+    ASSERT_NO_THROW(
+        cachedLayouts = writeAndCaptureChunkLayouts(
+            chunkData,
+            makeOptions(/*enableEncodingSelectionCache=*/true),
+            /*expectedStripeCount=*/1));
+    ASSERT_EQ(controlLayouts.size(), static_cast<size_t>(kChunkCount));
+    ASSERT_EQ(cachedLayouts.size(), static_cast<size_t>(kChunkCount));
+
+    // The encoding selection cache is best-effort: each chunk either
+    // successfully replays chunk 0's cached encoding, or the cached encoding
+    // was incompatible with the chunk's data, raising IncompatibleEncoding
+    // which the writer catches and falls back to a fresh selection — the same
+    // encoding the uncached writer chose for that chunk (see
+    // encodeWithFallback).
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      EXPECT_TRUE(
+          cachedLayouts[chunk].encodingType() ==
+              cachedLayouts.front().encodingType() ||
+          cachedLayouts[chunk].encodingType() ==
+              controlLayouts[chunk].encodingType())
+          << "seed=" << seed << " chunk=" << chunk
+          << " cached=" << static_cast<int>(cachedLayouts[chunk].encodingType())
+          << " cached0="
+          << static_cast<int>(cachedLayouts.front().encodingType())
+          << " control="
+          << static_cast<int>(controlLayouts[chunk].encodingType());
+    }
+  };
+
+  for (uint32_t seed : kRegressionSeeds) {
+    runOneSeed(seed);
+  }
+  const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
+                                                    : folly::Random::rand32();
+  runOneSeed(seed);
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutIncompatibleFallback) {
+  // Exercises the best-effort fallback when a cached encoding is incompatible
+  // with a later chunk's data (see encodeWithFallback). Chunk 0 is fully
+  // constant -> Constant, which gets cached. Chunk 1 is mainly constant (not
+  // constant); replaying the cached Constant onto it raises
+  // IncompatibleEncoding (ConstantEncoding requires constant data), which the
+  // writer catches and falls back to a fresh selection for that chunk. The
+  // fallback does not re-cache (it only caches when no layout is cached yet),
+  // so chunks 2-4 are fully constant again and still replay the original cached
+  // Constant.
+  constexpr int kRowsPerChunk = 1000;
+  constexpr int64_t kDominantValue = 7;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+
+  // Fully constant: selection picks Constant, which gets cached; reused for
+  // chunks 0, 2, 3, 4.
+  const std::vector<int64_t> fullyConstant(kRowsPerChunk, kDominantValue);
+  // Mainly constant: the dominant value with ~1% distinct exceptions, generated
+  // once with a fixed seed. Replaying the cached Constant onto this
+  // non-constant chunk trips IncompatibleEncoding.
+  std::mt19937 rng{kSeed};
+  std::vector<int64_t> mainlyConstant(kRowsPerChunk, kDominantValue);
+  for (int i = 0; i < kRowsPerChunk / 100; ++i) {
+    mainlyConstant[std::uniform_int_distribution<int>(
+        0, kRowsPerChunk - 1)(rng)] = static_cast<int64_t>(rng());
+  }
+  const std::vector<std::vector<int64_t>> chunkData = {
+      fullyConstant,
+      mainlyConstant,
+      fullyConstant,
+      fullyConstant,
+      fullyConstant};
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = []() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  // The incompatible second chunk must be handled gracefully, not thrown.
+  std::vector<nimble::EncodingLayout> controlLayouts;
+  std::vector<nimble::EncodingLayout> cachedLayouts;
+  ASSERT_NO_THROW(
+      controlLayouts = writeAndCaptureChunkLayouts(
+          chunkData,
+          makeOptions(/*enableEncodingSelectionCache=*/false),
+          /*expectedStripeCount=*/1));
+  ASSERT_NO_THROW(
+      cachedLayouts = writeAndCaptureChunkLayouts(
+          chunkData,
+          makeOptions(/*enableEncodingSelectionCache=*/true),
+          /*expectedStripeCount=*/1));
+  ASSERT_EQ(controlLayouts.size(), chunkData.size());
+  ASSERT_EQ(cachedLayouts.size(), chunkData.size());
+
+  // Sanity: freshly selected, the mainly-constant and fully-constant chunks
+  // pick different encodings.
+  ASSERT_NE(
+      controlLayouts.front().encodingType(), controlLayouts[1].encodingType());
+
+  // Chunk 1 (mainly constant) is incompatible with the cached Constant, so it
+  // falls back to the same fresh encoding the uncached writer chose.
+  EXPECT_NE(
+      cachedLayouts[1].encodingType(), cachedLayouts.front().encodingType());
+  EXPECT_EQ(cachedLayouts[1].encodingType(), controlLayouts[1].encodingType());
+
+  // The incompatible chunk does not disrupt the cache: the fully-constant
+  // chunks all replay the first chunk's cached encoding.
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[2].encodingType());
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[3].encodingType());
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[4].encodingType());
+}
+
+TEST_F(
+    VeloxWriterTest,
+    cachedEncodingLayoutNestedDictionaryIncompatibleFallback) {
+  // Exercises the best-effort fallback when a *nested* cached encoding is
+  // incompatible with a later chunk. Chunk 0 is mainly constant with a few
+  // distinct, large exception values, so selection picks MainlyConstant whose
+  // OtherValues sub-stream is a Dictionary; this layout is cached. Chunk 1 is
+  // fully constant, so on replay the MainlyConstant's OtherValues stream is
+  // empty -- the nested Dictionary replay then has 0 rows and raises the
+  // catchable IncompatibleEncoding (this is the exact shape that used to
+  // DCHECK-abort the process before the empty-Dictionary replay was made
+  // catchable). The writer catches it and falls back to a fresh selection for
+  // that chunk. Chunks 2-4 repeat chunk 0's data and replay the cached
+  // MainlyConstant successfully.
+  constexpr int kRowsPerChunk = 1000;
+  constexpr int64_t kDominantValue = 7;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+
+  // Mainly constant: kDominantValue for most rows, with a small number of rows
+  // set to one of a few large, distinct exception values. Few distinct + large
+  // magnitude biases the OtherValues sub-stream toward a Dictionary encoding.
+  constexpr std::array<int64_t, 3> kExceptions = {
+      int64_t{1} << 40, int64_t{2} << 40, int64_t{3} << 40};
+  std::mt19937 rng{kSeed};
+  std::vector<int64_t> mainlyConstant(kRowsPerChunk, kDominantValue);
+  for (int i = 0; i < kRowsPerChunk / 20; ++i) {
+    mainlyConstant[std::uniform_int_distribution<int>(
+        0, kRowsPerChunk - 1)(rng)] = kExceptions[i % kExceptions.size()];
+  }
+  // Fully constant: replaying MainlyConstant onto this empties OtherValues.
+  const std::vector<int64_t> fullyConstant(kRowsPerChunk, kDominantValue);
+  const std::vector<std::vector<int64_t>> chunkData = {
+      mainlyConstant,
+      fullyConstant,
+      mainlyConstant,
+      mainlyConstant,
+      mainlyConstant};
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = []() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  std::vector<nimble::EncodingLayout> controlLayouts;
+  std::vector<nimble::EncodingLayout> cachedLayouts;
+  // The fully-constant chunk that empties the nested Dictionary must be handled
+  // gracefully (catchable IncompatibleEncoding), not abort the process.
+  ASSERT_NO_THROW(
+      controlLayouts = writeAndCaptureChunkLayouts(
+          chunkData,
+          makeOptions(/*enableEncodingSelectionCache=*/false),
+          /*expectedStripeCount=*/1));
+  ASSERT_NO_THROW(
+      cachedLayouts = writeAndCaptureChunkLayouts(
+          chunkData,
+          makeOptions(/*enableEncodingSelectionCache=*/true),
+          /*expectedStripeCount=*/1));
+  ASSERT_EQ(controlLayouts.size(), chunkData.size());
+  ASSERT_EQ(cachedLayouts.size(), chunkData.size());
+
+  // Precondition: chunk 0 is MainlyConstant with a nested Dictionary
+  // OtherValues -- the exact shape that empties on the fully-constant replay.
+  // Without this the test would not exercise the nested-Dictionary path.
+  ASSERT_EQ(
+      controlLayouts.front().encodingType(),
+      nimble::EncodingType::MainlyConstant);
+  const auto& otherValues = controlLayouts.front().child(
+      nimble::EncodingIdentifiers::MainlyConstant::OtherValues);
+  ASSERT_TRUE(otherValues.has_value());
+  ASSERT_EQ(otherValues->encodingType(), nimble::EncodingType::Dictionary);
+
+  // Sanity: freshly selected, the mainly-constant and fully-constant chunks
+  // pick different top-level encodings.
+  ASSERT_NE(
+      controlLayouts.front().encodingType(), controlLayouts[1].encodingType());
+
+  // Chunk 1 (fully constant) empties the cached MainlyConstant's nested
+  // Dictionary on replay -> incompatible -> falls back to the same fresh
+  // encoding the uncached writer chose.
+  EXPECT_NE(
+      cachedLayouts[1].encodingType(), cachedLayouts.front().encodingType());
+  EXPECT_EQ(cachedLayouts[1].encodingType(), controlLayouts[1].encodingType());
+
+  // The incompatible chunk does not disrupt the cache: the mainly-constant
+  // chunks all replay the first chunk's cached MainlyConstant.
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[2].encodingType());
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[3].encodingType());
+  EXPECT_EQ(
+      cachedLayouts.front().encodingType(), cachedLayouts[4].encodingType());
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutNestedDictionaryReplay) {
+  // Strict nested-encoding coverage: the cache must replay the full nested
+  // encoding tree, not just the top-level type. Chunk 0 is many distinct,
+  // randomly interleaved large values -> Dictionary(Alphabet, Indices). Later
+  // chunks arrange the same values in contiguous runs, which a fresh selection
+  // encodes differently (a run-length family), but the cached Dictionary
+  // replays onto them compatibly (16-entry alphabet, never empty). Every cached
+  // chunk's full layout tree — including the nested Alphabet/Indices
+  // sub-encodings — must equal chunk 0's.
+  constexpr int kRowsPerChunk = 1024;
+  constexpr int kCardinality = 16;
+  constexpr int kRunLength = kRowsPerChunk / kCardinality;
+  constexpr uint32_t kSeed = 0xD1C7;
+
+  std::mt19937 rng{kSeed};
+  // Large, distinct values so Dictionary (16-entry alphabet + 4-bit indices)
+  // beats a flat 64-bit FixedBitWidth.
+  std::vector<int64_t> alphabet(kCardinality);
+  for (auto& value : alphabet) {
+    value = (static_cast<int64_t>(rng()) << 20) | (int64_t{1} << 40);
+  }
+
+  // Chunk 0: randomly interleaved (no runs) -> Dictionary.
+  std::vector<int64_t> interleaved(kRowsPerChunk);
+  for (auto& value : interleaved) {
+    value =
+        alphabet[std::uniform_int_distribution<int>(0, kCardinality - 1)(rng)];
+  }
+  // Later chunks: the same values in contiguous runs -> a run-length family
+  // when freshly selected, but Dictionary-replay compatible.
+  auto makeRuns = [&](int shift) {
+    std::vector<int64_t> runs(kRowsPerChunk);
+    for (int i = 0; i < kRowsPerChunk; ++i) {
+      runs[i] = alphabet[((i / kRunLength) + shift) % kCardinality];
+    }
+    return runs;
+  };
+  const std::vector<std::vector<int64_t>> chunkData = {
+      interleaved, makeRuns(0), makeRuns(3)};
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = []() {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  const auto control = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/false),
+      /*expectedStripeCount=*/1);
+  const auto cached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/true),
+      /*expectedStripeCount=*/1);
+  ASSERT_EQ(control.size(), chunkData.size());
+  ASSERT_EQ(cached.size(), chunkData.size());
+
+  // Precondition: chunk 0 is a Dictionary with populated Alphabet + Indices
+  // sub-encodings (so nested replay is genuinely exercised)...
+  ASSERT_EQ(control.front().encodingType(), nimble::EncodingType::Dictionary);
+  ASSERT_TRUE(control.front()
+                  .child(nimble::EncodingIdentifiers::Dictionary::Alphabet)
+                  .has_value());
+  ASSERT_TRUE(control.front()
+                  .child(nimble::EncodingIdentifiers::Dictionary::Indices)
+                  .has_value());
+  // ...and a fresh selection of a later (run-shaped) chunk diverges from it, so
+  // the replay assertion below is not vacuous.
+  ASSERT_FALSE(encodingLayoutsEqual(control.front(), control[1]));
+
+  // Cached chunk 0 is itself a fresh selection (it populates the cache), so it
+  // matches the uncached chunk 0.
+  EXPECT_TRUE(encodingLayoutsEqual(cached.front(), control.front()));
+
+  // Core assertion: every cached chunk replays chunk 0's full nested tree
+  // (Dictionary + Alphabet/Indices), not merely the top-level Dictionary type.
+  for (const auto& layout : cached) {
+    EXPECT_TRUE(encodingLayoutsEqual(layout, cached.front()));
+  }
+}
+
+TEST_F(VeloxWriterTest, cachedEncodingLayoutAllDataTypes) {
+  // Interface-level coverage across chunk and stripe boundaries: caching must
+  // round-trip correctly and produce sane encodings for every scalar column
+  // type, not just BIGINT. Chunk 0 is fuzzed (with nulls); later chunks are
+  // constant. Caching is best-effort, so per column each cached chunk either
+  // replays chunk 0's encoding or falls back to the same fresh encoding the
+  // uncached writer chose; the round-trip (verified inside the helper) is the
+  // hard correctness guarantee.
+  const auto type = allScalarTypesRow();
+  constexpr int kChunkCount = 8;
+  constexpr int kChunksPerStripe = 3;
+  constexpr uint32_t kExpectedStripeCount = 3; // ceil(8 / 3)
+  constexpr int kRowsPerChunk = 1000;
+  constexpr uint32_t kSeed = 0xC0FFEE;
+  const auto batches =
+      makeDivergentBatches(type, kChunkCount, kRowsPerChunk, kSeed);
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory =
+        chunkAndStripeFlushPolicyFactory(kChunksPerStripe);
+    return options;
+  };
+
+  for (int column = 0; column < static_cast<int>(type->size()); ++column) {
+    auto control = writeAndCaptureChunkLayouts(
+        type,
+        batches,
+        makeOptions(/*enableEncodingSelectionCache=*/false),
+        kExpectedStripeCount,
+        column);
+    auto cached = writeAndCaptureChunkLayouts(
+        type,
+        batches,
+        makeOptions(/*enableEncodingSelectionCache=*/true),
+        kExpectedStripeCount,
+        column);
+    ASSERT_EQ(control.size(), static_cast<size_t>(kChunkCount));
+    ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+
+    for (int chunk = 0; chunk < kChunkCount; ++chunk) {
+      EXPECT_TRUE(
+          encodingLayoutsEqual(cached[chunk], cached.front()) ||
+          encodingLayoutsEqual(cached[chunk], control[chunk]))
+          << "column " << column << " (" << type->childAt(column)->toString()
+          << ") chunk " << chunk;
+    }
+  }
+}
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, cachedEncodingLayoutReplayRetry) {
+  // With the cache on, chunk 0 runs a fresh selection and caches its layout;
+  // chunk 1 replays it through encodeWithFallback. A TestValue hook at the
+  // encode entry point counts fresh vs replay attempts and can throw to force
+  // the replay to fail. encodeWithFallback catches ANY exception (not just
+  // IncompatibleEncoding) and retries once with a fresh selection.
+  velox::common::testutil::TestValue::enable();
+
+  const auto type = velox::ROW({{"c0", velox::BIGINT()}});
+  // Two non-nullable chunks: chunk 0 seeds the cache, chunk 1 replays it.
+  const auto batches = bigintBatches(makeDivergentInt64Chunks(
+      /*chunkCount=*/2, /*rowsPerChunk=*/1000, /*seed=*/0xC0FFEE));
+
+  // Runs a 2-chunk cached write with the given encode hook; returns whether the
+  // write threw.
+  auto runScenario = [&](std::function<void(const bool*)> onEncode) {
+    SCOPED_TESTVALUE_SET("facebook::nimble::encode", std::move(onEncode));
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = true;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = [] {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    try {
+      for (const auto& batch : batches) {
+        writer.write(batch);
+      }
+      writer.close();
+    } catch (const std::exception&) {
+      return true;
+    }
+    return false;
+  };
+
+  // Case 1: the replay succeeds, so there is no retry. Chunk 0 is the only
+  // fresh selection; chunk 1 replays exactly once.
+  {
+    int fullSelectionCount = 0;
+    int replayCount = 0;
+    const bool threw = runScenario([&](const bool* hasEncodingLayout) {
+      if (*hasEncodingLayout) {
+        ++replayCount;
+      } else {
+        ++fullSelectionCount;
+      }
+    });
+    EXPECT_FALSE(threw);
+    EXPECT_EQ(fullSelectionCount, 1);
+    EXPECT_EQ(replayCount, 1);
+  }
+
+  // Case 2: the replay throws a non-IncompatibleEncoding error; the catch-all
+  // retries with a fresh selection, which succeeds.
+  {
+    int fullSelectionCount = 0;
+    int replayCount = 0;
+    const bool threw = runScenario([&](const bool* hasEncodingLayout) {
+      if (*hasEncodingLayout) {
+        ++replayCount;
+        throw std::runtime_error("injected replay failure");
+      }
+      ++fullSelectionCount;
+    });
+    EXPECT_FALSE(threw);
+    EXPECT_EQ(replayCount, 1); // one replay attempt, which threw
+    EXPECT_EQ(fullSelectionCount, 2); // chunk 0 seed + chunk 1 retry
+  }
+
+  // Case 3: the replay and the fresh-selection retry both throw, so the error
+  // propagates out of the writer.
+  {
+    int fullSelectionCount = 0;
+    int replayCount = 0;
+    bool replayed = false;
+    const bool threw = runScenario([&](const bool* hasEncodingLayout) {
+      if (*hasEncodingLayout) {
+        ++replayCount;
+        replayed = true;
+        throw std::runtime_error("injected replay failure");
+      }
+      ++fullSelectionCount;
+      if (replayed) {
+        throw std::runtime_error("injected retry failure");
+      }
+    });
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(replayCount, 1);
+    EXPECT_EQ(
+        fullSelectionCount, 2); // chunk 0 seed (ok) + chunk 1 retry (threw)
+  }
+}
+
+DEBUG_ONLY_TEST_F(VeloxWriterTest, cachedEncodingLayoutSelectionCount) {
+  // With the cache on, the full encoding selection runs only once per stream
+  // (chunk 0) and every later chunk across all stripes replays chunk 0's
+  // encoding. With it off, a fresh selection runs for every chunk, and because
+  // the data is divergent each chunk selects a different encoding. A TestValue
+  // hook at the encode entry point counts the full selections
+  // (hasEncodingLayout
+  // == false).
+  velox::common::testutil::TestValue::enable();
+
+  const auto type = velox::ROW({{"c0", velox::BIGINT()}});
+  constexpr int kChunkCount = 8;
+  constexpr int kChunksPerStripe = 3;
+  constexpr uint32_t kExpectedStripeCount = 3; // ceil(8 / 3)
+  // Chunk 0 is high-entropy random (a flat layout that replays onto anything);
+  // later chunks are constant, so replay succeeds and never falls back to a
+  // fresh selection.
+  const auto batches = bigintBatches(makeDivergentInt64Chunks(
+      kChunkCount, /*rowsPerChunk=*/1000, /*seed=*/0xC0FFEE));
+
+  struct RunResult {
+    int fullSelectionCount;
+    std::vector<nimble::EncodingLayout> chunkLayouts;
+  };
+  // Writes the batches with the given cache flag and returns the number of full
+  // encoding selections (counted via the TestValue hook) alongside the
+  // per-chunk encoding layouts captured from the written file.
+  auto run = [&](bool enableEncodingSelectionCache) -> RunResult {
+    int fullSelectionCount = 0;
+    SCOPED_TESTVALUE_SET(
+        "facebook::nimble::encode",
+        std::function<void(const bool*)>([&](const bool* hasEncodingLayout) {
+          if (!*hasEncodingLayout) {
+            ++fullSelectionCount;
+          }
+        }));
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory =
+        chunkAndStripeFlushPolicyFactory(kChunksPerStripe);
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    for (const auto& batch : batches) {
+      writer.write(batch);
+    }
+    writer.close();
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    return {
+        fullSelectionCount,
+        captureColumnChunkLayouts(
+            readFile, /*columnIndex=*/0, kExpectedStripeCount)};
+  };
+
+  // Cache off: the full selection runs for every chunk, and the divergent data
+  // makes the chunks select different encodings.
+  const auto uncached = run(/*enableEncodingSelectionCache=*/false);
+  EXPECT_EQ(uncached.fullSelectionCount, kChunkCount);
+  ASSERT_EQ(uncached.chunkLayouts.size(), static_cast<size_t>(kChunkCount));
+  EXPECT_NE(
+      uncached.chunkLayouts.front().encodingType(),
+      uncached.chunkLayouts[1].encodingType());
+
+  // Cache on: the full selection runs once, and every chunk replays chunk 0's
+  // encoding.
+  const auto cached = run(/*enableEncodingSelectionCache=*/true);
+  EXPECT_EQ(cached.fullSelectionCount, 1);
+  ASSERT_EQ(cached.chunkLayouts.size(), static_cast<size_t>(kChunkCount));
+  for (const auto& layout : cached.chunkLayouts) {
+    EXPECT_EQ(
+        layout.encodingType(), cached.chunkLayouts.front().encodingType());
+  }
 }
 
 // Parameterized test fixture for index tests.

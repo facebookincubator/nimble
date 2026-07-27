@@ -338,18 +338,22 @@ class WriterStreamContext : public StreamContext {
     isInMapStream_ = value;
   }
 
+  // The layout to replay for this stream: overlaid from the EncodingLayoutTree
+  // at setup, or captured from this stream's first encode when
+  // encoding-selection caching is enabled. Empty until one of those populates
+  // it.
   const EncodingLayout* encoding() const {
-    return encoding_;
+    return encoding_.has_value() ? &*encoding_ : nullptr;
   }
 
-  void setEncoding(const EncodingLayout* value) {
-    encoding_ = value;
+  void setEncoding(EncodingLayout value) {
+    encoding_.emplace(std::move(value));
   }
 
  private:
   bool isNullStream_{false};
   bool isInMapStream_{false};
-  const EncodingLayout* encoding_{nullptr};
+  std::optional<EncodingLayout> encoding_;
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
@@ -362,6 +366,8 @@ class FlatmapEncodingLayoutContext : public TypeBuilderContext {
   const folly::F14FastMap<std::string_view, const EncodingLayoutTree&>
       keyEncodings;
 };
+
+WriterStreamContext& streamContext(const StreamDescriptorBuilder& descriptor);
 
 template <typename T>
 std::string_view encode(
@@ -379,8 +385,17 @@ std::string_view encode(
       reinterpret_cast<const T*>(streamData.data().data()),
       streamData.data().size() / sizeof(T)};
 
+  // True when replaying a saved layout (an external EncodingLayoutTree layout
+  // or one cached from a previous encode), false when running a fresh encoding
+  // selection. Exposed as a test-injection point so tests can count how often
+  // full selection actually runs (once per stream with the cache on, once per
+  // chunk with it off) and force the replay to fail to exercise the fallback.
+  const bool hasEncodingLayout = encodingLayout.has_value();
+  velox::common::testutil::TestValue::adjust(
+      "facebook::nimble::encode", const_cast<bool*>(&hasEncodingLayout));
+
   std::unique_ptr<EncodingSelectionPolicy<T>> policy;
-  if (encodingLayout.has_value()) {
+  if (hasEncodingLayout) {
     policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
         std::move(encodingLayout.value()),
         context.options().compressionOptions,
@@ -409,37 +424,70 @@ std::string_view encode(
   }
 }
 
+// Encodes streamData by replaying a saved layout -- either an external
+// EncodingLayoutTree layout or one cached from this stream's first encode. Only
+// entered once the stream has a saved layout to replay (checked below). Replay
+// is best-effort: if it throws for any reason (e.g. the layout no longer fits
+// this chunk's data), retry once with a fresh selection, letting any failure of
+// that retry propagate.
+template <typename T>
+std::string_view encodeWithFallback(
+    const EncodingLayout* encodingLayout,
+    detail::WriterContext& context,
+    Buffer& buffer,
+    EncodingBufferPool* encodingBufferPool,
+    const StreamData& streamData) {
+  NIMBLE_CHECK_NOT_NULL(
+      encodingLayout,
+      "encodeWithFallback requires a saved encoding layout to replay.");
+  try {
+    return encode<T>(
+        *encodingLayout, context, buffer, encodingBufferPool, streamData);
+  } catch (const std::exception&) {
+    // A saved layout can fail to apply to this chunk's data in ways beyond a
+    // clean IncompatibleEncoding, so retry on any error rather than keying off
+    // a specific (unreliable) error code.
+    return encode<T>(
+        std::nullopt, context, buffer, encodingBufferPool, streamData);
+  }
+}
+
 template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
-  const auto* streamContext =
+  const auto* writerStreamContext =
       streamData.descriptor().context<WriterStreamContext>();
 
-  std::optional<EncodingLayout> encodingLayout;
-  if (streamContext && streamContext->encoding()) {
-    encodingLayout.emplace(*streamContext->encoding());
-  }
-
-  try {
-    return encode<T>(
-        std::move(encodingLayout),
+  // Replay an externally provided (EncodingLayoutTree) or previously captured
+  // layout, falling back to a fresh selection if it no longer fits the data.
+  // TODO: Replace the exception-based best-effort replay in encodeWithFallback
+  // with a non-throwing compatibility check before the replay attempt.
+  if (writerStreamContext && writerStreamContext->encoding()) {
+    return encodeWithFallback<T>(
+        writerStreamContext->encoding(),
         context,
         buffer,
         encodingBufferPool,
         streamData);
-  } catch (const NimbleUserError& e) {
-    if (e.errorCode() != error_code::IncompatibleEncoding ||
-        !encodingLayout.has_value()) {
-      throw;
-    }
-
-    // Incompatible captured encoding. Try again without a captured encoding.
-    return encode<T>(
-        std::nullopt, context, buffer, encodingBufferPool, streamData);
   }
+
+  // No layout to replay: run a fresh selection.
+  auto encoded =
+      encode<T>(std::nullopt, context, buffer, encodingBufferPool, streamData);
+
+  // Cache the data layout from this first encode so later chunks/stripes replay
+  // it, skipping the full selection cascade. EncodingLayoutCapture::capture()
+  // already strips any Nullable/Sentinel wrapper, so the cached layout is the
+  // data encoding alone — Nimble re-applies per-chunk nullability at encode
+  // time, so it stays valid regardless of a later chunk's nulls.
+  if (context.options().enableEncodingSelectionCache) {
+    streamContext(streamData.descriptor())
+        .setEncoding(EncodingLayoutCapture::capture(encoded));
+  }
+  return encoded;
 }
 
 std::string_view encodeStreamData(
@@ -500,8 +548,7 @@ void findNodeIds(
   }
 }
 
-WriterStreamContext& getStreamContext(
-    const StreamDescriptorBuilder& descriptor) {
+WriterStreamContext& streamContext(const StreamDescriptorBuilder& descriptor) {
   auto* context = descriptor.context<WriterStreamContext>();
   if (context != nullptr) {
     return *context;
@@ -625,10 +672,9 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
       [&, nodeAttributes = std::move(attributesByNodeId)](
           TypeBuilder& type, uint32_t nodeId) {
         if (type.kind() == Kind::Row) {
-          getStreamContext(type.asRow().nullsDescriptor())
-              .setIsNullStream(true);
+          streamContext(type.asRow().nullsDescriptor()).setIsNullStream(true);
         } else if (type.kind() == Kind::FlatMap) {
-          getStreamContext(type.asFlatMap().nullsDescriptor())
+          streamContext(type.asFlatMap().nullsDescriptor())
               .setIsNullStream(true);
         }
         auto it = nodeAttributes.find(nodeId);
@@ -642,10 +688,10 @@ void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
   {
-#define SET_STREAM_CONTEXT(builder, descriptor, identifier)             \
-  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(         \
-          EncodingLayoutTree::StreamIdentifiers::identifier)) {         \
-    getStreamContext(builder.descriptor()).setEncoding(encodingLayout); \
+#define SET_STREAM_CONTEXT(builder, descriptor, identifier)           \
+  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(       \
+          EncodingLayoutTree::StreamIdentifiers::identifier)) {       \
+    streamContext(builder.descriptor()).setEncoding(*encodingLayout); \
   }
 
     if (typeBuilder.kind() == Kind::FlatMap) {
@@ -935,7 +981,7 @@ VeloxWriter::VeloxWriter(
                                                  const TypeBuilder& fieldType) {
     // Mark the newly added child's in-map stream descriptor.
     auto& flatmapBuilder = flatmap.asFlatMap();
-    getStreamContext(
+    streamContext(
         flatmapBuilder.inMapDescriptorAt(flatmapBuilder.childrenCount() - 1))
         .setIsInMapStream(true);
 
