@@ -176,15 +176,25 @@ inline double dictionaryCostBits(
   }
   const size_t uniques = m.uniqueCount;
   const uint8_t valueBits = storageWidthBits(bitWidth);
+  // Alphabet is encoded with min(Trivial, FixedBitWidth) over the observed
+  // range at exact bit width (see DictionaryEncoding::encode), so pack the
+  // uniques at the range width rather than the full storage width.
+  const uint8_t alphabetBits = m.range == 0
+      ? uint8_t{1}
+      : std::min<uint8_t>(
+            static_cast<uint8_t>(bitWidth),
+            static_cast<uint8_t>(std::bit_width(m.range)));
   const double dictBits =
-      static_cast<double>(uniques) * static_cast<double>(valueBits);
+      static_cast<double>(uniques) * static_cast<double>(alphabetBits);
   // Index width: ceil(log2(uniques)), clamped to 32
   const uint32_t indexWidth = (uniques <= 1)
       ? 1u
       : std::min(32u, static_cast<uint32_t>(std::bit_width(uniques - 1)));
-  // Bit-packed indices rounded up to byte boundary
-  const double roundedIndexBits = static_cast<double>((indexWidth + 7u) & ~7u);
-  const double indexBits = roundedIndexBits * static_cast<double>(numValues);
+  // Indices are exact-bit-packed: SubIntSplit sections encode with
+  // fixedBitWidthUseExactBits, and Dictionary threads those options into its
+  // nested index FixedBitWidth, so there is no byte-boundary rounding.
+  const double indexBits =
+      static_cast<double>(indexWidth) * static_cast<double>(numValues);
   // prefix(6) + alphabetSize(4) + nested header overhead (~15 bytes)
   const double headerBits = (6.0 + 4.0 + 15.0) * 8.0;
 
