@@ -94,6 +94,19 @@ class StreamChunkerTestsBase : public ::testing::Test {
           chunkView->nonNulls(),
           ::testing::ElementsAreArray(expectedChunkNonNulls));
       EXPECT_EQ(chunkView->hasNulls(), expectedChunk.hasNulls);
+      // Null count is precomputed by the chunker: false entries in the bitmap,
+      // or -- for the null-only stream -- false entries in the validity
+      // payload.
+      uint64_t expectedNulls = std::count(
+          expectedChunkNonNulls.begin(), expectedChunkNonNulls.end(), false);
+      if constexpr (std::is_same_v<T, bool>) {
+        if (expectedChunkNonNulls.empty() &&
+            dynamic_cast<NullsStreamData*>(&stream) != nullptr) {
+          expectedNulls = std::count(
+              expectedChunkData.begin(), expectedChunkData.end(), false);
+        }
+      }
+      EXPECT_EQ(chunkView->numNulls(), expectedNulls);
       ++chunkIndex;
     }
     ASSERT_EQ(chunkIndex, expectedChunks.size());

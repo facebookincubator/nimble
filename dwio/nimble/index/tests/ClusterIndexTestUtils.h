@@ -134,12 +134,16 @@ struct StreamStats {
   std::vector<uint32_t> chunkRows;
   /// Byte offset of each chunk within its stream.
   std::vector<uint32_t> chunkOffsets;
+  /// Per-chunk null-value count for this stream. Empty when per-chunk null
+  /// statistics are absent from the section.
+  std::vector<uint32_t> chunkNullCounts;
 };
 
 /// Specification for a single chunk in a stream (for test data creation).
 struct ChunkSpec {
-  uint32_t rowCount;
-  uint32_t size;
+  uint32_t rowCount{};
+  uint32_t size{};
+  uint32_t nullCount{0};
 };
 
 /// Specification for a single stream (for test data creation).
