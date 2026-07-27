@@ -24,6 +24,38 @@ struct UncompressedData {
   velox::BufferPtr buffer;
 };
 
+struct StringPayload {
+  CompressionType compressionType;
+  std::string_view lengths;
+  std::string_view blob;
+};
+
+StringPayload readStringPayload(std::string_view encoded, uint32_t dataOffset) {
+  const char* pos = encoded.data() + dataOffset;
+  const auto compressionType =
+      static_cast<CompressionType>(encoding::readChar(pos));
+  const uint32_t lengthsSize = encoding::readUint32(pos);
+  const std::string_view lengths{pos, lengthsSize};
+  pos += lengthsSize;
+  return {
+      .compressionType = compressionType,
+      .lengths = lengths,
+      .blob = {pos, static_cast<size_t>(encoded.end() - pos)}};
+}
+
+void writeStringHeader(
+    uint32_t rowCount,
+    bool useVarint,
+    CompressionType compressionType,
+    std::string_view serializedLengths,
+    char*& pos) {
+  EncodingPrefix::serialize(
+      EncodingType::Trivial, DataType::String, rowCount, useVarint, pos);
+  encoding::writeChar(static_cast<char>(compressionType), pos);
+  encoding::writeUint32(serializedLengths.size(), pos);
+  encoding::writeBytes(serializedLengths, pos);
+}
+
 UncompressedData uncompressIfNeeded(
     velox::memory::MemoryPool& pool,
     CompressionType compressionType,
@@ -74,26 +106,23 @@ TrivialEncoding<std::string_view>::TrivialEncoding(
     : TypedEncoding<std::string_view, std::string_view>{pool, data, options},
       row_{0},
       buffer_{&pool} {
-  auto pos = data.data() + this->dataOffset();
-  const auto dataCompressionType =
-      static_cast<CompressionType>(encoding::readChar(pos));
-  const auto lengthsSize = encoding::readUint32(pos);
+  const auto payload = readStringPayload(data, this->dataOffset());
   lengths_ = EncodingFactory(options).create(
-      pool, {pos, lengthsSize}, stringBufferFactory);
-  blob_ = pos + lengthsSize;
+      pool, payload.lengths, stringBufferFactory);
+  blob_ = payload.blob.data();
 
-  if (dataCompressionType != CompressionType::Uncompressed) {
+  if (payload.compressionType != CompressionType::Uncompressed) {
     dataUncompressed_ = Compression::uncompress(
         pool,
-        dataCompressionType,
+        payload.compressionType,
         DataType::String,
-        {blob_, static_cast<size_t>(data.end() - blob_)},
+        payload.blob,
         options.decompressCounter(),
         options.bufferPool);
     blob_ = dataUncompressed_->as<char>();
     uncompressedDataBytes_ = dataUncompressed_->size();
   } else {
-    uncompressedDataBytes_ = data.size() - std::distance(data.data(), blob_);
+    uncompressedDataBytes_ = payload.blob.size();
   }
   // TODO(huamengjiang): if we want to reduce the temporary memory peak, we can
   // pass the string buffer factory into the compression api.
@@ -189,12 +218,12 @@ std::string_view TrivialEncoding<std::string_view>::encode(
 
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
-  Encoding::serializePrefix(
-      EncodingType::Trivial, DataType::String, valueCount, useVarint, pos);
-  encoding::writeChar(
-      static_cast<char>(compressionEncoder.compressionType()), pos);
-  encoding::writeUint32(serializedLengths.size(), pos);
-  encoding::writeBytes(serializedLengths, pos);
+  writeStringHeader(
+      valueCount,
+      useVarint,
+      compressionEncoder.compressionType(),
+      serializedLengths,
+      pos);
   compressionEncoder.write(pos);
 
   NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
@@ -207,32 +236,31 @@ std::string_view TrivialEncoding<std::string_view>::slice(
     uint32_t length,
     Buffer& buffer,
     const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
   const auto sourcePrefixSize =
       EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
-  const char* sourcePos = encoded.data() + sourcePrefixSize;
-  const auto compressionType =
-      static_cast<CompressionType>(encoding::readChar(sourcePos));
-
-  const uint32_t lengthsSize = encoding::readUint32(sourcePos);
-  const std::string_view lengthsData{sourcePos, lengthsSize};
-  sourcePos += lengthsSize;
+  const auto payload = readStringPayload(encoded, sourcePrefixSize);
   const auto blob = uncompressIfNeeded(
       buffer.getMemoryPool(),
-      compressionType,
+      payload.compressionType,
       DataType::String,
-      {sourcePos, static_cast<size_t>(encoded.end() - sourcePos)},
+      payload.blob,
       options);
   const char* blobData = blob.data;
 
   const auto slicedLengths =
-      EncodingFactory::slice(lengthsData, offset, length, buffer, options);
+      EncodingFactory::slice(payload.lengths, offset, length, buffer, options);
   const auto rowEnd = offset + length;
   auto materializedLengths =
       makeScratchVector<uint32_t>(buffer.getMemoryPool(), options, rowEnd);
   materializedLengths.resize(rowEnd);
   auto lengthsEncoding = EncodingFactory{options}.create(
       buffer.getMemoryPool(),
-      lengthsData,
+      payload.lengths,
       [](uint32_t /*totalLength*/) -> void* { return nullptr; });
   lengthsEncoding->materialize(rowEnd, materializedLengths.data());
   const auto sliceBegin = materializedLengths.begin() + offset;
@@ -247,15 +275,12 @@ std::string_view TrivialEncoding<std::string_view>::slice(
       prefixSize + kPrefixSize + slicedLengths.size() + blobBytes;
   char* reserved = buffer.reserve(encodingSize);
   char* pos = reserved;
-  EncodingPrefix::serialize(
-      EncodingType::Trivial,
-      DataType::String,
+  writeStringHeader(
       length,
       options.useVarintRowCount,
+      CompressionType::Uncompressed,
+      slicedLengths,
       pos);
-  encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
-  encoding::writeUint32(slicedLengths.size(), pos);
-  encoding::writeBytes(slicedLengths, pos);
   encoding::writeBytes({blobData + blobOffset, blobBytes}, pos);
   NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   releaseScratchVector(materializedLengths, options);
@@ -406,6 +431,11 @@ std::string_view TrivialEncoding<bool>::slice(
     uint32_t length,
     Buffer& buffer,
     const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
   const auto sourcePrefixSize =
       EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
   const char* sourcePos = encoded.data() + sourcePrefixSize;

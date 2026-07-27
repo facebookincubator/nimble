@@ -250,7 +250,7 @@ TYPED_TEST(SparseBoolEncodingTest, skipThenMaterialize) {
 TYPED_TEST(SparseBoolEncodingTest, slice) {
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
-  for (const auto values :
+  for (const auto& values :
        {this->toVector(
             {false,
              false,

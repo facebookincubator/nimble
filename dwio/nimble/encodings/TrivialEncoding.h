@@ -336,6 +336,11 @@ std::string_view TrivialEncoding<T>::slice(
     uint32_t length,
     Buffer& buffer,
     const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
   const auto sourcePrefixSize =
       EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
   const char* sourcePos = encoded.data() + sourcePrefixSize;

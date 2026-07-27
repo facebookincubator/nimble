@@ -412,7 +412,9 @@ std::pair<uint32_t, uint32_t> NullableEncoding<T>::countNonNullsForSlice(
     Buffer& buffer,
     const Encoding::Options& options) {
   const auto rowEnd = offset + length;
-  NIMBLE_CHECK_GT(rowEnd, 0, "Nullable slice requires a non-empty row range.");
+  if (rowEnd == 0) {
+    return {0, 0};
+  }
 
   auto* pool = &buffer.getMemoryPool();
   auto encoding = EncodingFactory{options}.create(
