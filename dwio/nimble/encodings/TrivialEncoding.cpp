@@ -17,6 +17,54 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 
 namespace facebook::nimble {
+namespace {
+
+struct UncompressedData {
+  const char* data;
+  velox::BufferPtr buffer;
+};
+
+UncompressedData uncompressIfNeeded(
+    velox::memory::MemoryPool& pool,
+    CompressionType compressionType,
+    DataType dataType,
+    std::string_view data,
+    const Encoding::Options& options) {
+  if (compressionType == CompressionType::Uncompressed) {
+    return {.data = data.data()};
+  }
+
+  auto buffer = Compression::uncompress(
+      pool,
+      compressionType,
+      dataType,
+      data,
+      options.decompressCounter(),
+      options.bufferPool);
+  return {.data = buffer->as<char>(), .buffer = std::move(buffer)};
+}
+
+template <typename T>
+Vector<T> makeScratchVector(
+    velox::memory::MemoryPool& pool,
+    const Encoding::Options& options,
+    uint64_t capacity) {
+  if (auto* bufferPool = options.bufferPool) {
+    if (auto buffer = bufferPool->get(capacity * sizeof(T))) {
+      return Vector<T>{std::move(buffer)};
+    }
+  }
+  return Vector<T>{&pool};
+}
+
+template <typename T>
+void releaseScratchVector(Vector<T>& vector, const Encoding::Options& options) {
+  if (auto* bufferPool = options.bufferPool) {
+    bufferPool->release(vector.releaseBuffer());
+  }
+}
+
+} // namespace
 
 TrivialEncoding<std::string_view>::TrivialEncoding(
     velox::memory::MemoryPool& pool,
@@ -151,6 +199,67 @@ std::string_view TrivialEncoding<std::string_view>::encode(
 
   NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
+}
+
+std::string_view TrivialEncoding<std::string_view>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourcePrefixSize =
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const char* sourcePos = encoded.data() + sourcePrefixSize;
+  const auto compressionType =
+      static_cast<CompressionType>(encoding::readChar(sourcePos));
+
+  const uint32_t lengthsSize = encoding::readUint32(sourcePos);
+  const std::string_view lengthsData{sourcePos, lengthsSize};
+  sourcePos += lengthsSize;
+  const auto blob = uncompressIfNeeded(
+      buffer.getMemoryPool(),
+      compressionType,
+      DataType::String,
+      {sourcePos, static_cast<size_t>(encoded.end() - sourcePos)},
+      options);
+  const char* blobData = blob.data;
+
+  const auto slicedLengths =
+      EncodingFactory::slice(lengthsData, offset, length, buffer, options);
+  const auto rowEnd = offset + length;
+  auto materializedLengths =
+      makeScratchVector<uint32_t>(buffer.getMemoryPool(), options, rowEnd);
+  materializedLengths.resize(rowEnd);
+  auto lengthsEncoding = EncodingFactory{options}.create(
+      buffer.getMemoryPool(),
+      lengthsData,
+      [](uint32_t /*totalLength*/) -> void* { return nullptr; });
+  lengthsEncoding->materialize(rowEnd, materializedLengths.data());
+  const auto sliceBegin = materializedLengths.begin() + offset;
+  const auto blobOffset =
+      std::accumulate(materializedLengths.begin(), sliceBegin, uint32_t{0});
+  const auto blobBytes =
+      std::accumulate(sliceBegin, materializedLengths.end(), uint32_t{0});
+
+  const auto prefixSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+  const auto encodingSize =
+      prefixSize + kPrefixSize + slicedLengths.size() + blobBytes;
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Trivial,
+      DataType::String,
+      length,
+      options.useVarintRowCount,
+      pos);
+  encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
+  encoding::writeUint32(slicedLengths.size(), pos);
+  encoding::writeBytes(slicedLengths, pos);
+  encoding::writeBytes({blobData + blobOffset, blobBytes}, pos);
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  releaseScratchVector(materializedLengths, options);
+  return std::string_view{reserved, encodingSize};
 }
 
 TrivialEncoding<bool>::TrivialEncoding(
@@ -289,6 +398,50 @@ std::string_view TrivialEncoding<bool>::encode(
 
   NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
+}
+
+std::string_view TrivialEncoding<bool>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourcePrefixSize =
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const char* sourcePos = encoded.data() + sourcePrefixSize;
+  const auto compressionType =
+      static_cast<CompressionType>(encoding::readChar(sourcePos));
+  const auto sourceData = uncompressIfNeeded(
+      buffer.getMemoryPool(),
+      compressionType,
+      DataType::Undefined,
+      {sourcePos, static_cast<size_t>(encoded.end() - sourcePos)},
+      options);
+  sourcePos = sourceData.data;
+
+  const auto prefixSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+  const auto bitmapBytes = FixedBitArray::bufferSize(length, 1);
+  const auto encodingSize = prefixSize + kPrefixSize + bitmapBytes;
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Trivial,
+      DataType::Bool,
+      length,
+      options.useVarintRowCount,
+      pos);
+  encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
+  std::memset(pos, 0, bitmapBytes);
+  velox::bits::copyBits(
+      reinterpret_cast<const uint64_t*>(sourcePos),
+      offset,
+      reinterpret_cast<uint64_t*>(pos),
+      0,
+      length);
+  pos += bitmapBytes;
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return std::string_view{reserved, encodingSize};
 }
 
 } // namespace facebook::nimble

@@ -157,7 +157,7 @@ TYPED_TEST(
           nimble::CompressionType::Uncompressed,
           defaultOptions);
 
-  const auto defaultPrefixSize = nimble::EncodingPrefix::readPrefixSize(
+  const auto defaultPrefixSize = nimble::EncodingPrefix::prefixSize(
       defaultSerialized, TypeParam::useVarint);
   EXPECT_EQ(
       static_cast<uint8_t>(
@@ -172,18 +172,15 @@ TYPED_TEST(
           nimble::CompressionType::Uncompressed,
           exactOptions);
 
-  const auto exactPrefixSize = nimble::EncodingPrefix::readPrefixSize(
-      exactSerialized, TypeParam::useVarint);
+  const auto exactPrefixSize =
+      nimble::EncodingPrefix::prefixSize(exactSerialized, TypeParam::useVarint);
   EXPECT_EQ(
       static_cast<uint8_t>(
           exactSerialized[exactPrefixSize + sizeof(uint8_t) + 4]),
       6);
 
-  auto encoding = nimble::EncodingFactory().create(
-      *this->pool_,
-      defaultSerialized,
-      this->stringBufferFactory(),
-      defaultOptions);
+  auto encoding = nimble::EncodingFactory{defaultOptions}.create(
+      *this->pool_, defaultSerialized, this->stringBufferFactory());
   std::vector<uint32_t> result(values.size());
   encoding->materialize(values.size(), result.data());
   EXPECT_EQ(result, std::vector<uint32_t>(values.begin(), values.end()));
@@ -200,12 +197,12 @@ TYPED_TEST(FixedBitWidthEncodingTest, decodesByteRoundedPayload) {
   const auto serialized = this->encodeByteRounded(values, options);
 
   const auto prefixSize =
-      nimble::EncodingPrefix::readPrefixSize(serialized, TypeParam::useVarint);
+      nimble::EncodingPrefix::prefixSize(serialized, TypeParam::useVarint);
   EXPECT_EQ(
       static_cast<uint8_t>(serialized[prefixSize + sizeof(uint8_t) + 4]), 8);
 
-  auto encoding = nimble::EncodingFactory().create(
-      *this->pool_, serialized, this->stringBufferFactory(), options);
+  auto encoding = nimble::EncodingFactory{options}.create(
+      *this->pool_, serialized, this->stringBufferFactory());
   std::vector<uint32_t> result(values.size());
   encoding->materialize(values.size(), result.data());
   EXPECT_EQ(result, std::vector<uint32_t>(values.begin(), values.end()));

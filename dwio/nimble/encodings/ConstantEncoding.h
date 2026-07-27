@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
@@ -194,6 +195,36 @@ class ConstantEncodingBase
         options.allowNestedAlpSelection ? canonicalValue(values.front())
                                         : values.front(),
         pos);
+    NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+    return {reserved, encodingSize};
+  }
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const auto sourceRowCount =
+        EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+    NIMBLE_CHECK_LE(offset, sourceRowCount);
+    NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+    const auto sourcePrefixSize =
+        EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+    const std::string_view valueData = encoded.substr(sourcePrefixSize);
+    const auto prefixSize =
+        EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+    const auto encodingSize = prefixSize + valueData.size();
+    char* reserved = buffer.reserve(encodingSize);
+    char* pos = reserved;
+    EncodingPrefix::serialize(
+        EncodingType::Constant,
+        TypeTraits<T>::dataType,
+        length,
+        options.useVarintRowCount,
+        pos);
+    encoding::writeBytes(valueData, pos);
     NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
     return {reserved, encodingSize};
   }

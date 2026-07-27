@@ -16,6 +16,7 @@
 #pragma once
 
 #include <numeric>
+#include <optional>
 #include <span>
 
 #include "dwio/nimble/common/Buffer.h"
@@ -79,6 +80,13 @@ class TrivialEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
   static uint64_t estimateSize(uint64_t rowCount) {
     return EncodingPrefix::kFixedPrefixSize + kPrefixSize +
         rowCount * sizeof(physicalType);
@@ -129,6 +137,13 @@ class TrivialEncoding<std::string_view> final
   static std::string_view encode(
       EncodingSelection<std::string_view>& selection,
       std::span<const std::string_view> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 
@@ -205,6 +220,13 @@ class TrivialEncoding<bool> final : public TypedEncoding<bool, bool> {
   static std::string_view encode(
       EncodingSelection<bool>& selection,
       std::span<const bool> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 
@@ -305,6 +327,50 @@ std::string_view TrivialEncoding<T>::encode(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   compressionEncoder.write(pos);
   return {reserved, encodingSize};
+}
+
+template <typename T>
+std::string_view TrivialEncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourcePrefixSize =
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const char* sourcePos = encoded.data() + sourcePrefixSize;
+  const auto compressionType =
+      static_cast<CompressionType>(encoding::readChar(sourcePos));
+  velox::BufferPtr uncompressed;
+  if (compressionType != CompressionType::Uncompressed) {
+    uncompressed = Compression::uncompress(
+        buffer.getMemoryPool(),
+        compressionType,
+        TypeTraits<physicalType>::dataType,
+        {sourcePos, static_cast<size_t>(encoded.end() - sourcePos)},
+        options.decompressCounter(),
+        options.bufferPool);
+    sourcePos = uncompressed->template as<char>();
+  }
+
+  const char* sourceValues = sourcePos;
+  const auto valueBytes = length * sizeof(physicalType);
+  const auto prefixSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+  const auto encodingSize = prefixSize + kPrefixSize + valueBytes;
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Trivial,
+      TypeTraits<T>::dataType,
+      length,
+      options.useVarintRowCount,
+      pos);
+  encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
+  encoding::writeBytes(
+      {sourceValues + offset * sizeof(physicalType), valueBytes}, pos);
+  NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return std::string_view{reserved, encodingSize};
 }
 
 template <typename T>

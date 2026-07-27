@@ -196,7 +196,7 @@ class ReadAtOffsetsStringTrivialView {
       const Encoding::Options& options) {
     rowCount_ = EncodingPrefix::readRowCount(data, options.useVarintRowCount);
     const auto dataOffset =
-        EncodingPrefix::readPrefixSize(data, options.useVarintRowCount);
+        EncodingPrefix::prefixSize(data, options.useVarintRowCount);
     const char* pos = data.data() + dataOffset;
     const auto compressionType =
         static_cast<CompressionType>(encoding::readChar(pos));
@@ -234,7 +234,7 @@ class MaterializedOffsetsStringTrivialView {
       const Encoding::Options& options) {
     rowCount_ = EncodingPrefix::readRowCount(data, options.useVarintRowCount);
     const auto dataOffset =
-        EncodingPrefix::readPrefixSize(data, options.useVarintRowCount);
+        EncodingPrefix::prefixSize(data, options.useVarintRowCount);
     const char* pos = data.data() + dataOffset;
     const auto compressionType =
         static_cast<CompressionType>(encoding::readChar(pos));
@@ -273,7 +273,7 @@ class ReadAtRunEndsRLEView {
       : runEnds_{pool} {
     rowCount_ = EncodingPrefix::readRowCount(data, options.useVarintRowCount);
     const auto dataOffset =
-        EncodingPrefix::readPrefixSize(data, options.useVarintRowCount);
+        EncodingPrefix::prefixSize(data, options.useVarintRowCount);
     const char* pos = data.data() + dataOffset;
     const auto runLengthsSize = encoding::readUint32(pos);
     auto runLengths = detail::createTypedEncodingView<uint32_t>(
@@ -307,7 +307,7 @@ class MaterializedRunEndsRLEView {
       : runEnds_{pool} {
     rowCount_ = EncodingPrefix::readRowCount(data, options.useVarintRowCount);
     const auto dataOffset =
-        EncodingPrefix::readPrefixSize(data, options.useVarintRowCount);
+        EncodingPrefix::prefixSize(data, options.useVarintRowCount);
     const char* pos = data.data() + dataOffset;
     const auto runLengthsSize = encoding::readUint32(pos);
     auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };

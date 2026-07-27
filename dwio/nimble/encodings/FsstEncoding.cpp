@@ -267,7 +267,8 @@ std::string_view FsstEncoding::lengthsEncoding(
       EncodingType::Fsst,
       "Expected FSST encoding.");
 
-  const auto prefixSize = readPrefixSize(encoding, options.useVarintRowCount);
+  const auto prefixSize =
+      EncodingPrefix::prefixSize(encoding, options.useVarintRowCount);
   NIMBLE_CHECK_GE(encoding.size(), prefixSize, "FSST encoding too small.");
   const auto header = parseHeader(encoding.data() + prefixSize);
   return {header.lengths, header.lengthsSize};

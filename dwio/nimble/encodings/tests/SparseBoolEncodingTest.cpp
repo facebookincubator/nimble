@@ -19,6 +19,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "folly/Random.h"
@@ -244,6 +245,93 @@ TYPED_TEST(SparseBoolEncodingTest, skipThenMaterialize) {
   for (uint32_t i = 0; i < 4; ++i) {
     EXPECT_EQ(result[i], values[i + 3]) << "index " << i;
   }
+}
+
+TYPED_TEST(SparseBoolEncodingTest, slice) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  for (const auto values :
+       {this->toVector(
+            {false,
+             false,
+             true,
+             false,
+             true,
+             false,
+             false,
+             true,
+             false,
+             false}),
+        this->toVector(
+            {true, true, false, true, false, true, true, false, true, true})}) {
+    const auto encoded =
+        nimble::test::Encoder<nimble::SparseBoolEncoding>::encode(
+            *this->buffer_,
+            values,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    struct Range {
+      uint32_t offset;
+      uint32_t length;
+    };
+    for (const auto range :
+         {Range{/*offset=*/0, /*length=*/4},
+          Range{/*offset=*/2, /*length=*/6},
+          Range{/*offset=*/7, /*length=*/3}}) {
+      SCOPED_TRACE(
+          testing::Message()
+          << "offset=" << range.offset << ", length=" << range.length);
+      nimble::Buffer sliceBuffer{*this->pool_};
+      const auto sliced = nimble::SparseBoolEncoding::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+      nimble::SparseBoolEncoding encoding{
+          *this->pool_,
+          sliced,
+          [](uint32_t /*totalLength*/) -> void* { return nullptr; },
+          options};
+
+      EXPECT_EQ(encoding.encodingType(), nimble::EncodingType::SparseBool);
+      EXPECT_EQ(encoding.dataType(), nimble::DataType::Bool);
+      EXPECT_EQ(encoding.rowCount(), range.length);
+      nimble::Vector<bool> result(this->pool_.get(), range.length);
+      encoding.materialize(range.length, result.data());
+      for (uint32_t i = 0; i < range.length; ++i) {
+        EXPECT_EQ(result[i], values[range.offset + i]) << "index " << i;
+      }
+    }
+  }
+}
+
+TYPED_TEST(SparseBoolEncodingTest, invalidSliceRange) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  auto values = this->toVector(
+      {false, false, true, false, true, false, false, true, false, false});
+  const auto encoded =
+      nimble::test::Encoder<nimble::SparseBoolEncoding>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  nimble::Buffer invalidSliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::SparseBoolEncoding::slice(
+          encoded,
+          /*offset=*/11,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
+  NIMBLE_ASSERT_THROW(
+      nimble::SparseBoolEncoding::slice(
+          encoded,
+          /*offset=*/9,
+          /*length=*/2,
+          invalidSliceBuffer,
+          options),
+      "");
 }
 
 TYPED_TEST(SparseBoolEncodingTest, resetAndRematerialize) {

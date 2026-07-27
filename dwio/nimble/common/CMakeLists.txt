@@ -17,6 +17,7 @@ add_library(
   nimble_common
   Buffer.cpp
   Checksum.cpp
+  DataTypeDispatch.h
   Exceptions.cpp
   FixedBitArray.cpp
   MetricsLogger.cpp

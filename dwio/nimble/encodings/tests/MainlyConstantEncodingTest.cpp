@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
@@ -97,6 +98,13 @@ class MainlyConstantEncodingTest : public ::testing::Test {
   }
 
   template <typename T>
+  nimble::Vector<T> toVector(std::initializer_list<T> values) {
+    nimble::Vector<T> vector{pool_.get()};
+    vector.insert(vector.end(), values.begin(), values.end());
+    return vector;
+  }
+
+  template <typename T>
   std::vector<nimble::Vector<T>> prepareValues() {
     auto toVector =
         [this]<typename ValueType>(std::initializer_list<ValueType> values) {
@@ -148,12 +156,12 @@ using TestTypes = ::testing::Types<NUM_TYPES>;
 
 TYPED_TEST_CASE(MainlyConstantEncodingTest, TestTypes);
 
-TYPED_TEST(MainlyConstantEncodingTest, SerializeThenDeserialize) {
-  using D = typename TypeParam::data_type;
+TYPED_TEST(MainlyConstantEncodingTest, serializeThenDeserialize) {
+  using DataType = typename TypeParam::data_type;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
 
-  auto valueGroups = this->template prepareValues<D>();
+  auto valueGroups = this->template prepareValues<DataType>();
   std::vector<velox::BufferPtr> newStringBuffers;
   const auto stringBufferFactory = [&](uint32_t totalLength) {
     auto& buffer = newStringBuffers.emplace_back(
@@ -161,8 +169,8 @@ TYPED_TEST(MainlyConstantEncodingTest, SerializeThenDeserialize) {
     return buffer->template asMutable<void>();
   };
   for (const auto& values : valueGroups) {
-    auto encoding = nimble::test::Encoder<nimble::MainlyConstantEncoding<D>>::
-        createEncoding(
+    auto encoding = nimble::test::
+        Encoder<nimble::MainlyConstantEncoding<DataType>>::createEncoding(
             *this->buffer_,
             values,
             stringBufferFactory,
@@ -170,20 +178,112 @@ TYPED_TEST(MainlyConstantEncodingTest, SerializeThenDeserialize) {
             options);
 
     uint32_t rowCount = values.size();
-    nimble::Vector<D> result(this->pool_.get(), rowCount);
+    nimble::Vector<DataType> result(this->pool_.get(), rowCount);
     encoding->materialize(rowCount, result.data());
 
     EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::MainlyConstant);
-    EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<D>::dataType);
+    EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<DataType>::dataType);
     EXPECT_EQ(encoding->rowCount(), rowCount);
     for (uint32_t i = 0; i < rowCount; ++i) {
-      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+      EXPECT_TRUE(
+          nimble::NimbleCompare<DataType>::equals(result[i], values[i]));
     }
   }
 }
 
+TYPED_TEST(MainlyConstantEncodingTest, slice) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  const auto values = this->template toVector<DataType>(
+      {static_cast<DataType>(7),
+       static_cast<DataType>(7),
+       static_cast<DataType>(20),
+       static_cast<DataType>(7),
+       static_cast<DataType>(40),
+       static_cast<DataType>(7),
+       static_cast<DataType>(7),
+       static_cast<DataType>(70),
+       static_cast<DataType>(7),
+       static_cast<DataType>(7)});
+  const auto encoded =
+      nimble::test::Encoder<nimble::MainlyConstantEncoding<DataType>>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+  for (const auto range :
+       {Range{/*offset=*/0, /*length=*/0},
+        Range{/*offset=*/0, /*length=*/4},
+        Range{/*offset=*/2, /*length=*/6},
+        Range{/*offset=*/6, /*length=*/4}}) {
+    SCOPED_TRACE(
+        testing::Message() << "offset=" << range.offset
+                           << ", length=" << range.length);
+    nimble::Buffer sliceBuffer{*this->pool_};
+    const auto sliced = nimble::MainlyConstantEncoding<DataType>::slice(
+        encoded, range.offset, range.length, sliceBuffer, options);
+    nimble::MainlyConstantEncoding<DataType> encoding{
+        *this->pool_,
+        sliced,
+        [](uint32_t /*totalLength*/) -> void* { return nullptr; },
+        options};
+
+    EXPECT_EQ(encoding.encodingType(), nimble::EncodingType::MainlyConstant);
+    EXPECT_EQ(encoding.dataType(), nimble::TypeTraits<DataType>::dataType);
+    EXPECT_EQ(encoding.rowCount(), range.length);
+    nimble::Vector<DataType> result(this->pool_.get(), range.length);
+    encoding.materialize(range.length, result.data());
+    for (uint32_t i = 0; i < range.length; ++i) {
+      EXPECT_TRUE(
+          nimble::NimbleCompare<DataType>::equals(
+              result[i], values[range.offset + i]));
+    }
+  }
+}
+
+TYPED_TEST(MainlyConstantEncodingTest, invalidSliceRange) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  const auto values = this->template toVector<DataType>(
+      {static_cast<DataType>(7),
+       static_cast<DataType>(7),
+       static_cast<DataType>(20),
+       static_cast<DataType>(7)});
+  const auto encoded =
+      nimble::test::Encoder<nimble::MainlyConstantEncoding<DataType>>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  nimble::Buffer invalidSliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::MainlyConstantEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/5,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
+  NIMBLE_ASSERT_THROW(
+      nimble::MainlyConstantEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/3,
+          /*length=*/2,
+          invalidSliceBuffer,
+          options),
+      "");
+}
+
 TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
-  using D = typename TypeParam::data_type;
+  using DataType = typename TypeParam::data_type;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
 
@@ -192,9 +292,9 @@ TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
   // order is seeded per table, so each encode() below sees a differently-seeded
   // map. The tie must be broken by value (deterministically) so that identical
   // input always produces identical serialized bytes.
-  nimble::Vector<D> values{this->pool_.get()};
+  nimble::Vector<DataType> values{this->pool_.get()};
   for (const auto value : {7, 7, 7, 5, 5, 5, 1}) {
-    values.push_back(static_cast<D>(value));
+    values.push_back(static_cast<DataType>(value));
   }
   const uint32_t rowCount = values.size();
 
@@ -208,17 +308,17 @@ TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
   };
 
   // The tie-data must still round-trip to the original values.
-  auto encoding =
-      nimble::test::Encoder<nimble::MainlyConstantEncoding<D>>::createEncoding(
+  auto encoding = nimble::test::
+      Encoder<nimble::MainlyConstantEncoding<DataType>>::createEncoding(
           *this->buffer_,
           values,
           stringBufferFactory,
           nimble::CompressionType::Uncompressed,
           options);
-  nimble::Vector<D> result(this->pool_.get(), rowCount);
+  nimble::Vector<DataType> result(this->pool_.get(), rowCount);
   encoding->materialize(rowCount, result.data());
   for (uint32_t i = 0; i < rowCount; ++i) {
-    EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+    EXPECT_TRUE(nimble::NimbleCompare<DataType>::equals(result[i], values[i]));
   }
 
   // Re-encoding the same input must yield byte-identical output regardless of
@@ -228,7 +328,7 @@ TYPED_TEST(MainlyConstantEncodingTest, deterministicSerializationOnTie) {
   for (int i = 0; i < kIterations; ++i) {
     nimble::Buffer buffer{*this->pool_};
     const std::string encoded{
-        nimble::test::Encoder<nimble::MainlyConstantEncoding<D>>::encode(
+        nimble::test::Encoder<nimble::MainlyConstantEncoding<DataType>>::encode(
             buffer, values, nimble::CompressionType::Uncompressed, options)};
     if (i == 0) {
       expected = encoded;

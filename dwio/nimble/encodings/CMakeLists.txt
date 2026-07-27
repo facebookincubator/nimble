@@ -18,6 +18,7 @@ add_subdirectory(legacy)
 add_library(
   nimble_encodings
   ConstantEncoding.cpp
+  EncodingSliceFactory.cpp
   FsstEncoding.cpp
   HuffmanEncoding.h
   MainlyConstantEncoding.cpp
@@ -28,6 +29,7 @@ add_library(
   common/Encoding.cpp
   common/EncodingFactory.cpp
   common/EncodingLayout.cpp
+  common/EncodingTypeDispatch.h
   selection/EncodingSelectionPolicy.cpp
   selection/Statistics.cpp
   views/DeltaBlockEncodingView.h
