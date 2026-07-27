@@ -702,6 +702,16 @@ bool checkColumnProjectionSubfield(
   return false;
 }
 
+std::vector<Deserializer::Subfield> makeSelectedColumnSubfields(
+    const std::vector<std::string>& selectedColumns) {
+  std::vector<Deserializer::Subfield> selectedSubfields;
+  selectedSubfields.reserve(selectedColumns.size());
+  for (const auto& column : selectedColumns) {
+    selectedSubfields.emplace_back(column);
+  }
+  return selectedSubfields;
+}
+
 } // namespace
 
 Deserializer::ProjectedField* Deserializer::ProjectedField::ensureChild(
@@ -857,6 +867,18 @@ Deserializer::Deserializer(
   }
 
   initializeColumnProjection(veloxType, selectedSubfields);
+}
+
+std::unique_ptr<Deserializer> Deserializer::createForSelectedColumns(
+    std::shared_ptr<const Type> schema,
+    const std::vector<std::string>& selectedColumns,
+    velox::memory::MemoryPool* pool,
+    DeserializerOptions options) {
+  return std::make_unique<Deserializer>(
+      std::move(schema),
+      makeSelectedColumnSubfields(selectedColumns),
+      pool,
+      std::move(options));
 }
 
 void Deserializer::initializeColumnProjection(

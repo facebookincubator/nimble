@@ -687,6 +687,115 @@ TEST_F(ProjectorTest, columnProjectionDeserializerBuildsProjectedType) {
   EXPECT_EQ(b->valueAt(2), 300);
 }
 
+TEST_F(ProjectorTest, columnProjectionDeserializerSelectsColumnsByPath) {
+  auto type = ROW({
+      {"z", VARCHAR()},
+      {"a", INTEGER()},
+      {"weight", BIGINT()},
+      {"outer", ROW({{"inner", BIGINT()}, {"ignored", VARCHAR()}})},
+  });
+  auto outer = makeSimpleRowVector(
+      {"inner", "ignored"},
+      {
+          makeIntVector<int64_t>({300, 400}),
+          makeStringVector({"unused", "unused"}),
+      });
+  auto vec = makeSimpleRowVector(
+      {"z", "a", "weight", "outer"},
+      {
+          makeStringVector({"x", "y"}),
+          makeIntVector<int32_t>({1, 2}),
+          makeIntVector<int64_t>({100, 200}),
+          outer,
+      });
+  auto serialized =
+      serialize(vec, type, {.version = SerializationVersion::kSerialization});
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+
+  {
+    auto deserializer = Deserializer::createForSelectedColumns(
+        inputSchema,
+        /*selectedColumns=*/{"weight"},
+        pool_.get(),
+        {.hasHeader = true});
+    VectorPtr output;
+    deserializer->deserialize(serialized, output);
+
+    EXPECT_TRUE(output->type()->equivalent(*ROW({{"weight", BIGINT()}})));
+    auto* weight = output->asChecked<RowVector>()
+                       ->childAt(0)
+                       ->asChecked<FlatVector<int64_t>>();
+    EXPECT_EQ(weight->valueAt(0), 100);
+    EXPECT_EQ(weight->valueAt(1), 200);
+  }
+
+  {
+    auto deserializer = Deserializer::createForSelectedColumns(
+        inputSchema,
+        /*selectedColumns=*/{"z", "a", "weight"},
+        pool_.get(),
+        {.hasHeader = true});
+    VectorPtr output;
+    deserializer->deserialize(serialized, output);
+
+    EXPECT_TRUE(output->type()->equivalent(
+        *ROW({{"a", INTEGER()}, {"weight", BIGINT()}, {"z", VARCHAR()}})));
+  }
+
+  {
+    auto deserializer = Deserializer::createForSelectedColumns(
+        inputSchema,
+        /*selectedColumns=*/{"outer.inner"},
+        pool_.get(),
+        {.hasHeader = true});
+    VectorPtr output;
+    deserializer->deserialize(serialized, output);
+
+    EXPECT_TRUE(output->type()->equivalent(
+        *ROW({{"outer", ROW({{"inner", BIGINT()}})}})));
+    auto* inner = output->asChecked<RowVector>()
+                      ->childAt(0)
+                      ->asChecked<RowVector>()
+                      ->childAt(0)
+                      ->asChecked<FlatVector<int64_t>>();
+    EXPECT_EQ(inner->valueAt(0), 300);
+    EXPECT_EQ(inner->valueAt(1), 400);
+  }
+
+  {
+    auto deserializer = Deserializer::createForSelectedColumns(
+        inputSchema, {}, pool_.get(), {.hasHeader = true});
+    VectorPtr output;
+    deserializer->deserialize(serialized, output);
+
+    EXPECT_TRUE(output->type()->equivalent(*type));
+    EXPECT_TRUE(output->equalValueAt(vec.get(), 0, 0));
+    EXPECT_TRUE(output->equalValueAt(vec.get(), 1, 1));
+  }
+}
+
+TEST_F(ProjectorTest, columnProjectionDeserializerRejectsInvalidColumns) {
+  auto type = ROW({
+      {"data", BIGINT()},
+      {"weight", INTEGER()},
+  });
+  auto inputSchema =
+      getNimbleSchema(type, {.version = SerializationVersion::kSerialization});
+
+  NIMBLE_ASSERT_THROW(
+      Deserializer::createForSelectedColumns(
+          inputSchema, {"weight", "weight"}, pool_.get(), {}),
+      "Duplicate column projection subfield: weight");
+  NIMBLE_ASSERT_USER_THROW(
+      Deserializer::createForSelectedColumns(
+          inputSchema,
+          /*selectedColumns=*/{"missing"},
+          pool_.get(),
+          {.hasHeader = true}),
+      "Column projection subfield does not exist in schema: missing");
+}
+
 TEST_F(ProjectorTest, columnProjectionDeserializerCanBeReused) {
   auto type = ROW({
       {"a", INTEGER()},
