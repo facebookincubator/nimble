@@ -208,10 +208,11 @@ TEST_F(NimbleDumpLibTest, EmitSchema_PrintsColumnAttributes) {
       std::vector<velox::VectorPtr>{idVector, nameVector});
 
   // Stamp Iceberg field-ids onto the top-level columns (as the write path does)
-  // and confirm the dumped schema round-trips and surfaces them.
+  // and confirm the dumped schema round-trips and surfaces them. Node ids are
+  // pre-order: id=1, name=2 (root row = 0).
   VeloxWriterOptions writerOptions;
-  writerOptions.attributesByColumn = {
-      {"id", {{"iceberg.id", "1"}}}, {"name", {{"iceberg.id", "2"}}}};
+  writerOptions.schemaAttributes = {
+      {1, {{"iceberg.id", "1"}}}, {2, {{"iceberg.id", "2"}}}};
 
   auto fileContent =
       test::createNimbleFile(*leafPool_, rowVector, writerOptions);
