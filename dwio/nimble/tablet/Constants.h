@@ -36,6 +36,6 @@ constexpr std::string_view kVectorizedStatsSection =
     "columnar.vectorized_stats";
 constexpr std::string_view kIndexSection = "columnar.indexes";
 // TODO: Rename this section to "columnar.chunk.stats".
-constexpr std::string_view kChunkIndexSection = "columnar.chunk.index";
+constexpr std::string_view kChunkStatsSection = "columnar.chunk.stats";
 
 } // namespace facebook::nimble

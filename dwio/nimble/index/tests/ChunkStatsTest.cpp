@@ -18,14 +18,14 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 
 namespace facebook::nimble::index::test {
 
-class ChunkIndexTest : public ClusterIndexTestBase {};
+class ChunkStatsTest : public ClusterIndexTestBase {};
 
-TEST_F(ChunkIndexTest, lookupChunkWithRowId) {
+TEST_F(ChunkStatsTest, lookupChunkWithRowId) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 2 stripes, each with 2 streams with different chunk configurations
@@ -167,7 +167,7 @@ TEST_F(ChunkIndexTest, lookupChunkWithRowId) {
   NIMBLE_ASSERT_THROW(s11->lookupChunk(650), "beyond the last chunk");
 }
 
-TEST_F(ChunkIndexTest, lookupChunkPopulatesChunkIndex) {
+TEST_F(ChunkStatsTest, lookupChunkPopulatesChunkIndex) {
   // Single stripe, two streams. chunkIndex is the absolute position in the
   // stripe's chunkRows FlatBuffers array — i.e., it is offset by the number
   // of chunks belonging to earlier streams in the stripe.
@@ -226,7 +226,7 @@ TEST_F(ChunkIndexTest, lookupChunkPopulatesChunkIndex) {
   }
 }
 
-TEST_F(ChunkIndexTest, createStreamIndex) {
+TEST_F(ChunkStatsTest, createStreamIndex) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   std::vector<Stripe> stripes = {
@@ -255,7 +255,7 @@ TEST_F(ChunkIndexTest, createStreamIndex) {
   EXPECT_NE(chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000), nullptr);
 }
 
-TEST_F(ChunkIndexTest, singleChunkStreamReturnsNullptr) {
+TEST_F(ChunkStatsTest, singleChunkStreamReturnsNullptr) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Mix of single-chunk and multi-chunk streams across stripes.
@@ -288,7 +288,7 @@ TEST_F(ChunkIndexTest, singleChunkStreamReturnsNullptr) {
   EXPECT_EQ(streamIndex->streamId(), 1);
 }
 
-TEST_F(ChunkIndexTest, streamIndexStreamId) {
+TEST_F(ChunkStatsTest, streamIndexStreamId) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Each stream needs >1 chunk so createStreamIndex returns non-null.
@@ -343,7 +343,7 @@ TEST_F(ChunkIndexTest, streamIndexStreamId) {
   }
 }
 
-TEST_F(ChunkIndexTest, streamIndexLookupChunk) {
+TEST_F(ChunkStatsTest, streamIndexLookupChunk) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -529,7 +529,7 @@ TEST_F(ChunkIndexTest, streamIndexLookupChunk) {
       "beyond the last chunk");
 }
 
-TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
+TEST_F(ChunkStatsTest, stripeIndexAndStreamIdOutOfBound) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -617,7 +617,7 @@ TEST_F(ChunkIndexTest, stripeIndexAndStreamIdOutOfBound) {
   EXPECT_EQ(chunkIndex1->createStreamIndex(3, 5, /*streamSize=*/1000), nullptr);
 }
 
-TEST_F(ChunkIndexTest, streamIndexRowCount) {
+TEST_F(ChunkStatsTest, streamIndexRowCount) {
   std::vector<std::string> indexColumns = {"col1"};
   std::string minKey = "aaa";
   // Setup: 4 stripes across 2 groups, each stripe with 2 streams
@@ -726,7 +726,7 @@ TEST_F(ChunkIndexTest, streamIndexRowCount) {
   }
 }
 
-TEST_F(ChunkIndexTest, chunkOnlyLookupByRowId) {
+TEST_F(ChunkStatsTest, chunkOnlyLookupByRowId) {
   // Chunk-index-only: no value index, no key stream.
   std::vector<ChunkOnlyStripe> stripes = {
       {.streams =

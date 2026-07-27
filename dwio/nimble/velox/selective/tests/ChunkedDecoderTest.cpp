@@ -645,7 +645,7 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
 
  private:
   IndexBuffers testIndexBuffers_;
-  std::shared_ptr<index::ChunkIndexGroup> testChunkIndex_;
+  std::shared_ptr<index::ChunkStatsGroup> testChunkIndex_;
   EncodingFactory encodingFactory_;
 };
 

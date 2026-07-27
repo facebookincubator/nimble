@@ -16,7 +16,7 @@
 #include "dwio/nimble/index/tests/ClusterIndexTestBase.h"
 
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
-#include "dwio/nimble/tablet/ChunkIndexGenerated.h"
+#include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataInput.h"
 #include "folly/json/json.h"
@@ -76,7 +76,7 @@ ClusterIndexTestBase::IndexBuffers ClusterIndexTestBase::createTestClusterIndex(
     std::vector<uint32_t> chunkOffsets;
     std::vector<flatbuffers::Offset<flatbuffers::String>> chunkKeys;
 
-    // Build standalone ChunkIndexGroup for this group
+    // Build standalone ChunkStatsGroup for this group
     flatbuffers::FlatBufferBuilder chunkBuilder;
     std::vector<uint32_t> streamChunkCounts;
     std::vector<uint32_t> streamChunkRows;
@@ -157,8 +157,8 @@ ClusterIndexTestBase::IndexBuffers ClusterIndexTestBase::createTestClusterIndex(
 
     const uint32_t numStreams = streamChunkCounts.size() / groupStripeCount;
 
-    // Build standalone StripeChunkIndex flatbuffer
-    auto stripeChunkIndex = serialization::CreateStripeChunkIndex(
+    // Build standalone StripeChunkStats flatbuffer
+    auto stripeChunkIndex = serialization::CreateStripeChunkStats(
         chunkBuilder,
         numStreams,
         chunkBuilder.CreateVector(streamChunkCounts),
@@ -269,7 +269,7 @@ ClusterIndexTestBase::createChunkOnlyTestClusterIndex(
 
   uint32_t stripeIdx = 0;
   for (const auto& groupStripeCount : stripeGroups) {
-    // Build standalone ChunkIndexGroup only (no StripeClusterIndex needed)
+    // Build standalone ChunkStatsGroup only (no StripeClusterIndex needed)
     flatbuffers::FlatBufferBuilder chunkBuilder;
 
     std::vector<uint32_t> streamChunkCounts;
@@ -299,7 +299,7 @@ ClusterIndexTestBase::createChunkOnlyTestClusterIndex(
 
     const uint32_t numStreams = streamChunkCounts.size() / groupStripeCount;
 
-    auto stripeChunkIndex = serialization::CreateStripeChunkIndex(
+    auto stripeChunkIndex = serialization::CreateStripeChunkStats(
         chunkBuilder,
         numStreams,
         chunkBuilder.CreateVector(streamChunkCounts),
@@ -378,7 +378,7 @@ std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
       std::move(dataInput));
 }
 
-std::shared_ptr<ChunkIndexGroup> ClusterIndexTestBase::createChunkIndex(
+std::shared_ptr<ChunkStatsGroup> ClusterIndexTestBase::createChunkIndex(
     const IndexBuffers& indexBuffers,
     uint32_t stripeGroupIndex) {
   // Compute firstStripe and stripeCount from stripeGroupIndices.
@@ -393,7 +393,7 @@ std::shared_ptr<ChunkIndexGroup> ClusterIndexTestBase::createChunkIndex(
     }
   }
 
-  // Find the ChunkIndexGroup data for this group using recorded sizes.
+  // Find the ChunkStatsGroup data for this group using recorded sizes.
   NIMBLE_CHECK_LT(stripeGroupIndex, indexBuffers.chunkIndexGroupSizes.size());
   size_t offset = 0;
   for (uint32_t g = 0; g < stripeGroupIndex; ++g) {
@@ -410,7 +410,7 @@ std::shared_ptr<ChunkIndexGroup> ClusterIndexTestBase::createChunkIndex(
           CompressionType::Uncompressed,
           pool_.get()));
 
-  return ChunkIndexGroup::create(
+  return ChunkStatsGroup::create(
       firstStripe, stripeCount, std::move(chunkIndexBuffer));
 }
 

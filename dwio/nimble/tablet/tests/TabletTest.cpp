@@ -30,7 +30,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
-#include "dwio/nimble/index/ChunkIndexGroup.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
@@ -1817,8 +1817,8 @@ class TabletWithIndexTest : public TabletTest {
     const uint32_t streamSize = tablet.streamSize(stripeIdentifier, streamId);
 
     // Calculate stripe offset within the chunk index group.
-    // Use the ChunkIndexTestHelper to get the first stripe of the group.
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    // Use the ChunkStatsTestHelper to get the first stripe of the group.
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeIdentifier.chunkIndex().get());
     const uint32_t stripeOffsetInGroup = stripeIdx - chunkHelper.firstStripe();
 
@@ -2122,7 +2122,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   // Verify the first group, index group, and chunk index group is pinned
   // and is the only one (covered by footer IO).
   EXPECT_TRUE(tabletHelper.hasOnlyFirstStripeGroupCached());
-  EXPECT_TRUE(tabletHelper.hasOnlyFirstChunkIndexGroupCached());
+  EXPECT_TRUE(tabletHelper.hasOnlyFirstChunkStatsGroupCached());
 
   // Verify index columns
   EXPECT_EQ(index->indexColumns().size(), 2);
@@ -2217,7 +2217,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
     nimble::index::test::ClusterIndexTestHelper clusterIndexTestHelper(
         tablet->clusterIndex());
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeIdWithIndex.chunkIndex().get());
     // We have 2 streams per stripe
     EXPECT_EQ(chunkHelper.streamCount(), 2);
@@ -2295,7 +2295,7 @@ TEST_P(TabletWithIndexTest, singleGroup) {
   {
     for (uint32_t stripeIdx = 0; stripeIdx < 3; ++stripeIdx) {
       auto stripeId = tablet->stripeIdentifier(stripeIdx);
-      nimble::index::test::ChunkIndexTestHelper chunkHelper(
+      nimble::index::test::ChunkStatsTestHelper chunkHelper(
           stripeId.chunkIndex().get());
       for (uint32_t streamId = 0; streamId < 2; ++streamId) {
         auto streamStats = chunkHelper.streamStats(streamId);
@@ -2516,7 +2516,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
 
   // Verify no metadata is pinned from preload (more than one group).
   EXPECT_EQ(tabletHelper.cachedStripeGroupCount(), 0);
-  EXPECT_EQ(tabletHelper.cachedChunkIndexGroupCount(), 0);
+  EXPECT_EQ(tabletHelper.cachedChunkStatsGroupCount(), 0);
 
   // Verify index columns
   EXPECT_EQ(index->indexColumns().size(), 2);
@@ -2578,7 +2578,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   {
     auto stripeId = tablet->stripeIdentifier(0);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
@@ -2602,7 +2602,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   {
     auto stripeId = tablet->stripeIdentifier(1);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
@@ -2629,7 +2629,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   {
     auto stripeId = tablet->stripeIdentifier(2);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
@@ -2657,7 +2657,7 @@ TEST_P(TabletWithIndexTest, multipleGroups) {
   {
     for (uint32_t stripeIdx = 0; stripeIdx < 3; ++stripeIdx) {
       auto stripeId = tablet->stripeIdentifier(stripeIdx);
-      nimble::index::test::ChunkIndexTestHelper chunkHelper(
+      nimble::index::test::ChunkStatsTestHelper chunkHelper(
           stripeId.chunkIndex().get());
       for (uint32_t streamId = 0; streamId < 2; ++streamId) {
         auto streamStats = chunkHelper.streamStats(streamId);
@@ -2954,7 +2954,7 @@ TEST_P(TabletWithIndexTest, singleGroupWithEmptyStream) {
 
   auto stripeId = tablet->stripeIdentifier(0);
 
-  nimble::index::test::ChunkIndexTestHelper chunkHelper(
+  nimble::index::test::ChunkStatsTestHelper chunkHelper(
       stripeId.chunkIndex().get());
   EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -3409,7 +3409,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   {
     auto stripeId = tablet->stripeIdentifier(0);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
@@ -3448,7 +3448,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   {
     auto stripeId = tablet->stripeIdentifier(1);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
@@ -3487,7 +3487,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   {
     auto stripeId = tablet->stripeIdentifier(2);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
@@ -3526,7 +3526,7 @@ TEST_P(TabletWithIndexTest, multipleGroupsWithEmptyStream) {
   {
     auto stripeId = tablet->stripeIdentifier(3);
 
-    nimble::index::test::ChunkIndexTestHelper chunkHelper(
+    nimble::index::test::ChunkStatsTestHelper chunkHelper(
         stripeId.chunkIndex().get());
     // All 4 streams indexed (chunkIndexMinAvgChunks = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
@@ -3797,7 +3797,7 @@ TEST_P(TabletWithIndexTest, streamDeduplication) {
 
   auto stripeId = tablet->stripeIdentifier(0);
 
-  nimble::index::test::ChunkIndexTestHelper chunkHelper(
+  nimble::index::test::ChunkStatsTestHelper chunkHelper(
       stripeId.chunkIndex().get());
   EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -3975,7 +3975,7 @@ TEST_P(TabletWithIndexTest, noIndex) {
   EXPECT_EQ(tablet->stripeCount(), 1);
   EXPECT_FALSE(tablet->hasOptionalSection(std::string(nimble::kIndexSection)));
   EXPECT_FALSE(
-      tablet->hasOptionalSection(std::string(nimble::kChunkIndexSection)));
+      tablet->hasOptionalSection(std::string(nimble::kChunkStatsSection)));
 }
 
 TEST_P(TabletWithIndexTest, loadClusterIndex) {
@@ -4351,7 +4351,7 @@ TEST_F(TabletWithIndexTest, configCombinations) {
 
     // Verify optional sections
     EXPECT_EQ(
-        tablet->hasOptionalSection(std::string(nimble::kChunkIndexSection)),
+        tablet->hasOptionalSection(std::string(nimble::kChunkStatsSection)),
         config.expectChunkIndex);
     EXPECT_EQ(
         tablet->hasOptionalSection(std::string(nimble::kIndexSection)),
@@ -4362,7 +4362,7 @@ TEST_F(TabletWithIndexTest, configCombinations) {
       auto stripeId = tablet->stripeIdentifier(0);
       ASSERT_NE(stripeId.chunkIndex(), nullptr);
 
-      nimble::index::test::ChunkIndexTestHelper chunkHelper(
+      nimble::index::test::ChunkStatsTestHelper chunkHelper(
           stripeId.chunkIndex().get());
       EXPECT_EQ(chunkHelper.streamCount(), 2);
 
@@ -4571,7 +4571,7 @@ TEST_P(TabletWithIndexTest, fileLayoutOrdering) {
       << "Cluster index should come after index partition metadata";
 
   const auto chunkIndexIt =
-      layout.optionalSections.find(std::string(nimble::kChunkIndexSection));
+      layout.optionalSections.find(std::string(nimble::kChunkStatsSection));
   ASSERT_NE(chunkIndexIt, layout.optionalSections.end());
   EXPECT_GT(chunkIndexIt->second.offset(), layout.indexPartitions[0].offset())
       << "Chunk index should come after index partition metadata";
@@ -4650,7 +4650,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPath) {
   nimble::TabletReader::Options options;
   options.preloadOptionalSections = {
       std::string(nimble::kIndexSection),
-      std::string(nimble::kChunkIndexSection)};
+      std::string(nimble::kChunkStatsSection)};
 
   // Cold path: first reader populates the cache.
   {
@@ -4984,7 +4984,7 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_FALSE(
         containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_TRUE(containsSection(
-        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+        opts.preloadOptionalSections, nimble::kChunkStatsSection));
   }
 
   {
@@ -4999,7 +4999,7 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_FALSE(
         containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_FALSE(containsSection(
-        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+        opts.preloadOptionalSections, nimble::kChunkStatsSection));
   }
 
   {
@@ -5012,7 +5012,7 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_FALSE(
         containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_FALSE(containsSection(
-        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+        opts.preloadOptionalSections, nimble::kChunkStatsSection));
   }
 
   {
@@ -5025,7 +5025,7 @@ TEST_P(TabletTest, configureOptionsIndexFlags) {
     EXPECT_FALSE(
         containsSection(opts.preloadOptionalSections, nimble::kIndexSection));
     EXPECT_TRUE(containsSection(
-        opts.preloadOptionalSections, nimble::kChunkIndexSection));
+        opts.preloadOptionalSections, nimble::kChunkStatsSection));
   }
 }
 
@@ -6936,7 +6936,7 @@ TEST_P(TabletTest, footerReadTrackedInMetadataIoStats) {
 }
 
 // Verifies that cache warm path works for chunk index group metadata that is
-// Zstd-compressed. This exercises the uncompressed_size fix in ChunkIndex
+// Zstd-compressed. This exercises the uncompressed_size fix in ChunkStats
 // FlatBuffer serialization — without it, resolveUncompressedSize() returns
 // nullopt for chunk index groups, causing orphaned cache entries and
 // unnecessary file IO on warm reads.
@@ -6996,7 +6996,7 @@ TEST_P(TabletWithIndexTest, cacheWarmPathCompressedChunkIndex) {
   nimble::TabletReader::Options options;
   options.preloadOptionalSections = {
       std::string(nimble::kIndexSection),
-      std::string(nimble::kChunkIndexSection)};
+      std::string(nimble::kChunkStatsSection)};
 
   // Cold path.
   {

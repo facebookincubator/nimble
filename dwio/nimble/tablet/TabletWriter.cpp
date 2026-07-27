@@ -43,7 +43,7 @@ TabletWriter::TabletWriter(
       options_(std::move(options)),
       checksum_{ChecksumFactory::create(options_.checksumType)},
       chunkIndexWriter_{
-          options_.enableChunkIndex ? std::make_unique<ChunkIndexWriter>(
+          options_.enableChunkIndex ? std::make_unique<ChunkStatsWriter>(
                                           pool,
                                           options_.chunkIndexMinAvgChunks)
                                     : nullptr} {}
@@ -302,7 +302,7 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
   auto& stripeStreamOffsets = streamOffsets_.emplace_back(streamCount, 0);
   auto& stripeStreamSizes = streamSizes_.emplace_back(streamCount, 0);
 
-  finishStripeChunkIndex(streamCount);
+  finishStripeChunkStats(streamCount);
 
   if (options_.layoutPlanner != nullptr) {
     streams = options_.layoutPlanner->getLayout(std::move(streams));
@@ -698,7 +698,7 @@ void TabletWriter::tryWriteStripeGroup(bool force) {
   // Handled by the |transposeStreamMetadata| helper inside writeStripeGroup.
   writeStripeGroup(streamCount, stripeCount);
 
-  writeChunkIndexGroup(streamCount, stripeCount);
+  writeChunkStatsGroup(streamCount, stripeCount);
 
   invokeStripeGroupFlushCallback();
 
@@ -732,7 +732,7 @@ void TabletWriter::writeStreamWithChecksum(const Stream& stream) {
   }
 }
 
-void TabletWriter::finishStripeChunkIndex(size_t streamCount) {
+void TabletWriter::finishStripeChunkStats(size_t streamCount) {
   if (hasChunkIndex()) {
     chunkIndexWriter_->newStripe(streamCount);
   }
@@ -747,7 +747,7 @@ void TabletWriter::addStreamChunkIndex(
   chunkIndexWriter_->addStream(streamIndex, chunks);
 }
 
-void TabletWriter::writeChunkIndexGroup(
+void TabletWriter::writeChunkStatsGroup(
     size_t streamCount,
     size_t stripeCount) {
   if (hasChunkIndex()) {
