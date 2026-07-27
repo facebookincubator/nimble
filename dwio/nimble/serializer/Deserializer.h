@@ -69,6 +69,17 @@ class Deserializer {
       velox::memory::MemoryPool* pool,
       DeserializerOptions options);
 
+  /// Builds a deserializer that reads columns identified by Subfield
+  /// expressions, such as "weight" or "outer.inner".
+  /// Empty selectedColumns reads all fields.
+  /// Output ordering follows Subfield projection semantics and is
+  /// lexicographical by field name, not the order of selectedColumns.
+  static std::unique_ptr<Deserializer> createForSelectedColumns(
+      std::shared_ptr<const Type> schema,
+      const std::vector<std::string>& selectedColumns,
+      velox::memory::MemoryPool* pool,
+      DeserializerOptions options);
+
   ~Deserializer();
 
   Deserializer(Deserializer&&) = delete;
