@@ -31,7 +31,6 @@
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
-#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/common/EncodingTypeDispatch.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 
