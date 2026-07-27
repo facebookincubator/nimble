@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 
+#include <utility>
+
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
@@ -158,7 +160,8 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
     const Encoding::Options& options) const {
-  return EncodingFactory{options}.create(pool, data, stringBufferFactory);
+  return EncodingFactory{options}.create(
+      pool, data, std::move(stringBufferFactory));
 }
 
 std::string_view EncodingFactory::slice(
@@ -189,6 +192,8 @@ std::string_view EncodingFactory::encode(
       std::move(selection), physicalValues, buffer, options);
 }
 
+// The encoding layout is honored, except for nullable encodings, which are
+// replaced with the appropriate nullable encoding.
 template <typename T>
 std::string_view EncodingFactory::encodeWithCapturedLayout(
     std::string_view encodedLayoutSource,

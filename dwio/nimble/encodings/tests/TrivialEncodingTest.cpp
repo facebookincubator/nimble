@@ -228,3 +228,86 @@ TEST_F(TrivialEncodingTest, sliceRangesForSupportedTypes) {
   expectSliceRanges<std::string_view>(
       makeStringValues(stringStorage, valueCount), nimble::DataType::String);
 }
+
+TEST_F(TrivialEncodingTest, invalidSliceRange) {
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useVarint=" << useVarint);
+    const nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+
+    const auto uint32Values = makeVector<uint32_t>({10, 20, 30});
+    const auto uint32Encoded =
+        nimble::test::Encoder<nimble::TrivialEncoding<uint32_t>>::encode(
+            *buffer_,
+            uint32Values,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Buffer uint32SliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<uint32_t>::slice(
+            uint32Encoded,
+            /*offset=*/4,
+            /*length=*/0,
+            uint32SliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<uint32_t>::slice(
+            uint32Encoded,
+            /*offset=*/2,
+            /*length=*/2,
+            uint32SliceBuffer,
+            options),
+        "");
+
+    const auto boolValues = makeBoolValues(/*valueCount=*/3);
+    const auto boolEncoded =
+        nimble::test::Encoder<nimble::TrivialEncoding<bool>>::encode(
+            *buffer_,
+            boolValues,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Buffer boolSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<bool>::slice(
+            boolEncoded,
+            /*offset=*/4,
+            /*length=*/0,
+            boolSliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<bool>::slice(
+            boolEncoded,
+            /*offset=*/2,
+            /*length=*/2,
+            boolSliceBuffer,
+            options),
+        "");
+
+    std::vector<std::string> stringStorage;
+    const auto stringValues = makeStringValues(stringStorage, /*valueCount=*/3);
+    const auto stringEncoded = nimble::test::
+        Encoder<nimble::TrivialEncoding<std::string_view>>::encode(
+            *buffer_,
+            stringValues,
+            nimble::CompressionType::Uncompressed,
+            options);
+    nimble::Buffer stringSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<std::string_view>::slice(
+            stringEncoded,
+            /*offset=*/4,
+            /*length=*/0,
+            stringSliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<std::string_view>::slice(
+            stringEncoded,
+            /*offset=*/2,
+            /*length=*/2,
+            stringSliceBuffer,
+            options),
+        "");
+  }
+}
