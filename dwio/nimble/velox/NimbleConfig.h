@@ -82,6 +82,20 @@ class Config : public velox::config::ConfigBase {
   // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
   static Entry<std::string> FLUSH_POLICY_CONFIG;
 
+  /// Configures encoding selection. A comma-separated "type:<t>,key:value,..."
+  /// config whose leading "type" selects the policy (mirrors
+  /// nimble.flush_policy_config). Currently supported:
+  ///   type:random,seed:<n>[,encodings:<E1>;<E2>;...]
+  ///       Random-but-compatible encoding selection, reproducible from 'seed'
+  ///       (required). 'encodings' (optional, ';'-separated) restricts the
+  ///       candidate set; streams with no compatible encoding in the set (e.g.
+  ///       empty streams) still fall back to Trivial. Test/fuzz only; not for
+  ///       production.
+  /// An empty/unset config keeps the default (manual) policy. See
+  /// RandomEncodingSelectionPolicy. E.g. "type:random,seed:42".
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<std::string> ENCODING_SELECTION_CONFIG;
+
   // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   // production tables without consulting the Nimble team (oncall: dwios).
 

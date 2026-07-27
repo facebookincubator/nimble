@@ -31,6 +31,7 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
+#include "dwio/nimble/encodings/selection/tests/RandomEncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/KeyEncoding.h"
@@ -346,6 +347,50 @@ nimble::EncodingSelectionPolicyCreator makeEncodingSelectionPolicyCreator(
              -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
     return factory.createPolicy(dataType);
   };
+}
+
+nimble::EncodingSelectionPolicyCreator createRandomEncodingSelectionFactory(
+    uint64_t seed) {
+  nimble::testing::RandomEncodingSelectionPolicyFactory factory{seed};
+  return [factory = std::move(factory)](nimble::DataType dataType)
+             -> std::unique_ptr<nimble::EncodingSelectionPolicyBase> {
+    return factory.createPolicy(dataType);
+  };
+}
+
+// Writes |vector| to an in-memory Nimble file using |creator| for encoding
+// selection.
+std::string writeWithEncodingSelectionCreator(
+    velox::memory::MemoryPool& rootPool,
+    const velox::RowVectorPtr& vector,
+    nimble::EncodingSelectionPolicyCreator creator) {
+  nimble::VeloxWriterOptions options;
+  options.encodingSelectionPolicyCreator = std::move(creator);
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(), std::move(writeFile), rootPool, std::move(options));
+  writer.write(vector);
+  writer.close();
+  return file;
+}
+
+// A schema spanning the scalar physical types plus array/map/row nesting, so
+// the random policy is exercised across every per-type compatible encoding set.
+velox::RowTypePtr randomEncodingSelectionTestType() {
+  return velox::ROW({
+      {"i8", velox::TINYINT()},
+      {"i32", velox::INTEGER()},
+      {"i64", velox::BIGINT()},
+      {"f32", velox::REAL()},
+      {"f64", velox::DOUBLE()},
+      {"b", velox::BOOLEAN()},
+      {"s", velox::VARCHAR()},
+      {"arr", velox::ARRAY(velox::INTEGER())},
+      {"map", velox::MAP(velox::VARCHAR(), velox::BIGINT())},
+      {"nested",
+       velox::ROW({{"n1", velox::INTEGER()}, {"n2", velox::VARCHAR()}})},
+  });
 }
 
 nimble::EncodingLayout captureFirstColumnEncoding(
@@ -8136,4 +8181,89 @@ DEBUG_ONLY_TEST_F(VeloxWriterTest, parallelEncodeFlatMapTaskCount) {
   EXPECT_EQ(result->size(), numBatches * 100);
 }
 
+// Fuzzer data written with the random encoding selection policy round-trips for
+// every seed: the policy only ever picks encodings compatible with the data
+// (via EncodingSizeEstimation), so no stream needs the writer's one-shot
+// IncompatibleEncoding fallback. Regression seeds are pinned first; drive
+// breadth with --stress-runs.
+TEST_F(VeloxWriterTest, randomEncodingSelectionRoundTrip) {
+  const auto rowType = randomEncodingSelectionTestType();
+  std::vector<uint32_t> seeds = {1u, 7u, 42u};
+  seeds.push_back(
+      FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
+                                  : folly::Random::rand32());
+
+  for (const uint32_t seed : seeds) {
+    LOG(INFO) << "randomEncodingSelectionRoundTrip seed: " << seed;
+    velox::VectorFuzzer::Options fuzzerOptions;
+    fuzzerOptions.vectorSize = 500;
+    fuzzerOptions.nullRatio = 0.2;
+    fuzzerOptions.stringLength = 16;
+    fuzzerOptions.containerLength = 6;
+    fuzzerOptions.containerVariableLength = true;
+    velox::VectorFuzzer fuzzer(fuzzerOptions, leafPool_.get(), seed);
+    auto vector = fuzzer.fuzzInputFlatRow(rowType);
+
+    const auto file = writeWithEncodingSelectionCreator(
+        *rootPool_, vector, createRandomEncodingSelectionFactory(seed));
+
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+    nimble::VeloxReader reader(readFile.get(), *leafPool_);
+    velox::VectorPtr result;
+    ASSERT_TRUE(reader.next(vector->size(), result));
+    ASSERT_EQ(result->size(), vector->size());
+    for (velox::vector_size_t i = 0; i < vector->size(); ++i) {
+      ASSERT_TRUE(vector->equalValueAt(result.get(), i, i))
+          << "mismatch at row " << i << " (seed " << seed << ")";
+    }
+    ASSERT_FALSE(reader.next(1, result));
+  }
+}
+
+// The random layout is reproducible from its seed: identical input + seed
+// yields byte-identical files (Nimble writer output is deterministic for
+// identical input). Concurrency-independence is guaranteed by construction --
+// each policy derives its seed from its structural path, never from encode
+// thread order, and shares no state across the encode executor's threads -- so
+// it is not exercised here (it would depend on the coroutine encode path). A
+// different seed selects a different layout.
+TEST_F(VeloxWriterTest, randomEncodingSelectionDeterministic) {
+  const uint32_t seed = FLAGS_writer_tests_seed > 0 ? FLAGS_writer_tests_seed
+                                                    : folly::Random::rand32();
+  LOG(INFO) << "randomEncodingSelectionDeterministic seed: " << seed;
+
+  const auto rowType = randomEncodingSelectionTestType();
+  velox::VectorFuzzer::Options fuzzerOptions;
+  fuzzerOptions.vectorSize = 500;
+  fuzzerOptions.nullRatio = 0.2;
+  fuzzerOptions.stringLength = 16;
+  fuzzerOptions.containerLength = 6;
+  fuzzerOptions.containerVariableLength = true;
+  velox::VectorFuzzer fuzzer(fuzzerOptions, leafPool_.get(), seed);
+  auto vector = fuzzer.fuzzInputFlatRow(rowType);
+
+  const auto file = writeWithEncodingSelectionCreator(
+      *rootPool_, vector, createRandomEncodingSelectionFactory(seed));
+  // Same seed reproduces the exact file.
+  EXPECT_EQ(
+      file,
+      writeWithEncodingSelectionCreator(
+          *rootPool_, vector, createRandomEncodingSelectionFactory(seed)));
+  // A different seed should be able to select a different layout. For a given
+  // fuzzed input some nodes may have a singleton compatible-encoding set, so an
+  // individual alternate seed can legitimately reproduce the same file; only
+  // require that at least one of several distinct alternate seeds diverges,
+  // which proves the seed drives the layout without flaking on such inputs. XOR
+  // a nonzero delta so every alternate seed stays distinct with no wraparound.
+  bool anyDifferent = false;
+  for (uint32_t delta = 1; delta <= 8 && !anyDifferent; ++delta) {
+    anyDifferent =
+        writeWithEncodingSelectionCreator(
+            *rootPool_,
+            vector,
+            createRandomEncodingSelectionFactory(seed ^ delta)) != file;
+  }
+  EXPECT_TRUE(anyDifferent)
+      << "no alternate seed produced a different layout for seed " << seed;
+}
 } // namespace facebook
