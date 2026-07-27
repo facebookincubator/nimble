@@ -313,8 +313,7 @@ TYPED_TEST(ALPEncodingTest, headerMetadataUsesVarints) {
       *this->buffer_, values, alpWithFixedBitWidthPayloadLayout(), options);
 
   const char* pos = serialized.data() +
-      nimble::EncodingPrefix::readPrefixSize(
-                        serialized, options.useVarintRowCount);
+      nimble::EncodingPrefix::prefixSize(serialized, options.useVarintRowCount);
   const auto header = nimble::detail::alp::readHeader(pos);
   EXPECT_TRUE(header.hasExceptions);
 

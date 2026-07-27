@@ -31,6 +31,8 @@ add_executable(
   CompressionTest.cpp
   EncodingTest.cpp
   EncodingLegacyTest.cpp
+  EncodingPrefixTest.cpp
+  EncodingTypeDispatchTest.cpp
   FixedBitWidthEncodingViewTest.cpp
   FsstEncodingTest.cpp
   HuffmanEncodingTest.cpp
@@ -50,6 +52,7 @@ add_executable(
   RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
   SimdForBitpackEncodingViewTest.cpp
+  SliceEncodingTest.cpp
   SparseBoolEncodingViewTest.cpp
   StatisticsTest.cpp
   TrivialEncodingViewTest.cpp

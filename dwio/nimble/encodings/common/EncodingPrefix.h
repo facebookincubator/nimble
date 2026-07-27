@@ -62,8 +62,16 @@ struct EncodingPrefix {
     return kRowCountOffset + varint::varintSize(rowCount);
   }
 
-  static DataType readDataType(std::string_view data) {
+  static EncodingType encodingType(std::string_view data) {
+    return static_cast<EncodingType>(data[kEncodingTypeOffset]);
+  }
+
+  static DataType dataType(std::string_view data) {
     return static_cast<DataType>(data[kDataTypeOffset]);
+  }
+
+  static DataType readDataType(std::string_view data) {
+    return dataType(data);
   }
 
   static uint32_t readRowCount(std::string_view data, bool useVarint) {
@@ -74,7 +82,7 @@ struct EncodingPrefix {
     return *reinterpret_cast<const uint32_t*>(data.data() + kRowCountOffset);
   }
 
-  static uint32_t readPrefixSize(std::string_view data, bool useVarint) {
+  static uint32_t prefixSize(std::string_view data, bool useVarint) {
     if (useVarint) {
       const char* pos = data.data() + kRowCountOffset;
       varint::readVarint32(&pos);

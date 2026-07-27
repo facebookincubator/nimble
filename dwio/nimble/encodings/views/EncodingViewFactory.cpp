@@ -159,7 +159,7 @@ std::unique_ptr<EncodingView> createEncodingView(
     std::string_view data,
     velox::memory::MemoryPool* pool,
     const Encoding::Options& options) {
-  const auto dataType = EncodingPrefix::readDataType(data);
+  const auto dataType = EncodingPrefix::dataType(data);
   switch (dataType) {
     case DataType::Int8:
       return detail::createTypedEncodingView<int8_t>(data, pool, options);

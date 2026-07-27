@@ -85,6 +85,13 @@ class SparseBoolEncoding final : public TypedEncoding<bool, bool> {
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
   static uint64_t estimateSize(
       uint64_t rowCount,
       const Statistics<bool>& statistics,

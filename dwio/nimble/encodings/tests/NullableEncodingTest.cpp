@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/encodings/SentinelEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -141,7 +142,7 @@ nimble::Vector<E> spreadNullsIntoData(
   return result;
 }
 
-TYPED_TEST(NullableEncodingTest, Materialize) {
+TYPED_TEST(NullableEncodingTest, materialize) {
   using E = typename TypeParam::encoding_type::cppDataType;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
@@ -236,6 +237,119 @@ TYPED_TEST(NullableEncodingTest, Materialize) {
   }
 }
 
+class NullableEncodingSliceTest : public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance({});
+  }
+
+  void SetUp() override {
+    rootPool_ =
+        velox::memory::memoryManager()->addRootPool("NullableEncodingTest");
+    pool_ = rootPool_->addLeafChild("NullableEncodingTestLeaf");
+  }
+
+  nimble::Vector<int32_t> toInt32Vector(std::initializer_list<int32_t> values) {
+    nimble::Vector<int32_t> vector{pool_.get()};
+    vector.insert(vector.end(), values.begin(), values.end());
+    return vector;
+  }
+
+  nimble::Vector<bool> toBoolVector(std::initializer_list<bool> values) {
+    nimble::Vector<bool> vector{pool_.get()};
+    vector.insert(vector.end(), values.begin(), values.end());
+    return vector;
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+};
+
+TEST_F(NullableEncodingSliceTest, slice) {
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useVarint=" << useVarint);
+    const nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+    nimble::Buffer sourceBuffer{*pool_};
+    const auto values = toInt32Vector({10, 20, 30, 40, 50});
+    const auto nulls =
+        toBoolVector({true, false, true, true, false, true, true});
+    const auto expected = spreadNullsIntoData<int32_t>(*pool_, values, nulls);
+    const auto encoded = nimble::test::
+        Encoder<nimble::NullableEncoding<int32_t>>::encodeNullable(
+            sourceBuffer,
+            values,
+            nulls,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    struct Range {
+      uint32_t offset;
+      uint32_t length;
+    };
+    for (const auto range :
+         {Range{/*offset=*/0, /*length=*/3},
+          Range{/*offset=*/1, /*length=*/5},
+          Range{/*offset=*/4, /*length=*/3}}) {
+      SCOPED_TRACE(
+          testing::Message()
+          << "offset=" << range.offset << ", length=" << range.length);
+      nimble::Buffer sliceBuffer{*pool_};
+      const auto sliced = nimble::NullableEncoding<int32_t>::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+      nimble::NullableEncoding<int32_t> encoding{
+          *pool_,
+          sliced,
+          [](uint32_t /*totalLength*/) -> void* { return nullptr; },
+          options};
+
+      EXPECT_EQ(encoding.encodingType(), nimble::EncodingType::Nullable);
+      EXPECT_EQ(encoding.dataType(), nimble::DataType::Int32);
+      EXPECT_EQ(encoding.rowCount(), range.length);
+      nimble::Vector<int32_t> result(pool_.get(), range.length);
+      encoding.materialize(range.length, result.data());
+      for (uint32_t i = 0; i < range.length; ++i) {
+        EXPECT_EQ(result[i], expected[range.offset + i]);
+      }
+    }
+  }
+}
+
+TEST_F(NullableEncodingSliceTest, invalidSliceRange) {
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useVarint=" << useVarint);
+    const nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+    nimble::Buffer sourceBuffer{*pool_};
+    const auto values = toInt32Vector({10, 20, 30, 40, 50});
+    const auto nulls =
+        toBoolVector({true, false, true, true, false, true, true});
+    const auto encoded = nimble::test::
+        Encoder<nimble::NullableEncoding<int32_t>>::encodeNullable(
+            sourceBuffer,
+            values,
+            nulls,
+            nimble::CompressionType::Uncompressed,
+            options);
+
+    nimble::Buffer invalidSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::NullableEncoding<int32_t>::slice(
+            encoded,
+            /*offset=*/8,
+            /*length=*/0,
+            invalidSliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::NullableEncoding<int32_t>::slice(
+            encoded,
+            /*offset=*/6,
+            /*length=*/2,
+            invalidSliceBuffer,
+            options),
+        "");
+  }
+}
+
 template <typename T>
 void checkOutput(
     size_t index,
@@ -256,7 +370,7 @@ void checkOutput(
   }
 }
 
-TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
+TYPED_TEST(NullableEncodingTest, scatteredMaterialize) {
   using E = typename TypeParam::encoding_type::cppDataType;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
@@ -447,7 +561,7 @@ TYPED_TEST(NullableEncodingTest, ScatteredMaterialize) {
   }
 }
 
-TYPED_TEST(NullableEncodingTest, MaterializeNullable) {
+TYPED_TEST(NullableEncodingTest, materializeNullable) {
   using E = typename TypeParam::encoding_type::cppDataType;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};

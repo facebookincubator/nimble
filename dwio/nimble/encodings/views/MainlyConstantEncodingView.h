@@ -40,8 +40,8 @@ class MainlyConstantEncodingView final : public TypedEncodingView<T> {
     const char* pos = data.data() + this->dataOffset_;
     const auto isCommonSize = encoding::readUint32(pos);
     auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
-    auto isCommon = EncodingFactory{}.create(
-        *this->pool_, {pos, isCommonSize}, noStringBufferFactory, options);
+    auto isCommon = EncodingFactory{options}.create(
+        *this->pool_, {pos, isCommonSize}, noStringBufferFactory);
     NIMBLE_CHECK_NOT_NULL(isCommon);
     isCommon_.resize(this->rowCount_);
     isCommon->materialize(this->rowCount_, isCommon_.data());

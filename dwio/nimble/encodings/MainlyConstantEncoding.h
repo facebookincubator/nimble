@@ -32,6 +32,7 @@
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -696,6 +697,84 @@ class MainlyConstantEncodingBase
     }
   }
 
+  static std::pair<uint32_t, uint32_t> countCommonForSlice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options) {
+    const auto rowEnd = offset + length;
+    if (rowEnd == 0) {
+      return {0, 0};
+    }
+
+    auto* pool = &buffer.getMemoryPool();
+    auto encoding = EncodingFactory{options}.create(
+        *pool, encoded, [](uint32_t /*size*/) -> void* { return nullptr; });
+
+    Vector<bool> values{pool, rowEnd};
+    encoding->materialize(rowEnd, values.data());
+    const auto sliceBegin = values.begin() + offset;
+    return {
+        std::count(values.begin(), sliceBegin, true),
+        std::count(sliceBegin, values.end(), true)};
+  }
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const auto sourceRowCount =
+        EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+    NIMBLE_CHECK_LE(offset, sourceRowCount);
+    NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+    const char* pos = encoded.data() +
+        EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+    const uint32_t isCommonSize = encoding::readUint32(pos);
+    const std::string_view isCommon{pos, isCommonSize};
+    pos += isCommonSize;
+    const uint32_t otherValuesSize = encoding::readUint32(pos);
+    const std::string_view otherValues{pos, otherValuesSize};
+    pos += otherValuesSize;
+    const std::string_view commonValue{
+        pos, static_cast<size_t>(encoded.end() - pos)};
+
+    const auto [commonBefore, commonInSlice] =
+        countCommonForSlice(isCommon, offset, length, buffer, options);
+    const auto otherOffset = offset - commonBefore;
+    const auto otherCount = length - commonInSlice;
+
+    auto* pool = &buffer.getMemoryPool();
+    ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+    const auto slicedIsCommon = EncodingFactory::slice(
+        isCommon, offset, length, scopedBuffer.get(), options);
+    const auto slicedOtherValues = EncodingFactory::slice(
+        otherValues, otherOffset, otherCount, scopedBuffer.get(), options);
+
+    const auto prefixSize =
+        EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+    const auto encodingSize = prefixSize + sizeof(uint32_t) +
+        slicedIsCommon.size() + sizeof(uint32_t) + slicedOtherValues.size() +
+        commonValue.size();
+    char* reserved = buffer.reserve(encodingSize);
+    char* writePos = reserved;
+    EncodingPrefix::serialize(
+        EncodingType::MainlyConstant,
+        TypeTraits<T>::dataType,
+        length,
+        options.useVarintRowCount,
+        writePos);
+    encoding::writeString(slicedIsCommon, writePos);
+    encoding::writeString(slicedOtherValues, writePos);
+    encoding::writeBytes(commonValue, writePos);
+    NIMBLE_CHECK_EQ(
+        writePos - reserved, encodingSize, "Encoding size mismatch.");
+    return {reserved, encodingSize};
+  }
+
   // Counts unset bits across all words. Caller must mask tail bits
   // before calling (set garbage tail bits to 1 in the last word).
   FOLLY_ALWAYS_INLINE static uint32_t countNonCommon(
@@ -775,6 +854,16 @@ class MainlyConstantEncoding final : public MainlyConstantEncodingBase<T> {
       std::span<const physicalType> values,
       Buffer& buffer,
       const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    return MainlyConstantEncodingBase<T>::slice(
+        encoded, offset, length, buffer, options);
+  }
 };
 
 //
@@ -875,5 +964,15 @@ class MainlyConstantEncoding<std::string_view> final
       std::span<const physicalType> values,
       Buffer& buffer,
       const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    return MainlyConstantEncodingBase<std::string_view>::slice(
+        encoded, offset, length, buffer, options);
+  }
 };
 } // namespace facebook::nimble

@@ -333,8 +333,8 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     velox::memory::MemoryPool& memoryPool,
     std::string_view data,
     std::function<void*(uint32_t)> stringBufferFactory,
-    const Encoding::Options& /*options*/) const {
-  return create(memoryPool, data, std::move(stringBufferFactory));
+    const Encoding::Options& options) const {
+  return EncodingFactory{options}.create(memoryPool, data, stringBufferFactory);
 }
 
 template <typename T>

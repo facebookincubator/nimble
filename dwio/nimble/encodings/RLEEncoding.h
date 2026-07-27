@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -224,6 +225,53 @@ class RLEEncodingBase
     return {reserved, encodingSize};
   }
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const auto sourceRowCount =
+        EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+    NIMBLE_CHECK_LE(offset, sourceRowCount);
+    NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+    const auto sourcePrefixSize =
+        EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+    const char* pos = encoded.data() + sourcePrefixSize;
+    const auto runLengthsSize = encoding::readUint32(pos);
+    const std::string_view runLengthsData{pos, runLengthsSize};
+    pos += runLengthsSize;
+    const std::string_view runValuesData{
+        pos, static_cast<size_t>(encoded.end() - pos)};
+
+    auto slicedRuns =
+        sliceRuns(runLengthsData, offset, length, buffer, options);
+    const auto slicedRunValues = RLEEncoding::sliceRunValues(
+        runValuesData,
+        slicedRuns.runValueOffset,
+        slicedRuns.runValueCount,
+        buffer,
+        options);
+
+    const auto prefixSize =
+        EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+    const auto encodingSize = prefixSize + sizeof(uint32_t) +
+        slicedRuns.encodedLengths.size() + slicedRunValues.size();
+    char* reserved = buffer.reserve(encodingSize);
+    char* output = reserved;
+    EncodingPrefix::serialize(
+        EncodingType::RLE,
+        TypeTraits<T>::dataType,
+        length,
+        options.useVarintRowCount,
+        output);
+    encoding::writeString(slicedRuns.encodedLengths, output);
+    encoding::writeBytes(slicedRunValues, output);
+    NIMBLE_CHECK_EQ(output - reserved, encodingSize, "Encoding size mismatch.");
+    return std::string_view{reserved, encodingSize};
+  }
+
   const char* getValuesStart() const {
     return this->data_.data() + this->dataOffset() + 4 +
         *reinterpret_cast<const uint32_t*>(
@@ -263,6 +311,114 @@ class RLEEncodingBase
   uint32_t copiesRemaining_ = 0;
   physicalType currentValue_;
   detail::BufferedEncoding<uint32_t, 32> materializedRunLengths_;
+
+ private:
+  struct RLESliceRuns {
+    // Run-length child encoding for the returned RLE slice. This view points
+    // into the caller-owned output buffer.
+    std::string_view encodedLengths;
+    // Run-value child range matching encodedLengths.
+    uint32_t runValueOffset{0};
+    uint32_t runValueCount{0};
+  };
+
+  static RLESliceRuns sliceRuns(
+      std::string_view encodedRunLengths,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options) {
+    const auto runCount = EncodingPrefix::readRowCount(
+        encodedRunLengths, options.useVarintRowCount);
+    NIMBLE_CHECK_GT(
+        length, 0, "RLE run slicing requires a non-empty row range.");
+    NIMBLE_CHECK_GT(
+        runCount, 0, "Cannot slice a non-empty range from empty RLE runs.");
+    auto* pool = &buffer.getMemoryPool();
+    RLESliceRuns result;
+
+    EncodingFactory encodingFactory{options};
+    auto runLengthsEncoding = encodingFactory.create(
+        *pool, encodedRunLengths, [](uint32_t /* totalLength */) -> void* {
+          return nullptr;
+        });
+
+    const auto end = offset + length;
+    uint32_t firstRunStart{0};
+    uint32_t lastRunEnd{0};
+    constexpr uint32_t kRunLengthChunkSize{256};
+    const auto maxRunLengthChunkSize =
+        std::min({runCount, length, kRunLengthChunkSize});
+    Vector<uint32_t> runLengths{pool, maxRunLengthChunkSize};
+    Vector<uint32_t> slicedRunLengths{pool};
+    slicedRunLengths.reserve(length);
+    uint32_t row{0};
+    for (uint32_t run = 0; run < runCount;) {
+      const auto chunkSize =
+          std::min<uint32_t>(maxRunLengthChunkSize, runCount - run);
+      runLengthsEncoding->materialize(chunkSize, runLengths.data());
+      for (uint32_t i = 0; i < chunkSize; ++i, ++run) {
+        const auto runStart = row;
+        const auto runEnd = row + runLengths[i];
+        row = runEnd;
+        if (runEnd <= offset) {
+          continue;
+        }
+        if (runStart >= end) {
+          break;
+        }
+        if (result.runValueCount == 0) {
+          result.runValueOffset = run;
+          firstRunStart = runStart;
+        }
+        lastRunEnd = runEnd;
+        ++result.runValueCount;
+        slicedRunLengths.push_back(runLengths[i]);
+      }
+      if (row >= end) {
+        break;
+      }
+    }
+
+    NIMBLE_CHECK_GT(
+        result.runValueCount,
+        0,
+        "Could not find RLE runs for a non-empty row range.");
+    NIMBLE_CHECK_EQ(
+        slicedRunLengths.size(),
+        result.runValueCount,
+        "Sliced RLE run length count mismatch.");
+
+    if (firstRunStart < offset || lastRunEnd > end) {
+      slicedRunLengths[0] -= offset - firstRunStart;
+      slicedRunLengths[result.runValueCount - 1] -= lastRunEnd - end;
+      result.encodedLengths = encodeRunLengthsSlice(
+          encodedRunLengths, slicedRunLengths, buffer, options);
+    } else {
+      result.encodedLengths = EncodingFactory::slice(
+          encodedRunLengths,
+          result.runValueOffset,
+          result.runValueCount,
+          buffer,
+          options);
+    }
+    return result;
+  }
+
+  static std::string_view encodeRunLengthsSlice(
+      std::string_view encodedRunLengths,
+      std::span<const uint32_t> runLengths,
+      Buffer& buffer,
+      const Encoding::Options& options) {
+    NIMBLE_CHECK_GT(
+        runLengths.size(), 0, "Cannot encode empty RLE run-length slice.");
+    return EncodingFactory::encodeWithCapturedLayout<uint32_t>(
+        encodedRunLengths,
+        runLengths,
+        buffer,
+        options,
+        "Captured RLE run-length layout");
+  }
 };
 
 } // namespace internal
@@ -454,6 +610,18 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   }
 
  private:
+  friend class internal::RLEEncodingBase<T, RLEEncoding<T>>;
+
+  static std::string_view sliceRunValues(
+      std::string_view encodedRunValues,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options) {
+    return EncodingFactory::slice(
+        encodedRunValues, offset, length, buffer, options);
+  }
+
   static uint64_t estimateRunValuesSize(
       uint64_t runCount,
       const Statistics<physicalType>& statistics,
@@ -567,6 +735,23 @@ class RLEEncoding<bool> final
   }
 
  private:
+  friend class internal::RLEEncodingBase<bool, RLEEncoding<bool>>;
+
+  static std::string_view sliceRunValues(
+      std::string_view encodedRunValues,
+      uint32_t offset,
+      uint32_t /* length */,
+      Buffer& buffer,
+      const Encoding::Options& /* options */) {
+    const auto initialValue =
+        *reinterpret_cast<const bool*>(encodedRunValues.data());
+    const auto slicedInitialValue =
+        offset % 2 == 0 ? initialValue : !initialValue;
+    char* reserved = buffer.reserve(sizeof(bool));
+    *reserved = slicedInitialValue;
+    return {reserved, sizeof(bool)};
+  }
+
   bool initialValue_;
   bool value_;
 };

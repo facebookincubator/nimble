@@ -15,14 +15,18 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <span>
+#include <utility>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 
@@ -91,6 +95,13 @@ class NullableEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
   std::string debugString(int offset) const final;
 
   // Dictionary API — delegates to the inner (non-null) encoding.
@@ -115,6 +126,13 @@ class NullableEncoding final
   /// Shared by readWithVisitor and readIndicesWithVisitor.
   template <typename V>
   void materializeNullsForVisitor(V& visitor, ReadWithVisitorParams& params);
+
+  static std::pair<uint32_t, uint32_t> countNonNullsForSlice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options);
 
   // One bit for each row. A true bit represents a row with a non-null value.
   const char* bitmap_;
@@ -383,6 +401,75 @@ std::string_view NullableEncoding<T>::encodeNullable(
   encoding::writeString(serializedValues, pos);
   encoding::writeBytes(serializedNulls, pos);
   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
+template <typename T>
+std::pair<uint32_t, uint32_t> NullableEncoding<T>::countNonNullsForSlice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto rowEnd = offset + length;
+  NIMBLE_CHECK_GT(rowEnd, 0, "Nullable slice requires a non-empty row range.");
+
+  auto* pool = &buffer.getMemoryPool();
+  auto encoding = EncodingFactory{options}.create(
+      *pool, encoded, [](uint32_t /*size*/) -> void* { return nullptr; });
+
+  Vector<bool> values{pool, rowEnd};
+  encoding->materialize(rowEnd, values.data());
+  const auto sliceBegin = values.begin() + offset;
+  return {
+      std::count(values.begin(), sliceBegin, true),
+      std::count(sliceBegin, values.end(), true)};
+}
+
+template <typename T>
+std::string_view NullableEncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+  const char* pos = encoded.data() +
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const uint32_t valuesSize = encoding::readUint32(pos);
+  const std::string_view values{pos, valuesSize};
+  pos += valuesSize;
+  const std::string_view nulls{pos, encoded.end()};
+
+  const auto [nonNullOffset, nonNullCount] =
+      countNonNullsForSlice(nulls, offset, length, buffer, options);
+
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  const auto slicedValues = EncodingFactory::slice(
+      values, nonNullOffset, nonNullCount, scopedBuffer.get(), options);
+  const auto slicedNulls = EncodingFactory::slice(
+      nulls, offset, length, scopedBuffer.get(), options);
+
+  const auto prefixSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+  const auto encodingSize =
+      prefixSize + sizeof(uint32_t) + slicedValues.size() + slicedNulls.size();
+  char* reserved = buffer.reserve(encodingSize);
+  char* writePos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Nullable,
+      TypeTraits<T>::dataType,
+      length,
+      options.useVarintRowCount,
+      writePos);
+  encoding::writeString(slicedValues, writePos);
+  encoding::writeBytes(slicedNulls, writePos);
+  NIMBLE_CHECK_EQ(writePos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 

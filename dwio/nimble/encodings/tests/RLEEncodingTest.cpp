@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
@@ -270,12 +271,12 @@ using TestTypes = ::testing::Types<NUM_TYPES>;
 
 TYPED_TEST_CASE(RleEncodingTest, TestTypes);
 
-TYPED_TEST(RleEncodingTest, SerializeThenDeserialize) {
-  using D = typename TypeParam::data_type;
+TYPED_TEST(RleEncodingTest, serializeThenDeserialize) {
+  using DataType = typename TypeParam::data_type;
   const nimble::Encoding::Options options{
       .useVarintRowCount = TypeParam::useVarint};
 
-  auto valueGroups = this->template prepareValues<D>();
+  auto valueGroups = this->template prepareValues<DataType>();
   std::vector<velox::BufferPtr> newStringBuffers;
   const auto stringBufferFactory = [&](uint32_t totalLength) {
     auto& buffer = newStringBuffers.emplace_back(
@@ -284,21 +285,130 @@ TYPED_TEST(RleEncodingTest, SerializeThenDeserialize) {
   };
   for (const auto& values : valueGroups) {
     auto encoding =
-        nimble::test::Encoder<nimble::RLEEncoding<D>>::createEncoding(
+        nimble::test::Encoder<nimble::RLEEncoding<DataType>>::createEncoding(
             *this->buffer_,
             values,
             stringBufferFactory,
             nimble::CompressionType::Uncompressed,
             options);
     uint32_t rowCount = values.size();
-    nimble::Vector<D> result(this->pool_.get(), rowCount);
+    nimble::Vector<DataType> result(this->pool_.get(), rowCount);
     encoding->materialize(rowCount, result.data());
 
     EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::RLE);
-    EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<D>::dataType);
+    EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<DataType>::dataType);
     EXPECT_EQ(encoding->rowCount(), rowCount);
     for (uint32_t i = 0; i < rowCount; ++i) {
-      EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
+      EXPECT_TRUE(
+          nimble::NimbleCompare<DataType>::equals(result[i], values[i]));
     }
   }
+}
+
+TYPED_TEST(RleEncodingTest, slice) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  const auto values = this->template toVector<DataType>(
+      {static_cast<DataType>(1),
+       static_cast<DataType>(1),
+       static_cast<DataType>(1),
+       static_cast<DataType>(2),
+       static_cast<DataType>(2),
+       static_cast<DataType>(3),
+       static_cast<DataType>(3),
+       static_cast<DataType>(3),
+       static_cast<DataType>(4),
+       static_cast<DataType>(4)});
+  const auto encoded =
+      nimble::test::Encoder<nimble::RLEEncoding<DataType>>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  struct Range {
+    const char* name;
+    uint32_t offset;
+    uint32_t length;
+  };
+  for (const auto range :
+       {Range{/*name=*/"allRunsNoPartial",
+              /*offset=*/0,
+              /*length=*/10},
+        Range{/*name=*/"singleRunNoPartial",
+              /*offset=*/0,
+              /*length=*/3},
+        Range{/*name=*/"middleRunsNoPartial",
+              /*offset=*/3,
+              /*length=*/5},
+        Range{/*name=*/"lastRunNoPartial", /*offset=*/8, /*length=*/2},
+        Range{/*name=*/"firstRunPartialLastExact",
+              /*offset=*/1,
+              /*length=*/7},
+        Range{/*name=*/"firstExactLastRunPartial",
+              /*offset=*/3,
+              /*length=*/4},
+        Range{/*name=*/"bothPartialSameRun", /*offset=*/1, /*length=*/1},
+        Range{/*name=*/"bothPartialWithInteriorRun",
+              /*offset=*/1,
+              /*length=*/5}}) {
+    SCOPED_TRACE(
+        testing::Message() << "case=" << range.name << ", offset="
+                           << range.offset << ", length=" << range.length);
+    nimble::Buffer sliceBuffer{*this->pool_};
+    const auto sliced = nimble::RLEEncoding<DataType>::slice(
+        encoded, range.offset, range.length, sliceBuffer, options);
+    nimble::RLEEncoding<DataType> encoding{
+        *this->pool_,
+        sliced,
+        [](uint32_t /*totalLength*/) -> void* { return nullptr; },
+        options};
+
+    EXPECT_EQ(encoding.encodingType(), nimble::EncodingType::RLE);
+    EXPECT_EQ(encoding.dataType(), nimble::TypeTraits<DataType>::dataType);
+    EXPECT_EQ(encoding.rowCount(), range.length);
+    nimble::Vector<DataType> result(this->pool_.get(), range.length);
+    encoding.materialize(range.length, result.data());
+    for (uint32_t i = 0; i < range.length; ++i) {
+      EXPECT_TRUE(
+          nimble::NimbleCompare<DataType>::equals(
+              result[i], values[range.offset + i]));
+    }
+  }
+}
+
+TYPED_TEST(RleEncodingTest, invalidSliceRange) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  const auto values = this->template toVector<DataType>(
+      {static_cast<DataType>(1),
+       static_cast<DataType>(1),
+       static_cast<DataType>(2),
+       static_cast<DataType>(2)});
+  const auto encoded =
+      nimble::test::Encoder<nimble::RLEEncoding<DataType>>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  nimble::Buffer invalidSliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::RLEEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/5,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
+  NIMBLE_ASSERT_THROW(
+      nimble::RLEEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/3,
+          /*length=*/2,
+          invalidSliceBuffer,
+          options),
+      "");
 }

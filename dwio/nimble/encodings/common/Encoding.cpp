@@ -28,7 +28,7 @@ Encoding::Encoding(
       dataType_{EncodingPrefix::readDataType(data)},
       rowCount_{EncodingPrefix::readRowCount(data, options_.useVarintRowCount)},
       prefixSize_{
-          EncodingPrefix::readPrefixSize(data, options_.useVarintRowCount)} {}
+          EncodingPrefix::prefixSize(data, options_.useVarintRowCount)} {}
 
 /* static */ void Encoding::copyIOBuf(char* pos, const folly::IOBuf& buf) {
   [[maybe_unused]] size_t length = buf.computeChainDataLength();

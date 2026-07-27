@@ -46,7 +46,7 @@ PforWireInfo readPforWireInfo(
     std::string_view encoded,
     bool useVarintRowCount) {
   const auto prefixSize =
-      EncodingPrefix::readPrefixSize(encoded, useVarintRowCount);
+      EncodingPrefix::prefixSize(encoded, useVarintRowCount);
   const char* pos = encoded.data() + prefixSize;
   pos += sizeof(uint32_t);
   const auto baseBitWidth = static_cast<uint8_t>(encoding::readChar(pos));

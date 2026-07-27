@@ -336,8 +336,8 @@ class Encoding {
     return EncodingPrefix::readRowCount(data, useVarint);
   }
 
-  static uint32_t readPrefixSize(std::string_view data, bool useVarint) {
-    return EncodingPrefix::readPrefixSize(data, useVarint);
+  static uint32_t prefixSize(std::string_view data, bool useVarint) {
+    return EncodingPrefix::prefixSize(data, useVarint);
   }
 
   void releaseBuffer(velox::BufferPtr& buffer) {

@@ -26,6 +26,7 @@ add_executable(
   BitsTests.cpp
   ChunkHeaderTest.cpp
   ConstantsTest.cpp
+  DataTypeDispatchTest.cpp
   ExceptionHelperTest.cpp
   ExceptionTests.cpp
   FixedBitArrayTests.cpp

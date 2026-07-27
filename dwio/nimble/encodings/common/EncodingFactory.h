@@ -42,7 +42,8 @@ class EncodingFactory {
       std::string_view data,
       std::function<void*(uint32_t)> stringBufferFactory) const;
 
-  /// Same as above but uses the provided options instead of stored options_.
+  /// Creates an Encoding from serialized data using the provided options while
+  /// preserving this factory's concrete implementation.
   virtual std::unique_ptr<Encoding> create(
       velox::memory::MemoryPool& pool,
       std::string_view data,
@@ -61,10 +62,28 @@ class EncodingFactory {
       const Encoding::Options& options = {});
 
   template <typename T>
+  static std::string_view encodeWithCapturedLayout(
+      std::string_view encodedLayoutSource,
+      std::span<const T> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {},
+      std::string_view missingChildContext = "Captured encoding layout");
+
+  template <typename T>
   static std::string_view encodeNullable(
       std::unique_ptr<EncodingSelectionPolicy<T>>&& selectorPolicy,
       std::span<const T> values,
       std::span<const bool> nulls,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  /// Creates a serialized encoding over the row range [offset, offset + length)
+  /// of an existing encoded buffer. Native slices are used when possible;
+  /// otherwise the range is materialized and re-encoded.
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 

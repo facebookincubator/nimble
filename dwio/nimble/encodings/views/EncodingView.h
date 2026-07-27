@@ -69,7 +69,7 @@ class EncodingView {
         rowCount_{
             EncodingPrefix::readRowCount(data, options.useVarintRowCount)},
         dataOffset_{
-            EncodingPrefix::readPrefixSize(data, options.useVarintRowCount)} {
+            EncodingPrefix::prefixSize(data, options.useVarintRowCount)} {
     NIMBLE_CHECK_NOT_NULL(pool_);
   }
 
