@@ -60,6 +60,17 @@ class StreamData {
     return hasNulls() && hasNullValues(nonNulls());
   }
 
+  /// Number of null (false) entries in the validity bitmap; 0 when absent.
+  /// Chunk views override this to return the count precomputed by the chunker.
+  virtual uint64_t numNulls() const {
+    if (!hasNulls()) {
+      return 0;
+    }
+    const auto validity = nonNulls();
+    return static_cast<uint64_t>(
+        std::count(validity.begin(), validity.end(), false));
+  }
+
   virtual bool empty() const = 0;
 
   virtual uint64_t memoryUsed() const = 0;
@@ -116,17 +127,20 @@ class StreamDataView final : public StreamData {
       const StreamDescriptorBuilder& descriptor,
       std::string_view data,
       uint32_t rowCount,
-      std::optional<std::span<const bool>> nonNulls = std::nullopt)
+      std::optional<std::span<const bool>> nonNulls = std::nullopt,
+      uint32_t nullCount = 0)
       : StreamData(descriptor),
         data_{data},
         rowCount_{rowCount},
-        nonNulls_{nonNulls} {}
+        nonNulls_{nonNulls},
+        nullCount_{nullCount} {}
 
   StreamDataView(StreamDataView&& other) noexcept
       : StreamData(other.descriptor()),
         data_{other.data_},
         rowCount_{other.rowCount_},
-        nonNulls_{other.nonNulls_} {}
+        nonNulls_{other.nonNulls_},
+        nullCount_{other.nullCount_} {}
 
   StreamDataView(const StreamDataView&) = delete;
 
@@ -152,6 +166,10 @@ class StreamDataView final : public StreamData {
     return nonNulls_.has_value();
   }
 
+  uint64_t numNulls() const override {
+    return nullCount_;
+  }
+
   uint64_t memoryUsed() const override {
     NIMBLE_UNREACHABLE("StreamDataView is non-owning");
   }
@@ -168,6 +186,7 @@ class StreamDataView final : public StreamData {
   const std::string_view data_;
   const uint32_t rowCount_;
   const std::optional<std::span<const bool>> nonNulls_;
+  const uint32_t nullCount_;
 };
 
 /// Content only data stream.

@@ -144,6 +144,23 @@ ChunkLocation StreamIndex::lookupChunk(uint32_t rowId) const {
       chunkIndex, streamOffset, nextOffset - streamOffset, rowOffset};
 }
 
+std::optional<uint32_t> StreamIndex::chunkNullCount(uint32_t chunkIndex) const {
+  const auto* root = asFlatBuffersRoot<serialization::StripeChunkStats>(
+      chunkStats_->metadata_->content());
+
+  const auto* nullCounts = root->stream_chunk_null_counts();
+  if (nullCounts == nullptr) {
+    // Absent in files written before per-chunk null statistics were added; the
+    // null count is unknown.
+    return std::nullopt;
+  }
+  // The array is present, so chunkIndex (derived from ChunkLocation) must be in
+  // range. An out-of-range index is a programmer error or malformed metadata,
+  // not a legacy file, so fail loudly rather than masking it as "unknown".
+  NIMBLE_CHECK_LT(chunkIndex, nullCounts->size());
+  return nullCounts->Get(chunkIndex);
+}
+
 uint32_t StreamIndex::rowCount() const {
   if (endChunkOffset_ == startChunkOffset_) {
     return 0;

@@ -605,6 +605,161 @@ TEST_F(rowCountTest, isNullStreamClassification) {
   EXPECT_FALSE(view.isNullStream());
 }
 
+class numNullsTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+    pool_ = velox::memory::memoryManager()->addLeafPool("test");
+    schemaBuilder_ = std::make_unique<SchemaBuilder>();
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::unique_ptr<SchemaBuilder> schemaBuilder_;
+};
+
+TEST_F(numNullsTest, contentStreamDataHasNoNulls) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  ContentStreamData<int32_t> streamData(*pool_, descriptor, growthPolicy);
+
+  // Content-only streams never carry a validity bitmap.
+  EXPECT_FALSE(streamData.hasNulls());
+  EXPECT_EQ(streamData.numNulls(), 0);
+
+  auto& data = streamData.mutableData();
+  data.push_back(1);
+  data.push_back(2);
+  EXPECT_EQ(streamData.numNulls(), 0);
+}
+
+TEST_F(numNullsTest, nullsStreamData) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Bool);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullsStreamData streamData(*pool_, descriptor, growthPolicy);
+
+  // No validity bitmap -> no nulls, no scan.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
+  EXPECT_FALSE(streamData.hasNulls());
+  EXPECT_EQ(streamData.numNulls(), 0);
+
+  // Validity bitmap [t, f, t, f] -> 2 nulls.
+  streamData.reset();
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 4);
+  auto& nonNulls = streamData.mutableNonNulls();
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  EXPECT_TRUE(streamData.hasNulls());
+  EXPECT_EQ(streamData.numNulls(), 2);
+}
+
+TEST_F(numNullsTest, nullableContentStreamData) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullableContentStreamData<int32_t> streamData(
+      *pool_, descriptor, growthPolicy);
+
+  // No nulls -> 0.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/false, 3);
+  auto& data = streamData.mutableData();
+  data.push_back(10);
+  data.push_back(20);
+  data.push_back(30);
+  EXPECT_EQ(streamData.numNulls(), 0);
+
+  // 5 rows: 3 non-null values, 2 nulls.
+  streamData.reset();
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 5);
+  auto& nonNulls = streamData.mutableNonNulls();
+  auto& data2 = streamData.mutableData();
+  nonNulls.push_back(true);
+  data2.push_back(1);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+  data2.push_back(2);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+  data2.push_back(3);
+  EXPECT_EQ(streamData.numNulls(), 2);
+
+  // All 4 rows null.
+  streamData.reset();
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 4);
+  auto& nonNulls2 = streamData.mutableNonNulls();
+  for (int i = 0; i < 4; ++i) {
+    nonNulls2.push_back(false);
+  }
+  EXPECT_EQ(streamData.numNulls(), 4);
+}
+
+TEST_F(numNullsTest, streamDataView) {
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+
+  std::vector<int32_t> testData = {1, 2, 3};
+  std::string_view dataView(
+      reinterpret_cast<const char*>(testData.data()),
+      testData.size() * sizeof(int32_t));
+
+  // View reports the null count precomputed by the chunker.
+  StreamDataView noNulls(descriptor, dataView, /*rowCount=*/3);
+  EXPECT_FALSE(noNulls.hasNulls());
+  EXPECT_EQ(noNulls.numNulls(), 0);
+
+  std::array<bool, 5> nonNulls = {true, false, true, false, true};
+  StreamDataView view(
+      descriptor, dataView, /*rowCount=*/5, nonNulls, /*nullCount=*/2);
+  EXPECT_TRUE(view.hasNulls());
+  EXPECT_EQ(view.numNulls(), 2);
+}
+
+TEST_F(numNullsTest, streamDataViewNullStream) {
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::Int32);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+
+  // Null-only (struct/ROW) chunk view: validity is the payload, no bitmap, so
+  // hasNulls() is false yet numNulls() reflects the chunker-precomputed count.
+  const std::array<char, 5> validity = {1, 0, 1, 0, 0};
+  std::string_view dataView(validity.data(), validity.size());
+  StreamDataView view(
+      descriptor,
+      dataView,
+      /*rowCount=*/5,
+      /*nonNulls=*/std::nullopt,
+      /*nullCount=*/3);
+  EXPECT_FALSE(view.hasNulls());
+  EXPECT_EQ(view.numNulls(), 3);
+}
+
+TEST_F(numNullsTest, nullableContentStringStreamData) {
+  ExactGrowthPolicy growthPolicy;
+  const auto scalarBuilder =
+      schemaBuilder_->createScalarTypeBuilder(ScalarKind::String);
+  const auto& descriptor = scalarBuilder->scalarDescriptor();
+  NullableContentStringStreamData streamData(
+      *pool_, descriptor, growthPolicy, growthPolicy);
+
+  // 4 rows: "hello", null, "world", null -> 2 nulls.
+  streamData.ensureAdditionalNullsCapacity(/*mayHaveNulls=*/true, 4);
+  auto& nonNulls = streamData.mutableNonNulls();
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  nonNulls.push_back(true);
+  nonNulls.push_back(false);
+  EXPECT_TRUE(streamData.hasNulls());
+  EXPECT_EQ(streamData.numNulls(), 2);
+}
+
 class NullableContentStringStreamDataTest : public ::testing::Test {
  protected:
   void SetUp() override {

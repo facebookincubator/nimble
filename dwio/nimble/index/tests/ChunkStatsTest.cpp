@@ -800,4 +800,26 @@ TEST_F(ChunkStatsTest, chunkOnlyLookupByRowId) {
       "beyond the last chunk");
 }
 
+TEST_F(ChunkStatsTest, chunkNullCountAbsentReturnsNullopt) {
+  // Files written before per-chunk null statistics existed store the chunk
+  // index without the appended null-count array (as do these fixtures, which
+  // set only counts/rows/offsets). chunkNullCount() must report the count as
+  // unknown (nullopt) rather than fabricating a value.
+  std::vector<ChunkOnlyStripe> stripes = {
+      {.streams = {
+           {.numChunks = 3,
+            .chunkRows = {100, 250, 400},
+            .chunkOffsets = {0, 50, 120}}}}};
+  std::vector<int> stripeGroups = {1};
+
+  auto indexBuffers = createChunkOnlyTestClusterIndex(stripes, stripeGroups);
+  auto chunkIndex = createChunkIndex(indexBuffers, 0);
+  ASSERT_NE(chunkIndex, nullptr);
+
+  auto streamIndex = chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000);
+  ASSERT_NE(streamIndex, nullptr);
+  const auto location = streamIndex->lookupChunk(0);
+  EXPECT_FALSE(streamIndex->chunkNullCount(location.chunkIndex).has_value());
+}
+
 } // namespace facebook::nimble::index::test

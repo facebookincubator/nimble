@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <algorithm>
+
 #include "dwio/nimble/velox/StreamData.h"
 
 namespace facebook::nimble {
@@ -288,14 +290,19 @@ class NullsStreamChunker final : public StreamChunker {
     // Null stream values are converted to boolean data for encoding.
     streamData_->materialize();
     auto& nonNulls = streamData_->mutableNonNulls();
+    const auto* chunkBegin = nonNulls.data() + nonNullsOffset_;
+    // Validity booleans are the payload (no bitmap): nulls are the false bits.
+    const auto nullCount = static_cast<uint32_t>(
+        std::count(chunkBegin, chunkBegin + nonNullsInChunk, false));
     std::string_view dataChunk = {
-        reinterpret_cast<const char*>(nonNulls.data() + nonNullsOffset_),
-        nonNullsInChunk};
+        reinterpret_cast<const char*>(chunkBegin), nonNullsInChunk};
     nonNullsOffset_ += nonNullsInChunk;
     return StreamDataView{
         streamData_->descriptor(),
         dataChunk,
-        static_cast<uint32_t>(nonNullsInChunk)};
+        static_cast<uint32_t>(nonNullsInChunk),
+        /*nonNulls=*/std::nullopt,
+        nullCount};
   }
 
  private:
@@ -404,7 +411,9 @@ class NullableContentStreamChunker final : public StreamChunker {
           streamData_->descriptor(),
           dataChunk,
           static_cast<uint32_t>(chunkSize.nullElementCount),
-          nonNullsChunk};
+          nonNullsChunk,
+          static_cast<uint32_t>(
+              chunkSize.nullElementCount - chunkSize.dataElementCount)};
     }
     NIMBLE_CHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
     return StreamDataView{
@@ -635,7 +644,9 @@ class NullableContentStringStreamChunker final : public StreamChunker {
           streamData_->descriptor(),
           dataChunk,
           static_cast<uint32_t>(chunkSize.nullElementCount),
-          nonNullsChunk};
+          nonNullsChunk,
+          static_cast<uint32_t>(
+              chunkSize.nullElementCount - chunkSize.dataElementCount)};
     }
     NIMBLE_DCHECK_EQ(chunkSize.dataElementCount, chunkSize.nullElementCount);
     return StreamDataView{

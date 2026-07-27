@@ -165,6 +165,45 @@ TEST_F(ChunkStatsWriterTest, singleStripe) {
   EXPECT_EQ(r11.rowOffset, 60);
 }
 
+TEST_F(ChunkStatsWriterTest, perChunkNullCounts) {
+  ChunkStatsWriter writer(*pool_);
+  Buffer buffer{*pool_};
+  TestChunkFileIndex fileIndex;
+
+  // 1 stripe, 2 streams. ChunkSpec = {rowCount, size, nullCount}.
+  // Stream 0: 3 chunks with null counts 3, 0, 5.
+  // Stream 1: 2 chunks with null counts 0, 40 (a fully-null chunk).
+  writer.newStripe(2);
+  auto chunks0 = createChunks(buffer, {{30, 10, 3}, {45, 15, 0}, {25, 8, 5}});
+  auto chunks1 = createChunks(buffer, {{60, 20, 0}, {40, 12, 40}});
+  writer.addStream(0, chunks0);
+  writer.addStream(1, chunks1);
+
+  writer.writeGroup(2, 1, createMetadataSectionCallback(fileIndex));
+  writer.writeRoot(writeRootCallback(fileIndex));
+
+  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+
+  // Null counts round-trip through the flatbuffer in flattened order.
+  ChunkStatsTestHelper helper(chunkIndex.get());
+  EXPECT_EQ(
+      helper.streamStats(0).chunkNullCounts, (std::vector<uint32_t>{3, 0, 5}));
+  EXPECT_EQ(
+      helper.streamStats(1).chunkNullCounts, (std::vector<uint32_t>{0, 40}));
+
+  // Public reader accessor: lookupChunk() yields the absolute chunk index,
+  // which chunkNullCount() maps to the per-chunk null statistic.
+  auto stream0 = chunkIndex->createStreamIndex(0, 0, 33);
+  ASSERT_NE(stream0, nullptr);
+  EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(0).chunkIndex), 3);
+  EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(30).chunkIndex), 0);
+  EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(75).chunkIndex), 5);
+
+  auto stream1 = chunkIndex->createStreamIndex(0, 1, 32);
+  ASSERT_NE(stream1, nullptr);
+  EXPECT_EQ(stream1->chunkNullCount(stream1->lookupChunk(60).chunkIndex), 40);
+}
+
 TEST_F(ChunkStatsWriterTest, multipleStripesInSingleGroup) {
   ChunkStatsWriter writer(*pool_);
   Buffer buffer{*pool_};

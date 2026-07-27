@@ -32,6 +32,7 @@
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/KeyEncoding.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -2366,6 +2367,107 @@ TEST_F(VeloxWriterTest, chunkedStreamsRowSomeNullsWithChunksMinSizeZero) {
           ASSERT_CHUNK_COUNT(1, chunked);
         }
       });
+}
+
+// Regression guard for per-chunk null counts on null-only (struct/ROW) streams.
+// A nullable ROW writes a dedicated null stream whose validity is promoted to
+// boolean bytes at chunk time -- there is no separate validity bitmap. The
+// per-chunk null count must count those bytes; before the fix numNulls()
+// returned 0 for such streams, silently mis-reporting struct/ROW nulls as "no
+// nulls" in columnar.chunk.stats (a false "no nulls" assertion that would
+// over-prune once struct pruning consumes it).
+TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  // Batch 1: 5 rows, the entire struct is null.
+  auto nullsVector =
+      vectorMaker.rowVector({"c1"}, {vectorMaker.flatVector<int32_t>({})});
+  nullsVector->appendNulls(5);
+
+  // Batch 2: 3 rows, struct null at row 1 (child values otherwise present).
+  auto someNullsVector = vectorMaker.rowVector(
+      {"c1"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})});
+  someNullsVector->setNull(1, /*isNull=*/true);
+
+  const auto& type = nullsVector->type();
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  bool flushDecision = false;
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {
+          .enableChunkIndex = true,
+          // Never skip the stripe group, so the section is always written.
+          .chunkIndexMinAvgChunks = 0,
+          .minStreamChunkRawSize = 0,
+          .flushPolicyFactory =
+              [&]() {
+                return std::make_unique<nimble::LambdaFlushPolicy>(
+                    /*flushLambda=*/[&](auto&) { return false; },
+                    /*chunkLambda=*/[&](auto&) { return flushDecision; });
+              },
+          .enableChunking = true,
+      });
+
+  // Force a chunk boundary between the two writes so the null stream is split
+  // into two chunks (5 nulls, then 1 null).
+  flushDecision = true;
+  writer.write(nullsVector);
+  writer.write(someNullsVector);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  ASSERT_EQ(1, tablet->stripeCount());
+
+  auto stripeIdentifier = tablet->stripeIdentifier(0);
+  auto chunkStats = stripeIdentifier.chunkIndex();
+  ASSERT_NE(chunkStats, nullptr)
+      << "columnar.chunk.stats section should be present";
+
+  // The root struct null stream is the only source of nulls: 5 (batch 1) + 1
+  // (batch 2) = 6. Sum per-chunk null counts across every indexed stream; the
+  // int child stream has no nulls of its own and is single-chunk (not indexed).
+  const uint32_t streamCount = tablet->streamCount(stripeIdentifier);
+  uint64_t totalChunkNullCount = 0;
+  bool sawIndexedStream = false;
+  bool sawNonZeroChunk = false;
+  for (uint32_t streamId = 0; streamId < streamCount; ++streamId) {
+    auto streamIndex = chunkStats->createStreamIndex(
+        0, streamId, tablet->streamSize(stripeIdentifier, streamId));
+    if (streamIndex == nullptr) {
+      continue; // single-chunk (<=1) streams are not indexed
+    }
+    const uint32_t rows = streamIndex->rowCount();
+    if (rows == 0) {
+      continue;
+    }
+    sawIndexedStream = true;
+    const uint32_t firstChunk = streamIndex->lookupChunk(0).chunkIndex;
+    const uint32_t lastChunk = streamIndex->lookupChunk(rows - 1).chunkIndex;
+    for (uint32_t ci = firstChunk; ci <= lastChunk; ++ci) {
+      auto nullCount = streamIndex->chunkNullCount(ci);
+      ASSERT_TRUE(nullCount.has_value())
+          << "chunk " << ci << " of stream " << streamId
+          << " should carry a null count";
+      totalChunkNullCount += *nullCount;
+      if (*nullCount > 0) {
+        sawNonZeroChunk = true;
+      }
+    }
+  }
+
+  EXPECT_TRUE(sawIndexedStream)
+      << "expected an indexed (multi-chunk) null stream";
+  // Before the fix, every per-chunk null count for the struct null stream was
+  // 0.
+  EXPECT_TRUE(sawNonZeroChunk)
+      << "per-chunk null counts for the struct null stream must be non-zero";
+  EXPECT_EQ(6, totalChunkNullCount);
 }
 
 TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsNoChunks) {

@@ -66,6 +66,7 @@ void ChunkStatsWriter::addStream(
     accumulatedRows += chunk.rowCount;
     index.chunkRows.emplace_back(accumulatedRows);
     index.chunkOffsets.emplace_back(accumulatedOffset);
+    index.chunkNullCounts.emplace_back(chunk.nullCount);
     accumulatedOffset += chunk.contentSize();
     ++index.chunkCount;
   }
@@ -123,8 +124,10 @@ void ChunkStatsWriter::writeGroup(
 
   std::vector<uint32_t> flattenedChunkRows;
   std::vector<uint32_t> flattenedChunkOffsets;
+  std::vector<uint32_t> flattenedChunkNullCounts;
   flattenedChunkRows.reserve(accumulatedChunkCount);
   flattenedChunkOffsets.reserve(accumulatedChunkCount);
+  flattenedChunkNullCounts.reserve(accumulatedChunkCount);
 
   for (const auto& stripe : groupIndex_->stripes) {
     for (size_t streamId = 0; streamId < streamCount; ++streamId) {
@@ -138,6 +141,10 @@ void ChunkStatsWriter::writeGroup(
             flattenedChunkOffsets.end(),
             stream.chunkOffsets.begin(),
             stream.chunkOffsets.end());
+        flattenedChunkNullCounts.insert(
+            flattenedChunkNullCounts.end(),
+            stream.chunkNullCounts.begin(),
+            stream.chunkNullCounts.end());
       }
     }
   }
@@ -148,7 +155,8 @@ void ChunkStatsWriter::writeGroup(
       static_cast<uint32_t>(streamCount),
       builder.CreateVector(flattenedStreamChunkCounts),
       builder.CreateVector(flattenedChunkRows),
-      builder.CreateVector(flattenedChunkOffsets));
+      builder.CreateVector(flattenedChunkOffsets),
+      builder.CreateVector(flattenedChunkNullCounts));
   builder.Finish(chunkIndex);
 
   chunkIndexSections_.push_back(createMetadataSection(asView(builder)));

@@ -27,6 +27,10 @@ namespace facebook::nimble {
 struct Chunk {
   uint32_t rowCount{0};
 
+  /// Number of null values in this chunk. Only populated when chunk statistics
+  /// are enabled (VeloxWriterOptions::enableChunkIndex); left at 0 otherwise.
+  uint32_t nullCount{0};
+
   /// The encoded and compressed data content of this chunk, stored as a vector
   /// of string views. Each string_view points to a buffer containing a portion
   /// of the chunk's data. Multiple buffers may be used for large chunks.
