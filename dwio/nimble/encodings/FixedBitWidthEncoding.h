@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <cstring>
 #include <span>
 #include <type_traits>
 
@@ -87,6 +88,13 @@ class FixedBitWidthEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 
@@ -400,6 +408,78 @@ std::string_view FixedBitWidthEncoding<T>::encode(
   compressionEncoder.write(pos);
 
   NIMBLE_DCHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
+template <typename T>
+std::string_view FixedBitWidthEncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+  const auto sourcePrefixSize =
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const char* sourcePos = encoded.data() + sourcePrefixSize;
+  const auto sourceCompressionType =
+      static_cast<CompressionType>(encoding::readChar(sourcePos));
+  const auto baseline = encoding::read<physicalType>(sourcePos);
+  const auto bitWidth = static_cast<uint8_t>(encoding::readChar(sourcePos));
+
+  velox::BufferPtr uncompressed;
+  std::string_view packedData{
+      sourcePos, static_cast<size_t>(encoded.end() - sourcePos)};
+  if (sourceCompressionType != CompressionType::Uncompressed) {
+    uncompressed = Compression::uncompress(
+        buffer.getMemoryPool(),
+        sourceCompressionType,
+        DataType::Undefined,
+        packedData,
+        options.decompressCounter(),
+        options.bufferPool);
+    packedData = {uncompressed->as<char>(), uncompressed->size()};
+  }
+
+  const auto packedBytes = FixedBitArray::bufferSize(length, bitWidth);
+  const auto prefixSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+  const auto encodingSize =
+      prefixSize + FixedBitWidthEncoding<T>::kPrefixSize + packedBytes;
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::FixedBitWidth,
+      TypeTraits<T>::dataType,
+      length,
+      options.useVarintRowCount,
+      pos);
+  encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
+  encoding::write(baseline, pos);
+  encoding::writeChar(bitWidth, pos);
+
+  if (packedBytes > 0) {
+    std::memset(pos, 0, packedBytes);
+    const auto sourceBitOffset = static_cast<uint64_t>(offset) * bitWidth;
+    const auto sliceBits = static_cast<uint64_t>(length) * bitWidth;
+    if (sourceBitOffset % 8 == 0 && sliceBits % 8 == 0) {
+      std::memcpy(pos, packedData.data() + sourceBitOffset / 8, packedBytes);
+    } else {
+      velox::bits::copyBits(
+          reinterpret_cast<const uint64_t*>(packedData.data()),
+          sourceBitOffset,
+          reinterpret_cast<uint64_t*>(pos),
+          /*targetOffset=*/0,
+          sliceBits);
+    }
+    pos += packedBytes;
+  }
+
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 
