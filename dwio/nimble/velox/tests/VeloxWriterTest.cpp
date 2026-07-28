@@ -521,6 +521,46 @@ TEST_F(VeloxWriterTest, alpEncodingSelectionControlsWriterEncoding) {
   testAlpE2EWriterSelection<double>(*rootPool_, leafPool_.get());
 }
 
+// End-to-end check for the simplified MainlyConstant encode-selection: a dense
+// mainly-constant column must still be selected as MainlyConstant and,
+// alongside a high-cardinality column, round-trip byte-for-byte through the
+// reader.
+TEST_F(VeloxWriterTest, mainlyConstantRoundTrip) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  // Column 0: ~99% a single value with a handful of distinct uncommon values
+  // -> should still be selected as MainlyConstant.
+  auto dense = vectorMaker.flatVector<int64_t>(
+      4096, [](auto row) { return row % 128 == 0 ? 1000 + row : 7; });
+  // Column 1: all distinct (high cardinality) -> other-values priced via the
+  // FixedBitWidth over-estimate.
+  auto diverse = vectorMaker.flatVector<int64_t>(
+      4096, [](auto row) { return static_cast<int64_t>(row); });
+  auto vector = vectorMaker.rowVector({"dense", "diverse"}, {dense, diverse});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vector->type(), std::move(writeFile), *rootPool_, {});
+  writer.write(vector);
+  writer.close();
+
+  // The dense column is still encoded as MainlyConstant.
+  const auto captured = captureFirstColumnEncoding(file, leafPool_.get());
+  EXPECT_EQ(captured.encodingType(), nimble::EncodingType::MainlyConstant);
+
+  // Both columns must read back exactly.
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(vector->size(), result));
+  ASSERT_EQ(result->size(), vector->size());
+  for (velox::vector_size_t i = 0; i < vector->size(); ++i) {
+    EXPECT_TRUE(vector->equalValueAt(result.get(), i, i))
+        << "mismatch at row " << i;
+  }
+  ASSERT_FALSE(reader.next(1, result));
+}
+
 DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingBufferPoolPassedToEncodeOptions) {
   velox::common::testutil::TestValue::enable();
 

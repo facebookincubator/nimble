@@ -151,11 +151,13 @@ class MainlyConstantEncodingBase
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
     } else {
       const uint64_t commonValueSize = sizeof(physicalType);
-      const uint64_t otherValuesSize = estimateOtherValuesSize(
-          uniqueCounts,
-          /*commonValue=*/maxUniqueCount->first,
-          uncommonCount,
-          options);
+      // Other values are encoded as a FixedBitWidth child.
+      // TODO(nimble): restore precise other-values estimation (materialize the
+      // non-common values and compare Dictionary / Constant / nested-ALP
+      // candidates), bounded so it stays cheap on dense columns.
+      const uint64_t otherValuesSize =
+          FixedBitWidthEncoding<physicalType>::estimateSize(
+              uncommonCount, statistics.min(), statistics.max(), options);
       const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
           2 * sizeof(uint32_t) + commonValueSize;
       return outerEncodingSize + otherValuesSize + isCommonEncodingSize;
@@ -565,59 +567,6 @@ class MainlyConstantEncodingBase
           }
           return left.first > right.first;
         });
-  }
-
-  template <typename UniqueCounts>
-  static uint64_t estimateOtherValuesSize(
-      const UniqueCounts& uniqueCounts,
-      const physicalType& commonValue,
-      uint64_t uncommonCount,
-      const Encoding::Options& options) {
-    std::vector<physicalType> otherValues;
-    otherValues.reserve(uncommonCount);
-    for (const auto& uniqueCount : uniqueCounts) {
-      if (uniqueCount.first == commonValue) {
-        continue;
-      }
-      otherValues.insert(
-          otherValues.end(), uniqueCount.second, uniqueCount.first);
-    }
-
-    if (otherValues.empty()) {
-      return TrivialEncoding<physicalType>::estimateSize(0);
-    }
-
-    // Removing the common value can change the child stream's range and value
-    // distribution, so estimate its candidates from the actual other values.
-    const auto otherStats = Statistics<physicalType>::create(
-        std::span<const physicalType>{otherValues.data(), otherValues.size()});
-
-    uint64_t estimatedSize = std::min({
-        FixedBitWidthEncoding<physicalType>::estimateSize(
-            otherValues.size(), otherStats.min(), otherStats.max(), options),
-        TrivialEncoding<physicalType>::estimateSize(otherValues.size()),
-        DictionaryEncoding<T>::estimateSize(
-            otherValues.size(), otherStats, options),
-    });
-
-    const auto constantSize = ConstantEncoding<T>::estimateSize(
-        std::span<const physicalType>{otherValues.data(), otherValues.size()},
-        otherStats,
-        options);
-    if (constantSize.has_value()) {
-      estimatedSize = std::min(estimatedSize, constantSize.value());
-    }
-
-    if constexpr (isFloatingPointType<T>()) {
-      if (const auto alpEncodingSize = detail::nestedAlpSize<T>(
-              std::span<const physicalType>{
-                  otherValues.data(), otherValues.size()},
-              options)) {
-        estimatedSize = std::min(estimatedSize, *alpEncodingSize);
-      }
-    }
-
-    return estimatedSize;
   }
 
   // Encode-time child streams: isCommon spans all input rows, while

@@ -258,6 +258,35 @@ TEST_F(EncodingSizeEstimationTest, numericFixedBitWidth) {
   EXPECT_LT(size.value(), 5 * sizeof(uint32_t));
 }
 
+// Dense/high-cardinality data (most rows uncommon): the other-values stream is
+// priced from full-column statistics via the cheap FixedBitWidth over-estimate,
+// so MainlyConstant is over-priced relative to the flat encodings.
+TEST_F(EncodingSizeEstimationTest, mainlyConstantOverPricedForDenseData) {
+  using Est = detail::EncodingSizeEstimation<uint32_t>;
+
+  std::vector<uint32_t> data(300, 7); // 30% common, 70% uncommon & distinct
+  data.reserve(1000);
+  for (uint32_t i = 0; i < 700; ++i) {
+    data.push_back(1000 + i);
+  }
+  const auto stats = Statistics<uint32_t>::create(data);
+
+  const size_t uncommonCount = 700;
+  const auto mc = Est::estimateSize(
+      EncodingType::MainlyConstant, data.size(), stats, defaultOptions_);
+  const auto fixedBitWidth = Est::estimateSize(
+      EncodingType::FixedBitWidth, uncommonCount, stats, defaultOptions_);
+  const auto trivial = Est::estimateSize(
+      EncodingType::Trivial, uncommonCount, stats, defaultOptions_);
+
+  ASSERT_TRUE(mc.has_value());
+  ASSERT_TRUE(fixedBitWidth.has_value());
+  ASSERT_TRUE(trivial.has_value());
+  // Priced as the flat other-values stream plus the is-common bitmap, so the
+  // estimate exceeds the flat other-values alone.
+  EXPECT_GT(mc.value(), std::min(fixedBitWidth.value(), trivial.value()));
+}
+
 TEST_F(EncodingSizeEstimationTest, fixedBitWidthEstimateUsesExactBits) {
   using Est = detail::EncodingSizeEstimation<uint32_t>;
 
@@ -356,48 +385,6 @@ TEST_F(EncodingSizeEstimationTest, floatingRleEstimateUsesNestedAlp) {
   verify(double{});
 }
 
-TEST_F(
-    EncodingSizeEstimationTest,
-    floatingMainlyConstantEstimateUsesNestedAlp) {
-  auto verify = [&](auto typeTag) {
-    using T = decltype(typeTag);
-    using physicalType = typename TypeTraits<T>::physicalType;
-    using Est = detail::EncodingSizeEstimation<T>;
-    SCOPED_TRACE(toString(TypeTraits<T>::dataType));
-
-    std::vector<T> data(1024, static_cast<T>(123.456));
-    data.reserve(4096);
-    for (int32_t i = 0; i < 3072; ++i) {
-      data.push_back(static_cast<T>((i % 1024) - 512) / static_cast<T>(100));
-    }
-
-    const auto physicalValues =
-        EncodingPhysicalType<T>::asEncodingPhysicalTypeSpan(
-            std::span<const T>{data.data(), data.size()});
-    const auto stats = Statistics<physicalType>::create(physicalValues);
-
-    auto nestedAlpOptions = defaultOptions_;
-    nestedAlpOptions.allowNestedAlpSelection = true;
-    const auto defaultEstimate = Est::estimateSize(
-        EncodingType::MainlyConstant,
-        physicalValues.size(),
-        stats,
-        defaultOptions_);
-    const auto nestedAlpEstimate = Est::estimateSize(
-        EncodingType::MainlyConstant,
-        physicalValues.size(),
-        stats,
-        nestedAlpOptions);
-
-    ASSERT_TRUE(defaultEstimate.has_value());
-    ASSERT_TRUE(nestedAlpEstimate.has_value());
-    EXPECT_LT(nestedAlpEstimate.value(), defaultEstimate.value());
-  };
-
-  verify(float{});
-  verify(double{});
-}
-
 TEST_F(EncodingSizeEstimationTest, nestedAlpSizeEligibility) {
   const std::vector<float> logicalValues = {1.25F, 2.5F, 3.75F};
   const auto physicalValues =
@@ -462,61 +449,6 @@ TEST_F(EncodingSizeEstimationTest, numericMainlyConstant) {
       EncodingType::MainlyConstant, 100, stats, defaultOptions_);
   ASSERT_TRUE(size.has_value());
   EXPECT_LT(size.value(), 100 * sizeof(uint32_t));
-}
-
-TEST_F(
-    EncodingSizeEstimationTest,
-    numericMainlyConstantEstimateUsesUncommonValueRange) {
-  using Est = detail::EncodingSizeEstimation<uint32_t>;
-
-  for (const bool commonIsMinimum : {false, true}) {
-    SCOPED_TRACE(commonIsMinimum);
-    const uint32_t commonValue = commonIsMinimum ? 0 : 1'000'000;
-    const uint32_t uncommonBase = commonIsMinimum ? 1'000'000 : 0;
-    std::vector<uint32_t> data(80, commonValue);
-    for (uint32_t i = 0; i < 40; ++i) {
-      data.push_back(uncommonBase + i % 8);
-    }
-    const auto stats = Statistics<uint32_t>::create(data);
-    auto options = exactBitWidthOptions();
-
-    const auto estimate = Est::estimateSize(
-        EncodingType::MainlyConstant, data.size(), stats, options);
-    ASSERT_TRUE(estimate.has_value());
-
-    const auto isCommonSize = SparseBoolEncoding::estimateSize(
-        data.size(), /*exceptionCount=*/40, options);
-    const auto oldFullRangeOtherValuesSize =
-        FixedBitWidthEncoding<uint32_t>::estimateSize(
-            /*rowCount=*/40, stats.min(), stats.max(), options);
-    const auto oldFullRangeEstimate = EncodingPrefix::kFixedPrefixSize +
-        2 * sizeof(uint32_t) + sizeof(uint32_t) + isCommonSize +
-        oldFullRangeOtherValuesSize;
-
-    EXPECT_LT(estimate.value(), oldFullRangeEstimate);
-  }
-}
-
-TEST_F(
-    EncodingSizeEstimationTest,
-    numericMainlyConstantEstimateUsesConstantForOtherValues) {
-  using Est = detail::EncodingSizeEstimation<uint32_t>;
-
-  std::vector<uint32_t> data(80, 1'000'000);
-  data.insert(data.end(), 40, 7);
-  const auto statistics = Statistics<uint32_t>::create(data);
-  const auto options = exactBitWidthOptions();
-
-  const auto estimate = Est::estimateSize(
-      EncodingType::MainlyConstant, data.size(), statistics, options);
-  ASSERT_TRUE(estimate.has_value());
-
-  const auto expectedSize = EncodingPrefix::kFixedPrefixSize +
-      2 * sizeof(uint32_t) + sizeof(uint32_t) +
-      SparseBoolEncoding::estimateSize(
-                                data.size(), /*exceptionCount=*/40, options) +
-      EncodingPrefix::kFixedPrefixSize + sizeof(uint32_t);
-  EXPECT_EQ(estimate.value(), expectedSize);
 }
 
 TEST_F(EncodingSizeEstimationTest, numericRle) {
