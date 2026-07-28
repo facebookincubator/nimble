@@ -18,6 +18,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
+#include "dwio/nimble/velox/BufferPolicy.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
 #include "velox/common/base/RuntimeMetrics.h"
@@ -152,6 +153,22 @@ class VeloxWriter {
   // Returning 'true' if stripe was flushed.
   bool evaluateFlushPolicy();
 
+  // Drains buffered inputs from the installed BufferPolicy by repeatedly
+  // calling writeBuffer(), ingesting the emitted (input, slice) pairs and
+  // flushing one stripe per emitted BufferRange until the policy returns an
+  // empty range. When 'finalize' is true, first calls BufferPolicy::finalize()
+  // so any remaining rows the policy was still buffering get emitted; used at
+  // close() to make sure no rows are left behind. Only invoked when a
+  // BufferPolicy is installed. Returns true if any stripe was flushed.
+  bool flushInputBuffers(bool finalize);
+
+  // Ingests a (possibly sliced) input into the per-column stream buffers,
+  // adds index keys, and refreshes per-stripe accounting. Callers pre-slice
+  // via input->slice(start, length) when they need to write only a subset of
+  // rows (as the BufferPolicy path does when emitting sub-batch ranges).
+  // Does NOT consult the flush policy — the caller owns that.
+  void writeBatch(const velox::VectorPtr& input);
+
   // Returning 'true' if stripe was written.
   bool writeStripe();
 
@@ -204,6 +221,9 @@ class VeloxWriter {
   const std::unique_ptr<index::IndexWriter> clusterIndexWriter_;
   const std::vector<std::unique_ptr<index::IndexWriter>> denseIndexWriters_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
+  // Built once at construction from `options.bufferPolicyFactory`; null if
+  // the caller didn't set the factory (legacy FlushPolicy path).
+  const std::unique_ptr<BufferPolicy> bufferPolicy_;
 
   std::unique_ptr<FieldWriter> rootWriter_;
   std::unique_ptr<Buffer> encodingBuffer_;

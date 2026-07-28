@@ -22,6 +22,7 @@
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/tablet/StripeGroup.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
+#include "dwio/nimble/velox/BufferPolicy.h"
 #include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/NimbleConfig.h"
@@ -260,7 +261,15 @@ struct VeloxWriterOptions {
     return std::make_unique<StripeRawSizeFlushPolicy>(256 << 20);
   };
 
-  /// When the writer needs to buffer data, and internal buffers don't have
+  /// Optional content-driven cutting policy. When set, VeloxWriter routes
+  // every write() through the BufferPolicy (bufferInput → drain writeBuffer)
+  // and emits one stripe per emitted BufferRange, bypassing shouldFlush.
+  // When unset (the default), the writer takes the legacy path: write the
+  // whole batch, then consult flushPolicyFactory's shouldFlush.
+  // See BufferPolicy.h for the interface + lifecycle.
+  std::function<std::unique_ptr<BufferPolicy>()> bufferPolicyFactory;
+
+  // When the writer needs to buffer data, and internal buffers don't have
   /// enough capacity, the writer is using this policy to claculate the the new
   /// capacity for the vuffers.
   std::function<std::unique_ptr<InputBufferGrowthPolicy>()>
