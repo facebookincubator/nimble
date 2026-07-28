@@ -900,12 +900,17 @@ VeloxWriter::VeloxWriter(
                        }
                      })
                : nullptr,
-           .closeCallback = [this](
-                                const WriteDataFn& writeDataFn,
-                                const CreateMetadataSectionFn& createMetadataFn,
-                                const WriteOptionalSectionFn& writeMetadataFn) {
-             writeIndexes(writeDataFn, createMetadataFn, writeMetadataFn);
-           }})} {
+           .closeCallback =
+               [this](
+                   const WriteDataFn& writeDataFn,
+                   const CreateMetadataSectionFn& createMetadataFn,
+                   const WriteOptionalSectionFn& writeMetadataFn) {
+                 writeIndexes(writeDataFn, createMetadataFn, writeMetadataFn);
+               }})},
+      bufferPolicy_{
+          context_->options().bufferPolicyFactory != nullptr
+              ? context_->options().bufferPolicyFactory()
+              : nullptr} {
   NIMBLE_CHECK_NOT_NULL(file_);
 
   // Register handler for dynamically discovered FlatMap keys before creating
@@ -948,47 +953,21 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     std::rethrow_exception(lastException_);
   }
 
+  NIMBLE_CHECK_NOT_NULL(input, "Input must not be null");
   NIMBLE_CHECK_NOT_NULL(file_, "Writer is already closed");
   try {
-    const auto numRows = input->size();
-    // When enableStatsConsistencyCheck is true, compute raw size using
-    // RawSizeUtils to verify consistency with column statistics.
-    // Otherwise, skip this computation as column statistics will provide
-    // the raw size.
-    // Skip entirely when stats collection is disabled — there is no
-    // writeColumnStats() call to consume this value.
-    if (context_->options().enableStatsCollection &&
-        context_->options().enableStatsConsistencyCheck) {
-      // Calculate raw size using schema information to correctly handle
-      // passthrough flatmaps.
-      RawSizeContext context;
-      const auto rawSize = nimble::getRawSizeFromVector(
-          input,
-          velox::common::Ranges::of(0, numRows),
-          context,
-          schema_.get(),
-          context_->flatMapNodeIds(),
-          context_->ignoreTopLevelNulls());
-      NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
-      context_->updateFileRawSize(rawSize);
+    // BufferPolicy path: content-driven cutting via a policy that buffers
+    // inputs across writes and emits stripe-ready row ranges. Policies
+    // that need a specific input shape (e.g. plain RowVector for column
+    // inspection) validate internally.
+    if (bufferPolicy_ != nullptr) {
+      bufferPolicy_->bufferInput(input);
+      return flushInputBuffers(/*finalize=*/false);
     }
 
-    {
-      velox::CpuWallTimer ingestionTimer{context_->ingestionTiming()};
-      rootWriter_->write(input, OrderedRanges::of(0, numRows));
-    }
-    addIndexKey(input);
-
-    uint64_t memoryUsed{0};
-    for (const auto& [_, stream] : context_->streams()) {
-      memoryUsed += stream->memoryUsed();
-    }
-
-    context_->setMemoryUsed(memoryUsed);
-    context_->updateRowsInFile(numRows);
-    context_->updateRowsInStripe(numRows);
-    context_->setBytesWritten(file_->size());
-
+    // Legacy FlushPolicy path: append the whole batch to the writer's stream
+    // buffers, then consult shouldFlush.
+    writeBatch(input);
     return evaluateFlushPolicy();
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
@@ -1001,6 +980,70 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+bool VeloxWriter::flushInputBuffers(bool finalize) {
+  if (finalize) {
+    bufferPolicy_->finalize();
+  }
+  bool anyStripeFlushed = false;
+  while (true) {
+    auto range = bufferPolicy_->flushInput();
+    if (range.empty()) {
+      break;
+    }
+    NIMBLE_CHECK_EQ(
+        range.inputs.size(),
+        range.rowRanges.size(),
+        "BufferRange inputs and rowRanges must be parallel arrays");
+    for (size_t i = 0; i < range.inputs.size(); ++i) {
+      const auto& rowRange = range.rowRanges[i];
+      writeBatch(range.inputs[i]->slice(rowRange.startRow, rowRange.numRows()));
+    }
+    anyStripeFlushed = writeStripe() || anyStripeFlushed;
+  }
+  return anyStripeFlushed;
+}
+
+void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
+  const auto numRows = input->size();
+  // When enableStatsConsistencyCheck is true, compute raw size using
+  // RawSizeUtils to verify consistency with column statistics.
+  // Otherwise, skip this computation as column statistics will provide
+  // the raw size.
+  // Skip entirely when stats collection is disabled — there is no
+  // writeColumnStats() call to consume this value.
+  if (context_->options().enableStatsCollection &&
+      context_->options().enableStatsConsistencyCheck) {
+    // Calculate raw size using schema information to correctly handle
+    // passthrough flatmaps.
+    RawSizeContext context;
+    const auto rawSize = nimble::getRawSizeFromVector(
+        input,
+        velox::common::Ranges::of(0, numRows),
+        context,
+        schema_.get(),
+        context_->flatMapNodeIds(),
+        context_->ignoreTopLevelNulls());
+    NIMBLE_CHECK_GE(rawSize, 0, "Invalid raw size");
+    context_->updateFileRawSize(rawSize);
+  }
+
+  {
+    velox::CpuWallTimer ingestionTimer{context_->ingestionTiming()};
+    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+  }
+  addIndexKey(input);
+
+  uint64_t memoryUsed{0};
+  for (const auto& [_, stream] : context_->streams()) {
+    memoryUsed += stream->memoryUsed();
+  }
+
+  context_->setMemoryUsed(memoryUsed);
+  context_->updateRowsInFile(numRows);
+  context_->updateRowsInStripe(numRows);
+  context_->setBytesWritten(file_->size());
 }
 
 void VeloxWriter::writeMetadata() {
@@ -1136,6 +1179,11 @@ void VeloxWriter::close() {
 
   if (file_ != nullptr) {
     try {
+      if (bufferPolicy_ != nullptr) {
+        // Finalize signals "no more input" so the policy emits any residual
+        // range as the tail stripe.
+        flushInputBuffers(/*finalize=*/true);
+      }
       writeStripe();
       rootWriter_->close();
       if (context_->options().enableStatsCollection) {

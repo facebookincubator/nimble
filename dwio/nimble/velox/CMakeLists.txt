@@ -174,6 +174,7 @@ target_link_libraries(
 
 add_library(
   nimble_velox_writer
+  BufferPolicy.h
   EncodingLayoutTree.cpp
   FlushPolicy.cpp
   VeloxWriter.cpp
