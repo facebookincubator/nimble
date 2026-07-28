@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
+#include "dwio/nimble/velox/VeloxWriterOptions.h"
 
 namespace facebook::nimble {
 
@@ -137,4 +138,32 @@ INSTANTIATE_TEST_CASE_P(
             .size = 2048,
             .capacity = 1000,
             .expectedNewCapacity = 2073}));
+
+// Regression guard (D111195999): the growth policy stays amortized by default;
+// only lowMemoryMode switches to ExactGrowthPolicy. Spilling writers no longer
+// force lowMemoryMode, so they keep the amortized (O(N)) policy.
+TEST(WriterOptionsGrowthPolicyTest, DefaultUsesAmortizedGrowth) {
+  VeloxWriterOptions options; // lowMemoryMode defaults to false
+
+  // Amortized policy leaves headroom above the requested size.
+  EXPECT_GT(
+      options.makeInputBufferGrowthPolicy()->getExtendedCapacity(
+          /*newSize=*/100, /*capacity=*/0),
+      100u);
+  EXPECT_GT(
+      options.makeStringBufferGrowthPolicy()->getExtendedCapacity(100, 0),
+      100u);
+}
+
+TEST(WriterOptionsGrowthPolicyTest, LowMemoryModeForcesExactGrowth) {
+  VeloxWriterOptions options;
+  options.lowMemoryMode = true;
+
+  // Grow-to-exact: no headroom.
+  EXPECT_EQ(
+      options.makeInputBufferGrowthPolicy()->getExtendedCapacity(100, 0), 100u);
+  EXPECT_EQ(
+      options.makeStringBufferGrowthPolicy()->getExtendedCapacity(100, 0),
+      100u);
+}
 } // namespace facebook::nimble

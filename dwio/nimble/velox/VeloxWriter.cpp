@@ -45,6 +45,7 @@
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/common/time/Timer.h"
@@ -68,12 +69,8 @@ class WriterContext : public FieldWriterContext {
             this->options_.metricsLogger == nullptr
                 ? std::make_shared<MetricsLogger>()
                 : this->options_.metricsLogger} {
-    inputBufferGrowthPolicy_ = this->options_.lowMemoryMode
-        ? std::make_unique<ExactGrowthPolicy>()
-        : this->options_.inputGrowthPolicyFactory();
-    stringBufferGrowthPolicy_ = this->options_.lowMemoryMode
-        ? std::make_unique<ExactGrowthPolicy>()
-        : this->options_.stringBufferGrowthPolicyFactory();
+    inputBufferGrowthPolicy_ = this->options_.makeInputBufferGrowthPolicy();
+    stringBufferGrowthPolicy_ = this->options_.makeStringBufferGrowthPolicy();
     ignoreTopLevelNulls_ = options_.ignoreTopLevelNulls;
     disableSharedStringBuffers_ = options_.disableSharedStringBuffers;
     maxFlatMapKeys_ = options_.maxFlatMapKeys;
@@ -1300,12 +1297,14 @@ void VeloxWriter::clearEncodingBuffer() {
   if (encodingBuffer_ == nullptr) {
     return;
   }
-  if (context_->options().lowMemoryMode) {
-    encodingBuffer_.reset();
+  if (velox::memory::underMemoryArbitration()) {
+    // Under memory arbitration, free the buffer and pools.
     encodingBufferPools_.clear();
-    return;
+    encodingBuffer_.reset();
+  } else {
+    // Normal flush: rewind and keep chunks allocated for reuse.
+    encodingBuffer_->reset();
   }
-  encodingBuffer_->reset();
 }
 
 void VeloxWriter::ensureWriteStreams() {
