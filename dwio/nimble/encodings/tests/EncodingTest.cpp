@@ -2593,6 +2593,118 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryDisabledByOption) {
   }
 }
 
+// Dictionary(alphabet=RLE(runValues=Constant)) with preserveDictionaryEncoding.
+// ConstantEncoding returns dictionaryEnabled()=true, causing the inner RLE to
+// enter dict mode. Without the fix, DictionaryEncoding's materialize() crashes.
+TYPED_TEST(DictionaryApiTypedTest, nestedDictionaryRleConstantAlphabet) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha"};
+    for (int32_t i = 0; i < 8; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+  } else {
+    for (int32_t i = 0; i < 8; ++i) {
+      data.push_back(T(42));
+    }
+  }
+  const auto rowCount = static_cast<uint32_t>(data.size());
+
+  // Alphabet has one entry.
+  nimble::Vector<PhysicalType> alphabet{this->pool_.get()};
+  alphabet.push_back(reinterpret_cast<const PhysicalType&>(data[0]));
+  nimble::Vector<uint32_t> indices{this->pool_.get(), rowCount};
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    indices[i] = 0;
+  }
+
+  // Encode alphabet as RLE(runValues=Constant).
+  nimble::Vector<uint32_t> runLengths{this->pool_.get()};
+  runLengths.push_back(1);
+  auto rlSpan = std::span<const uint32_t>(runLengths.data(), runLengths.size());
+  nimble::Buffer rlBuf{*this->pool_};
+  nimble::EncodingSelection<uint32_t> rlSel{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<uint32_t>::create(rlSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+          false, false)};
+  auto serializedRunLengths =
+      nimble::TrivialEncoding<uint32_t>::encode(rlSel, rlSpan, rlBuf);
+
+  // Run values as Constant (dictionaryEnabled()=true).
+  auto rvSpan = std::span<const PhysicalType>(alphabet.data(), alphabet.size());
+  nimble::Buffer rvBuf{*this->pool_};
+  nimble::EncodingSelection<PhysicalType> rvSel{
+      {.encodingType = nimble::EncodingType::Constant},
+      nimble::Statistics<PhysicalType>::create(rvSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+  auto serializedRunValues =
+      nimble::ConstantEncoding<T>::encode(rvSel, rvSpan, rvBuf);
+
+  // Assemble alphabet as RLE binary.
+  nimble::Buffer alpBuf{*this->pool_};
+  const auto alpEncodingSize = static_cast<uint32_t>(
+      nimble::Encoding::kPrefixSize + 4 + serializedRunLengths.size() +
+      serializedRunValues.size());
+  char* alpPos = alpBuf.reserve(alpEncodingSize);
+  char* alpWrite = alpPos;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::RLE), alpWrite);
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::TypeTraits<T>::dataType), alpWrite);
+  nimble::encoding::writeUint32(alphabet.size(), alpWrite);
+  nimble::encoding::writeString(serializedRunLengths, alpWrite);
+  nimble::encoding::writeBytes(serializedRunValues, alpWrite);
+  auto serializedAlphabet = std::string_view(alpPos, alpEncodingSize);
+
+  // Encode indices as Trivial<uint32_t>.
+  auto idxSpan = std::span<const uint32_t>(indices.data(), indices.size());
+  nimble::Buffer idxBuf{*this->pool_};
+  nimble::EncodingSelection<uint32_t> idxSel{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<uint32_t>::create(idxSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+          false, false)};
+  auto serializedIndices =
+      nimble::TrivialEncoding<uint32_t>::encode(idxSel, idxSpan, idxBuf);
+
+  // Assemble outer Dictionary binary.
+  nimble::Buffer dictBuf{*this->pool_};
+  const auto dictSize = static_cast<uint32_t>(
+      nimble::Encoding::kPrefixSize + 4 + serializedAlphabet.size() +
+      serializedIndices.size());
+  char* dictPos = dictBuf.reserve(dictSize);
+  char* dictWrite = dictPos;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::Dictionary), dictWrite);
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::TypeTraits<T>::dataType), dictWrite);
+  nimble::encoding::writeUint32(rowCount, dictWrite);
+  nimble::encoding::writeUint32(
+      static_cast<uint32_t>(serializedAlphabet.size()), dictWrite);
+  std::memcpy(dictWrite, serializedAlphabet.data(), serializedAlphabet.size());
+  dictWrite += serializedAlphabet.size();
+  std::memcpy(dictWrite, serializedIndices.data(), serializedIndices.size());
+  auto serialized = std::string_view(dictPos, dictSize);
+
+  // Decode with preserveDictionaryEncoding=true.
+  auto encoding =
+      this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->rowCount(), rowCount);
+
+  std::vector<PhysicalType> materialized(rowCount);
+  encoding->materialize(rowCount, materialized.data());
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    EXPECT_EQ(materialized[i], reinterpret_cast<const PhysicalType&>(data[i]))
+        << "row " << i;
+  }
+}
+
 TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
   using T = TypeParam;
 

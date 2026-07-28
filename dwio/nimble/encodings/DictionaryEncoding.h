@@ -189,7 +189,11 @@ DictionaryEncoding<T>::DictionaryEncoding(
     const Encoding::Options& options)
     : TypedEncoding<T, physicalType>{pool, data, options},
       alphabet_{this->pool_} {
-  const EncodingFactory factory{options};
+  // The alphabet must be materialized flat — a sub-encoding in dict mode
+  // (values_ null) would crash on materialize().
+  auto subOptions = options;
+  subOptions.preserveDictionaryEncoding = false;
+  const EncodingFactory factory{subOptions};
   const auto* pos = data.data() + this->dataOffset();
   const uint32_t alphabetSize = encoding::readUint32(pos);
   alphabetEncoding_ =
