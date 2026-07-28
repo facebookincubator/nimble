@@ -286,6 +286,20 @@ struct VeloxWriterOptions {
     return DefaultInputBufferGrowthPolicy::withStringBufferRanges();
   };
 
+  /// Input-buffer growth policy for these options: ExactGrowthPolicy under
+  /// lowMemoryMode, else the amortized factory.
+  std::unique_ptr<InputBufferGrowthPolicy> makeInputBufferGrowthPolicy() const {
+    return lowMemoryMode ? std::make_unique<ExactGrowthPolicy>()
+                         : inputGrowthPolicyFactory();
+  }
+
+  /// String-buffer counterpart of makeInputBufferGrowthPolicy().
+  std::unique_ptr<InputBufferGrowthPolicy> makeStringBufferGrowthPolicy()
+      const {
+    return lowMemoryMode ? std::make_unique<ExactGrowthPolicy>()
+                         : stringBufferGrowthPolicyFactory();
+  }
+
   std::function<std::unique_ptr<velox::memory::MemoryReclaimer>()>
       reclaimerFactory = []() { return nullptr; };
 
