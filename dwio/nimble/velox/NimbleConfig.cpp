@@ -318,6 +318,10 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.flush_policy_config",
     "");
 
+/* static */ Config::Entry<std::string> Config::ENCODING_SELECTION_CONFIG(
+    "nimble.encoding_selection_config",
+    "");
+
 // EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
 // production tables without consulting the Nimble team (oncall: dwios).
 /* static */ Config::Entry<const std::vector<std::string>>
