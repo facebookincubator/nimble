@@ -291,6 +291,105 @@ class ALPEncoding final
     return {reserved, encodingSize};
   }
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {}) {
+    const auto sourceRowCount =
+        EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+    NIMBLE_CHECK_LE(offset, sourceRowCount);
+    NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+    NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
+
+    const char* pos = encoded.data() +
+        EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+    const auto header = detail::alp::readHeader(pos);
+    const uint32_t exceptionCount =
+        header.hasExceptions ? varint::readVarint32(&pos) : 0;
+    const uint32_t encodedValuesSize = varint::readVarint32(&pos);
+    const std::string_view encodedValues{pos, encodedValuesSize};
+    pos += encodedValuesSize;
+
+    const auto* exceptionPositions = reinterpret_cast<const uint32_t*>(pos);
+    pos += exceptionCount * sizeof(uint32_t);
+    const auto* exceptionValues = reinterpret_cast<const physicalType*>(pos);
+
+    auto* pool = &buffer.getMemoryPool();
+    ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+    const auto slicedEncodedValues = EncodingFactory::slice(
+        encodedValues, offset, length, scopedBuffer.get(), options);
+    NIMBLE_CHECK_LE(
+        slicedEncodedValues.size(),
+        std::numeric_limits<uint32_t>::max(),
+        "ALP sliced encoded values are too large.");
+    const auto slicedEncodedValuesSize =
+        static_cast<uint32_t>(slicedEncodedValues.size());
+
+    const auto* exceptionEnd = exceptionPositions + exceptionCount;
+    const auto* first =
+        std::lower_bound(exceptionPositions, exceptionEnd, offset);
+    const auto* last = std::lower_bound(first, exceptionEnd, offset + length);
+    const auto slicedExceptionCount = static_cast<uint32_t>(last - first);
+    ScopedVector<uint32_t> slicedExceptionPositions{
+        slicedExceptionCount, pool, options.bufferPool};
+    ScopedVector<physicalType> slicedExceptionValues{
+        slicedExceptionCount, pool, options.bufferPool};
+    uint32_t exceptionIndex{0};
+    for (const auto* it = first; it != last; ++it) {
+      slicedExceptionPositions[exceptionIndex] = *it - offset;
+      slicedExceptionValues[exceptionIndex] =
+          exceptionValues[it - exceptionPositions];
+      ++exceptionIndex;
+    }
+    NIMBLE_CHECK_EQ(exceptionIndex, slicedExceptionCount);
+
+    const uint32_t exceptionPositionsSize =
+        slicedExceptionCount * sizeof(uint32_t);
+    const uint32_t exceptionValuesSize =
+        slicedExceptionCount * sizeof(physicalType);
+    const uint32_t metadataSize = kHeaderSize +
+        (slicedExceptionCount > 0 ? varint::varintSize(slicedExceptionCount)
+                                  : 0) +
+        varint::varintSize(slicedEncodedValuesSize);
+    const uint32_t encodingSize =
+        Encoding::serializePrefixSize(length, options.useVarintRowCount) +
+        metadataSize + slicedEncodedValuesSize + exceptionPositionsSize +
+        exceptionValuesSize;
+
+    char* reserved = buffer.reserve(encodingSize);
+    char* writePos = reserved;
+    Encoding::serializePrefix(
+        EncodingType::ALP,
+        TypeTraits<T>::dataType,
+        length,
+        options.useVarintRowCount,
+        writePos);
+    detail::alp::writeHeader(
+        detail::alp::Header{
+            .exponent = header.exponent,
+            .factor = header.factor,
+            .hasExceptions = slicedExceptionCount > 0},
+        writePos);
+    if (slicedExceptionCount > 0) {
+      varint::writeVarint(slicedExceptionCount, &writePos);
+    }
+    varint::writeVarint(slicedEncodedValuesSize, &writePos);
+    encoding::writeBytes(slicedEncodedValues, writePos);
+    if (slicedExceptionCount > 0) {
+      std::memcpy(
+          writePos, slicedExceptionPositions.data(), exceptionPositionsSize);
+      writePos += exceptionPositionsSize;
+      std::memcpy(writePos, slicedExceptionValues.data(), exceptionValuesSize);
+      writePos += exceptionValuesSize;
+    }
+
+    NIMBLE_CHECK_EQ(
+        encodingSize, writePos - reserved, "Encoding size mismatch.");
+    return {reserved, encodingSize};
+  }
+
   static std::optional<uint64_t> estimateSize(
       std::span<const physicalType> values,
       const Encoding::Options& options = {}) {

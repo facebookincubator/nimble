@@ -19,8 +19,10 @@
 #include <span>
 #include <vector>
 
+#include "dwio/nimble/common/DataTypeDispatch.h"
 #include "dwio/nimble/common/NimbleException.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -196,6 +198,22 @@ std::string_view sliceBlockBitPacking(
           encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceALP(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE_OR(
+      dataType,
+      T,
+      ALPEncoding<T>::slice(encoded, offset, length, buffer, options),
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "ALP encoding only supports float and double data types, got {}.",
+          dataType));
+}
+
 } // namespace
 
 std::string_view EncodingSliceFactory::slice(
@@ -228,6 +246,8 @@ std::string_view EncodingSliceFactory::slice(
     case EncodingType::BlockBitPacking:
       return sliceBlockBitPacking(
           encoded, dataType, offset, length, buffer, options);
+    case EncodingType::ALP:
+      return sliceALP(encoded, dataType, offset, length, buffer, options);
     case EncodingType::Nullable:
       return sliceNullable(encoded, dataType, offset, length, buffer, options);
     case EncodingType::SparseBool:
