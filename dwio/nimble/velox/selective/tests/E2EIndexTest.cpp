@@ -20,6 +20,7 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include "dwio/nimble/encodings/PrefixEncoding.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "velox/common/base/RandomUtil.h"
@@ -44,7 +45,7 @@ namespace facebook::nimble::test {
 using namespace velox;
 using namespace velox::common;
 using namespace velox::dwio::common;
-using index::ClusterIndexConfig;
+using index::ClusterIndexConfigBuilder;
 
 namespace {
 
@@ -294,17 +295,17 @@ class E2EIndexTestBase : public ::testing::Test {
     VeloxWriterOptions options;
     options.enableChunking = true;
     options.enableChunkIndex = enableChunkIndex;
-    ClusterIndexConfig clusterIndexConfig;
-    clusterIndexConfig.columns = indexColumns;
-    clusterIndexConfig.sortOrders =
-        std::vector<SortOrder>(indexColumns.size(), sortOrder);
-    clusterIndexConfig.enforceKeyOrder = true;
-    clusterIndexConfig.noDuplicateKey = noDuplicateKey;
+    auto clusterIndexConfig =
+        ClusterIndexConfigBuilder{}
+            .withKeyColumns(indexColumns)
+            .withSortOrders(
+                std::vector<SortOrder>(indexColumns.size(), sortOrder))
+            .withEnforceKeyOrder(true)
+            .withNoDuplicateKey(noDuplicateKey);
     if (encodingLayout.has_value()) {
-      clusterIndexConfig.encodingLayout = std::move(encodingLayout).value();
+      clusterIndexConfig.withEncodingLayout(std::move(encodingLayout).value());
     }
-    options.clusterIndexConfig =
-        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
+    options.clusterIndexConfig = clusterIndexConfig.build();
 
     // Use small stripe and chunk sizes to generate multiple stripes and write
     // groups for better index test coverage.

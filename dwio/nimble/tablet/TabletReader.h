@@ -29,6 +29,7 @@
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/DenseIndexRegistry.h"
 #include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/FileLayout.h"

@@ -34,6 +34,7 @@
 #include "dwio/nimble/encodings/selection/tests/RandomEncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkStatsGroup.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/index/KeyEncoding.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -771,11 +772,12 @@ TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
       {"value_col", velox::VARCHAR()},
   });
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig{
-      .columns = {"key_col"},
-      .sortOrders = {nimble::SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-  };
+  auto clusterIndexConfig =
+      nimble::index::ClusterIndexConfigBuilder{}
+          .withKeyColumns({"key_col"})
+          .withSortOrders({nimble::SortOrder{.ascending = true}})
+          .withEnforceKeyOrder(true)
+          .build();
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -784,7 +786,7 @@ TEST_F(VeloxWriterTest, emptyFileWithIndexEnabled) {
       type,
       std::move(writeFile),
       *rootPool_,
-      {.clusterIndexConfig = nimble::index::toIndexConfig(clusterIndexConfig)});
+      {.clusterIndexConfig = std::move(clusterIndexConfig)});
   writer.close();
 
   // Verify FileLayout for empty file with index enabled using
@@ -1211,16 +1213,12 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
               {flatmapOrdinal, reorderedKeys}};
 
       if (enableIndex) {
-        nimble::index::ClusterIndexConfig clusterIndexConfig;
-        clusterIndexConfig.columns = {"key"};
-        clusterIndexConfig.sortOrders = {nimble::SortOrder{.ascending = true}};
-        clusterIndexConfig.enforceKeyOrder = true;
-        clusterIndexConfig.encodingLayout = nimble::EncodingLayout{
-            nimble::EncodingType::Prefix,
-            {},
-            nimble::CompressionType::Uncompressed};
-        options.clusterIndexConfig = facebook::nimble::index::toIndexConfig(
-            std::move(clusterIndexConfig));
+        options.clusterIndexConfig =
+            nimble::index::ClusterIndexConfigBuilder{}
+                .withKeyColumns({"key"})
+                .withSortOrders({nimble::SortOrder{.ascending = true}})
+                .withEnforceKeyOrder(true)
+                .build();
       }
 
       nimble::VeloxWriter writer(
@@ -5227,18 +5225,16 @@ class VeloxWriterIndexTest
     return batches;
   }
 
-  nimble::index::ClusterIndexConfig createIndexConfig(
+  std::shared_ptr<const nimble::index::IndexConfig> createIndexConfig(
       const std::vector<std::string>& columns,
       bool enforceKeyOrder = true) {
-    nimble::index::ClusterIndexConfig config{
-        .columns = columns,
-        .enforceKeyOrder = enforceKeyOrder,
-    };
-
-    // Set encoding layout based on encoding type
+    nimble::EncodingLayout encodingLayout{
+        nimble::EncodingType::Prefix,
+        {},
+        nimble::CompressionType::Uncompressed};
     if (encodingType() == nimble::EncodingType::Trivial) {
       // Trivial encoding for string data needs a child encoding for lengths.
-      config.encodingLayout = nimble::EncodingLayout{
+      encodingLayout = nimble::EncodingLayout{
           nimble::EncodingType::Trivial,
           {},
           nimble::CompressionType::Zstd,
@@ -5254,25 +5250,27 @@ class VeloxWriterIndexTest
             {{std::string(nimble::PrefixEncoding::kRestartIntervalConfigKey),
               std::to_string(prefixRestartInterval().value())}}};
       }
-      config.encodingLayout = nimble::EncodingLayout{
+      encodingLayout = nimble::EncodingLayout{
           encodingType(),
           std::move(layoutConfig),
           nimble::CompressionType::Zstd};
     }
 
-    if (enableChunking()) {
-      config.maxRowsPerKeyChunk = 100;
-    }
-    return config;
+    return nimble::index::ClusterIndexConfigBuilder{}
+        .withKeyColumns(columns)
+        .withEnforceKeyOrder(enforceKeyOrder)
+        .withEncodingLayout(std::move(encodingLayout))
+        .withMaxRowsPerKeyChunk(enableChunking() ? 100 : 10'000)
+        .build();
   }
 
   nimble::VeloxWriterOptions createWriterOptions(
-      const nimble::index::ClusterIndexConfig& clusterIndexConfig,
+      const std::shared_ptr<const nimble::index::IndexConfig>&
+          clusterIndexConfig,
       const std::function<std::unique_ptr<nimble::FlushPolicy>()>&
           flushPolicyFactory = nullptr) {
     nimble::VeloxWriterOptions options{
-        .clusterIndexConfig =
-            nimble::index::toIndexConfig(std::move(clusterIndexConfig)),
+        .clusterIndexConfig = clusterIndexConfig,
     };
     if (enableChunking()) {
       options.minStreamChunkRawSize = 1 << 10; // 1KB
@@ -5643,8 +5641,7 @@ TEST_P(VeloxWriterIndexTest, singleGroup) {
   // group.
   auto type = defaultType();
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -5746,8 +5743,7 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
   // stripes.
   auto type = defaultType();
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -5853,8 +5849,7 @@ TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {
       {"data_col", velox::VARCHAR()},
   });
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key1", "key2"});
+  auto clusterIndexConfig = createIndexConfig({"key1", "key2"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -5976,11 +5971,11 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
               testCase == TestCase::kOutOfOrder ? "OutOfOrder"
                                                 : "DuplicateKeys"));
 
-      nimble::index::ClusterIndexConfig clusterIndexConfig{
-          .columns = {"key_col"},
-          .enforceKeyOrder = enforceKeyOrder,
-          .noDuplicateKey = enforceKeyOrder,
-      };
+      auto clusterIndexConfig = nimble::index::ClusterIndexConfigBuilder{}
+                                    .withKeyColumns({"key_col"})
+                                    .withEnforceKeyOrder(enforceKeyOrder)
+                                    .withNoDuplicateKey(enforceKeyOrder)
+                                    .build();
 
       std::string file;
       auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -5989,8 +5984,7 @@ TEST_F(VeloxWriterTest, indexEnforceKeyOrder) {
           type,
           std::move(writeFile),
           *rootPool_,
-          {.clusterIndexConfig =
-               nimble::index::toIndexConfig(clusterIndexConfig)});
+          {.clusterIndexConfig = std::move(clusterIndexConfig)});
 
       velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
@@ -6046,8 +6040,7 @@ TEST_P(VeloxWriterIndexTest, duplicateKeys) {
   // This is a valid scenario where multiple rows have the same key value.
   auto type = defaultType();
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -6187,8 +6180,7 @@ TEST_P(VeloxWriterIndexTest, chunking) {
   // Test index with chunking enabled
   auto type = defaultType();
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -6253,8 +6245,7 @@ TEST_P(VeloxWriterIndexTest, streamDeduplication) {
       {"string_col2", velox::VARCHAR()},
   });
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -6371,8 +6362,7 @@ TEST_P(VeloxWriterIndexTest, streamStatsNoDuplicates) {
       {"string_col2", velox::VARCHAR()},
   });
 
-  nimble::index::ClusterIndexConfig clusterIndexConfig =
-      createIndexConfig({"key_col"});
+  auto clusterIndexConfig = createIndexConfig({"key_col"});
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -6464,15 +6454,16 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
             std::to_string(customRestartInterval.value())}}};
     }
 
-    nimble::index::ClusterIndexConfig clusterIndexConfig{
-        .columns = {"key_col"},
-        .enforceKeyOrder = true,
-        .encodingLayout =
-            nimble::EncodingLayout{
-                nimble::EncodingType::Prefix,
-                std::move(encodingConfig),
-                nimble::CompressionType::Uncompressed},
-    };
+    auto clusterIndexConfig =
+        nimble::index::ClusterIndexConfigBuilder{}
+            .withKeyColumns({"key_col"})
+            .withEnforceKeyOrder(true)
+            .withEncodingLayout(
+                nimble::EncodingLayout{
+                    nimble::EncodingType::Prefix,
+                    std::move(encodingConfig),
+                    nimble::CompressionType::Uncompressed})
+            .build();
 
     std::string file;
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -6481,8 +6472,7 @@ TEST_F(VeloxWriterTest, customPrefixRestartInterval) {
         type,
         std::move(writeFile),
         *rootPool_,
-        {.clusterIndexConfig =
-             nimble::index::toIndexConfig(clusterIndexConfig)});
+        {.clusterIndexConfig = std::move(clusterIndexConfig)});
 
     velox::test::VectorMaker vectorMaker{leafPool_.get()};
 

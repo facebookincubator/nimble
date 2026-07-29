@@ -17,11 +17,12 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/index/IndexKeyEncoder.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -35,6 +36,8 @@ struct SortedIndex;
 } // namespace facebook::nimble::serialization
 
 namespace facebook::nimble::index {
+
+class IndexConfig;
 
 namespace test {
 class SortedIndexWriterTestHelper;
@@ -54,7 +57,7 @@ class SortedIndexWriter : public IndexWriter {
  public:
   /// Factory method. Returns nullptr if configs is empty.
   static std::unique_ptr<SortedIndexWriter> create(
-      const std::vector<SortedIndexConfig>& configs,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool);
 
@@ -72,9 +75,20 @@ class SortedIndexWriter : public IndexWriter {
       const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
+  struct Options {
+    std::vector<std::string> columns;
+    EncodingLayout encodingLayout;
+    uint64_t maxRowsPerKeyChunk;
+  };
+
+  static Options makeOptions(const IndexConfig& config);
+  static std::vector<std::vector<std::string>> extractColumnSets(
+      const std::vector<Options>& options);
+
   SortedIndexWriter(
-      const std::vector<SortedIndexConfig>& configs,
+      std::string indexName,
       const velox::RowTypePtr& inputType,
+      std::vector<Options> options,
       velox::memory::MemoryPool* pool);
 
   struct IndexEntry {
@@ -83,7 +97,7 @@ class SortedIndexWriter : public IndexWriter {
   };
 
   struct IndexAccumulator {
-    SortedIndexConfig config;
+    Options options;
     std::unique_ptr<IndexKeyEncoder> encoder;
     std::vector<IndexEntry> entries;
     // Backs encoded key string_views in entries. Each accumulator owns its
@@ -138,6 +152,7 @@ class SortedIndexWriter : public IndexWriter {
         builder.GetSize()};
   }
 
+  const std::string indexName_;
   velox::memory::MemoryPool* const pool_;
   const std::vector<velox::column_index_t> keyColumnIndices_;
   std::vector<IndexAccumulator> accumulators_;

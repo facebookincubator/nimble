@@ -16,6 +16,7 @@
 #include "dwio/nimble/index/BloomFilter.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "dwio/nimble/common/Exceptions.h"
@@ -32,6 +33,10 @@ namespace {
 // Computes the number of 256-bit blocks needed for the bloom filter based on
 // the expected number of entries and the desired bits per key.
 uint32_t computeNumBlocks(uint64_t numEntries, float bitsPerKey) {
+  NIMBLE_USER_CHECK(
+      std::isfinite(bitsPerKey) && bitsPerKey > 0,
+      "Bloom filter bits per key must be finite and positive, but got: {}",
+      bitsPerKey);
   // Total bits needed, rounded up to block boundaries.
   const uint64_t totalBits = std::max(
       static_cast<uint64_t>(numEntries * bitsPerKey),
@@ -53,9 +58,7 @@ BloomFilter::BloomFilter(
       data_{velox::AlignedBuffer::allocate<uint8_t>(
           numBlocks_ * kBlockSizeBytes,
           pool,
-          0)} {
-  NIMBLE_CHECK_GT(bitsPerKey, 0.0f, "bitsPerKey must be positive");
-}
+          0)} {}
 
 BloomFilter::BloomFilter(
     uint32_t numBlocks,

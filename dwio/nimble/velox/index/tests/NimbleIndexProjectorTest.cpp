@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/serializer/Deserializer.h"
 #include "dwio/nimble/serializer/DeserializerImpl.h"
 #include "dwio/nimble/serializer/Serializer.h"
@@ -51,7 +52,7 @@ namespace facebook::nimble::test {
 
 using namespace velox;
 using namespace velox::dwio::common;
-using index::ClusterIndexConfig;
+using index::ClusterIndexConfigBuilder;
 using Subfield = velox::common::Subfield;
 
 namespace {
@@ -211,14 +212,15 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     options.enableChunking = true;
     options.flatMapColumns = flatMapColumns;
     options.enableStreamDeduplication = enableStreamDeduplication;
-    ClusterIndexConfig clusterIndexConfig;
-    clusterIndexConfig.columns = indexColumns;
-    clusterIndexConfig.sortOrders = std::vector<SortOrder>(
-        indexColumns.size(), SortOrder{.ascending = true});
-    clusterIndexConfig.enforceKeyOrder = true;
-    clusterIndexConfig.noDuplicateKey = true;
     options.clusterIndexConfig =
-        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
+        ClusterIndexConfigBuilder{}
+            .withKeyColumns(indexColumns)
+            .withSortOrders(
+                std::vector<SortOrder>(
+                    indexColumns.size(), SortOrder{.ascending = true}))
+            .withEnforceKeyOrder(true)
+            .withNoDuplicateKey(true)
+            .build();
 
     options.flushPolicyFactory = [stripeSize]() {
       return std::make_unique<LambdaFlushPolicy>(
@@ -2932,13 +2934,13 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     options.flatMapColumns = {{"features", {}}};
     options.experimentalStripeGroupEncodingLayout = metadataFormat;
 
-    ClusterIndexConfig clusterIndexConfig;
-    clusterIndexConfig.columns = {"key"};
-    clusterIndexConfig.sortOrders = {SortOrder{.ascending = true}};
-    clusterIndexConfig.enforceKeyOrder = true;
-    clusterIndexConfig.noDuplicateKey = true;
     options.clusterIndexConfig =
-        facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
+        ClusterIndexConfigBuilder{}
+            .withKeyColumns({"key"})
+            .withSortOrders({SortOrder{.ascending = true}})
+            .withEnforceKeyOrder(true)
+            .withNoDuplicateKey(true)
+            .build();
 
     if (enableReordering) {
       // Ordinal 1 = "features" column (after "key").

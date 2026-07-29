@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexTypes.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 
 namespace facebook::nimble::index {

@@ -15,38 +15,25 @@
  */
 #include "dwio/nimble/index/HashIndexWriter.h"
 
+#include "dwio/nimble/index/HashIndexConfig.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <set>
 
 #include <fmt/ranges.h>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/BloomFilter.h"
 #include "dwio/nimble/index/HashIndexUtils.h"
-#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
 #include "flatbuffers/flatbuffers.h"
 
 #include "velox/common/base/BitUtil.h"
-#include "velox/common/base/Nulls.h"
 
 namespace facebook::nimble::index {
-
-namespace {
-
-std::vector<std::vector<std::string>> extractColumnSets(
-    const std::vector<HashIndexConfig>& configs) {
-  std::vector<std::vector<std::string>> columnSets;
-  columnSets.reserve(configs.size());
-  for (const auto& config : configs) {
-    columnSets.emplace_back(config.columns);
-  }
-  return columnSets;
-}
-
-} // namespace
 
 // static
 // Estimates the serialized size of one bucket's keys.
@@ -104,10 +91,10 @@ flatbuffers::Offset<serialization::BloomFilter>
 HashIndexWriter::buildBloomFilter(
     flatbuffers::FlatBufferBuilder& builder,
     const IndexAccumulator& accumulator) const {
-  if (!accumulator.config.bloomFilter.has_value()) {
+  if (!accumulator.options.bloomFilterBitsPerKey.has_value()) {
     return 0;
   }
-  const auto bitsPerKey = accumulator.config.bloomFilter->bitsPerKey;
+  const auto bitsPerKey = accumulator.options.bloomFilterBitsPerKey.value();
   BloomFilter bloomFilter(accumulator.entries.size(), bitsPerKey, pool_);
   for (const auto& entry : accumulator.entries) {
     bloomFilter.insert(entry.key);
@@ -137,7 +124,7 @@ void HashIndexWriter::buildIndexFlatBuffer(
       std::max(
           1u,
           static_cast<uint32_t>(std::ceil(
-              static_cast<float>(numKeys) / accumulator.config.loadFactor)))));
+              static_cast<float>(numKeys) / accumulator.options.loadFactor)))));
   const uint32_t bucketMask = numBuckets - 1;
 
   // Assign keys to buckets.
@@ -156,17 +143,17 @@ void HashIndexWriter::buildIndexFlatBuffer(
   // When maxPartitionSizeBytes is set and data exceeds it, split into
   // multiple partitions for on-demand loading.
   uint32_t bucketsPerPartition = numBuckets;
-  if (accumulator.config.maxPartitionSizeBytes > 0 && numBuckets > 1) {
+  if (accumulator.options.maxPartitionSizeBytes > 0 && numBuckets > 1) {
     size_t estimatedTotalBucketSize = 0;
     for (uint32_t i = 0; i < numBuckets; ++i) {
       estimatedTotalBucketSize +=
           estimateBucketSize(bucketKeyIndices[i], accumulator);
     }
-    if (estimatedTotalBucketSize > accumulator.config.maxPartitionSizeBytes) {
+    if (estimatedTotalBucketSize > accumulator.options.maxPartitionSizeBytes) {
       const uint32_t numPartitions =
           static_cast<uint32_t>(velox::bits::divRoundUp(
               estimatedTotalBucketSize,
-              accumulator.config.maxPartitionSizeBytes));
+              accumulator.options.maxPartitionSizeBytes));
       bucketsPerPartition = velox::bits::divRoundUp(numBuckets, numPartitions);
     }
   }
@@ -235,8 +222,8 @@ void HashIndexWriter::buildIndexDirectoryFlatBuffer(
   for (size_t i = 0; i < accumulators_.size(); ++i) {
     // Build column names for the directory entry.
     std::vector<flatbuffers::Offset<flatbuffers::String>> columnOffsets;
-    columnOffsets.reserve(accumulators_[i].config.columns.size());
-    for (const auto& col : accumulators_[i].config.columns) {
+    columnOffsets.reserve(accumulators_[i].options.columns.size());
+    for (const auto& col : accumulators_[i].options.columns) {
       columnOffsets.emplace_back(builder.CreateString(col));
     }
     auto columnsVec = builder.CreateVector(columnOffsets);
@@ -259,54 +246,101 @@ void HashIndexWriter::buildIndexDirectoryFlatBuffer(
   builder.Finish(directory);
 }
 
+HashIndexWriter::Options HashIndexWriter::makeOptions(
+    const IndexConfig& config) {
+  const auto& hashIndexConfig = checkedIndexConfig<HashIndexConfig>(config);
+  auto options = Options{
+      .columns = hashIndexConfig.columns,
+      .loadFactor = hashIndexConfig.loadFactor,
+      .bloomFilterBitsPerKey = hashIndexConfig.bloomFilter.has_value()
+          ? std::optional<float>{hashIndexConfig.bloomFilter->bitsPerKey}
+          : std::nullopt,
+      .maxPartitionSizeBytes = hashIndexConfig.maxPartitionSizeBytes,
+  };
+  NIMBLE_USER_CHECK(
+      std::isfinite(options.loadFactor) && options.loadFactor > 0 &&
+          options.loadFactor <= 1,
+      "Hash index load factor must be finite and in (0, 1], but got: {}",
+      options.loadFactor);
+  NIMBLE_USER_CHECK(
+      !options.columns.empty(), "Hash index must have at least one column");
+  NIMBLE_USER_CHECK(
+      !options.bloomFilterBitsPerKey.has_value() ||
+          (std::isfinite(options.bloomFilterBitsPerKey.value()) &&
+           options.bloomFilterBitsPerKey.value() > 0),
+      "Bloom filter bits per key must be finite and positive, but got: {}",
+      options.bloomFilterBitsPerKey.value_or(0));
+  return options;
+}
+
 std::unique_ptr<HashIndexWriter> HashIndexWriter::create(
-    const std::vector<HashIndexConfig>& configs,
+    std::span<const IndexConfig*> configs,
     const velox::TypePtr& inputType,
     velox::memory::MemoryPool* pool) {
   if (configs.empty()) {
     return nullptr;
   }
   NIMBLE_CHECK_NOT_NULL(pool, "memory pool must not be null");
-  return std::unique_ptr<HashIndexWriter>(
-      new HashIndexWriter(configs, velox::asRowType(inputType), pool));
+  NIMBLE_CHECK_NOT_NULL(configs.front());
+  const auto indexName = configs.front()->name;
+  NIMBLE_USER_CHECK_EQ(
+      indexName,
+      kDenseHashIndexName,
+      "Hash index writer must use the built-in hash index name");
+  std::vector<Options> options;
+  options.reserve(configs.size());
+  for (const auto* config : configs) {
+    NIMBLE_CHECK_NOT_NULL(config);
+    NIMBLE_USER_CHECK_EQ(config->family, IndexFamily::Dense);
+    NIMBLE_USER_CHECK_EQ(config->name, indexName);
+    options.emplace_back(makeOptions(*config));
+  }
+  return std::unique_ptr<HashIndexWriter>(new HashIndexWriter(
+      indexName, velox::asRowType(inputType), std::move(options), pool));
+}
+
+std::vector<std::vector<std::string>> HashIndexWriter::extractColumnSets(
+    const std::vector<Options>& options) {
+  std::vector<std::vector<std::string>> columnSets;
+  columnSets.reserve(options.size());
+  for (const auto& option : options) {
+    columnSets.emplace_back(option.columns);
+  }
+  return columnSets;
 }
 
 HashIndexWriter::HashIndexWriter(
-    const std::vector<HashIndexConfig>& configs,
+    std::string indexName,
     const velox::RowTypePtr& inputType,
+    std::vector<Options> options,
     velox::memory::MemoryPool* pool)
-    : pool_{pool},
+    : indexName_{std::move(indexName)},
+      pool_{pool},
       keyColumnIndices_{
-          getKeyColumnIndices(extractColumnSets(configs), inputType)} {
-  NIMBLE_CHECK(!configs.empty(), "Hash index configs must not be empty");
-  accumulators_.reserve(configs.size());
-  for (const auto& config : configs) {
-    NIMBLE_CHECK(
-        !config.columns.empty(), "Hash index must have at least one column");
-    NIMBLE_CHECK_EQ(
-        config.indexName,
-        kDenseHashIndexName,
-        "Unsupported hash index implementation: {}",
-        config.indexName);
+          getKeyColumnIndices(extractColumnSets(options), inputType)} {
+  NIMBLE_CHECK(!options.empty(), "Hash index configs must not be empty");
+  accumulators_.reserve(options.size());
+  for (auto& option : options) {
+    NIMBLE_USER_CHECK(
+        !option.columns.empty(), "Hash index must have at least one column");
     // Check for duplicate index columns.
-    for (size_t i = 0; i < accumulators_.size(); ++i) {
-      NIMBLE_CHECK(
-          accumulators_[i].config.columns != config.columns,
+    for (const auto& accumulator : accumulators_) {
+      NIMBLE_USER_CHECK(
+          accumulator.options.columns != option.columns,
           "Duplicate hash index columns: [{}]",
-          fmt::join(config.columns, ", "));
+          fmt::join(option.columns, ", "));
     }
-    NIMBLE_CHECK_GT(config.loadFactor, 0.0f, "Load factor must be positive");
-    NIMBLE_CHECK_LE(config.loadFactor, 1.0f, "Load factor must be at most 1.0");
     accumulators_.emplace_back(
         IndexAccumulator{
-            .config = config,
-            .encoder = createNimbleIndexKeyEncoder(
-                config.columns,
-                inputType,
-                std::vector<SortOrder>(
-                    config.columns.size(), SortOrder{.ascending = true}),
-                pool),
+            .options = std::move(option),
         });
+    auto& accumulator = accumulators_.back();
+    accumulator.encoder = createNimbleIndexKeyEncoder(
+        accumulator.options.columns,
+        inputType,
+        std::vector<SortOrder>(
+            accumulator.options.columns.size(), SortOrder{.ascending = true}),
+        pool);
   }
 }
 
@@ -330,6 +364,7 @@ void HashIndexWriter::write(const velox::VectorPtr& input) {
     accumulator.encoder->encode(input, keys, [this](size_t size) {
       return encodingBuffer_->reserve(size);
     });
+    NIMBLE_CHECK_EQ(keys.size(), input->size());
 
     // Record index entries. Encoded keys are string_views into
     // encodingBuffer_ which guarantees pointer stability.
@@ -376,7 +411,7 @@ std::optional<IndexDescriptor> HashIndexWriter::close(
 
   return IndexDescriptor{
       .family = IndexFamily::Dense,
-      .name = std::string{kDenseHashIndexName},
+      .name = indexName_,
       .root = createMetadataFn(asStringView(directoryBuilder))};
 }
 

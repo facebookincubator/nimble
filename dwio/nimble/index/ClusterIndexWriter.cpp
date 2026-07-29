@@ -15,7 +15,10 @@
  */
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 
+#include "dwio/nimble/index/ClusterIndexConfig.h"
+
 #include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -24,7 +27,6 @@
 #include "folly/ScopeGuard.h"
 #include "folly/String.h"
 #include "folly/json/json.h"
-#include "velox/common/base/Nulls.h"
 
 namespace facebook::nimble::index {
 
@@ -68,58 +70,77 @@ uint32_t accumulateRowCount(
   return prev + newRows;
 }
 
+void validateKeyChunkCompressionType(CompressionType type) {
+  NIMBLE_USER_CHECK(
+      type == CompressionType::Uncompressed || type == CompressionType::Zstd ||
+          type == CompressionType::Lz4,
+      "Index key chunk compression only supports Uncompressed, Zstd, or Lz4, but got: {}",
+      type);
+}
+
 } // namespace
 
+ClusterIndexWriter::Options ClusterIndexWriter::makeOptions(
+    const IndexConfig& config) {
+  const auto& clusterIndexConfig =
+      checkedIndexConfig<ClusterIndexConfig>(config);
+  auto options = Options{
+      .indexName = config.name,
+      .columns = clusterIndexConfig.columns,
+      .sortOrders = clusterIndexConfig.sortOrders,
+      .encodingLayout = clusterIndexConfig.encodingLayout,
+      .enforceKeyOrder = clusterIndexConfig.enforceKeyOrder,
+      .noDuplicateKey = clusterIndexConfig.noDuplicateKey,
+      .maxRowsPerKeyChunk = clusterIndexConfig.maxRowsPerKeyChunk,
+      .keyChunkCompressionType = clusterIndexConfig.keyChunkCompressionType,
+  };
+  NIMBLE_USER_CHECK(
+      !options.columns.empty(), "Cluster index must have at least one column");
+  NIMBLE_USER_CHECK(
+      options.sortOrders.empty() ||
+          options.sortOrders.size() == options.columns.size(),
+      "Cluster index columns and sort orders must have the same size");
+  validateKeyStreamEncodingLayout(options.encodingLayout);
+  validateKeyChunkCompressionType(options.keyChunkCompressionType);
+  if (options.sortOrders.empty()) {
+    options.sortOrders.assign(
+        options.columns.size(), SortOrder{.ascending = true});
+  }
+  return options;
+}
+
 std::unique_ptr<ClusterIndexWriter> ClusterIndexWriter::create(
-    const std::optional<ClusterIndexConfig>& config,
+    const IndexConfig& config,
     const velox::TypePtr& inputType,
     velox::memory::MemoryPool* pool) {
-  if (!config.has_value()) {
-    return nullptr;
-  }
+  NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Cluster);
   NIMBLE_CHECK_NOT_NULL(pool, "memory pool must not be null");
   return std::unique_ptr<ClusterIndexWriter>(new ClusterIndexWriter(
-      config.value(), velox::asRowType(inputType), pool));
+      velox::asRowType(inputType), makeOptions(config), pool));
 }
 
 ClusterIndexWriter::ClusterIndexWriter(
-    const ClusterIndexConfig& config,
     const velox::RowTypePtr& inputType,
+    Options options,
     velox::memory::MemoryPool* pool)
-    : pool_{pool},
-      columns_{config.columns},
-      sortOrders_{
-          config.sortOrders.empty() ? std::vector<SortOrder>(
-                                          config.columns.size(),
-                                          SortOrder{.ascending = true})
-                                    : config.sortOrders},
+    : indexName_{std::move(options.indexName)},
+      pool_{pool},
+      columns_{std::move(options.columns)},
+      sortOrders_{std::move(options.sortOrders)},
       keyEncoder_{
-          clusterIndexFactory(config.indexName)
-              .createKeyEncoder(config.columns, inputType, sortOrders_, pool)},
-      encodingLayout_{config.encodingLayout},
-      enforceKeyOrder_{config.enforceKeyOrder},
-      keyColumnIndices_{getKeyColumnIndices({config.columns}, inputType)},
-      noDuplicateKey_{config.noDuplicateKey},
-      maxRowsPerKeyChunk_{config.maxRowsPerKeyChunk},
-      keyCompressionParams_{.type = config.keyChunkCompressionType},
+          clusterIndexFactory(indexName_)
+              .createKeyEncoder(columns_, inputType, sortOrders_, pool)},
+      encodingLayout_{std::move(options.encodingLayout)},
+      enforceKeyOrder_{options.enforceKeyOrder},
+      keyColumnIndices_{getKeyColumnIndices({columns_}, inputType)},
+      noDuplicateKey_{options.noDuplicateKey},
+      maxRowsPerKeyChunk_{options.maxRowsPerKeyChunk},
+      keyCompressionParams_{.type = options.keyChunkCompressionType},
       keyStream_{std::make_unique<ContentStreamData<std::string_view>>(
           *pool_,
           keyStreamDescriptor(),
           keyStreamGrowthPolicy())},
-      keyBuffer_{std::make_unique<Buffer>(*pool)} {
-  const auto encodingType = config.encodingLayout.encodingType();
-  NIMBLE_CHECK(
-      encodingType == EncodingType::Prefix ||
-          encodingType == EncodingType::Trivial,
-      "Key stream encoding only supports Prefix or Trivial encoding, but got: {}",
-      encodingType);
-  NIMBLE_CHECK(
-      keyCompressionParams_.type == CompressionType::Uncompressed ||
-          keyCompressionParams_.type == CompressionType::Zstd ||
-          keyCompressionParams_.type == CompressionType::Lz4,
-      "Key chunk compression only supports Uncompressed, Zstd, or Lz4, but got: {}",
-      keyCompressionParams_.type);
-}
+      keyBuffer_{std::make_unique<Buffer>(*pool)} {}
 
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>>
 ClusterIndexWriter::createEncodingPolicy() const {
@@ -350,7 +371,7 @@ std::optional<IndexDescriptor> ClusterIndexWriter::close(
 
   return IndexDescriptor{
       .family = IndexFamily::Cluster,
-      .name = std::string{kClusterIndexName},
+      .name = indexName_,
       .root = createMetadataFn(asView(builder))};
 }
 

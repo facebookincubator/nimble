@@ -35,12 +35,8 @@ class HashIndexWriterTestHelper {
     return writer_->numRows_;
   }
 
-  size_t numAccumulators() const {
-    return writer_->accumulators_.size();
-  }
-
-  size_t numEntries(size_t accumulatorIndex) const {
-    return writer_->accumulators_[accumulatorIndex].entries.size();
+  size_t numEntries(size_t index = 0) const {
+    return writer_->accumulators_[index].entries.size();
   }
 
  private:

@@ -19,7 +19,8 @@
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/HashIndex.h"
-#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/HashIndexConfig.h"
+#include "dwio/nimble/index/HashIndexWriter.h"
 #include "dwio/nimble/index/IndexLookup.h"
 
 #include "dwio/nimble/tablet/TabletReader.h"
@@ -94,10 +95,10 @@ class HashIndexTestBase {
   void writeFile(
       const std::string& filePath,
       const std::vector<velox::VectorPtr>& batches,
-      HashIndexConfig indexConfig,
+      std::shared_ptr<const IndexConfig> indexConfig,
       std::optional<uint64_t> flushSize = std::nullopt) {
     VeloxWriterOptions options;
-    options.denseIndexConfigs.push_back(toIndexConfig(std::move(indexConfig)));
+    options.denseIndexConfigs.push_back(std::move(indexConfig));
     if (flushSize.has_value()) {
       options.flushPolicyFactory = [size = flushSize.value()]() {
         return std::make_unique<StripeRawSizeFlushPolicy>(size);
@@ -220,11 +221,11 @@ class HashIndexParamTest : public HashIndexTestBase,
     return GetParam().columns;
   }
 
-  HashIndexConfig indexConfig() const {
-    return HashIndexConfig{
-        .columns = columns(),
-        .bloomFilter = BloomFilterConfig{},
-    };
+  std::shared_ptr<const IndexConfig> indexConfig() const {
+    return HashIndexConfigBuilder{}
+        .withKeyColumns(columns())
+        .withBloomFilter(10)
+        .build();
   }
 };
 
@@ -245,9 +246,15 @@ TEST_P(HashIndexParamTest, roundTrip) {
   }
 
   const auto filePath = tempFilePath("round_trip");
-  auto config = indexConfig();
-  config.loadFactor = 0.5f;
-  writeFile(filePath, batches, std::move(config), /*flushSize=*/512);
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}
+          .withKeyColumns(columns())
+          .withLoadFactor(0.5f)
+          .withBloomFilter(10)
+          .build(),
+      /*flushSize=*/512);
 
   auto tablet = openTablet(filePath);
   auto* hashIndex = tablet->denseIndex(columns());
@@ -302,9 +309,13 @@ TEST_P(HashIndexParamTest, bloomFilterSkips) {
   const auto filePath = tempFilePath("bloom_filter");
   // Use high bitsPerKey to eliminate false positives, making bloom filter
   // behavior fully deterministic for this test.
-  auto config = indexConfig();
-  config.bloomFilter = BloomFilterConfig{.bitsPerKey = 40.0f};
-  writeFile(filePath, batches, std::move(config));
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}
+          .withKeyColumns(columns())
+          .withBloomFilter(40)
+          .build());
 
   auto tablet = openTablet(filePath);
   auto* hashIndex = tablet->denseIndex(columns());
@@ -390,9 +401,14 @@ TEST_P(HashIndexParamTest, partitionedIndex) {
   batches.push_back(makeBatch(0, 200));
 
   const auto filePath = tempFilePath("partitioned");
-  auto config = indexConfig();
-  config.maxPartitionSizeBytes = 64;
-  writeFile(filePath, batches, std::move(config));
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}
+          .withKeyColumns(columns())
+          .withBloomFilter(10)
+          .withMaxPartitionSizeBytes(64)
+          .build());
 
   auto tablet = openTablet(filePath);
   auto* hashIndex = tablet->denseIndex(columns());
@@ -418,9 +434,15 @@ TEST_P(HashIndexParamTest, partitionedMultipleBatches) {
   }
 
   const auto filePath = tempFilePath("partitioned_multi_batch");
-  auto config = indexConfig();
-  config.maxPartitionSizeBytes = 128;
-  writeFile(filePath, batches, std::move(config), /*flushSize=*/256);
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}
+          .withKeyColumns(columns())
+          .withBloomFilter(10)
+          .withMaxPartitionSizeBytes(128)
+          .build(),
+      /*flushSize=*/256);
 
   auto tablet = openTablet(filePath);
   auto* hashIndex = tablet->denseIndex(columns());
@@ -470,9 +492,9 @@ TEST_F(HashIndexTest, multipleIndices) {
   {
     VeloxWriterOptions options;
     options.denseIndexConfigs.push_back(
-        toIndexConfig(HashIndexConfig{.columns = {"col_a"}}));
+        HashIndexConfigBuilder{}.withKeyColumns({"col_a"}).build());
     options.denseIndexConfigs.push_back(
-        toIndexConfig(HashIndexConfig{.columns = {"col_b", "col_c"}}));
+        HashIndexConfigBuilder{}.withKeyColumns({"col_b", "col_c"}).build());
     writeFile(filePath, colAType, {batch}, std::move(options));
   }
 
@@ -522,7 +544,10 @@ TEST_F(HashIndexTest, indexDataReuseWithSameReader) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("same_reader_reuse");
-  writeFile(filePath, batches, HashIndexConfig{.columns = {"id"}});
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
 
   auto allocator = std::make_shared<velox::memory::MallocAllocator>(
       velox::memory::MemoryAllocator::Options{
@@ -609,7 +634,10 @@ TEST_F(HashIndexTest, indexDataReuseCrossReaders) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("cross_reader_reuse");
-  writeFile(filePath, batches, HashIndexConfig{.columns = {"id"}});
+  writeFile(
+      filePath,
+      batches,
+      HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
 
   auto allocator = std::make_shared<velox::memory::MallocAllocator>(
       velox::memory::MemoryAllocator::Options{

@@ -35,6 +35,8 @@
 
 namespace facebook::nimble::test {
 
+using index::detail::ClusterIndexConfig;
+
 using index::test::ChunkSpec;
 using index::test::ChunkStatsTestHelper;
 using index::test::createChunks;

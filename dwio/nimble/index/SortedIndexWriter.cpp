@@ -15,9 +15,10 @@
  */
 #include "dwio/nimble/index/SortedIndexWriter.h"
 
+#include "dwio/nimble/index/SortedIndexConfig.h"
+
 #include <algorithm>
 #include <limits>
-#include <set>
 
 #include <fmt/ranges.h>
 
@@ -25,29 +26,18 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
-#include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/SortedIndexGenerated.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
 #include "dwio/nimble/velox/StreamData.h"
 #include "flatbuffers/flatbuffers.h"
 
 #include "velox/common/base/BitUtil.h"
-#include "velox/common/base/Nulls.h"
 
 namespace facebook::nimble::index {
 
 namespace {
-
-std::vector<std::vector<std::string>> extractColumnSets(
-    const std::vector<SortedIndexConfig>& configs) {
-  std::vector<std::vector<std::string>> columnSets;
-  columnSets.reserve(configs.size());
-  for (const auto& config : configs) {
-    columnSets.emplace_back(config.columns);
-  }
-  return columnSets;
-}
-
 std::unique_ptr<EncodingSelectionPolicy<std::string_view>> createEncodingPolicy(
     const EncodingLayout& layout) {
   return std::make_unique<ReplayedEncodingSelectionPolicy<std::string_view>>(
@@ -72,6 +62,16 @@ uint8_t SortedIndexWriter::rowIdWidth(uint32_t numRows) {
     return 3;
   }
   return 4;
+}
+
+std::vector<std::vector<std::string>> SortedIndexWriter::extractColumnSets(
+    const std::vector<Options>& options) {
+  std::vector<std::vector<std::string>> columnSets;
+  columnSets.reserve(options.size());
+  for (const auto& option : options) {
+    columnSets.emplace_back(option.columns);
+  }
+  return columnSets;
 }
 
 void SortedIndexWriter::IndexAccumulator::sort() {
@@ -118,51 +118,77 @@ SortedIndexWriter::CompositeEntries SortedIndexWriter::buildCompositeEntries(
   return result;
 }
 
+SortedIndexWriter::Options SortedIndexWriter::makeOptions(
+    const IndexConfig& config) {
+  const auto& sortedIndexConfig = checkedIndexConfig<SortedIndexConfig>(config);
+  auto options = Options{
+      .columns = sortedIndexConfig.columns,
+      .encodingLayout = sortedIndexConfig.encodingLayout,
+      .maxRowsPerKeyChunk = sortedIndexConfig.maxRowsPerKeyChunk,
+  };
+  validateKeyStreamEncodingLayout(options.encodingLayout);
+  NIMBLE_USER_CHECK(
+      !options.columns.empty(), "Sorted index must have at least one column");
+  return options;
+}
+
 std::unique_ptr<SortedIndexWriter> SortedIndexWriter::create(
-    const std::vector<SortedIndexConfig>& configs,
+    std::span<const IndexConfig*> configs,
     const velox::TypePtr& inputType,
     velox::memory::MemoryPool* pool) {
   if (configs.empty()) {
     return nullptr;
   }
   NIMBLE_CHECK_NOT_NULL(pool, "memory pool must not be null");
-  return std::unique_ptr<SortedIndexWriter>(
-      new SortedIndexWriter(configs, velox::asRowType(inputType), pool));
+  NIMBLE_CHECK_NOT_NULL(configs.front());
+  const auto indexName = configs.front()->name;
+  NIMBLE_USER_CHECK_EQ(
+      indexName,
+      kDenseSortedIndexName,
+      "Sorted index writer must use the built-in sorted index name");
+  std::vector<Options> options;
+  options.reserve(configs.size());
+  for (const auto* config : configs) {
+    NIMBLE_CHECK_NOT_NULL(config);
+    NIMBLE_USER_CHECK_EQ(config->family, IndexFamily::Dense);
+    NIMBLE_USER_CHECK_EQ(config->name, indexName);
+    options.emplace_back(makeOptions(*config));
+  }
+  return std::unique_ptr<SortedIndexWriter>(new SortedIndexWriter(
+      indexName, velox::asRowType(inputType), std::move(options), pool));
 }
 
 SortedIndexWriter::SortedIndexWriter(
-    const std::vector<SortedIndexConfig>& configs,
+    std::string indexName,
     const velox::RowTypePtr& inputType,
+    std::vector<Options> options,
     velox::memory::MemoryPool* pool)
-    : pool_{pool},
+    : indexName_{std::move(indexName)},
+      pool_{pool},
       keyColumnIndices_{
-          getKeyColumnIndices(extractColumnSets(configs), inputType)} {
-  NIMBLE_CHECK(!configs.empty(), "Sorted index configs must not be empty");
-  accumulators_.reserve(configs.size());
-  for (const auto& config : configs) {
-    NIMBLE_CHECK(
-        !config.columns.empty(), "Sorted index must have at least one column");
-    NIMBLE_CHECK_EQ(
-        config.indexName,
-        kDenseSortedIndexName,
-        "Unsupported sorted index implementation: {}",
-        config.indexName);
-    for (size_t i = 0; i < accumulators_.size(); ++i) {
-      NIMBLE_CHECK(
-          accumulators_[i].config.columns != config.columns,
+          getKeyColumnIndices(extractColumnSets(options), inputType)} {
+  NIMBLE_CHECK(!options.empty(), "Sorted index configs must not be empty");
+  accumulators_.reserve(options.size());
+  for (auto& option : options) {
+    NIMBLE_USER_CHECK(
+        !option.columns.empty(), "Sorted index must have at least one column");
+    for (const auto& accumulator : accumulators_) {
+      NIMBLE_USER_CHECK(
+          accumulator.options.columns != option.columns,
           "Duplicate sorted index columns: [{}]",
-          fmt::join(config.columns, ", "));
+          fmt::join(option.columns, ", "));
     }
     accumulators_.emplace_back(
         IndexAccumulator{
-            .config = config,
-            .encoder = createNimbleIndexKeyEncoder(
-                config.columns,
-                inputType,
-                std::vector<SortOrder>(
-                    config.columns.size(), SortOrder{.ascending = true}),
-                pool),
+            .options = std::move(option),
         });
+    auto& accumulator = accumulators_.back();
+    accumulator.encoder = createNimbleIndexKeyEncoder(
+        accumulator.options.columns,
+        inputType,
+        std::vector<SortOrder>(
+            accumulator.options.columns.size(), SortOrder{.ascending = true}),
+        pool);
   }
 }
 
@@ -187,6 +213,7 @@ void SortedIndexWriter::write(const velox::VectorPtr& input) {
     accumulator.encoder->encode(input, keys, [&accumulator](size_t size) {
       return accumulator.encodingBuffer->reserve(size);
     });
+    NIMBLE_CHECK_EQ(keys.size(), input->size());
 
     const auto newSize = accumulator.entries.size() + input->size();
     if (accumulator.entries.capacity() < newSize) {
@@ -214,8 +241,8 @@ void SortedIndexWriter::buildIndex(
   accumulator.clear();
 
   // Chunk and encode following ClusterIndexWriter pattern.
-  const uint64_t maxRows = accumulator.config.maxRowsPerKeyChunk > 0
-      ? accumulator.config.maxRowsPerKeyChunk
+  const uint64_t maxRows = accumulator.options.maxRowsPerKeyChunk > 0
+      ? accumulator.options.maxRowsPerKeyChunk
       : composite.entries.size();
 
   const auto numChunks = static_cast<uint32_t>(
@@ -240,7 +267,7 @@ void SortedIndexWriter::buildIndex(
 
     // Encode chunk using EncodingFactory (Prefix or Trivial).
     const auto encoded = EncodingFactory::encode<std::string_view>(
-        createEncodingPolicy(accumulator.config.encodingLayout),
+        createEncodingPolicy(accumulator.options.encodingLayout),
         span,
         encodingBuffer);
     NIMBLE_CHECK(!encoded.empty());
@@ -311,8 +338,8 @@ void SortedIndexWriter::buildDirectoryFlatBuffer(
 
   for (size_t i = 0; i < accumulators_.size(); ++i) {
     std::vector<flatbuffers::Offset<flatbuffers::String>> columnOffsets;
-    columnOffsets.reserve(accumulators_[i].config.columns.size());
-    for (const auto& col : accumulators_[i].config.columns) {
+    columnOffsets.reserve(accumulators_[i].options.columns.size());
+    for (const auto& col : accumulators_[i].options.columns) {
       columnOffsets.emplace_back(builder.CreateString(col));
     }
     auto columnsVec = builder.CreateVector(columnOffsets);
@@ -355,7 +382,7 @@ std::optional<IndexDescriptor> SortedIndexWriter::close(
   buildDirectoryFlatBuffer(directoryBuilder, indexSections);
   return IndexDescriptor{
       .family = IndexFamily::Dense,
-      .name = std::string{kDenseSortedIndexName},
+      .name = indexName_,
       .root = createMetadataFn(asStringView(directoryBuilder))};
 }
 

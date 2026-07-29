@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <span>
+
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/IndexWriter.h"
@@ -46,9 +48,11 @@ class DenseIndexFactory {
 
   virtual std::string_view name() const = 0;
 
-  /// Creates a non-null writer for one index configuration.
+  /// Creates a non-null writer for one or more index configurations. The
+  /// implementation must consume or copy configs during this call and must
+  /// not retain the span storage.
   virtual std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig& config,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const = 0;
 

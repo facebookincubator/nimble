@@ -17,11 +17,11 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexKeyEncoder.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -34,6 +34,8 @@ struct BloomFilter;
 } // namespace facebook::nimble::serialization
 
 namespace facebook::nimble::index {
+
+class IndexConfig;
 
 namespace test {
 class HashIndexWriterTestHelper;
@@ -83,7 +85,7 @@ class HashIndexWriter : public IndexWriter {
   /// @param inputType Schema of the input data.
   /// @param pool Memory pool for allocations.
   static std::unique_ptr<HashIndexWriter> create(
-      const std::vector<HashIndexConfig>& configs,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool);
 
@@ -102,9 +104,21 @@ class HashIndexWriter : public IndexWriter {
       const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
+  struct Options {
+    std::vector<std::string> columns;
+    float loadFactor;
+    std::optional<float> bloomFilterBitsPerKey;
+    uint64_t maxPartitionSizeBytes;
+  };
+
+  static Options makeOptions(const IndexConfig& config);
+  static std::vector<std::vector<std::string>> extractColumnSets(
+      const std::vector<Options>& options);
+
   HashIndexWriter(
-      const std::vector<HashIndexConfig>& configs,
+      std::string indexName,
       const velox::RowTypePtr& inputType,
+      std::vector<Options> options,
       velox::memory::MemoryPool* pool);
 
   // An indexed key and its file row.
@@ -117,7 +131,7 @@ class HashIndexWriter : public IndexWriter {
 
   // Per-index accumulator that collects keys and builds the hash table.
   struct IndexAccumulator {
-    HashIndexConfig config;
+    Options options;
     std::unique_ptr<IndexKeyEncoder> encoder;
     // Accumulated index entries with encoded keys pointing into
     // encodingBuffer_.
@@ -176,6 +190,7 @@ class HashIndexWriter : public IndexWriter {
     }
   }
 
+  const std::string indexName_;
   velox::memory::MemoryPool* const pool_;
   // Deduplicated key column indices across all hash indices for null
   // validation.

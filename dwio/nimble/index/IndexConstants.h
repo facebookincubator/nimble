@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace facebook::nimble {
 
@@ -25,3 +26,12 @@ namespace facebook::nimble {
 constexpr uint32_t kKeyStreamId = UINT32_MAX;
 
 } // namespace facebook::nimble
+
+namespace facebook::nimble::index {
+
+inline constexpr std::string_view kClusterIndexName{"nimble.cluster.v1"};
+inline constexpr std::string_view kDenseHashIndexName{"nimble.dense.hash.v1"};
+inline constexpr std::string_view kDenseSortedIndexName{
+    "nimble.dense.sorted.v1"};
+
+} // namespace facebook::nimble::index

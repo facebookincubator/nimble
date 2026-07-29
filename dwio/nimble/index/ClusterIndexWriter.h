@@ -17,10 +17,13 @@
 
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
-#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexWriter.h"
 #include "dwio/nimble/index/SortOrder.h"
 #include "dwio/nimble/tablet/Chunk.h"
@@ -30,6 +33,8 @@
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::nimble::index {
+
+class IndexConfig;
 
 /// ClusterIndexWriter builds a cluster index for sorted data during file write.
 ///
@@ -56,14 +61,12 @@ class ClusterIndexWriter : public IndexWriter {
  public:
   /// Factory method to create a ClusterIndexWriter instance.
   ///
-  /// @param config Optional index configuration. If not present, returns
-  ///               nullptr (no indexing).
+  /// @param config Index configuration.
   /// @param inputType Type of input data containing the index columns.
   /// @param pool Memory pool for allocations.
-  /// @return Unique pointer to ClusterIndexWriter, or nullptr if config is not
-  ///         present.
+  /// @return Unique pointer to ClusterIndexWriter.
   static std::unique_ptr<ClusterIndexWriter> create(
-      const std::optional<ClusterIndexConfig>& config,
+      const IndexConfig& config,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool);
 
@@ -90,9 +93,22 @@ class ClusterIndexWriter : public IndexWriter {
       const CreateMetadataSectionFn& createMetadataFn) override;
 
  private:
+  struct Options {
+    std::string indexName;
+    std::vector<std::string> columns;
+    std::vector<SortOrder> sortOrders;
+    EncodingLayout encodingLayout;
+    bool enforceKeyOrder;
+    bool noDuplicateKey;
+    uint64_t maxRowsPerKeyChunk;
+    CompressionType keyChunkCompressionType;
+  };
+
+  static Options makeOptions(const IndexConfig& config);
+
   ClusterIndexWriter(
-      const ClusterIndexConfig& config,
       const velox::RowTypePtr& inputType,
+      Options options,
       velox::memory::MemoryPool* pool);
 
   // Chunk in a key stream with key boundaries.
@@ -167,6 +183,7 @@ class ClusterIndexWriter : public IndexWriter {
     std::vector<uint32_t> partitionRowCounts;
   };
 
+  const std::string indexName_;
   velox::memory::MemoryPool* const pool_;
   const std::vector<std::string> columns_;
   const std::vector<SortOrder> sortOrders_;

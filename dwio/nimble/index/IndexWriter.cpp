@@ -48,6 +48,16 @@ void IndexWriter::validateNoNullKeys(
 }
 
 // static
+void IndexWriter::validateKeyStreamEncodingLayout(
+    const EncodingLayout& layout) {
+  NIMBLE_USER_CHECK(
+      layout.encodingType() == EncodingType::Prefix ||
+          layout.encodingType() == EncodingType::Trivial,
+      "Index key stream only supports Prefix or Trivial encoding, but got: {}",
+      layout.encodingType());
+}
+
+// static
 std::vector<velox::column_index_t> IndexWriter::getKeyColumnIndices(
     const std::vector<std::vector<std::string>>& columnSets,
     const velox::RowTypePtr& inputType) {

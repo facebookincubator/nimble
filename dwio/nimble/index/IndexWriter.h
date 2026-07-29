@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexKeyEncoder.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
@@ -69,6 +70,9 @@ class IndexWriter {
   static void validateNoNullKeys(
       const velox::VectorPtr& input,
       const std::vector<velox::column_index_t>& keyColumnIndices);
+
+  // Validates that the encoding is supported by index key streams.
+  static void validateKeyStreamEncodingLayout(const EncodingLayout& layout);
 
   // Returns deduplicated key column indices across multiple column sets.
   static std::vector<velox::column_index_t> getKeyColumnIndices(

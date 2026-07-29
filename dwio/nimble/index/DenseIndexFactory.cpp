@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/HashIndex.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFactoryRegistry.h"
 #include "dwio/nimble/index/SortedIndex.h"
 #include "dwio/nimble/index/SortedIndexWriter.h"
@@ -154,13 +155,15 @@ class HashIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig& config,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const override {
-    NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Dense);
-    NIMBLE_USER_CHECK_EQ(config.name, name());
-    return HashIndexWriter::create(
-        {toHashIndexConfig(config)}, inputType, pool);
+    for (const auto* config : configs) {
+      NIMBLE_CHECK_NOT_NULL(config);
+      NIMBLE_USER_CHECK_EQ(config->family, IndexFamily::Dense);
+      NIMBLE_USER_CHECK_EQ(config->name, name());
+    }
+    return HashIndexWriter::create(configs, inputType, pool);
   }
 
   std::unique_ptr<DenseIndexReader> createReader(
@@ -190,13 +193,15 @@ class SortedIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig& config,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const override {
-    NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Dense);
-    NIMBLE_USER_CHECK_EQ(config.name, name());
-    return SortedIndexWriter::create(
-        {toSortedIndexConfig(config)}, inputType, pool);
+    for (const auto* config : configs) {
+      NIMBLE_CHECK_NOT_NULL(config);
+      NIMBLE_USER_CHECK_EQ(config->family, IndexFamily::Dense);
+      NIMBLE_USER_CHECK_EQ(config->name, name());
+    }
+    return SortedIndexWriter::create(configs, inputType, pool);
   }
 
   std::unique_ptr<DenseIndexReader> createReader(
