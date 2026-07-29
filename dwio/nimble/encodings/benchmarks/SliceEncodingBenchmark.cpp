@@ -17,6 +17,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -165,6 +166,12 @@ SLICE_BENCHMARKS(
     uint32_t,
     EncodingType::RLE,
     makeRunLength<uint32_t>());
+SLICE_BENCHMARKS(
+    DictionaryUint32,
+    DictionaryEncoding<uint32_t>,
+    uint32_t,
+    EncodingType::Dictionary,
+    makeLowCardinality<uint32_t>(1024));
 SLICE_BENCHMARKS(
     FixedBitWidthUint32,
     FixedBitWidthEncoding<uint32_t>,
