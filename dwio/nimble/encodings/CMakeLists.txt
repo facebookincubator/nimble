@@ -14,6 +14,7 @@
 add_subdirectory(benchmarks)
 add_subdirectory(tests)
 add_subdirectory(legacy)
+add_subdirectory(selection/tests)
 
 add_library(
   nimble_encodings

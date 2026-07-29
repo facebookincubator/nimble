@@ -71,6 +71,7 @@ target_link_libraries(
   nimble_common
   nimble_encodings
   nimble_encodings_tests_utils
+  nimble_random_encoding_selection_policy
   nimble_index_test_utils
   velox_key_encoder
   velox_vector
