@@ -3620,11 +3620,11 @@ TEST_F(ProjectorTest, projectedComplexNullFuzzerPreservesNulls) {
           {
               .vectorSize = kRowsPerBatch,
               .nullRatio = 0,
+              .useRandomNullPattern = true,
               .stringLength = 12,
               .stringVariableLength = true,
               .containerLength = 3,
               .containerVariableLength = true,
-              .useRandomNullPattern = true,
               .normalizeMapKeys = true,
           },
           pool_.get(),
