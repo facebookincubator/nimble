@@ -158,16 +158,16 @@ ClusterIndexTestBase::IndexBuffers ClusterIndexTestBase::createTestClusterIndex(
     const uint32_t numStreams = streamChunkCounts.size() / groupStripeCount;
 
     // Build standalone StripeChunkStats flatbuffer
-    auto stripeChunkIndex = serialization::CreateStripeChunkStats(
+    auto stripeChunkStats = serialization::CreateStripeChunkStats(
         chunkBuilder,
         numStreams,
         chunkBuilder.CreateVector(streamChunkCounts),
         chunkBuilder.CreateVector(streamChunkRows),
         chunkBuilder.CreateVector(streamChunkOffsets));
-    chunkBuilder.Finish(stripeChunkIndex);
+    chunkBuilder.Finish(stripeChunkStats);
 
-    result.chunkIndexGroupSizes.push_back(chunkBuilder.GetSize());
-    result.chunkIndexGroups.append(
+    result.chunkStatsGroupSizes.push_back(chunkBuilder.GetSize());
+    result.chunkStatsGroups.append(
         reinterpret_cast<const char*>(chunkBuilder.GetBufferPointer()),
         chunkBuilder.GetSize());
   }
@@ -299,16 +299,16 @@ ClusterIndexTestBase::createChunkOnlyTestClusterIndex(
 
     const uint32_t numStreams = streamChunkCounts.size() / groupStripeCount;
 
-    auto stripeChunkIndex = serialization::CreateStripeChunkStats(
+    auto stripeChunkStats = serialization::CreateStripeChunkStats(
         chunkBuilder,
         numStreams,
         chunkBuilder.CreateVector(streamChunkCounts),
         chunkBuilder.CreateVector(streamChunkRows),
         chunkBuilder.CreateVector(streamChunkOffsets));
-    chunkBuilder.Finish(stripeChunkIndex);
+    chunkBuilder.Finish(stripeChunkStats);
 
-    result.chunkIndexGroupSizes.push_back(chunkBuilder.GetSize());
-    result.chunkIndexGroups.append(
+    result.chunkStatsGroupSizes.push_back(chunkBuilder.GetSize());
+    result.chunkStatsGroups.append(
         reinterpret_cast<const char*>(chunkBuilder.GetBufferPointer()),
         chunkBuilder.GetSize());
 
@@ -378,7 +378,7 @@ std::unique_ptr<ClusterIndex> ClusterIndexTestBase::createClusterIndex(
       std::move(dataInput));
 }
 
-std::shared_ptr<ChunkStatsGroup> ClusterIndexTestBase::createChunkIndex(
+std::shared_ptr<ChunkStatsGroup> ClusterIndexTestBase::createChunkStats(
     const IndexBuffers& indexBuffers,
     uint32_t stripeGroupIndex) {
   // Compute firstStripe and stripeCount from stripeGroupIndices.
@@ -394,24 +394,24 @@ std::shared_ptr<ChunkStatsGroup> ClusterIndexTestBase::createChunkIndex(
   }
 
   // Find the ChunkStatsGroup data for this group using recorded sizes.
-  NIMBLE_CHECK_LT(stripeGroupIndex, indexBuffers.chunkIndexGroupSizes.size());
+  NIMBLE_CHECK_LT(stripeGroupIndex, indexBuffers.chunkStatsGroupSizes.size());
   size_t offset = 0;
   for (uint32_t g = 0; g < stripeGroupIndex; ++g) {
-    offset += indexBuffers.chunkIndexGroupSizes[g];
+    offset += indexBuffers.chunkStatsGroupSizes[g];
   }
 
-  auto chunkIndexBuffer =
+  auto chunkStatsBuffer =
       std::make_unique<MetadataBuffer>(MetadataBuffer::decompress(
           toBufferPtr(
               std::string_view(
-                  indexBuffers.chunkIndexGroups.data() + offset,
-                  indexBuffers.chunkIndexGroupSizes[stripeGroupIndex]),
+                  indexBuffers.chunkStatsGroups.data() + offset,
+                  indexBuffers.chunkStatsGroupSizes[stripeGroupIndex]),
               pool_.get()),
           CompressionType::Uncompressed,
           pool_.get()));
 
   return ChunkStatsGroup::create(
-      firstStripe, stripeCount, std::move(chunkIndexBuffer));
+      firstStripe, stripeCount, std::move(chunkStatsBuffer));
 }
 
 } // namespace facebook::nimble::index::test

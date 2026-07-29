@@ -228,8 +228,8 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
     int streamId) const {
   NIMBLE_CHECK(stripeIdentifier_.has_value());
 
-  const auto& chunkIndex = stripeIdentifier_->chunkIndex();
-  if (chunkIndex == nullptr) {
+  const auto& chunkStats = stripeIdentifier_->chunkStats();
+  if (chunkStats == nullptr) {
     return nullptr;
   }
   // A stream absent from this stripe group (e.g. added by later schema
@@ -242,7 +242,7 @@ std::shared_ptr<index::StreamIndex> StripeStreams::streamIndex(
   }
   const uint32_t streamSize =
       readerBase_->tablet().streamSize(*stripeIdentifier_, streamId);
-  return chunkIndex->createStreamIndex(stripe_, streamId, streamSize);
+  return chunkStats->createStreamIndex(stripe_, streamId, streamSize);
 }
 
 } // namespace facebook::nimble

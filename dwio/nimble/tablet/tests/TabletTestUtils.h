@@ -71,9 +71,9 @@ class TabletReaderTestHelper {
     return cachedStripeGroupCount() == 1 && hasStripeGroupCached(0);
   }
 
-  /// Returns the number of cached chunk index groups.
+  /// Returns the number of cached chunk stats groups.
   size_t cachedChunkStatsGroupCount() const {
-    return tabletReader_->chunkIndexCache_.testingCacheCount();
+    return tabletReader_->chunkStatsCache_.testingCacheCount();
   }
 
   /// Returns statistics for cluster-index reads.
@@ -81,14 +81,14 @@ class TabletReaderTestHelper {
     return tabletReader_->ioOptions_.indexIoStats();
   }
 
-  /// Returns true if the chunk index group at the given index is cached.
+  /// Returns true if the chunk stats group at the given index is cached.
   bool hasChunkStatsGroupCached(uint32_t groupIndex) const {
-    return tabletReader_->chunkIndexCache_.hasCacheEntry(groupIndex);
+    return tabletReader_->chunkStatsCache_.hasCacheEntry(groupIndex);
   }
 
-  /// Returns true if the first chunk index group is cached and it's the only
-  /// one. This is useful for verifying that when the chunk index is covered by
-  /// footer IO, the first chunk index group is pre-populated in the cache
+  /// Returns true if the first chunk stats group is cached and it's the only
+  /// one. This is useful for verifying that when the chunk stats is covered by
+  /// footer IO, the first chunk stats group is pre-populated in the cache
   /// without additional reads.
   bool hasOnlyFirstChunkStatsGroupCached() const {
     return cachedChunkStatsGroupCount() == 1 && hasChunkStatsGroupCached(0);

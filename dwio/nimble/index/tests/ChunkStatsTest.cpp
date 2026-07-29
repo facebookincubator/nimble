@@ -58,8 +58,8 @@ TEST_F(ChunkStatsTest, lookupChunkWithRowId) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   struct {
     uint32_t stripeIndex;
@@ -144,7 +144,7 @@ TEST_F(ChunkStatsTest, lookupChunkWithRowId) {
             testCase.stripeIndex,
             testCase.streamId,
             testCase.rowId));
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     auto result = streamIndex->lookupChunk(testCase.rowId);
@@ -153,17 +153,17 @@ TEST_F(ChunkStatsTest, lookupChunkWithRowId) {
   }
 
   // Row at/after last chunk boundary — throws
-  auto s00 = chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000);
+  auto s00 = chunkStats->createStreamIndex(0, 0, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s00->lookupChunk(750), "beyond the last chunk");
   NIMBLE_ASSERT_THROW(s00->lookupChunk(850), "beyond the last chunk");
 
-  auto s01 = chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000);
+  auto s01 = chunkStats->createStreamIndex(0, 1, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s01->lookupChunk(450), "beyond the last chunk");
 
-  auto s10 = chunkIndex->createStreamIndex(1, 0, /*streamSize=*/1000);
+  auto s10 = chunkStats->createStreamIndex(1, 0, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s10->lookupChunk(550), "beyond the last chunk");
 
-  auto s11 = chunkIndex->createStreamIndex(1, 1, /*streamSize=*/1000);
+  auto s11 = chunkStats->createStreamIndex(1, 1, /*streamSize=*/1000);
   NIMBLE_ASSERT_THROW(s11->lookupChunk(650), "beyond the last chunk");
 }
 
@@ -190,8 +190,8 @@ TEST_F(ChunkStatsTest, lookupChunkPopulatesChunkIndex) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   struct {
     uint32_t streamId;
@@ -218,7 +218,7 @@ TEST_F(ChunkStatsTest, lookupChunkPopulatesChunkIndex) {
 
   for (const auto& tc : testCases) {
     SCOPED_TRACE(fmt::format("streamId {} rowId {}", tc.streamId, tc.rowId));
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         /*stripe=*/0, tc.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     const auto result = streamIndex->lookupChunk(tc.rowId);
@@ -247,12 +247,12 @@ TEST_F(ChunkStatsTest, createStreamIndex) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   // Multi-chunk streams return non-null StreamIndex.
-  EXPECT_NE(chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
-  EXPECT_NE(chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000), nullptr);
+  EXPECT_NE(chunkStats->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
+  EXPECT_NE(chunkStats->createStreamIndex(0, 1, /*streamSize=*/1000), nullptr);
 }
 
 TEST_F(ChunkStatsTest, singleChunkStreamReturnsNullptr) {
@@ -275,15 +275,15 @@ TEST_F(ChunkStatsTest, singleChunkStreamReturnsNullptr) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   // Single-chunk streams return nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 0, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
 
   // Multi-chunk stream returns non-null.
-  auto streamIndex = chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000);
+  auto streamIndex = chunkStats->createStreamIndex(0, 1, /*streamSize=*/1000);
   ASSERT_NE(streamIndex, nullptr);
   EXPECT_EQ(streamIndex->streamId(), 1);
 }
@@ -315,8 +315,8 @@ TEST_F(ChunkStatsTest, streamIndexStreamId) {
 
   auto indexBuffers =
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   struct {
     uint32_t stripeIndex;
@@ -336,7 +336,7 @@ TEST_F(ChunkStatsTest, streamIndexStreamId) {
             "stripeIndex {} streamId {}",
             testCase.stripeIndex,
             testCase.streamId));
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->streamId(), testCase.streamId);
@@ -487,10 +487,10 @@ TEST_F(ChunkStatsTest, streamIndexLookupChunk) {
             testCase.streamId,
             testCase.rowId));
 
-    auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(chunkIndex, nullptr);
+    auto chunkStats = createChunkStats(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(chunkStats, nullptr);
 
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
 
@@ -500,7 +500,7 @@ TEST_F(ChunkStatsTest, streamIndexLookupChunk) {
   }
 
   // Row at/after last chunk boundary — throws
-  auto ci0 = createChunkIndex(indexBuffers, 0);
+  auto ci0 = createChunkStats(indexBuffers, 0);
   NIMBLE_ASSERT_THROW(
       ci0->createStreamIndex(0, 0, /*streamSize=*/1000)->lookupChunk(750),
       "beyond the last chunk");
@@ -514,7 +514,7 @@ TEST_F(ChunkStatsTest, streamIndexLookupChunk) {
       ci0->createStreamIndex(1, 1, /*streamSize=*/1000)->lookupChunk(650),
       "beyond the last chunk");
 
-  auto ci1 = createChunkIndex(indexBuffers, 1);
+  auto ci1 = createChunkStats(indexBuffers, 1);
   NIMBLE_ASSERT_THROW(
       ci1->createStreamIndex(2, 0, /*streamSize=*/1000)->lookupChunk(450),
       "beyond the last chunk");
@@ -576,45 +576,45 @@ TEST_F(ChunkStatsTest, stripeIndexAndStreamIdOutOfBound) {
       createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
 
   // Test Group 0 (stripes 0, 1)
-  auto chunkIndex0 = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex0, nullptr);
+  auto chunkStats0 = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats0, nullptr);
 
   // Test stripe index after group's range
   NIMBLE_ASSERT_THROW(
-      chunkIndex0->createStreamIndex(2, 0, /*streamSize=*/1000),
-      "Stripe offset is out of range for this chunk index group");
+      chunkStats0->createStreamIndex(2, 0, /*streamSize=*/1000),
+      "Stripe offset is out of range for this chunk stats group");
   NIMBLE_ASSERT_THROW(
-      chunkIndex0->createStreamIndex(3, 0, /*streamSize=*/1000),
-      "Stripe offset is out of range for this chunk index group");
+      chunkStats0->createStreamIndex(3, 0, /*streamSize=*/1000),
+      "Stripe offset is out of range for this chunk stats group");
 
   // streamId >= streamCount returns nullptr.
-  EXPECT_EQ(chunkIndex0->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkStats0->createStreamIndex(0, 2, /*streamSize=*/1000), nullptr);
   EXPECT_EQ(
-      chunkIndex0->createStreamIndex(1, 10, /*streamSize=*/1000), nullptr);
+      chunkStats0->createStreamIndex(1, 10, /*streamSize=*/1000), nullptr);
 
   // Test Group 1 (stripes 2, 3)
-  auto chunkIndex1 = createChunkIndex(indexBuffers, 1);
-  ASSERT_NE(chunkIndex1, nullptr);
+  auto chunkStats1 = createChunkStats(indexBuffers, 1);
+  ASSERT_NE(chunkStats1, nullptr);
 
   // Stripe index before group's range (group 1 starts at stripe 2)
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(0, 0, /*streamSize=*/1000),
+      chunkStats1->createStreamIndex(0, 0, /*streamSize=*/1000),
       "Stripe index is before this group's range");
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(1, 0, /*streamSize=*/1000),
+      chunkStats1->createStreamIndex(1, 0, /*streamSize=*/1000),
       "Stripe index is before this group's range");
 
   // Stripe index after group's range (group 1 has stripes 2, 3)
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(4, 0, /*streamSize=*/1000),
-      "Stripe offset is out of range for this chunk index group");
+      chunkStats1->createStreamIndex(4, 0, /*streamSize=*/1000),
+      "Stripe offset is out of range for this chunk stats group");
   NIMBLE_ASSERT_THROW(
-      chunkIndex1->createStreamIndex(5, 0, /*streamSize=*/1000),
-      "Stripe offset is out of range for this chunk index group");
+      chunkStats1->createStreamIndex(5, 0, /*streamSize=*/1000),
+      "Stripe offset is out of range for this chunk stats group");
 
   // streamId >= streamCount returns nullptr.
-  EXPECT_EQ(chunkIndex1->createStreamIndex(2, 2, /*streamSize=*/1000), nullptr);
-  EXPECT_EQ(chunkIndex1->createStreamIndex(3, 5, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkStats1->createStreamIndex(2, 2, /*streamSize=*/1000), nullptr);
+  EXPECT_EQ(chunkStats1->createStreamIndex(3, 5, /*streamSize=*/1000), nullptr);
 }
 
 TEST_F(ChunkStatsTest, streamIndexRowCount) {
@@ -716,10 +716,10 @@ TEST_F(ChunkStatsTest, streamIndexRowCount) {
             testCase.stripeIndex,
             testCase.streamId));
 
-    auto chunkIndex = createChunkIndex(indexBuffers, testCase.groupIndex);
-    ASSERT_NE(chunkIndex, nullptr);
+    auto chunkStats = createChunkStats(indexBuffers, testCase.groupIndex);
+    ASSERT_NE(chunkStats, nullptr);
 
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     EXPECT_EQ(streamIndex->rowCount(), testCase.expectedRowCount);
@@ -744,8 +744,8 @@ TEST_F(ChunkStatsTest, chunkOnlyLookupByRowId) {
   std::vector<int> stripeGroups = {2};
 
   auto indexBuffers = createChunkOnlyTestClusterIndex(stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
   struct {
     uint32_t stripeIndex;
@@ -777,7 +777,7 @@ TEST_F(ChunkStatsTest, chunkOnlyLookupByRowId) {
             testCase.stripeIndex,
             testCase.streamId,
             testCase.rowId));
-    auto streamIndex = chunkIndex->createStreamIndex(
+    auto streamIndex = chunkStats->createStreamIndex(
         testCase.stripeIndex, testCase.streamId, /*streamSize=*/1000);
     ASSERT_NE(streamIndex, nullptr);
     auto result = streamIndex->lookupChunk(testCase.rowId);
@@ -787,15 +787,15 @@ TEST_F(ChunkStatsTest, chunkOnlyLookupByRowId) {
 
   // Row at/after last chunk boundary — throws
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000)
+      chunkStats->createStreamIndex(0, 0, /*streamSize=*/1000)
           ->lookupChunk(750),
       "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(0, 1, /*streamSize=*/1000)
+      chunkStats->createStreamIndex(0, 1, /*streamSize=*/1000)
           ->lookupChunk(450),
       "beyond the last chunk");
   NIMBLE_ASSERT_THROW(
-      chunkIndex->createStreamIndex(1, 0, /*streamSize=*/1000)
+      chunkStats->createStreamIndex(1, 0, /*streamSize=*/1000)
           ->lookupChunk(550),
       "beyond the last chunk");
 }
@@ -813,10 +813,10 @@ TEST_F(ChunkStatsTest, chunkNullCountAbsentReturnsNullopt) {
   std::vector<int> stripeGroups = {1};
 
   auto indexBuffers = createChunkOnlyTestClusterIndex(stripes, stripeGroups);
-  auto chunkIndex = createChunkIndex(indexBuffers, 0);
-  ASSERT_NE(chunkIndex, nullptr);
+  auto chunkStats = createChunkStats(indexBuffers, 0);
+  ASSERT_NE(chunkStats, nullptr);
 
-  auto streamIndex = chunkIndex->createStreamIndex(0, 0, /*streamSize=*/1000);
+  auto streamIndex = chunkStats->createStreamIndex(0, 0, /*streamSize=*/1000);
   ASSERT_NE(streamIndex, nullptr);
   const auto location = streamIndex->lookupChunk(0);
   EXPECT_FALSE(streamIndex->chunkNullCount(location.chunkIndex).has_value());

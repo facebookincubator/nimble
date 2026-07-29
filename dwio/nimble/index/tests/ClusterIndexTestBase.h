@@ -60,9 +60,9 @@ class ClusterIndexTestBase : public ::testing::Test {
     /// sequentially.
     std::string indexPartitions;
     /// Serialized ChunkStats flatbuffers appended sequentially.
-    std::string chunkIndexGroups;
-    /// Size of each ChunkStats flatbuffer in chunkIndexGroups.
-    std::vector<size_t> chunkIndexGroupSizes;
+    std::string chunkStatsGroups;
+    /// Size of each ChunkStats flatbuffer in chunkStatsGroups.
+    std::vector<size_t> chunkStatsGroupSizes;
     /// Serialized root Index flatbuffer.
     std::string rootIndex;
     /// Per-stripe row counts (from test data).
@@ -104,7 +104,7 @@ class ClusterIndexTestBase : public ::testing::Test {
       velox::ReadFile* keyStreamFile = nullptr);
 
   /// Creates a ChunkStatsGroup from the serialized IndexBuffers.
-  std::shared_ptr<ChunkStatsGroup> createChunkIndex(
+  std::shared_ptr<ChunkStatsGroup> createChunkStats(
       const IndexBuffers& indexBuffers,
       uint32_t stripeGroupIndex);
 

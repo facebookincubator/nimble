@@ -69,12 +69,14 @@ struct VeloxWriterOptions {
   /// chunk index is always enabled regardless of this flag.
   /// EXPERIMENTAL: Not production-ready. Do not enable for production tables
   /// without consulting the Nimble team (oncall: dwios).
+  // TODO: keeps the chunkIndex name for now; rename to the chunkStats naming
+  // once per-chunk null/min/max stats are fully rolled out.
   bool enableChunkIndex{false};
 
-  /// Skip writing chunk index for a stripe group if the average number
-  /// of chunks per stream is below this threshold. 0 disables chunk index
+  /// Skip writing chunk stats for a stripe group if the average number
+  /// of chunks per stream is below this threshold. 0 disables chunk stats
   /// skipping.
-  float chunkIndexMinAvgChunks{2};
+  float chunkStatsMinAvgChunks{2};
 
   /// NOTE: !!! This is under experimentation and please do not turn on in
   /// production use case !!!

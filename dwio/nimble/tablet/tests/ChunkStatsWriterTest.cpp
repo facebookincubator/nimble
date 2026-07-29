@@ -66,7 +66,7 @@ class ChunkStatsWriterTest : public ::testing::Test {
   }
 
   // Creates a ChunkStatsGroup reader from a serialized group metadata section.
-  std::shared_ptr<index::ChunkStatsGroup> loadChunkIndex(
+  std::shared_ptr<index::ChunkStatsGroup> loadChunkStats(
       const std::string& groupData,
       uint32_t firstStripe,
       uint32_t stripeCount) {
@@ -100,20 +100,20 @@ TEST_F(ChunkStatsWriterTest, singleStripe) {
   writer.writeGroup(2, 1, createMetadataSectionCallback(fileIndex));
   writer.writeRoot(writeRootCallback(fileIndex));
 
-  // Verify root index (ChunkIndexes flatbuffer).
+  // Verify root index (ChunkStats flatbuffer).
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 1);
   ASSERT_FALSE(fileIndex.rootIndexData.empty());
 
-  auto* rootChunkIndexes = flatbuffers::GetRoot<serialization::ChunkStats>(
+  auto* rootChunkStats = flatbuffers::GetRoot<serialization::ChunkStats>(
       fileIndex.rootIndexData.data());
-  ASSERT_NE(rootChunkIndexes, nullptr);
-  ASSERT_NE(rootChunkIndexes->stripe_indexes(), nullptr);
-  EXPECT_EQ(rootChunkIndexes->stripe_indexes()->size(), 1);
+  ASSERT_NE(rootChunkStats, nullptr);
+  ASSERT_NE(rootChunkStats->stripe_indexes(), nullptr);
+  EXPECT_EQ(rootChunkStats->stripe_indexes()->size(), 1);
 
   // Load as ChunkStatsGroup reader.
-  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+  auto chunkStats = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 1);
 
-  ChunkStatsTestHelper helper(chunkIndex.get());
+  ChunkStatsTestHelper helper(chunkStats.get());
   EXPECT_EQ(helper.firstStripe(), 0);
   EXPECT_EQ(helper.stripeCount(), 1);
   EXPECT_EQ(helper.streamCount(), 2);
@@ -132,7 +132,7 @@ TEST_F(ChunkStatsWriterTest, singleStripe) {
 
   // Lookup via StreamIndex (public API).
   // Stream 0: 3 chunks, sizes {10, 15, 8}, total = 33.
-  auto stream0 = chunkIndex->createStreamIndex(0, 0, 33);
+  auto stream0 = chunkStats->createStreamIndex(0, 0, 33);
   ASSERT_NE(stream0, nullptr);
 
   auto r00 = stream0->lookupChunk(0);
@@ -151,7 +151,7 @@ TEST_F(ChunkStatsWriterTest, singleStripe) {
   EXPECT_EQ(r02.rowOffset, 75);
 
   // Stream 1: 2 chunks, sizes {20, 12}, total = 32.
-  auto stream1 = chunkIndex->createStreamIndex(0, 1, 32);
+  auto stream1 = chunkStats->createStreamIndex(0, 1, 32);
   ASSERT_NE(stream1, nullptr);
 
   auto r10 = stream1->lookupChunk(0);
@@ -182,10 +182,10 @@ TEST_F(ChunkStatsWriterTest, perChunkNullCounts) {
   writer.writeGroup(2, 1, createMetadataSectionCallback(fileIndex));
   writer.writeRoot(writeRootCallback(fileIndex));
 
-  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+  auto chunkStats = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 1);
 
   // Null counts round-trip through the flatbuffer in flattened order.
-  ChunkStatsTestHelper helper(chunkIndex.get());
+  ChunkStatsTestHelper helper(chunkStats.get());
   EXPECT_EQ(
       helper.streamStats(0).chunkNullCounts, (std::vector<uint32_t>{3, 0, 5}));
   EXPECT_EQ(
@@ -193,13 +193,13 @@ TEST_F(ChunkStatsWriterTest, perChunkNullCounts) {
 
   // Public reader accessor: lookupChunk() yields the absolute chunk index,
   // which chunkNullCount() maps to the per-chunk null statistic.
-  auto stream0 = chunkIndex->createStreamIndex(0, 0, 33);
+  auto stream0 = chunkStats->createStreamIndex(0, 0, 33);
   ASSERT_NE(stream0, nullptr);
   EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(0).chunkIndex), 3);
   EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(30).chunkIndex), 0);
   EXPECT_EQ(stream0->chunkNullCount(stream0->lookupChunk(75).chunkIndex), 5);
 
-  auto stream1 = chunkIndex->createStreamIndex(0, 1, 32);
+  auto stream1 = chunkStats->createStreamIndex(0, 1, 32);
   ASSERT_NE(stream1, nullptr);
   EXPECT_EQ(stream1->chunkNullCount(stream1->lookupChunk(60).chunkIndex), 40);
 }
@@ -227,9 +227,9 @@ TEST_F(ChunkStatsWriterTest, multipleStripesInSingleGroup) {
   writer.writeRoot(writeRootCallback(fileIndex));
 
   // Load and verify.
-  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 2);
+  auto chunkStats = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 2);
 
-  ChunkStatsTestHelper helper(chunkIndex.get());
+  ChunkStatsTestHelper helper(chunkStats.get());
   EXPECT_EQ(helper.stripeCount(), 2);
   EXPECT_EQ(helper.streamCount(), 2);
 
@@ -281,15 +281,15 @@ TEST_F(ChunkStatsWriterTest, multipleStripeGroups) {
   // All 3 groups are written (threshold=0, no skipping).
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 3);
 
-  auto* rootChunkIndexes = flatbuffers::GetRoot<serialization::ChunkStats>(
+  auto* rootChunkStats = flatbuffers::GetRoot<serialization::ChunkStats>(
       fileIndex.rootIndexData.data());
-  ASSERT_NE(rootChunkIndexes, nullptr);
-  ASSERT_NE(rootChunkIndexes->stripe_indexes(), nullptr);
-  EXPECT_EQ(rootChunkIndexes->stripe_indexes()->size(), 3);
+  ASSERT_NE(rootChunkStats, nullptr);
+  ASSERT_NE(rootChunkStats->stripe_indexes(), nullptr);
+  EXPECT_EQ(rootChunkStats->stripe_indexes()->size(), 3);
 
   // Verify group 0 (stripe 0).
   {
-    auto ci = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+    auto ci = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 1);
     ChunkStatsTestHelper helper(ci.get());
     EXPECT_EQ(helper.stripeCount(), 1);
     EXPECT_EQ(helper.streamCount(), 1);
@@ -301,7 +301,7 @@ TEST_F(ChunkStatsWriterTest, multipleStripeGroups) {
 
   // Verify group 1 (stripe 1).
   {
-    auto ci = loadChunkIndex(fileIndex.groupMetadataSections[1], 1, 1);
+    auto ci = loadChunkStats(fileIndex.groupMetadataSections[1], 1, 1);
     ChunkStatsTestHelper helper(ci.get());
     EXPECT_EQ(helper.stripeCount(), 1);
     EXPECT_EQ(helper.streamCount(), 1);
@@ -313,7 +313,7 @@ TEST_F(ChunkStatsWriterTest, multipleStripeGroups) {
 
   // Verify group 2 (stripe 2): 1 chunk, createStreamIndex returns nullptr.
   {
-    auto ci = loadChunkIndex(fileIndex.groupMetadataSections[2], 2, 1);
+    auto ci = loadChunkStats(fileIndex.groupMetadataSections[2], 2, 1);
     ChunkStatsTestHelper helper(ci.get());
     EXPECT_EQ(helper.stripeCount(), 1);
     EXPECT_EQ(helper.streamCount(), 1);
@@ -340,9 +340,9 @@ TEST_F(ChunkStatsWriterTest, emptyStream) {
   writer.writeGroup(3, 1, createMetadataSectionCallback(fileIndex));
   writer.writeRoot(writeRootCallback(fileIndex));
 
-  auto chunkIndex = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 1);
+  auto chunkStats = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 1);
 
-  ChunkStatsTestHelper helper(chunkIndex.get());
+  ChunkStatsTestHelper helper(chunkStats.get());
   // All 3 streams are indexed (dense layout).
   EXPECT_EQ(helper.streamCount(), 3);
 
@@ -364,10 +364,10 @@ TEST_F(ChunkStatsWriterTest, emptyStream) {
   EXPECT_EQ(stream2.chunkOffsets, (std::vector<uint32_t>{0}));
 
   // createStreamIndex returns nullptr for streams with ≤1 chunk.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1, 0), nullptr);
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 2, 25), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 1, 0), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 2, 25), nullptr);
   // streamId out of range returns nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 3, 0), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 3, 0), nullptr);
 }
 
 TEST_F(ChunkStatsWriterTest, emptyFileNoStripeGroups) {
@@ -377,7 +377,7 @@ TEST_F(ChunkStatsWriterTest, emptyFileNoStripeGroups) {
   // No stripes written — writeGroup() is never called.
   writer.writeRoot(writeRootCallback(fileIndex));
 
-  // No chunk_index section should be written.
+  // No chunk stats section should be written.
   EXPECT_TRUE(fileIndex.rootIndexData.empty());
 }
 
@@ -450,15 +450,15 @@ TEST_F(ChunkStatsWriterTest, multipleStripesInMultipleGroups) {
 
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 2);
 
-  auto* rootChunkIndexes = flatbuffers::GetRoot<serialization::ChunkStats>(
+  auto* rootChunkStats = flatbuffers::GetRoot<serialization::ChunkStats>(
       fileIndex.rootIndexData.data());
-  ASSERT_NE(rootChunkIndexes, nullptr);
-  ASSERT_NE(rootChunkIndexes->stripe_indexes(), nullptr);
-  EXPECT_EQ(rootChunkIndexes->stripe_indexes()->size(), 2);
+  ASSERT_NE(rootChunkStats, nullptr);
+  ASSERT_NE(rootChunkStats->stripe_indexes(), nullptr);
+  EXPECT_EQ(rootChunkStats->stripe_indexes()->size(), 2);
 
   // Verify group 0 (2 stripes, firstStripe=0).
   {
-    auto ci = loadChunkIndex(fileIndex.groupMetadataSections[0], 0, 2);
+    auto ci = loadChunkStats(fileIndex.groupMetadataSections[0], 0, 2);
     ChunkStatsTestHelper helper(ci.get());
     EXPECT_EQ(helper.stripeCount(), 2);
 
@@ -475,7 +475,7 @@ TEST_F(ChunkStatsWriterTest, multipleStripesInMultipleGroups) {
 
   // Verify group 1 (1 stripe, firstStripe=2).
   {
-    auto ci = loadChunkIndex(fileIndex.groupMetadataSections[1], 2, 1);
+    auto ci = loadChunkStats(fileIndex.groupMetadataSections[1], 2, 1);
     ChunkStatsTestHelper helper(ci.get());
     EXPECT_EQ(helper.stripeCount(), 1);
     EXPECT_EQ(helper.streamCount(), 2);
@@ -533,7 +533,7 @@ TEST_F(ChunkStatsWriterTest, minAvgChunksPerStream) {
       {1.5f, 2, 3, {false, false, true}},
       // threshold=2.0: groups 1 (avg=1.5) and 2 (avg=1.0) are skipped.
       {2.0f, 1, 3, {false, true, true}},
-      // threshold=3.0: all groups skipped — no chunk_index section written.
+      // threshold=3.0: all groups skipped — no chunk stats section written.
       {3.0f, 0, 0, {true, true, true}},
   };
 
@@ -568,23 +568,22 @@ TEST_F(ChunkStatsWriterTest, minAvgChunksPerStream) {
         fileIndex.groupMetadataSections.size(), testData.expectedWrittenGroups);
 
     if (testData.expectedRootEntries == 0) {
-      // All groups were skipped — no chunk_index section written.
+      // All groups were skipped — no chunk stats section written.
       EXPECT_TRUE(fileIndex.rootIndexData.empty());
       continue;
     }
 
     ASSERT_FALSE(fileIndex.rootIndexData.empty());
 
-    auto* rootChunkIndexes = flatbuffers::GetRoot<serialization::ChunkStats>(
+    auto* rootChunkStats = flatbuffers::GetRoot<serialization::ChunkStats>(
         fileIndex.rootIndexData.data());
-    ASSERT_NE(rootChunkIndexes, nullptr);
-    ASSERT_NE(rootChunkIndexes->stripe_indexes(), nullptr);
+    ASSERT_NE(rootChunkStats, nullptr);
+    ASSERT_NE(rootChunkStats->stripe_indexes(), nullptr);
     EXPECT_EQ(
-        rootChunkIndexes->stripe_indexes()->size(),
-        testData.expectedRootEntries);
+        rootChunkStats->stripe_indexes()->size(), testData.expectedRootEntries);
 
     for (uint32_t i = 0; i < testData.expectedRootEntries; ++i) {
-      auto* entry = rootChunkIndexes->stripe_indexes()->Get(i);
+      auto* entry = rootChunkStats->stripe_indexes()->Get(i);
       if (testData.expectedSkipped[i]) {
         EXPECT_EQ(entry->size(), 0) << "Group " << i << " should be skipped";
       } else {
@@ -650,12 +649,12 @@ TEST_F(ChunkStatsWriterTest, uncompressedSizeRoundtrip) {
       MetadataBuffer::decompress(
           std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
 
-  auto chunkIndex = index::ChunkStats::create(std::move(rootSection));
-  ASSERT_NE(chunkIndex, nullptr);
-  ASSERT_EQ(chunkIndex->numGroups(), 2);
+  auto chunkStats = index::ChunkStats::create(std::move(rootSection));
+  ASSERT_NE(chunkStats, nullptr);
+  ASSERT_EQ(chunkStats->numGroups(), 2);
 
   for (uint32_t i = 0; i < 2; ++i) {
-    const auto& section = chunkIndex->groupMetadata(i);
+    const auto& section = chunkStats->groupMetadata(i);
     EXPECT_EQ(section.compressionType(), CompressionType::Zstd)
         << "Group " << i;
     EXPECT_TRUE(section.uncompressedSize().has_value()) << "Group " << i;
@@ -698,16 +697,16 @@ TEST_F(ChunkStatsWriterTest, missingUncompressedSizeBackwardCompat) {
       MetadataBuffer::decompress(
           std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
 
-  auto chunkIndex = index::ChunkStats::create(std::move(rootSection));
-  ASSERT_NE(chunkIndex, nullptr);
-  ASSERT_EQ(chunkIndex->numGroups(), 2);
+  auto chunkStats = index::ChunkStats::create(std::move(rootSection));
+  ASSERT_NE(chunkStats, nullptr);
+  ASSERT_EQ(chunkStats->numGroups(), 2);
 
-  const auto& zstdSection = chunkIndex->groupMetadata(0);
+  const auto& zstdSection = chunkStats->groupMetadata(0);
   EXPECT_EQ(zstdSection.compressionType(), CompressionType::Zstd);
   EXPECT_FALSE(zstdSection.uncompressedSize().has_value());
   EXPECT_EQ(zstdSection.size(), 200);
 
-  const auto& uncompressedSection = chunkIndex->groupMetadata(1);
+  const auto& uncompressedSection = chunkStats->groupMetadata(1);
   EXPECT_EQ(
       uncompressedSection.compressionType(), CompressionType::Uncompressed);
   EXPECT_FALSE(uncompressedSection.uncompressedSize().has_value());
@@ -752,11 +751,11 @@ TEST_F(ChunkStatsWriterTest, uncompressedSizeForUncompressedSections) {
       MetadataBuffer::decompress(
           std::move(rootBuffer), CompressionType::Uncompressed, pool_.get()))};
 
-  auto chunkIndex = index::ChunkStats::create(std::move(rootSection));
-  ASSERT_NE(chunkIndex, nullptr);
-  ASSERT_EQ(chunkIndex->numGroups(), 1);
+  auto chunkStats = index::ChunkStats::create(std::move(rootSection));
+  ASSERT_NE(chunkStats, nullptr);
+  ASSERT_EQ(chunkStats->numGroups(), 1);
 
-  const auto& section = chunkIndex->groupMetadata(0);
+  const auto& section = chunkStats->groupMetadata(0);
   EXPECT_EQ(section.compressionType(), CompressionType::Uncompressed);
   EXPECT_TRUE(section.uncompressedSize().has_value());
   EXPECT_EQ(section.uncompressedSize().value(), section.size());

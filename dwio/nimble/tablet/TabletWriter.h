@@ -50,14 +50,14 @@ constexpr uint32_t kMetadataCompressionThreshold = 64 * 1024; // 64kB
 /// Writes a new nimble file.
 class TabletWriter {
  public:
-  /// Called AFTER stripe group and chunk index metadata are written.
+  /// Called AFTER stripe group and chunk stats metadata are written.
   /// Writes partition data (key stream + metadata) aligned with stripe groups.
   using StripeGroupFlushCallback = std::function<void(
       const WriteDataFn& writeDataFn,
       const CreateMetadataSectionFn& createMetadataFn)>;
 
   /// Called during close() after all stripe groups have been flushed,
-  /// before the chunk index root and footer are written. Used by index
+  /// before the chunk stats root and footer are written. Used by index
   /// writers to finalize and write the root index as an optional section.
   using CloseCallback = std::function<void(
       const WriteDataFn& writeDataFn,
@@ -73,10 +73,10 @@ class TabletWriter {
     // When true, chunk-level position index is built for all streams,
     // enabling O(1) chunk-level seeking within stripes.
     bool enableChunkIndex{false};
-    // Skip writing chunk index for a stripe group if the average number
-    // of chunks per stream is below this threshold. 0 disables chunk index
+    // Skip writing chunk stats for a stripe group if the average number
+    // of chunks per stream is below this threshold. 0 disables chunk stats
     // skipping.
-    float chunkIndexMinAvgChunks{2};
+    float chunkStatsMinAvgChunks{2};
     // Selects how per-stripe-group stream offsets/sizes are serialized (default
     // kRaw); see StripeGroup::EncodingLayout.
     StripeGroup::EncodingLayout stripeGroupEncodingLayout{
@@ -156,8 +156,8 @@ class TabletWriter {
       velox::memory::MemoryPool& pool,
       Options options);
 
-  bool hasChunkIndex() const {
-    return chunkIndexWriter_ != nullptr;
+  bool hasChunkStats() const {
+    return chunkStatsWriter_ != nullptr;
   }
 
   // Checks that writer is not closed and throws if it is.
@@ -203,26 +203,26 @@ class TabletWriter {
 
   void writeStreamWithChecksum(const Stream& stream);
 
-  // Starts chunk index writing for a new stripe.
+  // Starts chunk stats writing for a new stripe.
   void finishStripeChunkStats(size_t streamCount);
 
   // Adds chunk-level index data for a stream.
-  void addStreamChunkIndex(
+  void addStreamChunkStats(
       uint32_t streamIndex,
       const std::vector<Chunk>& chunks);
 
-  // Writes the chunk index group for a completed stripe group.
+  // Writes the chunk stats group for a completed stripe group.
   void writeChunkStatsGroup(size_t streamCount, size_t stripeCount);
 
-  // Writes the chunk index root.
-  void writeChunkIndexRoot();
+  // Writes the chunk stats root.
+  void writeChunkStatsRoot();
 
   velox::WriteFile* const file_;
   velox::memory::MemoryPool* const pool_;
   const Options options_;
   const std::unique_ptr<Checksum> checksum_;
   // Chunk-level position index.
-  const std::unique_ptr<ChunkStatsWriter> chunkIndexWriter_;
+  const std::unique_ptr<ChunkStatsWriter> chunkStatsWriter_;
 
   // Number of rows in each stripe.
   std::vector<uint32_t> stripeRowCounts_;
