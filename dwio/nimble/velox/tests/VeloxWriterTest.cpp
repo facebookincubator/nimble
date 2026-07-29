@@ -2738,6 +2738,7 @@ TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
       *rootPool_,
       {
           .enableChunkIndex = true,
+          .enableChunkStats = true,
           // Never skip the stripe group, so the section is always written.
           .chunkStatsMinAvgChunks = 0,
           .minStreamChunkRawSize = 0,
@@ -2806,6 +2807,98 @@ TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
   EXPECT_TRUE(sawNonZeroChunk)
       << "per-chunk null counts for the struct null stream must be non-zero";
   EXPECT_EQ(6, totalChunkNullCount);
+}
+
+// enableChunkIndex on, enableChunkStats off: positional index is written but
+// null counts are omitted (reader sees them absent, not zero).
+TEST_F(VeloxWriterTest, chunkNullCountsAbsentWithoutChunkStats) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  auto nullsVector =
+      vectorMaker.rowVector({"c1"}, {vectorMaker.flatVector<int32_t>({})});
+  nullsVector->appendNulls(5);
+  auto someNullsVector = vectorMaker.rowVector(
+      {"c1"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})});
+  someNullsVector->setNull(1, /*isNull=*/true);
+
+  const auto& type = nullsVector->type();
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  bool flushDecision = false;
+  nimble::VeloxWriter writer(
+      type,
+      std::move(writeFile),
+      *rootPool_,
+      {
+          .enableChunkIndex = true,
+          .chunkStatsMinAvgChunks = 0,
+          .minStreamChunkRawSize = 0,
+          .flushPolicyFactory =
+              [&]() {
+                return std::make_unique<nimble::LambdaFlushPolicy>(
+                    /*flushLambda=*/[&](auto&) { return false; },
+                    /*chunkLambda=*/[&](auto&) { return flushDecision; });
+              },
+          .enableChunking = true,
+      });
+
+  flushDecision = true;
+  writer.write(nullsVector);
+  writer.write(someNullsVector);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  ASSERT_EQ(1, tablet->stripeCount());
+
+  auto stripeIdentifier = tablet->stripeIdentifier(0);
+  auto chunkStats = stripeIdentifier.chunkStats();
+  ASSERT_NE(chunkStats, nullptr)
+      << "positional chunk index section should still be written when "
+         "enableChunkIndex is set, even with chunk stats disabled";
+
+  const uint32_t streamCount = tablet->streamCount(stripeIdentifier);
+  bool sawIndexedStream = false;
+  for (uint32_t streamId = 0; streamId < streamCount; ++streamId) {
+    auto streamIndex = chunkStats->createStreamIndex(
+        0, streamId, tablet->streamSize(stripeIdentifier, streamId));
+    if (streamIndex == nullptr) {
+      continue; // single-chunk (<=1) streams are not indexed
+    }
+    const uint32_t rows = streamIndex->rowCount();
+    if (rows == 0) {
+      continue;
+    }
+    sawIndexedStream = true;
+    const uint32_t firstChunk = streamIndex->lookupChunk(0).chunkIndex;
+    const uint32_t lastChunk = streamIndex->lookupChunk(rows - 1).chunkIndex;
+    EXPECT_LE(firstChunk, lastChunk);
+    for (uint32_t ci = firstChunk; ci <= lastChunk; ++ci) {
+      EXPECT_FALSE(streamIndex->chunkNullCount(ci).has_value())
+          << "chunk " << ci << " of stream " << streamId
+          << " must report null count as absent when chunk stats are disabled";
+    }
+  }
+  EXPECT_TRUE(sawIndexedStream)
+      << "expected an indexed (multi-chunk) null stream";
+}
+
+// enableChunkStats without enableChunkIndex must fail loudly at construction.
+TEST_F(VeloxWriterTest, chunkStatsRequiresChunkIndex) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {"c1"}, {vectorMaker.flatVector<int64_t>({1, 2, 3})});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  EXPECT_ANY_THROW(
+      nimble::VeloxWriter(
+          vector->type(),
+          std::move(writeFile),
+          *rootPool_,
+          {.enableChunkStats = true}));
 }
 
 TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsNoChunks) {

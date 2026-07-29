@@ -73,6 +73,9 @@ class TabletWriter {
     // When true, chunk-level position index is built for all streams,
     // enabling O(1) chunk-level seeking within stripes.
     bool enableChunkIndex{false};
+    // Write per-chunk value statistics (null counts); requires
+    // enableChunkIndex.
+    bool enableChunkStats{false};
     // Skip writing chunk stats for a stripe group if the average number
     // of chunks per stream is below this threshold. 0 disables chunk stats
     // skipping.

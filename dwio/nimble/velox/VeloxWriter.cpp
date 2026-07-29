@@ -898,6 +898,7 @@ VeloxWriter::VeloxWriter(
            .streamDeduplicationEnabled =
                context_->options().enableStreamDeduplication,
            .enableChunkIndex = context_->options().enableChunkIndex,
+           .enableChunkStats = context_->options().enableChunkStats,
            .chunkStatsMinAvgChunks = context_->options().chunkStatsMinAvgChunks,
            .stripeGroupEncodingLayout =
                context_->options().experimentalStripeGroupEncodingLayout,
@@ -1514,7 +1515,7 @@ uint32_t VeloxWriter::encodeChunk(
   uint32_t chunkBytes{0};
   chunk.rowCount = chunkView.rowCount();
   // Per-chunk null count, precomputed by the chunker.
-  if (context_->options().enableChunkIndex) {
+  if (context_->options().enableChunkStats) {
     chunk.nullCount = static_cast<uint32_t>(chunkView.numNulls());
   }
   ChunkedStreamWriter chunkWriter{

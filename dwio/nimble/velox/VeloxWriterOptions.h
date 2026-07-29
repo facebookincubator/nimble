@@ -73,6 +73,9 @@ struct VeloxWriterOptions {
   // once per-chunk null/min/max stats are fully rolled out.
   bool enableChunkIndex{false};
 
+  /// Write per-chunk value statistics (null counts); requires enableChunkIndex.
+  bool enableChunkStats{false};
+
   /// Skip writing chunk stats for a stripe group if the average number
   /// of chunks per stream is below this threshold. 0 disables chunk stats
   /// skipping.

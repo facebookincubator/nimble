@@ -270,6 +270,14 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.chunk.index.enabled",
     false);
 
+/// Enable per-chunk value statistics (null counts); requires
+/// ENABLE_CHUNK_INDEX.
+// EXPERIMENTAL: Not production-ready. Do not enable for production tables
+// without consulting the Nimble team (oncall: dwios).
+/* static */ Config::Entry<bool> Config::ENABLE_CHUNK_STATS(
+    "nimble.chunk.stats.enabled",
+    false);
+
 /// Threshold to trigger chunking to relieve memory pressure.
 /* static */ Config::Entry<uint64_t>
     Config::CHUNKING_WRITER_MEMORY_HIGH_THRESHOLD(

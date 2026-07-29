@@ -45,10 +45,16 @@ TabletWriter::TabletWriter(
       // TODO: keeps the chunkIndex name for now; rename to the chunkStats
       // naming once per-chunk null/min/max stats are fully rolled out.
       chunkStatsWriter_{
-          options_.enableChunkIndex ? std::make_unique<ChunkStatsWriter>(
-                                          pool,
-                                          options_.chunkStatsMinAvgChunks)
-                                    : nullptr} {}
+          options_.enableChunkIndex
+              ? std::make_unique<ChunkStatsWriter>(
+                    pool,
+                    options_.chunkStatsMinAvgChunks,
+                    /*enableStats=*/options_.enableChunkStats)
+              : nullptr} {
+  NIMBLE_CHECK(
+      !options_.enableChunkStats || options_.enableChunkIndex,
+      "enableChunkStats requires enableChunkIndex to be true.");
+}
 
 namespace {
 template <typename Source, typename Target = Source>

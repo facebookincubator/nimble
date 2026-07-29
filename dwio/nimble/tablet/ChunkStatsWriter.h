@@ -45,7 +45,8 @@ class ChunkStatsWriter {
   ///        0 disables chunk stats skipping.
   explicit ChunkStatsWriter(
       velox::memory::MemoryPool& pool,
-      float minAvgChunksPerStream = 2);
+      float minAvgChunksPerStream = 2,
+      bool enableStats = true);
 
   ChunkStatsWriter(const ChunkStatsWriter&) = delete;
   ChunkStatsWriter& operator=(const ChunkStatsWriter&) = delete;
@@ -104,6 +105,8 @@ class ChunkStatsWriter {
 
   velox::memory::MemoryPool* const pool_;
   const float minAvgChunksPerStream_;
+  // When false, omit per-chunk null counts (positional index only).
+  const bool enableStats_;
   std::unique_ptr<GroupIndex> groupIndex_;
   // Metadata sections for chunk stats flatbuffers (used by writeRoot).
   std::vector<MetadataSection> chunkStatsSections_;

@@ -39,8 +39,11 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 
 ChunkStatsWriter::ChunkStatsWriter(
     velox::memory::MemoryPool& pool,
-    float minAvgChunksPerStream)
-    : pool_{&pool}, minAvgChunksPerStream_{minAvgChunksPerStream} {}
+    float minAvgChunksPerStream,
+    bool enableStats)
+    : pool_{&pool},
+      minAvgChunksPerStream_{minAvgChunksPerStream},
+      enableStats_{enableStats} {}
 
 void ChunkStatsWriter::newStripe(size_t streamCount) {
   NIMBLE_CHECK(!finalized_, "ChunkStatsWriter has been finalized");
@@ -150,13 +153,17 @@ void ChunkStatsWriter::writeGroup(
   }
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
+  // Omit null counts when stats are disabled; readers treat them as absent.
+  const auto nullCountsVector = enableStats_
+      ? builder.CreateVector(flattenedChunkNullCounts)
+      : flatbuffers::Offset<flatbuffers::Vector<uint32_t>>{0};
   auto chunkStats = serialization::CreateStripeChunkStats(
       builder,
       static_cast<uint32_t>(streamCount),
       builder.CreateVector(flattenedStreamChunkCounts),
       builder.CreateVector(flattenedChunkRows),
       builder.CreateVector(flattenedChunkOffsets),
-      builder.CreateVector(flattenedChunkNullCounts));
+      nullCountsVector);
   builder.Finish(chunkStats);
 
   chunkStatsSections_.push_back(createMetadataSection(asView(builder)));
