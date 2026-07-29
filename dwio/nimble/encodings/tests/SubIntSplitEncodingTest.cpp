@@ -288,7 +288,8 @@ TYPED_TEST(SubIntSplitEncodingTest, RecomputeRoundTripAndReplay) {
 
   const auto encoded =
       encodeWithNonRecursiveSubIntSplit<T>(values, *this->buffer_);
-  const auto captured = nimble::EncodingLayoutCapture::capture(encoded);
+  const auto captured = nimble::EncodingLayoutCapture::capture(
+      encoded, nimble::Encoding::Options{});
 
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
   ASSERT_GT(captured.childrenCount(), 1u);
@@ -307,7 +308,8 @@ TYPED_TEST(SubIntSplitEncodingTest, RecomputeRoundTripAndReplay) {
 
   const auto replayed =
       encodeWithReplayLayout<T>(captured, values, *this->buffer_);
-  const auto replayCaptured = nimble::EncodingLayoutCapture::capture(replayed);
+  const auto replayCaptured = nimble::EncodingLayoutCapture::capture(
+      replayed, nimble::Encoding::Options{});
   expectSameLayout(captured, replayCaptured);
 
   auto encoding = decodeEncoding<T>(replayed, *this->pool_);
@@ -335,7 +337,8 @@ TYPED_TEST(SubIntSplitEncodingTest, PreserveRoundTripExplicitBoundaries) {
 
   const auto encoded =
       encodeWithReplayLayout<T>(layout, values, *this->buffer_);
-  const auto captured = nimble::EncodingLayoutCapture::capture(encoded);
+  const auto captured = nimble::EncodingLayoutCapture::capture(
+      encoded, nimble::Encoding::Options{});
 
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
   ASSERT_EQ(captured.childrenCount(), segments.size());
@@ -393,7 +396,8 @@ TEST(SubIntSplitEncodingTests, FullWidthSingleSectionRoundTrip) {
   auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
   nimble::Buffer buffer{*pool};
   const auto encoded = encodeWithReplayLayout<uint64_t>(layout, values, buffer);
-  const auto captured = nimble::EncodingLayoutCapture::capture(encoded);
+  const auto captured = nimble::EncodingLayoutCapture::capture(
+      encoded, nimble::Encoding::Options{});
 
   ASSERT_EQ(captured.childrenCount(), 1u);
   const auto capturedBoundaries = captured.config().get(

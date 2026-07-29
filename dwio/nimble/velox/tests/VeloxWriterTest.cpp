@@ -134,7 +134,8 @@ class VeloxWriterTest : public ::testing::Test {
           *leafPool_, std::move(streams[0])};
       while (chunkedStream.hasNext()) {
         chunkLayouts.push_back(
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk()));
+            nimble::EncodingLayoutCapture::capture(
+                chunkedStream.nextChunk(), nimble::Encoding::Options{}));
       }
     }
     return chunkLayouts;
@@ -411,7 +412,8 @@ nimble::EncodingLayout captureFirstColumnEncoding(
   auto streams = tablet->load(tablet->stripeIdentifier(0), streamIdentifiers);
   nimble::InMemoryChunkedStream chunkedStream{*pool, std::move(streams[0])};
   NIMBLE_CHECK(chunkedStream.hasNext(), "Expected at least one chunk.");
-  return nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+  return nimble::EncodingLayoutCapture::capture(
+      chunkedStream.nextChunk(), nimble::Encoding::Options{});
 }
 
 template <typename T>
@@ -751,8 +753,8 @@ TEST_F(VeloxWriterTest, fsstEncodingTargetControlsWriterEncoding) {
     nimble::InMemoryChunkedStream chunkedStream{
         *leafPool_, std::move(streams[0])};
     ASSERT_TRUE(chunkedStream.hasNext());
-    const auto capture =
-        nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+    const auto capture = nimble::EncodingLayoutCapture::capture(
+        chunkedStream.nextChunk(), nimble::Encoding::Options{});
 
     EXPECT_EQ(capture.encodingType(), testCase.expectedEncodingType);
     EXPECT_EQ(capture.compressionType(), testCase.expectedCompressionType);
@@ -1657,8 +1659,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
             *leafPool_, std::move(streams[0])};
         ASSERT_TRUE(chunkedStream.hasNext());
         // Verify Map stream
-        auto capture =
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = nimble::EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), nimble::Encoding::Options{});
         EXPECT_EQ(nimble::EncodingType::Dictionary, capture.encodingType());
         EXPECT_EQ(
             nimble::EncodingType::FixedBitWidth,
@@ -1675,8 +1677,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
             *leafPool_, std::move(streams[1])};
         ASSERT_TRUE(chunkedStream.hasNext());
         // Verify Map Values stream
-        auto capture =
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = nimble::EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), nimble::Encoding::Options{});
         EXPECT_EQ(nimble::EncodingType::MainlyConstant, capture.encodingType());
         EXPECT_EQ(
             nimble::EncodingType::Trivial,
@@ -1695,8 +1697,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
             *leafPool_, std::move(streams[2])};
         ASSERT_TRUE(chunkedStream.hasNext());
         // Verify FlatMap Kay "1" stream
-        auto capture =
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = nimble::EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), nimble::Encoding::Options{});
         EXPECT_EQ(nimble::EncodingType::MainlyConstant, capture.encodingType());
         EXPECT_EQ(
             nimble::EncodingType::Trivial,
@@ -1725,8 +1727,8 @@ TEST_F(VeloxWriterTest, encodingLayout) {
             *leafPool_, std::move(streams[3])};
         ASSERT_TRUE(chunkedStream.hasNext());
         // Verify FlatMap Kay "2" stream
-        auto capture =
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = nimble::EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), nimble::Encoding::Options{});
         EXPECT_EQ(nimble::EncodingType::Constant, capture.encodingType());
       }
     }
@@ -1825,8 +1827,8 @@ TEST_F(VeloxWriterTest, openZLCompressionNumericRoundTrip) {
       nimble::InMemoryChunkedStream chunkedStream{
           *leafPool_, std::move(streams[0])};
       while (chunkedStream.hasNext()) {
-        auto capture =
-            nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = nimble::EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), nimble::Encoding::Options{});
         if (usesCompression(capture, nimble::CompressionType::OpenZL)) {
           anyOpenZL = true;
         }
@@ -4380,7 +4382,8 @@ TEST_F(VeloxWriterTest, cachedEncodingLayoutNullableEncoding) {
         *leafPool_, std::move(streams[0])};
     while (chunkedStream.hasNext()) {
       const auto rawChunk = chunkedStream.nextChunk();
-      auto dataLayout = nimble::EncodingLayoutCapture::capture(rawChunk);
+      auto dataLayout = nimble::EncodingLayoutCapture::capture(
+          rawChunk, nimble::Encoding::Options{});
       const auto wrapper =
           static_cast<nimble::EncodingType>(static_cast<uint8_t>(rawChunk[0]));
       chunkEncodings.push_back(ChunkEncoding{wrapper, std::move(dataLayout)});
@@ -6734,8 +6737,8 @@ void verifyDeltaEncoding(
 
     nimble::InMemoryChunkedStream chunkedStream{pool, std::move(streams[0])};
     ASSERT_TRUE(chunkedStream.hasNext());
-    auto capture =
-        nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+    auto capture = nimble::EncodingLayoutCapture::capture(
+        chunkedStream.nextChunk(), nimble::Encoding::Options{});
     EXPECT_EQ(nimble::EncodingType::Delta, capture.encodingType())
         << "Stripe " << i;
     if (checkChildren) {
@@ -6799,8 +6802,8 @@ TEST_F(VeloxWriterTest, encodingLayoutDelta) {
       nimble::InMemoryChunkedStream chunkedStream{
           *leafPool_, std::move(streams[0])};
       ASSERT_TRUE(chunkedStream.hasNext());
-      auto capture =
-          nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = nimble::EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), nimble::Encoding::Options{});
       EXPECT_EQ(nimble::EncodingType::Delta, capture.encodingType());
       EXPECT_EQ(
           nimble::EncodingType::Trivial,
@@ -7112,16 +7115,16 @@ TEST_F(VeloxWriterTest, encodingLayoutDeltaMultiColumn) {
       nimble::InMemoryChunkedStream chunkedStream{
           *leafPool_, std::move(streams[0])};
       ASSERT_TRUE(chunkedStream.hasNext());
-      auto capture =
-          nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = nimble::EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), nimble::Encoding::Options{});
       EXPECT_EQ(nimble::EncodingType::Delta, capture.encodingType());
     }
     {
       nimble::InMemoryChunkedStream chunkedStream{
           *leafPool_, std::move(streams[1])};
       ASSERT_TRUE(chunkedStream.hasNext());
-      auto capture =
-          nimble::EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = nimble::EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), nimble::Encoding::Options{});
       EXPECT_EQ(nimble::EncodingType::MainlyConstant, capture.encodingType());
     }
   }

@@ -114,9 +114,6 @@ class TrivialEncodingTest : public ::testing::Test {
         Range{/*name=*/"singleEnd",
               /*offset=*/valueCount - 1,
               /*length=*/1},
-        Range{/*name=*/"emptyStart", /*offset=*/0, /*length=*/0},
-        Range{/*name=*/"emptyMiddle", /*offset=*/2048, /*length=*/0},
-        Range{/*name=*/"emptyEnd", /*offset=*/valueCount, /*length=*/0},
     };
   }
 
@@ -245,6 +242,14 @@ TEST_F(TrivialEncodingTest, invalidSliceRange) {
     NIMBLE_ASSERT_THROW(
         nimble::TrivialEncoding<uint32_t>::slice(
             uint32Encoded,
+            /*offset=*/0,
+            /*length=*/0,
+            uint32SliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<uint32_t>::slice(
+            uint32Encoded,
             /*offset=*/4,
             /*length=*/0,
             uint32SliceBuffer,
@@ -267,6 +272,14 @@ TEST_F(TrivialEncodingTest, invalidSliceRange) {
             nimble::CompressionType::Uncompressed,
             options);
     nimble::Buffer boolSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<bool>::slice(
+            boolEncoded,
+            /*offset=*/0,
+            /*length=*/0,
+            boolSliceBuffer,
+            options),
+        "");
     NIMBLE_ASSERT_THROW(
         nimble::TrivialEncoding<bool>::slice(
             boolEncoded,
@@ -293,6 +306,14 @@ TEST_F(TrivialEncodingTest, invalidSliceRange) {
             nimble::CompressionType::Uncompressed,
             options);
     nimble::Buffer stringSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::TrivialEncoding<std::string_view>::slice(
+            stringEncoded,
+            /*offset=*/0,
+            /*length=*/0,
+            stringSliceBuffer,
+            options),
+        "");
     NIMBLE_ASSERT_THROW(
         nimble::TrivialEncoding<std::string_view>::slice(
             stringEncoded,

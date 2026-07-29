@@ -764,8 +764,8 @@ class E2EFilterTest
         if (!chunkedStream.hasNext()) {
           continue;
         }
-        auto capture =
-            EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+        auto capture = EncodingLayoutCapture::capture(
+            chunkedStream.nextChunk(), Encoding::Options{});
         // The top-level encoding may be Nullable (wrapping the data encoding)
         // or the data encoding directly.
         if (capture.encodingType() == EncodingType::Nullable) {
@@ -813,7 +813,8 @@ class E2EFilterTest
       if (!chunkedStream.hasNext()) {
         continue;
       }
-      auto capture = EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), Encoding::Options{});
       if (capture.encodingType() == EncodingType::Nullable) {
         ASSERT_TRUE(capture.child(1).has_value())
             << "Column " << columnName << " stripe " << i;

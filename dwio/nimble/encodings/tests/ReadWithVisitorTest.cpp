@@ -323,7 +323,8 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
     if (!chunkedStream.hasNext()) {
       return std::nullopt;
     }
-    return EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+    return EncodingLayoutCapture::capture(
+        chunkedStream.nextChunk(), Encoding::Options{});
   }
 
   template <typename T>

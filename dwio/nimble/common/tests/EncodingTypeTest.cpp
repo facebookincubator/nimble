@@ -27,7 +27,7 @@ namespace facebook::nimble::test {
 
 // --- EncodingPhysicalType<int32_t>: identity mapping ---
 
-TEST(EncodingTypeTest, Int32IdentityMapping) {
+TEST(EncodingTypeTest, int32IdentityMapping) {
   int32_t value = 42;
   auto physical = EncodingPhysicalType<int32_t>::asEncodingPhysicalType(value);
   static_assert(std::is_same_v<decltype(physical), uint32_t>);
@@ -35,14 +35,14 @@ TEST(EncodingTypeTest, Int32IdentityMapping) {
   EXPECT_EQ(logical, 42);
 }
 
-TEST(EncodingTypeTest, Int32NegativeRoundTrip) {
+TEST(EncodingTypeTest, int32NegativeRoundTrip) {
   int32_t value = -12345;
   auto physical = EncodingPhysicalType<int32_t>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<int32_t>::asEncodingLogicalType(physical);
   EXPECT_EQ(logical, -12345);
 }
 
-TEST(EncodingTypeTest, Int32Limits) {
+TEST(EncodingTypeTest, int32Limits) {
   {
     int32_t value = std::numeric_limits<int32_t>::min();
     auto physical =
@@ -63,7 +63,7 @@ TEST(EncodingTypeTest, Int32Limits) {
 
 // --- EncodingPhysicalType<float>: float <-> uint32_t bitwise conversion ---
 
-TEST(EncodingTypeTest, FloatRoundTrip) {
+TEST(EncodingTypeTest, floatRoundTrip) {
   float value = 3.14f;
   auto physical = EncodingPhysicalType<float>::asEncodingPhysicalType(value);
   static_assert(std::is_same_v<decltype(physical), uint32_t>);
@@ -71,7 +71,7 @@ TEST(EncodingTypeTest, FloatRoundTrip) {
   EXPECT_FLOAT_EQ(logical, 3.14f);
 }
 
-TEST(EncodingTypeTest, FloatNegativeZero) {
+TEST(EncodingTypeTest, floatNegativeZero) {
   float value = -0.0f;
   auto physical = EncodingPhysicalType<float>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<float>::asEncodingLogicalType(physical);
@@ -82,14 +82,14 @@ TEST(EncodingTypeTest, FloatNegativeZero) {
   EXPECT_NE(bits, 0u); // -0.0f has sign bit set
 }
 
-TEST(EncodingTypeTest, FloatNaN) {
+TEST(EncodingTypeTest, floatNaN) {
   float value = std::numeric_limits<float>::quiet_NaN();
   auto physical = EncodingPhysicalType<float>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<float>::asEncodingLogicalType(physical);
   EXPECT_TRUE(std::isnan(logical));
 }
 
-TEST(EncodingTypeTest, FloatInfinity) {
+TEST(EncodingTypeTest, floatInfinity) {
   float value = std::numeric_limits<float>::infinity();
   auto physical = EncodingPhysicalType<float>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<float>::asEncodingLogicalType(physical);
@@ -98,7 +98,7 @@ TEST(EncodingTypeTest, FloatInfinity) {
 
 // --- EncodingPhysicalType<double>: double <-> uint64_t bitwise conversion ---
 
-TEST(EncodingTypeTest, DoubleRoundTrip) {
+TEST(EncodingTypeTest, doubleRoundTrip) {
   double value = 2.718281828;
   auto physical = EncodingPhysicalType<double>::asEncodingPhysicalType(value);
   static_assert(std::is_same_v<decltype(physical), uint64_t>);
@@ -106,14 +106,14 @@ TEST(EncodingTypeTest, DoubleRoundTrip) {
   EXPECT_DOUBLE_EQ(logical, 2.718281828);
 }
 
-TEST(EncodingTypeTest, DoubleNaN) {
+TEST(EncodingTypeTest, doubleNaN) {
   double value = std::numeric_limits<double>::quiet_NaN();
   auto physical = EncodingPhysicalType<double>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<double>::asEncodingLogicalType(physical);
   EXPECT_TRUE(std::isnan(logical));
 }
 
-TEST(EncodingTypeTest, DoubleNegativeZero) {
+TEST(EncodingTypeTest, doubleNegativeZero) {
   double value = -0.0;
   auto physical = EncodingPhysicalType<double>::asEncodingPhysicalType(value);
   auto logical = EncodingPhysicalType<double>::asEncodingLogicalType(physical);
@@ -125,7 +125,7 @@ TEST(EncodingTypeTest, DoubleNegativeZero) {
 
 // --- asEncodingPhysicalTypeSpan ---
 
-TEST(EncodingTypeTest, AsEncodingPhysicalTypeSpanFloat) {
+TEST(EncodingTypeTest, asEncodingPhysicalTypeSpanFloat) {
   std::vector<float> values = {1.0f, 2.0f, 3.0f, -0.0f};
   auto span = std::span<const float>(values);
   auto physicalSpan =
@@ -140,7 +140,7 @@ TEST(EncodingTypeTest, AsEncodingPhysicalTypeSpanFloat) {
   }
 }
 
-TEST(EncodingTypeTest, AsEncodingPhysicalTypeSpanInt32) {
+TEST(EncodingTypeTest, asEncodingPhysicalTypeSpanInt32) {
   std::vector<int32_t> values = {-1, 0, 1, 100};
   auto span = std::span<const int32_t>(values);
   auto physicalSpan =
@@ -154,7 +154,7 @@ TEST(EncodingTypeTest, AsEncodingPhysicalTypeSpanInt32) {
   }
 }
 
-TEST(EncodingTypeTest, AsEncodingPhysicalTypeSpanEmpty) {
+TEST(EncodingTypeTest, asEncodingPhysicalTypeSpanEmpty) {
   std::vector<float> values;
   auto span = std::span<const float>(values);
   auto physicalSpan =

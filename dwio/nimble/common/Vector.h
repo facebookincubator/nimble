@@ -17,10 +17,14 @@
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "velox/buffer/Buffer.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 #include <array>
+#include <cstdint>
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace facebook::nimble {
 
@@ -364,6 +368,135 @@ class Vector {
 #ifndef NDEBUG
   inline static std::array<T, sizeof(size_t)> placeholder_;
 #endif
+};
+
+/// Owns a temporary Vector and returns its allocation to a BufferPool.
+template <typename V>
+class ScopedVector {
+ public:
+  ScopedVector(
+      uint64_t size,
+      velox::memory::MemoryPool* pool,
+      velox::BufferPool* bufferPool)
+      : bufferPool_{bufferPool},
+        vector_{acquireVectorBuffer(size, pool, bufferPool)} {
+    vector_.resize(size);
+  }
+
+  ~ScopedVector() {
+    if (bufferPool_ != nullptr) {
+      auto buffer = vector_.releaseBuffer();
+      if (buffer != nullptr) {
+        bufferPool_->release(std::move(buffer));
+      }
+    }
+  }
+
+  ScopedVector(const ScopedVector&) = delete;
+  ScopedVector& operator=(const ScopedVector&) = delete;
+
+  operator Vector<V>&() {
+    return vector_;
+  }
+
+  operator const Vector<V>&() const {
+    return vector_;
+  }
+
+  Vector<V>* operator->() {
+    return &vector_;
+  }
+
+  const Vector<V>* operator->() const {
+    return &vector_;
+  }
+
+  Vector<V>& operator*() {
+    return vector_;
+  }
+
+  const Vector<V>& operator*() const {
+    return vector_;
+  }
+
+  V& operator[](uint64_t i) {
+    return vector_[i];
+  }
+
+  const V& operator[](uint64_t i) const {
+    return vector_[i];
+  }
+
+  V* begin() {
+    return vector_.begin();
+  }
+
+  V* end() {
+    return vector_.end();
+  }
+
+  const V* begin() const {
+    return vector_.begin();
+  }
+
+  const V* end() const {
+    return vector_.end();
+  }
+
+  V* data() {
+    return vector_.data();
+  }
+
+  const V* data() const {
+    return vector_.data();
+  }
+
+  uint64_t size() const {
+    return vector_.size();
+  }
+
+  bool empty() const {
+    return vector_.empty();
+  }
+
+  uint64_t capacity() const {
+    return vector_.capacity();
+  }
+
+  void reserve(uint64_t size) {
+    vector_.reserve(size);
+  }
+
+  void resize(uint64_t size) {
+    vector_.resize(size);
+  }
+
+  void push_back(V value) {
+    vector_.push_back(value);
+  }
+
+  template <typename... Args>
+  void emplace_back(Args&&... args) {
+    vector_.emplace_back(std::forward<Args>(args)...);
+  }
+
+ private:
+  static Vector<V> acquireVectorBuffer(
+      uint64_t size,
+      velox::memory::MemoryPool* pool,
+      velox::BufferPool* bufferPool) {
+    using InnerType =
+        typename std::conditional<std::is_same_v<V, bool>, uint8_t, V>::type;
+    if (bufferPool != nullptr && size > 0) {
+      if (auto buffer = bufferPool->get(size * sizeof(InnerType))) {
+        return Vector<V>{std::move(buffer)};
+      }
+    }
+    return Vector<V>{pool};
+  }
+
+  velox::BufferPool* const bufferPool_;
+  Vector<V> vector_;
 };
 
 } // namespace facebook::nimble

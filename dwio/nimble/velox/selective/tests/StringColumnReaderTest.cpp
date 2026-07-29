@@ -220,7 +220,8 @@ std::vector<ChunkEncoding> getStreamChunkEncodings(
     }
     InMemoryChunkedStream chunkedStream{*pool, std::move(streams[0])};
     while (chunkedStream.hasNext()) {
-      auto capture = EncodingLayoutCapture::capture(chunkedStream.nextChunk());
+      auto capture = EncodingLayoutCapture::capture(
+          chunkedStream.nextChunk(), Encoding::Options{});
       ChunkEncoding chunk{capture.encodingType(), std::nullopt};
       if (capture.encodingType() == EncodingType::RLE) {
         const auto& runValues =

@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
@@ -218,8 +219,7 @@ TYPED_TEST(MainlyConstantEncodingTest, slice) {
     uint32_t length;
   };
   for (const auto range :
-       {Range{/*offset=*/0, /*length=*/0},
-        Range{/*offset=*/0, /*length=*/4},
+       {Range{/*offset=*/0, /*length=*/4},
         Range{/*offset=*/2, /*length=*/6},
         Range{/*offset=*/6, /*length=*/4}}) {
     SCOPED_TRACE(
@@ -247,6 +247,43 @@ TYPED_TEST(MainlyConstantEncodingTest, slice) {
   }
 }
 
+TYPED_TEST(MainlyConstantEncodingTest, sliceAllCommonRowsReturnsConstant) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+  const auto values = this->template toVector<DataType>(
+      {static_cast<DataType>(7),
+       static_cast<DataType>(7),
+       static_cast<DataType>(20),
+       static_cast<DataType>(7),
+       static_cast<DataType>(40),
+       static_cast<DataType>(7)});
+  const auto encoded =
+      nimble::test::Encoder<nimble::MainlyConstantEncoding<DataType>>::encode(
+          *this->buffer_,
+          values,
+          nimble::CompressionType::Uncompressed,
+          options);
+
+  nimble::Buffer sliceBuffer{*this->pool_};
+  const auto sliced = nimble::MainlyConstantEncoding<DataType>::slice(
+      encoded, /*offset=*/0, /*length=*/2, sliceBuffer, options);
+  auto encoding = nimble::EncodingFactory{options}.create(
+      *this->pool_, sliced, [](uint32_t /*totalLength*/) -> void* {
+        return nullptr;
+      });
+
+  EXPECT_EQ(encoding->encodingType(), nimble::EncodingType::Constant);
+  EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<DataType>::dataType);
+  EXPECT_EQ(encoding->rowCount(), 2);
+
+  nimble::Vector<DataType> result(this->pool_.get(), 2);
+  encoding->materialize(2, result.data());
+  for (uint32_t i = 0; i < result.size(); ++i) {
+    EXPECT_TRUE(nimble::NimbleCompare<DataType>::equals(result[i], values[i]));
+  }
+}
+
 TYPED_TEST(MainlyConstantEncodingTest, invalidSliceRange) {
   using DataType = typename TypeParam::data_type;
   const nimble::Encoding::Options options{
@@ -264,6 +301,14 @@ TYPED_TEST(MainlyConstantEncodingTest, invalidSliceRange) {
           options);
 
   nimble::Buffer invalidSliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::MainlyConstantEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
   NIMBLE_ASSERT_THROW(
       nimble::MainlyConstantEncoding<DataType>::slice(
           encoded,

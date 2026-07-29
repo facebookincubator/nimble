@@ -319,6 +319,14 @@ TYPED_TEST(SparseBoolEncodingTest, invalidSliceRange) {
   NIMBLE_ASSERT_THROW(
       nimble::SparseBoolEncoding::slice(
           encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
+  NIMBLE_ASSERT_THROW(
+      nimble::SparseBoolEncoding::slice(
+          encoded,
           /*offset=*/11,
           /*length=*/0,
           invalidSliceBuffer,

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
@@ -29,15 +30,46 @@ namespace {
 
 constexpr uint32_t kSliceOffset = 12345;
 constexpr uint32_t kSliceLength = 4096;
+constexpr uint32_t kPartialBlockSliceOffset = 12345;
+constexpr uint32_t kPartialBlockSliceLength = 256;
 
-void sliceBenchmark(const std::string& encoded, uint32_t iters) {
+void sliceBenchmark(
+    const std::string& encoded,
+    uint32_t offset,
+    uint32_t length,
+    uint32_t iters) {
   Buffer buffer{*benchmarkPool()};
   while (iters--) {
     buffer.reset();
-    const auto sliced =
-        EncodingFactory::slice(encoded, kSliceOffset, kSliceLength, buffer);
+    const auto sliced = EncodingFactory::slice(encoded, offset, length, buffer);
     folly::doNotOptimizeAway(sliced.data());
     folly::doNotOptimizeAway(sliced.size());
+  }
+}
+
+void sliceBenchmark(const std::string& encoded, uint32_t iters) {
+  sliceBenchmark(encoded, kSliceOffset, kSliceLength, iters);
+}
+
+template <typename EncodingT, typename T>
+void materializeEncodeBenchmark(
+    const std::string& encoded,
+    EncodingType encodingType,
+    uint32_t offset,
+    uint32_t length,
+    uint32_t iters) {
+  while (iters--) {
+    auto encoding =
+        EncodingFactory{}.create(*benchmarkPool(), encoded, nullFactory());
+    encoding->skip(offset);
+
+    Vector<T> values{benchmarkPool().get(), length};
+    encoding->materialize(length, values.data());
+
+    const auto materialized =
+        encodeData<EncodingT>(encodingType, values, Encoding::Options{});
+    folly::doNotOptimizeAway(materialized.data());
+    folly::doNotOptimizeAway(materialized.size());
   }
 }
 
@@ -46,19 +78,8 @@ void materializeEncodeBenchmark(
     const std::string& encoded,
     EncodingType encodingType,
     uint32_t iters) {
-  while (iters--) {
-    auto encoding =
-        EncodingFactory{}.create(*benchmarkPool(), encoded, nullFactory());
-    encoding->skip(kSliceOffset);
-
-    Vector<T> values{benchmarkPool().get(), kSliceLength};
-    encoding->materialize(kSliceLength, values.data());
-
-    const auto materialized =
-        encodeData<EncodingT>(encodingType, values, Encoding::Options{});
-    folly::doNotOptimizeAway(materialized.data());
-    folly::doNotOptimizeAway(materialized.size());
-  }
+  materializeEncodeBenchmark<EncodingT, T>(
+      encoded, encodingType, kSliceOffset, kSliceLength, iters);
 }
 
 template <typename T>
@@ -135,6 +156,37 @@ SLICE_BENCHMARKS(
     FixedBitWidthEncoding<uint32_t>,
     EncodingType::FixedBitWidth,
     makeNarrow<uint32_t>(12));
+SLICE_BENCHMARKS(
+    BlockBitPackingUint32,
+    BlockBitPackingEncoding<uint32_t>,
+    EncodingType::BlockBitPacking,
+    makeIncreasing<uint32_t>());
+
+BENCHMARK(Slice_BlockBitPackingUint32PartialBlock, iters) {
+  std::string encoded;
+  BENCHMARK_SUSPEND {
+    const auto data = makeIncreasing<uint32_t>();
+    encoded = encodeData<BlockBitPackingEncoding<uint32_t>>(
+        EncodingType::BlockBitPacking, data);
+  }
+  sliceBenchmark(
+      encoded, kPartialBlockSliceOffset, kPartialBlockSliceLength, iters);
+}
+BENCHMARK_RELATIVE(MaterializeEncode_BlockBitPackingUint32PartialBlock, iters) {
+  std::string encoded;
+  BENCHMARK_SUSPEND {
+    const auto data = makeIncreasing<uint32_t>();
+    encoded = encodeData<BlockBitPackingEncoding<uint32_t>>(
+        EncodingType::BlockBitPacking, data);
+  }
+  materializeEncodeBenchmark<BlockBitPackingEncoding<uint32_t>, uint32_t>(
+      encoded,
+      EncodingType::BlockBitPacking,
+      kPartialBlockSliceOffset,
+      kPartialBlockSliceLength,
+      iters);
+}
+BENCHMARK_DRAW_LINE();
 
 SLICE_MATERIALIZE_BENCHMARKS(
     TrivialUint32,

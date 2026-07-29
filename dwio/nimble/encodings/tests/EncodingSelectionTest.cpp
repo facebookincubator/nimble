@@ -1441,7 +1441,8 @@ TEST(ManualEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
 
     // Capture the encoding layout tree from the encoded output and verify
     // compression types at each level.
-    auto capturedLayout = nimble::EncodingLayoutCapture::capture(encoded);
+    auto capturedLayout = nimble::EncodingLayoutCapture::capture(
+        encoded, nimble::Encoding::Options{});
 
     // Verify leaf compression types in the captured tree.
     // Walk through all children and check leaf nodes.
@@ -1536,7 +1537,8 @@ TEST(ReplayedEncodingSelectionPolicyTest, nestedEncodingCompressionType) {
         std::move(policy), std::span<const uint32_t>(data), buffer);
 
     // Capture the encoding layout tree and verify compression types.
-    auto capturedLayout = nimble::EncodingLayoutCapture::capture(encoded);
+    auto capturedLayout = nimble::EncodingLayoutCapture::capture(
+        encoded, nimble::Encoding::Options{});
     EXPECT_EQ(capturedLayout.encodingType(), nimble::EncodingType::Dictionary);
 
     // Verify leaf compression types in the captured tree.

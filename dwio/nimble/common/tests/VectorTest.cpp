@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/common/Vector.h"
 #include <gtest/gtest.h>
+#include <numeric>
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 DECLARE_bool(velox_enable_memory_usage_track_in_default_memory_pool);
@@ -61,7 +63,7 @@ class VectorTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
 
-TEST_F(VectorTest, FromRange) {
+TEST_F(VectorTest, fromRange) {
   std::vector<int32_t> source{4, 5, 6};
   nimble::Vector<int32_t> v1(pool_.get(), source.begin(), source.end());
   EXPECT_EQ(3, v1.size());
@@ -70,7 +72,7 @@ TEST_F(VectorTest, FromRange) {
   EXPECT_EQ(6, v1[2]);
 }
 
-TEST_F(VectorTest, EqualOp1) {
+TEST_F(VectorTest, equalOp1) {
   nimble::Vector<int32_t> v1(pool_.get());
   v1.push_back(1);
   v1.emplace_back(2);
@@ -97,7 +99,7 @@ TEST_F(VectorTest, EqualOp1) {
   EXPECT_EQ(5, v2[1]);
 }
 
-TEST_F(VectorTest, ExplicitMoveEqualOp) {
+TEST_F(VectorTest, explicitMoveEqualOp) {
   nimble::Vector<int32_t> v1(pool_.get());
   v1.push_back(1);
   v1.emplace_back(2);
@@ -126,7 +128,7 @@ TEST_F(VectorTest, ExplicitMoveEqualOp) {
   ASSERT_TRUE(v2.empty());
 }
 
-TEST_F(VectorTest, MoveEqualOp1) {
+TEST_F(VectorTest, moveEqualOp1) {
   nimble::Vector<int32_t> v1(pool_.get());
   v1.push_back(1);
   v1.emplace_back(2);
@@ -141,7 +143,7 @@ TEST_F(VectorTest, MoveEqualOp1) {
   EXPECT_EQ(5, v1[1]);
 }
 
-TEST_F(VectorTest, CopyCtr) {
+TEST_F(VectorTest, copyCtr) {
   nimble::Vector<int32_t> v2(pool_.get());
   v2.push_back(3);
   v2.emplace_back(4);
@@ -164,7 +166,7 @@ TEST_F(VectorTest, CopyCtr) {
   EXPECT_EQ(4, v2[1]);
 }
 
-TEST_F(VectorTest, BoolInitializerList) {
+TEST_F(VectorTest, boolInitializerList) {
   nimble::Vector<bool> v1(pool_.get(), {true, false, true});
   EXPECT_EQ(3, v1.size());
   EXPECT_EQ(true, v1[0]);
@@ -172,7 +174,7 @@ TEST_F(VectorTest, BoolInitializerList) {
   EXPECT_EQ(true, v1[2]);
 }
 
-TEST_F(VectorTest, BoolEqualOp1) {
+TEST_F(VectorTest, boolEqualOp1) {
   nimble::Vector<bool> v1(pool_.get());
   v1.push_back(false);
   v1.emplace_back(true);
@@ -200,7 +202,7 @@ TEST_F(VectorTest, BoolEqualOp1) {
   EXPECT_EQ(false, v2[1]);
 }
 
-TEST_F(VectorTest, BoolMoveEqualOp1) {
+TEST_F(VectorTest, boolMoveEqualOp1) {
   nimble::Vector<bool> v1(pool_.get());
   v1.push_back(true);
   v1.emplace_back(false);
@@ -217,7 +219,7 @@ TEST_F(VectorTest, BoolMoveEqualOp1) {
   EXPECT_EQ(true, v1[1]);
 }
 
-TEST_F(VectorTest, BoolCopyCtr) {
+TEST_F(VectorTest, boolCopyCtr) {
   nimble::Vector<bool> v2(pool_.get());
   v2.push_back(true);
   v2.emplace_back(false);
@@ -233,7 +235,75 @@ TEST_F(VectorTest, BoolCopyCtr) {
   EXPECT_EQ(false, v2[1]);
 }
 
-TEST_F(VectorTest, MemoryCleanup) {
+TEST_F(VectorTest, scopedVectorReleasesBufferToPool) {
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
+
+  {
+    nimble::ScopedVector<uint32_t> scratch{
+        /*size=*/4, pool_.get(), &bufferPool};
+    ASSERT_EQ(scratch.size(), 4);
+    scratch[0] = 123;
+    EXPECT_EQ(scratch[0], 123);
+    EXPECT_EQ(bufferPool.size(), 0);
+  }
+  EXPECT_EQ(bufferPool.size(), 1);
+
+  {
+    nimble::ScopedVector<uint32_t> scratch{
+        /*size=*/2, pool_.get(), &bufferPool};
+    EXPECT_EQ(scratch.size(), 2);
+    EXPECT_EQ(bufferPool.size(), 0);
+  }
+  EXPECT_EQ(bufferPool.size(), 1);
+}
+
+TEST_F(VectorTest, scopedVectorWorksWithoutBufferPool) {
+  nimble::ScopedVector<bool> scratch{
+      /*size=*/3, pool_.get(), /*bufferPool=*/nullptr};
+  ASSERT_EQ(scratch.size(), 3);
+  scratch[0] = true;
+  scratch[1] = false;
+  EXPECT_TRUE(scratch[0]);
+  EXPECT_FALSE(scratch[1]);
+}
+
+TEST_F(VectorTest, scopedVectorOperations) {
+  nimble::ScopedVector<uint32_t> scratch{
+      /*size=*/0, pool_.get(), /*bufferPool=*/nullptr};
+  EXPECT_TRUE(scratch.empty());
+
+  scratch.reserve(3);
+  EXPECT_GE(scratch.capacity(), 3);
+  scratch.push_back(1);
+  scratch.emplace_back(2);
+  scratch.resize(3);
+  scratch[2] = 3;
+
+  EXPECT_EQ(scratch.size(), 3);
+
+  nimble::Vector<uint32_t>& values = scratch;
+  EXPECT_EQ(values.size(), scratch.size());
+  EXPECT_EQ(values.data(), scratch.data());
+  EXPECT_EQ(values[0], 1);
+
+  EXPECT_EQ(scratch->capacity(), scratch.capacity());
+  EXPECT_EQ((*scratch)[1], 2);
+  EXPECT_EQ(scratch[2], 3);
+  EXPECT_EQ(std::accumulate(scratch.begin(), scratch.end(), uint32_t{0}), 6);
+
+  const auto& constScratch = scratch;
+  const nimble::Vector<uint32_t>& constValues = constScratch;
+  EXPECT_EQ(constValues.data(), constScratch.data());
+  EXPECT_EQ(constValues[0], 1);
+  EXPECT_EQ(constScratch->size(), 3);
+  EXPECT_EQ((*constScratch)[1], 2);
+  EXPECT_EQ(constScratch[2], 3);
+  EXPECT_EQ(
+      std::accumulate(constScratch.begin(), constScratch.end(), uint32_t{0}),
+      6);
+}
+
+TEST_F(VectorTest, memoryCleanup) {
   EXPECT_EQ(0, pool_->usedBytes());
   {
     nimble::Vector<int32_t> v(pool_.get());
@@ -262,7 +332,7 @@ TEST_F(VectorTest, MemoryCleanup) {
   EXPECT_EQ(0, pool_->usedBytes());
 }
 
-TEST_F(VectorTest, ReserveActualSize) {
+TEST_F(VectorTest, reserveActualSize) {
   EXPECT_EQ(0, pool_->usedBytes());
 
   // There is no good way to assert the exact expected size because of padding

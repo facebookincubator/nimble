@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
@@ -29,18 +30,19 @@ namespace facebook::nimble {
 namespace {
 constexpr uint32_t kMinEncodingLayoutBufferSize = 5;
 
-// Captures one size-prefixed nested sub-stream into `children` (nullopt when
-// the sub-stream is empty)
-void captureSizedChild(
+void captureChild(
     std::vector<std::optional<const EncodingLayout>>& children,
-    const char*& cursor) {
-  const uint32_t size = encoding::readUint32(cursor);
+    const char*& cursor,
+    uint32_t size,
+    const Encoding::Options& childOptions) {
   children.emplace_back(
-      size > 0 ? std::optional<const EncodingLayout>(
-                     EncodingLayoutCapture::capture({cursor, size}))
-               : std::nullopt);
+      size > 0
+          ? std::optional<const EncodingLayout>(
+                EncodingLayoutCapture::capture({cursor, size}, childOptions))
+          : std::nullopt);
   cursor += size;
 }
+
 } // namespace
 
 std::optional<std::string> EncodingLayout::Config::get(
@@ -165,24 +167,23 @@ const EncodingLayout::Config& EncodingLayout::config() const {
   return encodingConfig_;
 }
 
-namespace {
-
-constexpr uint32_t kEncodingPrefixSize = 6;
-
-} // namespace
-
-EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
+EncodingLayout EncodingLayoutCapture::capture(
+    std::string_view encoding,
+    const Encoding::Options& options) {
   NIMBLE_CHECK_GE(
-      encoding.size(), kEncodingPrefixSize, "Encoding size too small.");
-
-  const auto encodingType =
-      encoding::peek<uint8_t, EncodingType>(encoding.data());
+      encoding.size(),
+      EncodingPrefix::kRowCountOffset,
+      "Encoding size too small.");
+  const auto encodingType = EncodingPrefix::encodingType(encoding);
+  const auto prefixSize =
+      EncodingPrefix::prefixSize(encoding, options.useVarintRowCount);
   CompressionType compressionType = CompressionType::Uncompressed;
 
   if (encodingType == EncodingType::FixedBitWidth ||
-      encodingType == EncodingType::Trivial) {
-    compressionType = encoding::peek<uint8_t, CompressionType>(
-        encoding.data() + kEncodingPrefixSize);
+      encodingType == EncodingType::Trivial ||
+      encodingType == EncodingType::BlockBitPacking) {
+    compressionType =
+        encoding::peek<uint8_t, CompressionType>(encoding.data() + prefixSize);
   }
 
   std::vector<std::optional<const EncodingLayout>> children;
@@ -200,7 +201,7 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
       // Non nested encodings have zero children
       break;
     case EncodingType::ALP: {
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const auto header = detail::alp::readHeader(pos);
       if (header.hasExceptions) {
         varint::readVarint32(&pos); // exceptionCount
@@ -209,89 +210,94 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
 
       children.reserve(1);
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, encodedValuesBytes}));
+          EncodingLayoutCapture::capture({pos, encodedValuesBytes}, options));
       break;
     }
     case EncodingType::PFOR: {
       const auto dataType =
           encoding::peek<uint8_t, DataType>(encoding.data() + 1);
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       pos += detail::dataTypeSize(dataType); // baseline
       encoding::readChar(pos); // baseBitWidth
       encoding::readUint32(pos); // numExceptions
 
       children.reserve(2);
-      captureSizedChild(children, pos); // exception positions
-      captureSizedChild(children, pos); // exception values
+      const auto positionsBytes = encoding::readUint32(pos);
+      captureChild(children, pos, positionsBytes, options);
+      const auto valuesBytes = encoding::readUint32(pos);
+      captureChild(children, pos, valuesBytes, options);
       break;
     }
     case EncodingType::BlockBitPacking: {
       // BlockBitPacking nests three per-block metadata sub-streams: baselines,
       // bit widths, and data offsets.
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       encoding::readChar(pos); // compressionType
-      encoding::read<uint16_t>(pos); // blockSize
-      encoding::read<uint16_t>(pos); // numBlocks
+      varint::readVarint32(&pos); // blockSize
+      varint::readVarint32(&pos); // numBlocks
 
       children.reserve(3);
-      captureSizedChild(children, pos); // baselines
-      captureSizedChild(children, pos); // bit widths
-      captureSizedChild(children, pos); // data offsets
+      const auto baselinesBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, baselinesBytes, options);
+      const auto bitWidthsBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, bitWidthsBytes, options);
+      const auto dataOffsetsBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, dataOffsetsBytes, options);
       break;
     }
     case EncodingType::Trivial: {
       const auto dataType =
           encoding::peek<uint8_t, DataType>(encoding.data() + 1);
       if (dataType == DataType::String) {
-        const char* pos = encoding.data() + kEncodingPrefixSize + 1;
+        const char* pos = encoding.data() + prefixSize + 1;
         const uint32_t lengthsBytes = encoding::readUint32(pos);
 
         children.reserve(1);
         children.emplace_back(
-            EncodingLayoutCapture::capture({pos, lengthsBytes}));
+            EncodingLayoutCapture::capture({pos, lengthsBytes}, options));
       }
       break;
     }
     case EncodingType::Fsst: {
-      FsstEncoding::captureNestedEncoding(encoding, children);
+      FsstEncoding::captureNestedEncoding(encoding, children, options);
       break;
     }
     case EncodingType::SparseBool: {
       children.reserve(1);
       children.emplace_back(
           EncodingLayoutCapture::capture(
-              encoding.substr(kEncodingPrefixSize + 1)));
+              encoding.substr(prefixSize + 1), options));
       break;
     }
     case EncodingType::MainlyConstant: {
       children.reserve(2);
 
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const uint32_t isCommonBytes = encoding::readUint32(pos);
 
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, isCommonBytes}));
+          EncodingLayoutCapture::capture({pos, isCommonBytes}, options));
 
       pos += isCommonBytes;
       const uint32_t otherValuesBytes = encoding::readUint32(pos);
 
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, otherValuesBytes}));
+          EncodingLayoutCapture::capture({pos, otherValuesBytes}, options));
       break;
     }
     case EncodingType::Dictionary: {
       children.reserve(2);
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const uint32_t alphabetBytes = encoding::readUint32(pos);
 
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, alphabetBytes}));
+          EncodingLayoutCapture::capture({pos, alphabetBytes}, options));
 
       pos += alphabetBytes;
 
       children.emplace_back(
           EncodingLayoutCapture::capture(
-              {pos, encoding.size() - (pos - encoding.data())}));
+              {pos, encoding.size() - (pos - encoding.data())}, options));
       break;
     }
     case EncodingType::RLE: {
@@ -300,55 +306,56 @@ EncodingLayout EncodingLayoutCapture::capture(std::string_view encoding) {
 
       children.reserve(dataType == DataType::Bool ? 1 : 2);
 
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const uint32_t runLengthBytes = encoding::readUint32(pos);
 
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, runLengthBytes}));
+          EncodingLayoutCapture::capture({pos, runLengthBytes}, options));
 
       if (dataType != DataType::Bool) {
         pos += runLengthBytes;
 
         children.emplace_back(
             EncodingLayoutCapture::capture(
-                {pos, encoding.size() - (pos - encoding.data())}));
+                {pos, encoding.size() - (pos - encoding.data())}, options));
       }
       break;
     }
     case EncodingType::Delta: {
       children.reserve(3);
 
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const uint32_t deltaBytes = encoding::readUint32(pos);
       const uint32_t restatementBytes = encoding::readUint32(pos);
 
-      children.emplace_back(EncodingLayoutCapture::capture({pos, deltaBytes}));
+      children.emplace_back(
+          EncodingLayoutCapture::capture({pos, deltaBytes}, options));
 
       pos += deltaBytes;
 
       children.emplace_back(
-          EncodingLayoutCapture::capture({pos, restatementBytes}));
+          EncodingLayoutCapture::capture({pos, restatementBytes}, options));
 
       pos += restatementBytes;
 
       children.emplace_back(
           EncodingLayoutCapture::capture(
-              {pos, encoding.size() - (pos - encoding.data())}));
+              {pos, encoding.size() - (pos - encoding.data())}, options));
       break;
     }
     case EncodingType::Nullable: {
-      const char* pos = encoding.data() + kEncodingPrefixSize;
+      const char* pos = encoding.data() + prefixSize;
       const uint32_t dataBytes = encoding::readUint32(pos);
 
       // For nullable encodings we only capture the data encoding part, so we
       // are "overwriting" the current captured node with the nested data node.
-      return EncodingLayoutCapture::capture({pos, dataBytes});
+      return EncodingLayoutCapture::capture({pos, dataBytes}, options);
     }
     case EncodingType::Sentinel: {
       // For sentinel encodings we only capture the data encoding part, so we
       // are "overwriting" the current captured node with the nested data node.
       return EncodingLayoutCapture::capture(
-          encoding.substr(kEncodingPrefixSize + 8));
+          encoding.substr(prefixSize + 8), options);
     }
   }
 

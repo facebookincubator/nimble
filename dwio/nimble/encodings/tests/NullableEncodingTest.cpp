@@ -334,6 +334,14 @@ TEST_F(NullableEncodingSliceTest, invalidSliceRange) {
     NIMBLE_ASSERT_THROW(
         nimble::NullableEncoding<int32_t>::slice(
             encoded,
+            /*offset=*/0,
+            /*length=*/0,
+            invalidSliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::NullableEncoding<int32_t>::slice(
+            encoded,
             /*offset=*/8,
             /*length=*/0,
             invalidSliceBuffer,
