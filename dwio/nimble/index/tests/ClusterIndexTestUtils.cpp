@@ -18,7 +18,6 @@
 
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
-#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/tablet/ChunkStatsGenerated.h"
 #include "dwio/nimble/tablet/ClusterIndexGenerated.h"
@@ -69,15 +68,14 @@ std::vector<velox::RowVectorPtr> generateData(
 void writeFile(
     const std::string& filePath,
     const std::vector<velox::RowVectorPtr>& data,
-    ClusterIndexConfig clusterIndexConfig,
+    std::shared_ptr<const IndexConfig> clusterIndexConfig,
     velox::memory::MemoryPool& pool,
     std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory) {
   NIMBLE_CHECK(!data.empty(), "Data must not be empty");
 
   VeloxWriterOptions options;
   options.enableChunking = true;
-  options.clusterIndexConfig =
-      facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
+  options.clusterIndexConfig = std::move(clusterIndexConfig);
   if (flushPolicyFactory) {
     options.flushPolicyFactory = std::move(flushPolicyFactory);
   }

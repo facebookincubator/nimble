@@ -98,13 +98,13 @@ struct VeloxWriterOptions {
   /// pruning.
   /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   /// production tables without consulting the Nimble team (oncall: dwios).
-  std::optional<index::IndexConfig> clusterIndexConfig;
+  std::shared_ptr<const index::IndexConfig> clusterIndexConfig;
 
-  /// Dense index configurations. Each configuration creates one independent
-  /// index through its named factory.
+  /// Dense index configurations, grouped by factory name. Each factory creates
+  /// one writer that may produce multiple logical indexes.
   /// EXPERIMENTAL: Dense indexes are not production-ready. Do not enable for
   /// production tables without consulting the Nimble team (oncall: dwios).
-  std::vector<index::IndexConfig> denseIndexConfigs;
+  std::vector<std::shared_ptr<const index::IndexConfig>> denseIndexConfigs;
 
   /// Columns that should be encoded as flat maps. Maps column name to a set
   /// of predefined key strings. When the set is empty, the column is

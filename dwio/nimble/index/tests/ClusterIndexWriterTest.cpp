@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/KeyChunkDecoder.h"
@@ -61,6 +62,38 @@ class ClusterIndexWriterTest : public testing::Test,
   static constexpr std::string_view kCol1{"col1"};
   static constexpr std::string_view kCol2{"col2"};
 
+  static std::shared_ptr<const IndexConfig> buildIndexConfig(
+      std::vector<std::string> columns,
+      EncodingLayout encodingLayout =
+          EncodingLayout{
+              EncodingType::Prefix,
+              {},
+              CompressionType::Uncompressed},
+      std::vector<SortOrder> sortOrders = {},
+      bool enforceKeyOrder = false,
+      bool noDuplicateKey = false,
+      uint64_t maxRowsPerKeyChunk = 10'000,
+      CompressionType keyChunkCompressionType = CompressionType::Uncompressed) {
+    auto builder = ClusterIndexConfigBuilder{}
+                       .withKeyColumns(std::move(columns))
+                       .withEncodingLayout(std::move(encodingLayout))
+                       .withSortOrders(std::move(sortOrders))
+                       .withEnforceKeyOrder(enforceKeyOrder)
+                       .withMaxRowsPerKeyChunk(maxRowsPerKeyChunk)
+                       .withKeyChunkCompressionType(keyChunkCompressionType);
+    if (noDuplicateKey) {
+      builder.withNoDuplicateKey(true);
+    }
+    return builder.build();
+  }
+
+  static std::unique_ptr<ClusterIndexWriter> createWriter(
+      const std::shared_ptr<const IndexConfig>& config,
+      const velox::TypePtr& type,
+      velox::memory::MemoryPool* pool) {
+    return ClusterIndexWriter::create(*config, type, pool);
+  }
+
   void SetUp() override {
     type_ = velox::ROW(
         {{std::string(kCol0), velox::VARCHAR()},
@@ -77,7 +110,7 @@ class ClusterIndexWriterTest : public testing::Test,
         pool_.get());
   }
 
-  static ClusterIndexConfig indexConfig(
+  static std::shared_ptr<const IndexConfig> indexConfig(
       EncodingType encodingType = EncodingType::Prefix) {
     EncodingLayout layout = encodingType == EncodingType::Prefix
         ? EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}
@@ -87,18 +120,26 @@ class ClusterIndexWriterTest : public testing::Test,
               CompressionType::Zstd,
               {EncodingLayout{
                   EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
-    return ClusterIndexConfig{
-        .columns = {std::string(kCol1)}, .encodingLayout = layout};
+    return buildIndexConfig({std::string(kCol1)}, std::move(layout));
+  }
+
+  static std::shared_ptr<const IndexConfig> orderedIndexConfig(
+      bool noDuplicateKey) {
+    return buildIndexConfig(
+        {std::string(kCol1)},
+        EncodingLayout{
+            EncodingType::Trivial,
+            {},
+            CompressionType::Uncompressed,
+            {EncodingLayout{
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        {},
+        true,
+        noDuplicateKey);
   }
 
   velox::RowTypePtr type_;
 };
-
-TEST_F(ClusterIndexWriterTest, createWithNoConfig) {
-  auto type = velox::ROW({{"col0", velox::INTEGER()}});
-  auto writer = ClusterIndexWriter::create(std::nullopt, type, pool_.get());
-  EXPECT_EQ(writer, nullptr);
-}
 
 TEST_F(ClusterIndexWriterTest, createWithValidConfig) {
   auto type = velox::ROW({{"col0", velox::INTEGER()}});
@@ -120,8 +161,11 @@ TEST_F(ClusterIndexWriterTest, createWithValidConfig) {
                 compressionType,
                 {EncodingLayout{
                     EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
-      ClusterIndexConfig config{.columns = {"col0"}, .encodingLayout = layout};
-      auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+      auto config = ClusterIndexConfigBuilder{}
+                        .withKeyColumns({"col0"})
+                        .withEncodingLayout(std::move(layout))
+                        .build();
+      auto writer = createWriter(config, type_, pool_.get());
       EXPECT_NE(writer, nullptr);
     }
   }
@@ -132,34 +176,42 @@ TEST_F(ClusterIndexWriterTest, createWithInvalidConfig) {
 
   {
     SCOPED_TRACE("non-existent column");
-    ClusterIndexConfig config{
-        .columns = {"non_existent_col"},
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial, {}, CompressionType::Uncompressed}};
+    auto config =
+        ClusterIndexConfigBuilder{}
+            .withKeyColumns({"non_existent_col"})
+            .withEncodingLayout(
+                EncodingLayout{
+                    EncodingType::Trivial, {}, CompressionType::Uncompressed})
+            .build();
     VELOX_ASSERT_USER_THROW(
-        ClusterIndexWriter::create(config, type, pool_.get()),
-        "Field not found");
+        createWriter(config, type, pool_.get()), "Field not found");
   }
 
   {
     SCOPED_TRACE("non-supported encoding");
-    ClusterIndexConfig config{
-        .columns = {"col0"},
-        .encodingLayout = EncodingLayout{
-            EncodingType::FixedBitWidth, {}, CompressionType::Uncompressed}};
+    auto config = ClusterIndexConfigBuilder{}
+                      .withKeyColumns({"col0"})
+                      .withEncodingLayout(
+                          EncodingLayout{
+                              EncodingType::FixedBitWidth,
+                              {},
+                              CompressionType::Uncompressed})
+                      .build();
     NIMBLE_ASSERT_THROW(
-        ClusterIndexWriter::create(config, type, pool_.get()),
-        "Key stream encoding only supports Prefix or Trivial encoding");
+        createWriter(config, type, pool_.get()),
+        "Index key stream only supports Prefix or Trivial encoding");
   }
 
   {
     SCOPED_TRACE("non-supported key chunk compression");
-    ClusterIndexConfig config{
-        .columns = {"col0"},
-        .keyChunkCompressionType = CompressionType::MetaInternal};
+    auto config =
+        ClusterIndexConfigBuilder{}
+            .withKeyColumns({"col0"})
+            .withKeyChunkCompressionType(CompressionType::MetaInternal)
+            .build();
     NIMBLE_ASSERT_THROW(
-        ClusterIndexWriter::create(config, type, pool_.get()),
-        "Key chunk compression only supports Uncompressed, Zstd, or Lz4");
+        createWriter(config, type, pool_.get()),
+        "Index key chunk compression only supports Uncompressed, Zstd, or Lz4");
   }
 }
 
@@ -193,11 +245,15 @@ TEST_F(ClusterIndexWriterTest, keyChunkCompressionProducesRequestedChunkCodec) {
         CompressionType::Zstd,
         CompressionType::Lz4}) {
     SCOPED_TRACE(toString(compressionType));
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol0)},
-        .keyChunkCompressionType = compressionType,
-    };
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = buildIndexConfig(
+        {std::string(kCol0)},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+        {},
+        false,
+        false,
+        10'000,
+        compressionType);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
     writer->write(batch);
 
@@ -251,11 +307,8 @@ TEST_F(ClusterIndexWriterTest, rejectNullKeys) {
   // Test that null values in key columns are rejected
   {
     SCOPED_TRACE("null in key column throws");
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = indexConfig();
+    auto writer = createWriter(config, type_, pool_.get());
 
     auto batch = makeRowVector(
         {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
@@ -271,11 +324,8 @@ TEST_F(ClusterIndexWriterTest, rejectNullKeys) {
   // Test multiple nulls in key column
   {
     SCOPED_TRACE("multiple nulls in key column");
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = indexConfig();
+    auto writer = createWriter(config, type_, pool_.get());
 
     auto batch = makeRowVector(
         {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
@@ -292,11 +342,8 @@ TEST_F(ClusterIndexWriterTest, rejectNullKeys) {
   // Test no nulls passes validation
   {
     SCOPED_TRACE("no nulls in key column passes");
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = indexConfig();
+    auto writer = createWriter(config, type_, pool_.get());
 
     auto batch = makeRowVector(
         {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
@@ -317,41 +364,33 @@ TEST_F(ClusterIndexWriterTest, multiColumnWithDifferentSortOrders) {
 
   {
     SCOPED_TRACE("valid: empty sort orders uses default");
-    ClusterIndexConfig config{
-        .columns = {"col0", "col1"},
-        .sortOrders = {},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writer = ClusterIndexWriter::create(config, type, pool_.get());
+    auto config = buildIndexConfig({"col0", "col1"});
+    auto writer = createWriter(config, type, pool_.get());
     EXPECT_NE(writer, nullptr);
   }
 
   {
     SCOPED_TRACE("invalid: sort orders size mismatch (fewer)");
-    ClusterIndexConfig config{
-        .columns = {"col0", "col1", "col2"},
-        .sortOrders =
-            {SortOrder{.ascending = true}, SortOrder{.ascending = false}},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto config = buildIndexConfig(
+        {"col0", "col1", "col2"},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+        {SortOrder{.ascending = true}, SortOrder{.ascending = false}});
     NIMBLE_ASSERT_THROW(
-        ClusterIndexWriter::create(config, type, pool_.get()),
-        "sortOrders and columns must have the same size");
+        createWriter(config, type, pool_.get()),
+        "Cluster index columns and sort orders must have the same size");
   }
 
   {
     SCOPED_TRACE("invalid: sort orders size mismatch (more)");
-    ClusterIndexConfig config{
-        .columns = {"col0", "col1"},
-        .sortOrders =
-            {SortOrder{.ascending = true},
-             SortOrder{.ascending = false},
-             SortOrder{.ascending = true}},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto config = buildIndexConfig(
+        {"col0", "col1"},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+        {SortOrder{.ascending = true},
+         SortOrder{.ascending = false},
+         SortOrder{.ascending = true}});
     NIMBLE_ASSERT_THROW(
-        ClusterIndexWriter::create(config, type, pool_.get()),
-        "sortOrders and columns must have the same size");
+        createWriter(config, type, pool_.get()),
+        "Cluster index columns and sort orders must have the same size");
   }
 
   // Data test: write data with multiple columns and different sort orders,
@@ -367,13 +406,12 @@ TEST_F(ClusterIndexWriterTest, multiColumnWithDifferentSortOrders) {
         velox::core::kDescNullsLast,
         velox::core::kAscNullsLast};
 
-    ClusterIndexConfig config{
-        .columns = {"col0", "col1", "col2"},
-        .sortOrders = sortOrders,
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
+    auto config = buildIndexConfig(
+        {"col0", "col1", "col2"},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd},
+        sortOrders);
 
-    auto writer = ClusterIndexWriter::create(config, type, pool_.get());
+    auto writer = createWriter(config, type, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     // Create input data with 3 rows.
@@ -396,50 +434,32 @@ TEST_F(ClusterIndexWriterTest, multiColumnWithDifferentSortOrders) {
     auto batch = makeRowVector({"col0"}, {makeFlatVector<int32_t>({1, 2, 3})});
 
     // Write with ascending order.
-    ClusterIndexConfig configAsc{
-        .columns = {"col0"},
-        .sortOrders = {SortOrder{.ascending = true}},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writerAsc =
-        ClusterIndexWriter::create(configAsc, singleColType, pool_.get());
+    auto configAsc = buildIndexConfig(
+        {"col0"},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd},
+        {SortOrder{.ascending = true}});
+    auto writerAsc = createWriter(configAsc, singleColType, pool_.get());
     writerAsc->write(batch);
 
     // Write with descending order.
-    ClusterIndexConfig configDesc{
-        .columns = {"col0"},
-        .sortOrders = {SortOrder{.ascending = false}},
-        .encodingLayout =
-            EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd}};
-    auto writerDesc =
-        ClusterIndexWriter::create(configDesc, singleColType, pool_.get());
+    auto configDesc = buildIndexConfig(
+        {"col0"},
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Zstd},
+        {SortOrder{.ascending = false}});
+    auto writerDesc = createWriter(configDesc, singleColType, pool_.get());
     writerDesc->write(batch);
   }
 }
 
 TEST_F(ClusterIndexWriterTest, emptyWrite) {
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol1)},
-      .encodingLayout = EncodingLayout{
-          EncodingType::Trivial,
-          {},
-          CompressionType::Uncompressed,
-          {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto config = indexConfig(EncodingType::Trivial);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 }
 
 TEST_F(ClusterIndexWriterTest, writeEmptyVectorOnly) {
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol1)},
-      .encodingLayout = EncodingLayout{
-          EncodingType::Trivial,
-          {},
-          CompressionType::Uncompressed,
-          {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto config = indexConfig(EncodingType::Trivial);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   // Write a single empty vector.
@@ -455,15 +475,8 @@ TEST_F(ClusterIndexWriterTest, writeEmptyVectorOnly) {
 // Test writing empty vectors at different positions: beginning, middle, and
 // end.
 TEST_F(ClusterIndexWriterTest, writeEmptyVectorAtDifferentPositions) {
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol1)},
-      .encodingLayout = EncodingLayout{
-          EncodingType::Trivial,
-          {},
-          CompressionType::Uncompressed,
-          {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto config = indexConfig(EncodingType::Trivial);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   auto emptyBatch = makeRowVector(
@@ -501,17 +514,18 @@ TEST_F(ClusterIndexWriterTest, writeEmptyVectorAtDifferentPositions) {
 TEST_F(ClusterIndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = enforceKeyOrder,
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
+    auto config = buildIndexConfig(
+        {std::string(kCol1)},
+        EncodingLayout{
             EncodingType::Trivial,
             {},
             CompressionType::Uncompressed,
             {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        {},
+        enforceKeyOrder,
+        enforceKeyOrder);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     auto batch = makeRowVector(
@@ -533,17 +547,18 @@ TEST_F(ClusterIndexWriterTest, enforceKeyOrderInvalidWithinBatch) {
 TEST_F(ClusterIndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
   for (bool enforceKeyOrder : {true, false}) {
     SCOPED_TRACE(fmt::format("enforceKeyOrder: {}", enforceKeyOrder));
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = enforceKeyOrder,
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
+    auto config = buildIndexConfig(
+        {std::string(kCol1)},
+        EncodingLayout{
             EncodingType::Trivial,
             {},
             CompressionType::Uncompressed,
             {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        {},
+        enforceKeyOrder,
+        enforceKeyOrder);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     auto batch1 = makeRowVector(
@@ -571,17 +586,18 @@ TEST_F(ClusterIndexWriterTest, enforceKeyOrderInvalidAcrossBatches) {
 TEST_F(ClusterIndexWriterTest, enforceKeyOrderDuplicateKeys) {
   // When enforceKeyOrder=true and noDuplicateKey=true, duplicate keys should
   // be rejected.
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol1)},
-      .enforceKeyOrder = true,
-      .noDuplicateKey = true,
-      .encodingLayout = EncodingLayout{
+  auto config = buildIndexConfig(
+      {std::string(kCol1)},
+      EncodingLayout{
           EncodingType::Trivial,
           {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+      {},
+      true,
+      true);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   // Batch with duplicate keys (1, 1, 2, 3, 3)
@@ -597,71 +613,35 @@ TEST_F(ClusterIndexWriterTest, enforceKeyOrderDuplicateKeys) {
 }
 
 TEST_F(ClusterIndexWriterTest, noDuplicateKey) {
-  // Test 1: When only noDuplicateKey=true (enforceKeyOrder=false), no checking
-  // is performed - duplicates and out-of-order keys are allowed
+  // noDuplicateKey only affects order validation when enforceKeyOrder is set.
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
+    auto config = buildIndexConfig(
+        {std::string(kCol1)},
+        EncodingLayout{
             EncodingType::Trivial,
             {},
             CompressionType::Uncompressed,
             {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+                EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+        {},
+        false,
+        true);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
-    // Batch with duplicate keys (1, 1, 2, 3, 3) - should succeed since
-    // enforceKeyOrder=false
     auto batch = makeRowVector(
         {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
-        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
-         makeFlatVector<int32_t>({1, 1, 2, 3, 3}),
-         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
-
+        {makeFlatVector<velox::StringView>({"a", "b", "c"}),
+         makeFlatVector<int32_t>({2, 1, 1}),
+         makeFlatVector<velox::StringView>({"d", "e", "f"})});
     EXPECT_NO_THROW(writer->write(batch));
   }
 
-  // Test 2: When only noDuplicateKey=true, out-of-order keys are also allowed
-  {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
-    ASSERT_NE(writer, nullptr);
-
-    // Batch with out-of-order keys (5, 4, 3, 2, 1) - should succeed since
-    // enforceKeyOrder=false
-    auto batch = makeRowVector(
-        {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
-        {makeFlatVector<velox::StringView>({"a", "b", "c", "d", "e"}),
-         makeFlatVector<int32_t>({5, 4, 3, 2, 1}),
-         makeFlatVector<velox::StringView>({"f", "g", "h", "i", "j"})});
-
-    EXPECT_NO_THROW(writer->write(batch));
-  }
-
-  // Test 3: When enforceKeyOrder=true and noDuplicateKey=true, duplicate keys
+  // When enforceKeyOrder=true and noDuplicateKey=true, duplicate keys
   // are rejected
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = true,
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = orderedIndexConfig(true);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     // Batch with duplicate keys (1, 1, 2, 3, 3) - should fail
@@ -679,17 +659,8 @@ TEST_F(ClusterIndexWriterTest, noDuplicateKey) {
   // Test 4: When enforceKeyOrder=true and noDuplicateKey=true, duplicates
   // across batches are rejected
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = true,
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = orderedIndexConfig(true);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     auto batch1 = makeRowVector(
@@ -714,17 +685,8 @@ TEST_F(ClusterIndexWriterTest, noDuplicateKey) {
   // Test 5: When enforceKeyOrder=true and noDuplicateKey=true, strictly
   // ascending keys succeed
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = true,
-        .noDuplicateKey = true,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = orderedIndexConfig(true);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     auto batch1 = makeRowVector(
@@ -746,17 +708,8 @@ TEST_F(ClusterIndexWriterTest, noDuplicateKey) {
   // Test 6: When enforceKeyOrder=true but noDuplicateKey=false, duplicates are
   // allowed
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = true,
-        .noDuplicateKey = false,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = orderedIndexConfig(false);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     // Batch with duplicate keys (1, 1, 2, 3, 3) - should succeed
@@ -772,17 +725,8 @@ TEST_F(ClusterIndexWriterTest, noDuplicateKey) {
   // Test 7: When enforceKeyOrder=true but noDuplicateKey=false, out-of-order
   // keys are still rejected
   {
-    ClusterIndexConfig config{
-        .columns = {std::string(kCol1)},
-        .enforceKeyOrder = true,
-        .noDuplicateKey = false,
-        .encodingLayout = EncodingLayout{
-            EncodingType::Trivial,
-            {},
-            CompressionType::Uncompressed,
-            {EncodingLayout{
-                EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto config = orderedIndexConfig(false);
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     // Batch with out-of-order keys (5, 4, 3, 2, 1) - should fail
@@ -848,7 +792,7 @@ class ClusterIndexWriterDataTest
         pool_.get());
   }
 
-  ClusterIndexConfig indexConfigWithSortOrder(
+  std::shared_ptr<const IndexConfig> indexConfigWithSortOrder(
       EncodingType encodingType = EncodingType::Prefix) const {
     EncodingLayout layout{
         EncodingType::Trivial, {}, CompressionType::Uncompressed};
@@ -869,10 +813,8 @@ class ClusterIndexWriterDataTest
           {EncodingLayout{
               EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
     }
-    return ClusterIndexConfig{
-        .columns = {std::string(kCol1)},
-        .sortOrders = {sortOrder()},
-        .encodingLayout = layout};
+    return buildIndexConfig(
+        {std::string(kCol1)}, std::move(layout), {sortOrder()});
   }
 
   // Creates a row vector with the given index column values and
@@ -940,7 +882,7 @@ TEST_P(ClusterIndexWriterDataTest, writeAndFinishStripeNonChunked) {
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     for (const auto& batchData : testCase.batches) {
@@ -974,7 +916,7 @@ TEST_P(ClusterIndexWriterDataTest, writeAndNewStripeMultiBatch) {
 
   for (const auto& testCase : testCases) {
     SCOPED_TRACE(testCase.debugString());
-    auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+    auto writer = createWriter(config, type_, pool_.get());
     ASSERT_NE(writer, nullptr);
 
     for (const auto& batchData : testCase.batches) {
@@ -996,9 +938,8 @@ TEST_P(ClusterIndexWriterDataTest, multiColumnIndex) {
             CompressionType::Zstd,
             {EncodingLayout{
                 EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
-  ClusterIndexConfig config{
-      .columns = {"col0", "col1"}, .encodingLayout = layout};
-  auto writer = ClusterIndexWriter::create(config, type, pool_.get());
+  auto config = buildIndexConfig({"col0", "col1"}, std::move(layout));
+  auto writer = createWriter(config, type, pool_.get());
 
   auto batch = makeRowVector(
       {"col0", "col1"},
@@ -1010,7 +951,7 @@ TEST_P(ClusterIndexWriterDataTest, multiColumnIndex) {
 
 TEST_P(ClusterIndexWriterDataTest, close) {
   auto config = indexConfig(encodingType());
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3}));
@@ -1025,7 +966,7 @@ TEST_P(ClusterIndexWriterDataTest, close) {
 
 TEST_P(ClusterIndexWriterDataTest, writeAfterClose) {
   auto config = indexConfig(encodingType());
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3}));
@@ -1075,16 +1016,17 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_F(ClusterIndexWriterTest, enforceKeyOrderWithEmptyKeys) {
   // Empty strings are valid encoded key values. Verify ordering is enforced
   // correctly when keys include empty strings.
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol0)},
-      .enforceKeyOrder = true,
-      .encodingLayout = EncodingLayout{
+  auto config = buildIndexConfig(
+      {std::string(kCol0)},
+      EncodingLayout{
           EncodingType::Trivial,
           {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+      {},
+      true);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   // Batch with empty string key followed by non-empty keys.
@@ -1109,16 +1051,17 @@ TEST_F(ClusterIndexWriterTest, enforceKeyOrderWithEmptyKeys) {
 TEST_F(ClusterIndexWriterTest, enforceKeyOrderAllEmptyKeys) {
   // All keys are empty strings — should be accepted when duplicates are
   // allowed.
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol0)},
-      .enforceKeyOrder = true,
-      .encodingLayout = EncodingLayout{
+  auto config = buildIndexConfig(
+      {std::string(kCol0)},
+      EncodingLayout{
           EncodingType::Trivial,
           {},
           CompressionType::Uncompressed,
           {EncodingLayout{
-              EncodingType::Trivial, {}, CompressionType::Uncompressed}}}};
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+              EncodingType::Trivial, {}, CompressionType::Uncompressed}}},
+      {},
+      true);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   auto batch = makeRowVector(
@@ -1141,13 +1084,14 @@ TEST_P(ClusterIndexWriterChunkTest, maxRowsPerKeyChunk) {
   const uint64_t maxRowsPerKeyChunk = GetParam();
   constexpr uint32_t kNumRows = 100;
 
-  ClusterIndexConfig config{
-      .columns = {std::string(kCol1)},
-      .sortOrders = {SortOrder{.ascending = true}},
-      .enforceKeyOrder = true,
-      .maxRowsPerKeyChunk = maxRowsPerKeyChunk,
-  };
-  auto writer = ClusterIndexWriter::create(config, type_, pool_.get());
+  auto config = buildIndexConfig(
+      {std::string(kCol1)},
+      EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+      {SortOrder{.ascending = true}},
+      true,
+      false,
+      maxRowsPerKeyChunk);
+  auto writer = createWriter(config, type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   // Write kNumRows sorted integer keys.
@@ -1277,11 +1221,6 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<uint64_t>& info) {
       return fmt::format("maxRowsPerKeyChunk_{}", info.param);
     });
-
-TEST_F(ClusterIndexWriterTest, defaultMaxRowsPerKeyChunk) {
-  ClusterIndexConfig config{.columns = {std::string(kCol1)}};
-  EXPECT_EQ(config.maxRowsPerKeyChunk, 10'000);
-}
 
 } // namespace
 } // namespace facebook::nimble::index::test

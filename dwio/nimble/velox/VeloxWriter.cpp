@@ -793,10 +793,10 @@ std::unique_ptr<index::IndexWriter> VeloxWriter::createClusterIndexWriter(
     const VeloxWriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
-  if (!options.clusterIndexConfig.has_value()) {
+  if (options.clusterIndexConfig == nullptr) {
     return nullptr;
   }
-  const auto& config = options.clusterIndexConfig.value();
+  const auto& config = *options.clusterIndexConfig;
   NIMBLE_USER_CHECK_EQ(
       config.family,
       index::IndexFamily::Cluster,
@@ -809,26 +809,46 @@ std::unique_ptr<index::IndexWriter> VeloxWriter::createClusterIndexWriter(
   return writer;
 }
 
-std::vector<std::unique_ptr<index::IndexWriter>>
-VeloxWriter::createDenseIndexWriters(
+std::vector<VeloxWriter::DenseIndexWriter> VeloxWriter::createDenseIndexWriters(
     const VeloxWriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
-  std::vector<std::unique_ptr<index::IndexWriter>> writers;
-  writers.reserve(options.denseIndexConfigs.size());
-  for (const auto& config : options.denseIndexConfigs) {
+  struct ConfigGroup {
+    std::string_view name;
+    std::vector<const index::IndexConfig*> configs;
+  };
+
+  std::vector<ConfigGroup> groups;
+  for (const auto& configPtr : options.denseIndexConfigs) {
+    NIMBLE_USER_CHECK_NOT_NULL(configPtr, "Dense index config cannot be null");
+    const auto& config = *configPtr;
     NIMBLE_USER_CHECK_EQ(
         config.family,
         index::IndexFamily::Dense,
         "Dense index configuration must use the dense family: {}",
         config.name);
-    const auto* factory = index::denseIndexFactory(config.name);
+    auto group =
+        std::find_if(groups.begin(), groups.end(), [&](const auto& candidate) {
+          return candidate.name == config.name;
+        });
+    if (group == groups.end()) {
+      groups.emplace_back(ConfigGroup{config.name, {}});
+      group = std::prev(groups.end());
+    }
+    group->configs.emplace_back(configPtr.get());
+  }
+
+  std::vector<DenseIndexWriter> writers;
+  writers.reserve(groups.size());
+  for (auto& group : groups) {
+    const auto* factory = index::denseIndexFactory(group.name);
     NIMBLE_USER_CHECK_NOT_NULL(
-        factory, "Unknown dense index factory: {}", config.name);
-    auto writer = factory->createWriter(config, type, pool);
-    NIMBLE_USER_CHECK_NOT_NULL(
-        writer, "Dense index factory returned a null writer: {}", config.name);
-    writers.emplace_back(std::move(writer));
+        factory, "Unknown dense index factory: {}", group.name);
+    auto writer = factory->createWriter(group.configs, type, pool);
+    NIMBLE_CHECK_NOT_NULL(
+        writer, "Dense index factory returned a null writer: {}", group.name);
+    writers.emplace_back(
+        DenseIndexWriter{std::string{group.name}, std::move(writer)});
   }
   return writers;
 }
@@ -894,8 +914,9 @@ VeloxWriter::VeloxWriter(
                          clusterIndexWriter_->flush(
                              writeDataFn, createMetadataFn);
                        }
-                       for (const auto& writer : denseIndexWriters_) {
-                         writer->flush(writeDataFn, createMetadataFn);
+                       for (const auto& denseIndex : denseIndexWriters_) {
+                         denseIndex.writer->flush(
+                             writeDataFn, createMetadataFn);
                        }
                      })
                : nullptr,
@@ -1108,8 +1129,8 @@ void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
   if (clusterIndexWriter_ != nullptr) {
     clusterIndexWriter_->write(input);
   }
-  for (const auto& writer : denseIndexWriters_) {
-    writer->write(input);
+  for (const auto& denseIndex : denseIndexWriters_) {
+    denseIndex.writer->write(input);
   }
 }
 
@@ -1118,27 +1139,26 @@ void VeloxWriter::writeIndexes(
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
   std::vector<index::IndexDescriptor> descriptors;
-  for (size_t i = 0; i < denseIndexWriters_.size(); ++i) {
+  for (const auto& denseIndex : denseIndexWriters_) {
     if (auto descriptor =
-            denseIndexWriters_[i]->close(writeDataFn, createMetadataFn)) {
-      const auto& config = context_->options().denseIndexConfigs[i];
+            denseIndex.writer->close(writeDataFn, createMetadataFn)) {
       NIMBLE_CHECK_EQ(
           descriptor->family,
           index::IndexFamily::Dense,
           "Index writer returned an unexpected family for {}",
-          config.name);
+          denseIndex.name);
       NIMBLE_CHECK_EQ(
           descriptor->name,
-          config.name,
+          denseIndex.name,
           "Index writer returned an unexpected name for {}",
-          config.name);
+          denseIndex.name);
       descriptors.emplace_back(std::move(descriptor.value()));
     }
   }
   if (clusterIndexWriter_ != nullptr) {
     if (auto descriptor =
             clusterIndexWriter_->close(writeDataFn, createMetadataFn)) {
-      const auto& config = context_->options().clusterIndexConfig.value();
+      const auto& config = *context_->options().clusterIndexConfig;
       NIMBLE_CHECK_EQ(
           descriptor->family,
           index::IndexFamily::Cluster,

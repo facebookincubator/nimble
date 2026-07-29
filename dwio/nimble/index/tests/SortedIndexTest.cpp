@@ -19,9 +19,9 @@
 #include <thread>
 
 #include "dwio/nimble/common/tests/GTestUtils.h"
-#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/SortedIndex.h"
+#include "dwio/nimble/index/SortedIndexConfig.h"
 #include "dwio/nimble/index/SortedIndexWriter.h"
 #include "dwio/nimble/index/tests/SortedIndexTestUtils.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -92,10 +92,10 @@ class SortedIndexTestBase {
   void writeFile(
       const std::string& filePath,
       const std::vector<velox::VectorPtr>& batches,
-      SortedIndexConfig indexConfig,
+      std::shared_ptr<const IndexConfig> indexConfig,
       std::optional<uint64_t> flushSize = std::nullopt) {
     VeloxWriterOptions options;
-    options.denseIndexConfigs.push_back(toIndexConfig(std::move(indexConfig)));
+    options.denseIndexConfigs.push_back(std::move(indexConfig));
     if (flushSize.has_value()) {
       options.flushPolicyFactory = [size = flushSize.value()]() {
         return std::make_unique<StripeRawSizeFlushPolicy>(size);
@@ -174,6 +174,14 @@ class SortedIndexTestBase {
     return tempDir_->getPath() + "/" + name;
   }
 
+  static std::unique_ptr<SortedIndexWriter> createWriter(
+      const std::shared_ptr<const IndexConfig>& config,
+      const velox::TypePtr& type,
+      velox::memory::MemoryPool* pool) {
+    const IndexConfig* configs[] = {config.get()};
+    return SortedIndexWriter::create(configs, type, pool);
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
   std::shared_ptr<velox::common::testutil::TempDirectoryPath> tempDir_;
@@ -227,7 +235,7 @@ class SortedIndexParamTest
     return GetParam().columns;
   }
 
-  SortedIndexConfig indexConfig() const {
+  std::shared_ptr<const IndexConfig> indexConfig() const {
     const auto encodingType = GetParam().encodingType;
     auto layout = encodingType == EncodingType::Prefix
         ? EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed}
@@ -237,8 +245,10 @@ class SortedIndexParamTest
               CompressionType::Uncompressed,
               {EncodingLayout{
                   EncodingType::Trivial, {}, CompressionType::Uncompressed}}};
-    return SortedIndexConfig{
-        .columns = columns(), .encodingLayout = std::move(layout)};
+    return SortedIndexConfigBuilder{}
+        .withKeyColumns(columns())
+        .withEncodingLayout(std::move(layout))
+        .build();
   }
 };
 
@@ -426,9 +436,9 @@ TEST_F(SortedIndexTest, multipleIndices) {
   {
     VeloxWriterOptions options;
     options.denseIndexConfigs.push_back(
-        toIndexConfig(SortedIndexConfig{.columns = {"id"}}));
+        SortedIndexConfigBuilder{}.withKeyColumns({"id"}).build());
     options.denseIndexConfigs.push_back(
-        toIndexConfig(SortedIndexConfig{.columns = {"id", "value"}}));
+        SortedIndexConfigBuilder{}.withKeyColumns({"id", "value"}).build());
     writeFile(filePath, rowType(), batches, std::move(options));
   }
 
@@ -445,6 +455,18 @@ TEST_F(SortedIndexTest, multipleIndices) {
 
   EXPECT_EQ(tablet->denseIndex({"value"}), nullptr);
   EXPECT_EQ(tablet->denseIndex({"value", "id"}), nullptr);
+}
+
+TEST_F(SortedIndexTest, rejectsNonSortedIndexName) {
+  const auto config = std::make_shared<const SortedIndexConfig>(
+      std::string{kDenseHashIndexName},
+      std::vector<std::string>{"id"},
+      EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+      0);
+  const IndexConfig* configs[] = {config.get()};
+  NIMBLE_ASSERT_THROW(
+      SortedIndexWriter::create(configs, rowType(), leafPool_.get()),
+      "Sorted index writer must use the built-in sorted index name");
 }
 
 TEST_P(SortedIndexParamTest, duplicateKeys) {
@@ -469,7 +491,7 @@ TEST_P(SortedIndexParamTest, duplicateKeys) {
 
   const auto filePath = tempFilePath("duplicate_keys");
   VeloxWriterOptions options;
-  options.denseIndexConfigs.push_back(toIndexConfig(indexConfig()));
+  options.denseIndexConfigs.push_back(indexConfig());
   writeFile(filePath, rowType(), {batch}, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -560,8 +582,11 @@ TEST_F(SortedIndexTest, duplicateKeysAcrossChunks) {
 
   const auto filePath = tempFilePath("dup_across_chunks");
   VeloxWriterOptions options;
-  SortedIndexConfig config{.columns = {"id"}, .maxRowsPerKeyChunk = 3};
-  options.denseIndexConfigs.push_back(toIndexConfig(std::move(config)));
+  options.denseIndexConfigs.push_back(
+      SortedIndexConfigBuilder{}
+          .withKeyColumns({"id"})
+          .withMaxRowsPerKeyChunk(3)
+          .build());
   writeFile(filePath, rowType(), {batch}, std::move(options));
 
   auto tablet = openTablet(filePath);
@@ -632,58 +657,41 @@ TEST_F(SortedIndexTest, duplicateKeysAcrossChunks) {
   }
 }
 
-TEST_F(SortedIndexTest, createWithEmptyConfigs) {
-  auto writer = SortedIndexWriter::create({}, rowType(), leafPool_.get());
-  EXPECT_EQ(writer, nullptr);
-}
-
 TEST_F(SortedIndexTest, createWithNullPool) {
   NIMBLE_ASSERT_THROW(
-      SortedIndexWriter::create(
-          {SortedIndexConfig{.columns = {"id"}}}, rowType(), nullptr),
+      createWriter(
+          SortedIndexConfigBuilder{}.withKeyColumns({"id"}).build(),
+          rowType(),
+          nullptr),
       "memory pool must not be null");
+}
+
+TEST_F(SortedIndexTest, createWithEmptyConfigs) {
+  EXPECT_EQ(SortedIndexWriter::create({}, rowType(), leafPool_.get()), nullptr);
 }
 
 TEST_F(SortedIndexTest, createWithEmptyColumns) {
   NIMBLE_ASSERT_THROW(
-      SortedIndexWriter::create(
-          {SortedIndexConfig{.columns = {}}}, rowType(), leafPool_.get()),
+      createWriter(
+          SortedIndexConfigBuilder{}.build(), rowType(), leafPool_.get()),
       "Sorted index must have at least one column");
 }
 
 TEST_F(SortedIndexTest, createWithNonExistentColumn) {
   VELOX_ASSERT_USER_THROW(
-      SortedIndexWriter::create(
-          {SortedIndexConfig{.columns = {"non_existent"}}},
+      createWriter(
+          SortedIndexConfigBuilder{}.withKeyColumns({"non_existent"}).build(),
           rowType(),
           leafPool_.get()),
       "Field not found");
 }
 
-TEST_F(SortedIndexTest, createWithDuplicateColumns) {
-  NIMBLE_ASSERT_THROW(
-      SortedIndexWriter::create(
-          {SortedIndexConfig{.columns = {"id"}},
-           SortedIndexConfig{.columns = {"id"}}},
-          rowType(),
-          leafPool_.get()),
-      "Duplicate sorted index columns");
-
-  // Same columns in different order are allowed.
-  auto writer = SortedIndexWriter::create(
-      {SortedIndexConfig{.columns = {"id", "value"}},
-       SortedIndexConfig{.columns = {"value", "id"}}},
-      rowType(),
-      leafPool_.get());
-  EXPECT_NE(writer, nullptr);
-}
-
 TEST_F(SortedIndexTest, rowCountOverflow) {
   auto overflowType = velox::ROW({{"key", velox::INTEGER()}});
 
-  SortedIndexConfig config{.columns = {"key"}};
-  auto writer =
-      SortedIndexWriter::create({config}, overflowType, leafPool_.get());
+  const auto config =
+      SortedIndexConfigBuilder{}.withKeyColumns({"key"}).build();
+  auto writer = createWriter(config, overflowType, leafPool_.get());
   ASSERT_NE(writer, nullptr);
 
   test::SortedIndexWriterTestHelper helper(writer.get());
@@ -710,7 +718,10 @@ TEST_F(SortedIndexTest, indexDataReuseWithSameReader) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("same_reader_reuse");
-  writeFile(filePath, batches, SortedIndexConfig{.columns = {"value"}});
+  writeFile(
+      filePath,
+      batches,
+      SortedIndexConfigBuilder{}.withKeyColumns({"value"}).build());
 
   auto allocator = std::make_shared<velox::memory::MallocAllocator>(
       velox::memory::MemoryAllocator::Options{
@@ -798,7 +809,10 @@ TEST_F(SortedIndexTest, indexDataReuseCrossReaders) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("cross_reader_reuse");
-  writeFile(filePath, batches, SortedIndexConfig{.columns = {"value"}});
+  writeFile(
+      filePath,
+      batches,
+      SortedIndexConfigBuilder{}.withKeyColumns({"value"}).build());
 
   auto allocator = std::make_shared<velox::memory::MallocAllocator>(
       velox::memory::MemoryAllocator::Options{

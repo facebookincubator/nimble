@@ -22,11 +22,16 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
+#include "dwio/nimble/index/ClusterIndexWriter.h"
 #include "dwio/nimble/index/DenseIndexFactory.h"
 #include "dwio/nimble/index/DenseIndexRegistry.h"
+#include "dwio/nimble/index/HashIndexConfig.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexKeyEncoder.h"
+#include "dwio/nimble/index/SortedIndexConfig.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletReader.h"
@@ -56,39 +61,18 @@ enum class FailureStage { kNone, kFlush, kClose };
 
 folly::Synchronized<std::vector<std::string>> lifecycleEvents;
 
-std::shared_ptr<const velox::config::ConfigBase> makeOptions(
-    std::unordered_map<std::string, std::string> options = {}) {
-  return std::make_shared<const velox::config::ConfigBase>(std::move(options));
-}
+struct TestIndexConfig final : IndexConfig {
+  TestIndexConfig(
+      IndexFamily family,
+      std::string name,
+      std::string column = "id",
+      FailureStage failureStage = FailureStage::kNone)
+      : IndexConfig{family, std::move(name)},
+        column{std::move(column)},
+        failureStage{failureStage} {}
 
-class RenamedIndexWriter final : public IndexWriter {
- public:
-  RenamedIndexWriter(std::unique_ptr<IndexWriter> delegate, std::string name)
-      : delegate_{std::move(delegate)}, name_{std::move(name)} {}
-
-  void write(const velox::VectorPtr& input) override {
-    delegate_->write(input);
-  }
-
-  void flush(
-      const WriteDataFn& writeDataFn,
-      const CreateMetadataSectionFn& createMetadataSectionFn) override {
-    delegate_->flush(writeDataFn, createMetadataSectionFn);
-  }
-
-  std::optional<IndexDescriptor> close(
-      const WriteDataFn& writeDataFn,
-      const CreateMetadataSectionFn& createMetadataSectionFn) override {
-    auto descriptor = delegate_->close(writeDataFn, createMetadataSectionFn);
-    if (descriptor.has_value()) {
-      descriptor->name = name_;
-    }
-    return descriptor;
-  }
-
- private:
-  std::unique_ptr<IndexWriter> delegate_;
-  const std::string name_;
+  const std::string column;
+  const FailureStage failureStage;
 };
 
 class TestClusterIndexFactory final : public ClusterIndexFactory {
@@ -101,16 +85,17 @@ class TestClusterIndexFactory final : public ClusterIndexFactory {
       const IndexConfig& config,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const override {
-    NIMBLE_CHECK_NOT_NULL(config.options);
-    const auto column = config.options->get<std::string>("column");
-    NIMBLE_CHECK(column.has_value(), "Cluster index column is missing");
-    auto builtInConfig = toIndexConfig(
-        ClusterIndexConfig{
-            .columns = {column.value()}, .enforceKeyOrder = true});
-    return std::make_unique<RenamedIndexWriter>(
-        clusterIndexFactory(kClusterIndexName)
-            .createWriter(builtInConfig, inputType, pool),
-        std::string{name()});
+    const auto& options = checkedIndexConfig<TestIndexConfig>(config);
+    const ClusterIndexConfig builtInConfig{
+        std::string{name()},
+        {options.column},
+        {},
+        true,
+        false,
+        EncodingLayout{EncodingType::Prefix, {}, CompressionType::Uncompressed},
+        10'000,
+        CompressionType::Uncompressed};
+    return ClusterIndexWriter::create(builtInConfig, inputType, pool);
   }
 
   std::unique_ptr<IndexKeyEncoder> createKeyEncoder(
@@ -131,6 +116,36 @@ class TestClusterIndexFactory final : public ClusterIndexFactory {
   }
 };
 
+class NamedIndexWriter final : public IndexWriter {
+ public:
+  NamedIndexWriter(std::string name, std::unique_ptr<IndexWriter> writer)
+      : name_{std::move(name)}, writer_{std::move(writer)} {}
+
+  void write(const velox::VectorPtr& input) override {
+    writer_->write(input);
+  }
+
+  void flush(
+      const WriteDataFn& writeDataFn,
+      const CreateMetadataSectionFn& createMetadataFn) override {
+    writer_->flush(writeDataFn, createMetadataFn);
+  }
+
+  std::optional<IndexDescriptor> close(
+      const WriteDataFn& writeDataFn,
+      const CreateMetadataSectionFn& createMetadataFn) override {
+    auto descriptor = writer_->close(writeDataFn, createMetadataFn);
+    if (descriptor.has_value()) {
+      descriptor->name = name_;
+    }
+    return descriptor;
+  }
+
+ private:
+  const std::string name_;
+  std::unique_ptr<IndexWriter> writer_;
+};
+
 class HashDelegatingDenseIndexFactory final : public DenseIndexFactory {
  public:
   explicit HashDelegatingDenseIndexFactory(
@@ -142,16 +157,29 @@ class HashDelegatingDenseIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig& config,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr& inputType,
       velox::memory::MemoryPool* pool) const override {
-    NIMBLE_CHECK_NOT_NULL(config.options);
-    const auto column = config.options->get<std::string>("column");
-    NIMBLE_CHECK(column.has_value(), "Dense index column is missing");
-    return std::make_unique<RenamedIndexWriter>(
-        HashIndexWriter::create(
-            {HashIndexConfig{.columns = {column.value()}}}, inputType, pool),
-        std::string{name()});
+    std::vector<std::shared_ptr<const IndexConfig>> builtInConfigs;
+    builtInConfigs.reserve(configs.size());
+    for (const auto* config : configs) {
+      NIMBLE_CHECK_NOT_NULL(config);
+      const auto& options = checkedIndexConfig<TestIndexConfig>(*config);
+      builtInConfigs.emplace_back(
+          std::make_shared<const HashIndexConfig>(
+              std::string{kDenseHashIndexName},
+              std::vector<std::string>{options.column},
+              0.7f,
+              std::nullopt,
+              0));
+    }
+    std::vector<const IndexConfig*> builtInConfigPtrs;
+    builtInConfigPtrs.reserve(builtInConfigs.size());
+    for (const auto& config : builtInConfigs) {
+      builtInConfigPtrs.emplace_back(config.get());
+    }
+    return std::make_unique<NamedIndexWriter>(
+        name_, HashIndexWriter::create(builtInConfigPtrs, inputType, pool));
   }
 
   std::unique_ptr<DenseIndexReader> createReader(
@@ -184,7 +212,7 @@ class ValidationDenseIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig&,
+      std::span<const IndexConfig*>,
       const velox::TypePtr&,
       velox::memory::MemoryPool*) const override {
     NIMBLE_UNREACHABLE("Validation factory does not create writers");
@@ -266,15 +294,13 @@ class LifecycleIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig& config,
+      std::span<const IndexConfig*> configs,
       const velox::TypePtr&,
       velox::memory::MemoryPool*) const override {
-    NIMBLE_CHECK_NOT_NULL(config.options);
-    const auto failureStage = config.options->get<std::string>("failureStage");
-    return std::make_unique<LifecycleIndexWriter>(
-        failureStage == "flush"       ? FailureStage::kFlush
-            : failureStage == "close" ? FailureStage::kClose
-                                      : FailureStage::kNone);
+    NIMBLE_CHECK_EQ(configs.size(), 1);
+    NIMBLE_CHECK_NOT_NULL(configs.front());
+    const auto& config = checkedIndexConfig<TestIndexConfig>(*configs.front());
+    return std::make_unique<LifecycleIndexWriter>(config.failureStage);
   }
 
   std::unique_ptr<DenseIndexReader> createReader(
@@ -295,7 +321,7 @@ class StubDenseIndexFactory final : public DenseIndexFactory {
   }
 
   std::unique_ptr<IndexWriter> createWriter(
-      const IndexConfig&,
+      std::span<const IndexConfig*>,
       const velox::TypePtr&,
       velox::memory::MemoryPool*) const override {
     return std::make_unique<Writer>();
@@ -380,17 +406,11 @@ class IndexFactoryTest : public testing::Test {
         {.shouldCreateParentDirectories = true,
          .shouldThrowOnFileAlreadyExists = false});
     VeloxWriterOptions options;
-    options.clusterIndexConfig = IndexConfig{
-        .family = IndexFamily::Cluster,
-        .name = std::string{kCustomClusterIndexName},
-        .options = makeOptions({{"column", "id"}}),
-    };
+    options.clusterIndexConfig = std::make_shared<const TestIndexConfig>(
+        IndexFamily::Cluster, std::string{kCustomClusterIndexName});
     options.denseIndexConfigs.emplace_back(
-        IndexConfig{
-            .family = IndexFamily::Dense,
-            .name = std::string{kCustomDenseIndexName},
-            .options = makeOptions({{"column", "id"}}),
-        });
+        std::make_shared<const TestIndexConfig>(
+            IndexFamily::Dense, std::string{kCustomDenseIndexName}));
     VeloxWriter writer(rowType(), std::move(file), *rootPool_, options);
     writer.write(makeBatch());
     writer.close();
@@ -563,10 +583,8 @@ TEST_F(IndexFactoryTest, concurrentFactoryAccess) {
 TEST_F(IndexFactoryTest, indexWriteFailurePoisonsWriter) {
   VeloxWriterOptions options;
   options.denseIndexConfigs.emplace_back(
-      IndexConfig{
-          .family = IndexFamily::Dense,
-          .name = std::string{kFailingDenseIndexName},
-      });
+      std::make_shared<const TestIndexConfig>(
+          IndexFamily::Dense, std::string{kFailingDenseIndexName}));
   auto writer = makeWriter("failing_writer", std::move(options));
 
   NIMBLE_ASSERT_THROW(
@@ -578,10 +596,8 @@ TEST_F(IndexFactoryTest, indexWriteFailurePoisonsWriter) {
 TEST_F(IndexFactoryTest, rejectInvalidWriterDescriptor) {
   VeloxWriterOptions options;
   options.denseIndexConfigs.emplace_back(
-      IndexConfig{
-          .family = IndexFamily::Dense,
-          .name = std::string{kInvalidDescriptorIndexName},
-      });
+      std::make_shared<const TestIndexConfig>(
+          IndexFamily::Dense, std::string{kInvalidDescriptorIndexName}));
   auto writer = makeWriter("invalid_descriptor", std::move(options));
   writer->write(makeBatch());
 
@@ -590,14 +606,56 @@ TEST_F(IndexFactoryTest, rejectInvalidWriterDescriptor) {
       "Index writer returned an unexpected name for test.dense.invalid_descriptor.v1");
 }
 
+TEST_F(IndexFactoryTest, rejectMismatchedBuiltInConfigType) {
+  VeloxWriterOptions options;
+  options.denseIndexConfigs.emplace_back(
+      std::make_shared<const TestIndexConfig>(
+          IndexFamily::Dense, std::string{kDenseHashIndexName}));
+
+  EXPECT_THROW(
+      makeWriter("mismatched_options", std::move(options)),
+      velox::VeloxRuntimeError);
+}
+
+TEST_F(IndexFactoryTest, rejectInvalidIndexConfigIdentity) {
+  {
+    VeloxWriterOptions options;
+    options.denseIndexConfigs.emplace_back(nullptr);
+    NIMBLE_ASSERT_USER_THROW(
+        makeWriter("null_dense_config", std::move(options)),
+        "Dense index config cannot be null");
+  }
+  {
+    VeloxWriterOptions options;
+    options.clusterIndexConfig = std::make_shared<const TestIndexConfig>(
+        IndexFamily::Dense, std::string{kCustomClusterIndexName});
+    NIMBLE_ASSERT_USER_THROW(
+        makeWriter("wrong_cluster_family", std::move(options)),
+        "Cluster index configuration must use the cluster family");
+  }
+  {
+    VeloxWriterOptions options;
+    options.denseIndexConfigs.emplace_back(
+        std::make_shared<const TestIndexConfig>(
+            IndexFamily::Cluster, std::string{kCustomDenseIndexName}));
+    NIMBLE_ASSERT_USER_THROW(
+        makeWriter("wrong_dense_family", std::move(options)),
+        "Dense index configuration must use the dense family");
+  }
+}
+
 TEST_F(IndexFactoryTest, preserveIndexDescriptorOrder) {
   VeloxWriterOptions options;
   options.denseIndexConfigs.emplace_back(
-      toIndexConfig(HashIndexConfig{.columns = {"id"}}));
+      HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   options.denseIndexConfigs.emplace_back(
-      toIndexConfig(SortedIndexConfig{.columns = {"id"}}));
-  options.clusterIndexConfig = toIndexConfig(
-      ClusterIndexConfig{.columns = {"id"}, .enforceKeyOrder = true});
+      HashIndexConfigBuilder{}.withKeyColumns({"id", "id"}).build());
+  options.denseIndexConfigs.emplace_back(
+      SortedIndexConfigBuilder{}.withKeyColumns({"id"}).build());
+  options.clusterIndexConfig = ClusterIndexConfigBuilder{}
+                                   .withKeyColumns({"id"})
+                                   .withEnforceKeyOrder(true)
+                                   .build();
   auto writer = makeWriter("typed_descriptor_order", std::move(options));
   writer->write(makeBatch());
   writer->close();
@@ -642,14 +700,16 @@ TEST_F(IndexFactoryTest, indexWriterLifecycle) {
     SCOPED_TRACE(testCase.name);
     lifecycleEvents.wlock()->clear();
     VeloxWriterOptions options;
+    const auto failureStage = testCase.failureStage == "flush"
+        ? FailureStage::kFlush
+        : testCase.failureStage == "close" ? FailureStage::kClose
+                                           : FailureStage::kNone;
     options.denseIndexConfigs.emplace_back(
-        IndexConfig{
-            .family = IndexFamily::Dense,
-            .name = std::string{kLifecycleDenseIndexName},
-            .options = testCase.failureStage.empty()
-                ? makeOptions()
-                : makeOptions({{"failureStage", testCase.failureStage}}),
-        });
+        std::make_shared<const TestIndexConfig>(
+            IndexFamily::Dense,
+            std::string{kLifecycleDenseIndexName},
+            "id",
+            failureStage));
     auto writer = makeWriter(testCase.name, std::move(options));
     writer->write(makeBatch());
 

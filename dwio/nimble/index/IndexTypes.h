@@ -16,8 +16,27 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
+
+#include <fmt/format.h>
+
+#include "dwio/nimble/tablet/MetadataBuffer.h"
 
 namespace facebook::nimble::index {
+
+enum class IndexFamily : uint8_t {
+  Cluster,
+  Dense,
+};
+
+std::string_view toString(IndexFamily family);
+
+struct IndexDescriptor {
+  IndexFamily family;
+  std::string name;
+  MetadataSection root;
+};
 
 /// Represents the location of a chunk within a stream.
 /// Offsets are relative to the containing unit:
@@ -50,3 +69,14 @@ struct ChunkLocation {
 };
 
 } // namespace facebook::nimble::index
+
+template <>
+struct fmt::formatter<facebook::nimble::index::IndexFamily>
+    : formatter<std::string_view> {
+  auto format(
+      facebook::nimble::index::IndexFamily family,
+      format_context& context) const {
+    return formatter<std::string_view>::format(
+        facebook::nimble::index::toString(family), context);
+  }
+};

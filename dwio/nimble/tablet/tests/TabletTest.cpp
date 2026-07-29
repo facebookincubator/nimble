@@ -31,8 +31,9 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkStatsGroup.h"
-#include "dwio/nimble/index/IndexConfig.h"
+#include "dwio/nimble/index/HashIndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
+#include "dwio/nimble/index/SortedIndexConfig.h"
 #include "dwio/nimble/index/tests/ClusterIndexTestUtils.h"
 #include "dwio/nimble/tablet/Compression.h"
 #include "dwio/nimble/tablet/Constants.h"
@@ -4172,11 +4173,11 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.denseIndexConfigs.push_back(
-      nimble::index::toIndexConfig(
-          nimble::index::HashIndexConfig{.columns = {"id"}}));
+      nimble::index::HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   writerOptions.denseIndexConfigs.push_back(
-      nimble::index::toIndexConfig(
-          nimble::index::SortedIndexConfig{.columns = {"value"}}));
+      nimble::index::SortedIndexConfigBuilder{}
+          .withKeyColumns({"value"})
+          .build());
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
@@ -4222,8 +4223,7 @@ TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
   nimble::VeloxWriterOptions writerOptions;
   writerOptions.denseIndexConfigs.push_back(
-      nimble::index::toIndexConfig(
-          nimble::index::HashIndexConfig{.columns = {"id"}}));
+      nimble::index::HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);

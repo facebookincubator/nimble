@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/index/BloomFilter.h"
 
+#include <limits>
+
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/common/Exceptions.h"
@@ -134,6 +136,18 @@ TEST_F(BloomFilterTest, bitsPerKeyAffectsSize) {
 TEST_F(BloomFilterTest, bitsPerKeyAccessor) {
   BloomFilter filter(100, 7.5f, leafPool_.get());
   EXPECT_FLOAT_EQ(filter.bitsPerKey(), 7.5f);
+}
+
+TEST_F(BloomFilterTest, invalidBitsPerKey) {
+  for (const auto bitsPerKey :
+       {0.0f,
+        -1.0f,
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN()}) {
+    SCOPED_TRACE(bitsPerKey);
+    EXPECT_THROW(
+        BloomFilter(100, bitsPerKey, leafPool_.get()), NimbleUserError);
+  }
 }
 
 TEST_F(BloomFilterTest, dataSizeMatchesBlocks) {

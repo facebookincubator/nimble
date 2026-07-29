@@ -20,6 +20,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ClusterIndex.h"
 #include "dwio/nimble/index/ClusterIndexWriter.h"
+#include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexFactoryRegistry.h"
 
 namespace facebook::nimble::index {
@@ -44,10 +45,7 @@ class NimbleClusterIndexFactory final : public ClusterIndexFactory {
       velox::memory::MemoryPool* pool) const override {
     NIMBLE_USER_CHECK_EQ(config.family, IndexFamily::Cluster);
     NIMBLE_USER_CHECK_EQ(config.name, name());
-    return ClusterIndexWriter::create(
-        std::optional<ClusterIndexConfig>{toClusterIndexConfig(config)},
-        inputType,
-        pool);
+    return ClusterIndexWriter::create(config, inputType, pool);
   }
 
   std::unique_ptr<IndexKeyEncoder> createKeyEncoder(

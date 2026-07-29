@@ -97,13 +97,17 @@ class VeloxWriter {
   Stats stats() const;
 
  private:
+  struct DenseIndexWriter {
+    std::string name;
+    std::unique_ptr<index::IndexWriter> writer;
+  };
+
   static std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
       const VeloxWriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
 
-  static std::vector<std::unique_ptr<index::IndexWriter>>
-  createDenseIndexWriters(
+  static std::vector<DenseIndexWriter> createDenseIndexWriters(
       const VeloxWriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
@@ -219,7 +223,7 @@ class VeloxWriter {
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;
   const std::unique_ptr<index::IndexWriter> clusterIndexWriter_;
-  const std::vector<std::unique_ptr<index::IndexWriter>> denseIndexWriters_;
+  const std::vector<DenseIndexWriter> denseIndexWriters_;
   const std::unique_ptr<TabletWriter> tabletWriter_;
   // Built once at construction from `options.bufferPolicyFactory`; null if
   // the caller didn't set the factory (legacy FlushPolicy path).

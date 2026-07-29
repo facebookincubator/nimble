@@ -21,15 +21,14 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/index/HashIndex.h"
+#include "dwio/nimble/index/HashIndexConfig.h"
 #include "dwio/nimble/index/HashIndexUtils.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
-#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/index/tests/HashIndexTestUtils.h"
 #include "dwio/nimble/tablet/HashIndexGenerated.h"
 #include "velox/common/base/tests/GTestUtils.h"
 
 #include "velox/common/memory/Memory.h"
-#include "velox/serializers/KeyEncoder.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::nimble::index::test {
@@ -48,8 +47,9 @@ class HashIndexWriterTestBase : public velox::test::VectorTestBase {
          {std::string(kCol2), velox::VARCHAR()}});
   }
 
-  static HashIndexConfig config(std::vector<std::string> columns) {
-    return HashIndexConfig{.columns = std::move(columns)};
+  static std::shared_ptr<const IndexConfig> config(
+      std::vector<std::string> columns) {
+    return HashIndexConfigBuilder{}.withKeyColumns(std::move(columns)).build();
   }
 
   // Creates a row vector with the given key column values.
@@ -190,6 +190,14 @@ class HashIndexWriterTestBase : public velox::test::VectorTestBase {
     EXPECT_EQ(partitionStartBuckets->size(), partitionSections->size());
   }
 
+  std::unique_ptr<HashIndexWriter> createWriter(
+      const std::shared_ptr<const IndexConfig>& config,
+      const velox::TypePtr& type,
+      velox::memory::MemoryPool* pool) const {
+    const IndexConfig* configs[] = {config.get()};
+    return HashIndexWriter::create(configs, type, pool);
+  }
+
   velox::RowTypePtr type_;
   std::vector<std::string> col0Strings_;
 };
@@ -230,8 +238,8 @@ class HashIndexWriterParamTest
     setupType();
   }
 
-  HashIndexConfig config() const {
-    return HashIndexConfig{.columns = GetParam().columns};
+  std::shared_ptr<const IndexConfig> config() const {
+    return HashIndexConfigBuilder{}.withKeyColumns(GetParam().columns).build();
   }
 };
 
@@ -245,96 +253,107 @@ INSTANTIATE_TEST_SUITE_P(
       return fmt::format("columns_{}", fmt::join(info.param.columns, "_"));
     });
 
-TEST_F(HashIndexWriterTest, createWithEmptyConfigs) {
-  auto writer = HashIndexWriter::create({}, type_, pool_.get());
-  EXPECT_EQ(writer, nullptr);
+TEST_F(HashIndexWriterTest, createWithValidConfig) {
+  auto writer = createWriter(config({"col1"}), type_, pool_.get());
+  EXPECT_NE(writer, nullptr);
 }
 
-TEST_F(HashIndexWriterTest, createWithValidConfig) {
-  auto writer = HashIndexWriter::create({config({"col1"})}, type_, pool_.get());
-  EXPECT_NE(writer, nullptr);
+TEST_F(HashIndexWriterTest, createWithEmptyConfigs) {
+  EXPECT_EQ(HashIndexWriter::create({}, type_, pool_.get()), nullptr);
+}
+
+TEST_F(HashIndexWriterTest, multipleIndices) {
+  const std::vector<std::vector<std::vector<std::string>>> testCases{
+      {{"col0"}, {"col1"}},
+      {{"col0"}, {"col1"}, {"col0", "col1"}},
+  };
+
+  for (const auto& columnSets : testCases) {
+    SCOPED_TRACE(fmt::format("indexCount={}", columnSets.size()));
+    std::vector<std::shared_ptr<const IndexConfig>> configs;
+    configs.reserve(columnSets.size());
+    for (const auto& columns : columnSets) {
+      configs.emplace_back(
+          HashIndexConfigBuilder{}.withKeyColumns(columns).build());
+    }
+    std::vector<const IndexConfig*> configPtrs;
+    configPtrs.reserve(configs.size());
+    for (const auto& config : configs) {
+      configPtrs.emplace_back(config.get());
+    }
+
+    auto writer = HashIndexWriter::create(configPtrs, type_, pool_.get());
+    writer->write(makeInput({1, 2, 3, 4, 5}));
+
+    HashIndexWriterTestHelper helper(writer.get());
+    for (size_t i = 0; i < columnSets.size(); ++i) {
+      EXPECT_EQ(helper.numEntries(i), 5);
+    }
+
+    MockSectionStore store;
+    const auto directory = closeAndReadDirectory(*writer, store);
+    validateDirectory(directory, columnSets);
+  }
+}
+
+TEST_F(HashIndexWriterTest, rejectsDuplicateIndexColumns) {
+  const auto first = config({"col1"});
+  const auto second = config({"col1"});
+  const IndexConfig* configs[] = {first.get(), second.get()};
+  NIMBLE_ASSERT_THROW(
+      HashIndexWriter::create(configs, type_, pool_.get()),
+      "Duplicate hash index columns: [col1]");
+}
+
+TEST_F(HashIndexWriterTest, rejectsNonHashIndexName) {
+  const auto config = std::make_shared<const HashIndexConfig>(
+      std::string{kDenseSortedIndexName},
+      std::vector<std::string>{"col1"},
+      0.7f,
+      std::nullopt,
+      0);
+  const IndexConfig* configs[] = {config.get()};
+  NIMBLE_ASSERT_THROW(
+      HashIndexWriter::create(configs, type_, pool_.get()),
+      "Hash index writer must use the built-in hash index name");
 }
 
 TEST_F(HashIndexWriterTest, createWithNullPool) {
   NIMBLE_ASSERT_THROW(
-      HashIndexWriter::create({config({"col1"})}, type_, nullptr),
+      createWriter(config({"col1"}), type_, nullptr),
       "memory pool must not be null");
 }
 
 TEST_F(HashIndexWriterTest, createWithInvalidConfig) {
   {
     SCOPED_TRACE("empty columns");
-    HashIndexConfig config{.columns = {}};
+    const auto invalidConfig = HashIndexConfigBuilder{}.build();
     NIMBLE_ASSERT_THROW(
-        HashIndexWriter::create({config}, type_, pool_.get()),
+        createWriter(invalidConfig, type_, pool_.get()),
         "Hash index must have at least one column");
   }
 
-  {
-    SCOPED_TRACE("zero load factor");
-    HashIndexConfig config{.columns = {"col1"}, .loadFactor = 0.0f};
+  for (const auto loadFactor : {0.0f, -0.5f, 1.5f}) {
+    SCOPED_TRACE(loadFactor);
+    const auto invalidConfig = HashIndexConfigBuilder{}
+                                   .withKeyColumns({"col1"})
+                                   .withLoadFactor(loadFactor)
+                                   .build();
     NIMBLE_ASSERT_THROW(
-        HashIndexWriter::create({config}, type_, pool_.get()),
-        "Load factor must be positive");
-  }
-
-  {
-    SCOPED_TRACE("negative load factor");
-    HashIndexConfig config{.columns = {"col1"}, .loadFactor = -0.5f};
-    NIMBLE_ASSERT_THROW(
-        HashIndexWriter::create({config}, type_, pool_.get()),
-        "Load factor must be positive");
-  }
-
-  {
-    SCOPED_TRACE("load factor > 1.0");
-    HashIndexConfig config{.columns = {"col1"}, .loadFactor = 1.5f};
-    NIMBLE_ASSERT_THROW(
-        HashIndexWriter::create({config}, type_, pool_.get()),
-        "Load factor must be at most 1.0");
+        createWriter(invalidConfig, type_, pool_.get()),
+        "Hash index load factor must be finite and in (0, 1]");
   }
 
   {
     SCOPED_TRACE("non-existent column");
-    HashIndexConfig config{.columns = {"non_existent"}};
+    const auto invalidConfig = config({"non_existent"});
     VELOX_ASSERT_USER_THROW(
-        HashIndexWriter::create({config}, type_, pool_.get()),
-        "Field not found");
+        createWriter(invalidConfig, type_, pool_.get()), "Field not found");
   }
 }
 
-TEST_F(HashIndexWriterTest, createWithDuplicateColumns) {
-  // Exact duplicate columns.
-  NIMBLE_ASSERT_THROW(
-      HashIndexWriter::create(
-          {config({"col1"}), config({"col1"})}, type_, pool_.get()),
-      "Duplicate hash index columns");
-
-  // Duplicate multi-column index.
-  NIMBLE_ASSERT_THROW(
-      HashIndexWriter::create(
-          {config({"col0", "col1"}), config({"col0", "col1"})},
-          type_,
-          pool_.get()),
-      "Duplicate hash index columns");
-
-  // Same columns in different order are allowed (different index).
-  auto writer = HashIndexWriter::create(
-      {config({"col0", "col1"}), config({"col1", "col0"})}, type_, pool_.get());
-  EXPECT_NE(writer, nullptr);
-}
-
-TEST_F(HashIndexWriterTest, createMultipleIndices) {
-  auto writer = HashIndexWriter::create(
-      {config({"col1"}), config({"col0", "col2"})}, type_, pool_.get());
-  ASSERT_NE(writer, nullptr);
-
-  HashIndexWriterTestHelper helper(writer.get());
-  EXPECT_EQ(helper.numAccumulators(), 2);
-}
-
 TEST_P(HashIndexWriterParamTest, writeEmptyVector) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   auto emptyBatch = makeInput({});
@@ -342,7 +361,7 @@ TEST_P(HashIndexWriterParamTest, writeEmptyVector) {
 
   HashIndexWriterTestHelper helper(writer.get());
   EXPECT_EQ(helper.numRows(), 0);
-  EXPECT_EQ(helper.numEntries(0), 0);
+  EXPECT_EQ(helper.numEntries(), 0);
 
   MockSectionStore store;
   EXPECT_FALSE(writer->close(noopWriteDataFn(), store.createFn()).has_value());
@@ -350,14 +369,14 @@ TEST_P(HashIndexWriterParamTest, writeEmptyVector) {
 }
 
 TEST_P(HashIndexWriterParamTest, writeSingleBatch) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3, 4, 5}));
 
   HashIndexWriterTestHelper helper(writer.get());
   EXPECT_EQ(helper.numRows(), 5);
-  EXPECT_EQ(helper.numEntries(0), 5);
+  EXPECT_EQ(helper.numEntries(), 5);
 
   MockSectionStore store;
   auto directory = closeAndReadDirectory(*writer, store);
@@ -371,7 +390,7 @@ TEST_P(HashIndexWriterParamTest, writeSingleBatch) {
 }
 
 TEST_P(HashIndexWriterParamTest, writeMultipleBatches) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({1, 2, 3}));
@@ -380,7 +399,7 @@ TEST_P(HashIndexWriterParamTest, writeMultipleBatches) {
 
   HashIndexWriterTestHelper helper(writer.get());
   EXPECT_EQ(helper.numRows(), 9);
-  EXPECT_EQ(helper.numEntries(0), 9);
+  EXPECT_EQ(helper.numEntries(), 9);
 
   MockSectionStore store;
   auto directory = closeAndReadDirectory(*writer, store);
@@ -394,7 +413,7 @@ TEST_P(HashIndexWriterParamTest, writeMultipleBatches) {
 }
 
 TEST_P(HashIndexWriterParamTest, writeWithEmptyBatchesMixed) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   writer->write(makeInput({}));
@@ -405,7 +424,7 @@ TEST_P(HashIndexWriterParamTest, writeWithEmptyBatchesMixed) {
 
   HashIndexWriterTestHelper helper(writer.get());
   EXPECT_EQ(helper.numRows(), 3);
-  EXPECT_EQ(helper.numEntries(0), 3);
+  EXPECT_EQ(helper.numEntries(), 3);
 
   MockSectionStore store;
   auto directory = closeAndReadDirectory(*writer, store);
@@ -471,8 +490,7 @@ TEST_F(HashIndexWriterTest, rejectNullKeys) {
 
   for (const auto& tc : testCases) {
     SCOPED_TRACE(tc.debugString());
-    auto writer =
-        HashIndexWriter::create({config(tc.columns)}, type_, pool_.get());
+    auto writer = createWriter(config(tc.columns), type_, pool_.get());
     auto batch = makeRowVector(
         {std::string(kCol0), std::string(kCol1), std::string(kCol2)},
         {makeNullableFlatVector<velox::StringView>(tc.col0),
@@ -489,7 +507,7 @@ TEST_F(HashIndexWriterTest, rejectNullKeys) {
 }
 
 TEST_P(HashIndexWriterParamTest, writeAfterCloseThrows) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   writer->write(makeInput({1}));
 
   MockSectionStore store;
@@ -500,7 +518,7 @@ TEST_P(HashIndexWriterParamTest, writeAfterCloseThrows) {
 }
 
 TEST_P(HashIndexWriterParamTest, doubleCloseThrows) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   writer->write(makeInput({1}));
 
   MockSectionStore store;
@@ -512,7 +530,7 @@ TEST_P(HashIndexWriterParamTest, doubleCloseThrows) {
 }
 
 TEST_P(HashIndexWriterParamTest, rowCountOverflow) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
   ASSERT_NE(writer, nullptr);
 
   HashIndexWriterTestHelper helper(writer.get());
@@ -523,26 +541,10 @@ TEST_P(HashIndexWriterParamTest, rowCountOverflow) {
       "Hash index row count exceeds uint32 limit");
 }
 
-TEST_F(HashIndexWriterTest, multipleIndices) {
-  auto writer = HashIndexWriter::create(
-      {config({"col1"}), config({"col0"})}, type_, pool_.get());
-  writer->write(makeInput({1, 2, 3}));
-
-  MockSectionStore store;
-  auto directory = closeAndReadDirectory(*writer, store);
-
-  validateDirectory(directory, {{"col1"}, {"col0"}});
-  // store has: partition for index 0, index 0, partition for index 1, index 1.
-  ASSERT_GE(store.sections.size(), 4);
-  // Index sections are at positions 1 and 3 (after their partitions).
-  validateIndex(store.sections[1], 3, /*expectedNumPartitions=*/1);
-  validateIndex(store.sections[3], 3, /*expectedNumPartitions=*/1);
-}
-
 TEST_F(HashIndexWriterTest, withBloomFilter) {
   struct TestCase {
     std::string name;
-    std::optional<BloomFilterConfig> bloomFilter;
+    std::optional<float> bloomFilterBitsPerKey;
     bool expectBloomFilter;
 
     std::string debugString() const {
@@ -551,17 +553,17 @@ TEST_F(HashIndexWriterTest, withBloomFilter) {
   };
 
   const std::vector<TestCase> testCases = {
-      {"enabled", BloomFilterConfig{}, true},
+      {"enabled", 10.0f, true},
       {"disabled", std::nullopt, false},
   };
 
   for (const auto& tc : testCases) {
     SCOPED_TRACE(tc.debugString());
-    HashIndexConfig indexConfig{
-        .columns = {"col1"},
-        .bloomFilter = tc.bloomFilter,
-    };
-    auto writer = HashIndexWriter::create({indexConfig}, type_, pool_.get());
+    auto builder = HashIndexConfigBuilder{}.withKeyColumns({"col1"});
+    if (tc.bloomFilterBitsPerKey.has_value()) {
+      builder.withBloomFilter(tc.bloomFilterBitsPerKey.value());
+    }
+    auto writer = createWriter(builder.build(), type_, pool_.get());
     writer->write(makeInput({1, 2, 3, 4, 5}));
 
     MockSectionStore store;
@@ -578,16 +580,26 @@ TEST_F(HashIndexWriterTest, withBloomFilter) {
   }
 }
 
+TEST_F(HashIndexWriterTest, rejectsInvalidBloomFilter) {
+  const auto invalidConfig = HashIndexConfigBuilder{}
+                                 .withKeyColumns({"col1"})
+                                 .withBloomFilter(0)
+                                 .build();
+  NIMBLE_ASSERT_THROW(
+      createWriter(invalidConfig, type_, pool_.get()),
+      "Bloom filter bits per key must be finite and positive");
+}
+
 TEST_F(HashIndexWriterTest, withPartitioning) {
-  HashIndexConfig config{
-      .columns = {"col1"},
-      // Very small partition size to force multiple partitions.
-      .maxPartitionSizeBytes = 32,
-  };
-  auto writer = HashIndexWriter::create({config}, type_, pool_.get());
+  const auto indexConfig = HashIndexConfigBuilder{}
+                               .withKeyColumns({"col1"})
+                               .withMaxPartitionSizeBytes(32)
+                               .build();
+  auto writer = createWriter(indexConfig, type_, pool_.get());
 
   // Write enough rows to exceed partition size.
   std::vector<int32_t> values;
+  values.reserve(100);
   for (int i = 0; i < 100; ++i) {
     values.push_back(i);
   }
@@ -620,11 +632,14 @@ TEST_F(HashIndexWriterTest, loadFactorVariations) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
 
-    HashIndexConfig config{
-        .columns = {"col1"}, .loadFactor = testData.loadFactor};
-    auto writer = HashIndexWriter::create({config}, type_, pool_.get());
+    const auto indexConfig = HashIndexConfigBuilder{}
+                                 .withKeyColumns({"col1"})
+                                 .withLoadFactor(testData.loadFactor)
+                                 .build();
+    auto writer = createWriter(indexConfig, type_, pool_.get());
 
     std::vector<int32_t> values;
+    values.reserve(50);
     for (int i = 0; i < 50; ++i) {
       values.push_back(i);
     }
@@ -642,13 +657,13 @@ TEST_F(HashIndexWriterTest, loadFactorVariations) {
 }
 
 TEST_P(HashIndexWriterParamTest, duplicateKeysAllowed) {
-  auto writer = HashIndexWriter::create({config()}, type_, pool_.get());
+  auto writer = createWriter(config(), type_, pool_.get());
 
   writer->write(makeInput({1, 1, 2, 2, 3}));
 
   HashIndexWriterTestHelper helper(writer.get());
   EXPECT_EQ(helper.numRows(), 5);
-  EXPECT_EQ(helper.numEntries(0), 5);
+  EXPECT_EQ(helper.numEntries(), 5);
 
   MockSectionStore store;
   auto directory = closeAndReadDirectory(*writer, store);

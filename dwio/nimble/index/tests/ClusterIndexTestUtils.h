@@ -26,6 +26,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/index/ChunkStatsGroup.h"
 #include "dwio/nimble/index/ClusterIndex.h"
+#include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
@@ -75,7 +76,7 @@ std::vector<velox::RowVectorPtr> generateData(
 void writeFile(
     const std::string& filePath,
     const std::vector<velox::RowVectorPtr>& data,
-    ClusterIndexConfig clusterIndexConfig,
+    std::shared_ptr<const IndexConfig> clusterIndexConfig,
     velox::memory::MemoryPool& pool,
     std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory = nullptr);
 

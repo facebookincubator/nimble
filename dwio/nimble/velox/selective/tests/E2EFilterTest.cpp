@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
@@ -40,7 +41,7 @@ namespace facebook::nimble {
 namespace {
 
 using namespace facebook::velox;
-using index::ClusterIndexConfig;
+using index::ClusterIndexConfigBuilder;
 
 using E2EFilterTestParams =
     std::tuple<bool, bool, bool, bool, bool, bool, bool>;
@@ -382,11 +383,10 @@ class E2EFilterTest
     }
     // Configure index if index columns are specified.
     if (!indexColumns.empty()) {
-      ClusterIndexConfig clusterIndexConfig;
-      clusterIndexConfig.columns = indexColumns;
-      clusterIndexConfig.enforceKeyOrder = true;
-      options.clusterIndexConfig =
-          facebook::nimble::index::toIndexConfig(std::move(clusterIndexConfig));
+      options.clusterIndexConfig = ClusterIndexConfigBuilder{}
+                                       .withKeyColumns(indexColumns)
+                                       .withEnforceKeyOrder(true)
+                                       .build();
     }
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
     // Branch on whether we need forced dictionary encoding, since
