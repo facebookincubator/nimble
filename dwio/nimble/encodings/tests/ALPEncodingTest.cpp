@@ -343,6 +343,126 @@ TYPED_TEST(ALPEncodingTest, headerMetadataUsesVarints) {
   }
 }
 
+TYPED_TEST(ALPEncodingTest, slice) {
+  using DataType = typename TypeParam::data_type;
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint,
+      .fixedBitWidthUseExactBits = true};
+
+  nimble::Vector<DataType> values{this->pool_.get()};
+  for (uint32_t i = 0; i < 128; ++i) {
+    values.push_back(
+        static_cast<DataType>((i % 37) - 18) / static_cast<DataType>(10));
+  }
+
+  const auto serialized = encodeWithLayout<DataType>(
+      *this->buffer_, values, alpWithFixedBitWidthPayloadLayout(), options);
+
+  for (const auto range :
+       {Range{/*offset=*/0, /*length=*/11},
+        Range{/*offset=*/7, /*length=*/19},
+        Range{/*offset=*/64, /*length=*/32},
+        Range{/*offset=*/120, /*length=*/8}}) {
+    SCOPED_TRACE(
+        testing::Message() << "offset=" << range.offset
+                           << " length=" << range.length);
+    nimble::Buffer sliceBuffer{*this->pool_};
+    const auto sliced = nimble::EncodingFactory::slice(
+        serialized, range.offset, range.length, sliceBuffer, options);
+
+    EXPECT_EQ(
+        nimble::EncodingPrefix::encodingType(sliced),
+        nimble::EncodingType::ALP);
+    EXPECT_EQ(
+        nimble::EncodingPrefix::readRowCount(sliced, options.useVarintRowCount),
+        range.length);
+
+    std::vector<velox::BufferPtr> stringBuffers;
+    auto encoding =
+        createEncoding(this->pool_.get(), sliced, options, stringBuffers);
+    nimble::Vector<DataType> result{this->pool_.get(), range.length};
+    encoding->materialize(range.length, result.data());
+    for (uint32_t i = 0; i < range.length; ++i) {
+      SCOPED_TRACE(fmt::format("i={}", i));
+      EXPECT_TRUE(
+          nimble::NimbleCompare<DataType>::equals(
+              result[i], values[range.offset + i]));
+    }
+  }
+}
+
+TYPED_TEST(ALPEncodingTest, rejectsZeroLengthSlice) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint,
+      .fixedBitWidthUseExactBits = true};
+
+  const auto values = this->template toVector<DataType>({1, 2, 3});
+  const auto serialized = encodeWithLayout<DataType>(
+      *this->buffer_, values, alpWithFixedBitWidthPayloadLayout(), options);
+
+  nimble::Buffer sliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::EncodingFactory::slice(
+          serialized,
+          /*offset=*/1,
+          /*length=*/0,
+          sliceBuffer,
+          options),
+      "Cannot slice zero rows.");
+}
+
+TYPED_TEST(ALPEncodingTest, sliceRebasesExceptions) {
+  using DataType = typename TypeParam::data_type;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint,
+      .fixedBitWidthUseExactBits = true};
+
+  nimble::Vector<DataType> values{this->pool_.get(), 128};
+  values.fill(DataType{1.25});
+  values[3] = std::numeric_limits<DataType>::infinity();
+  values[17] = -std::numeric_limits<DataType>::infinity();
+  values[31] = std::numeric_limits<DataType>::quiet_NaN();
+  values[97] = std::numeric_limits<DataType>::infinity();
+
+  const auto serialized = encodeWithLayout<DataType>(
+      *this->buffer_, values, alpWithFixedBitWidthPayloadLayout(), options);
+
+  constexpr uint32_t kOffset{16};
+  constexpr uint32_t kLength{32};
+  nimble::Buffer sliceBuffer{*this->pool_};
+  const auto sliced = nimble::EncodingFactory::slice(
+      serialized, kOffset, kLength, sliceBuffer, options);
+
+  const char* pos = sliced.data() +
+      nimble::EncodingPrefix::prefixSize(sliced, options.useVarintRowCount);
+  const auto header = nimble::detail::alp::readHeader(pos);
+  EXPECT_TRUE(header.hasExceptions);
+  EXPECT_EQ(nimble::varint::readVarint32(&pos), 2);
+  const auto encodedValuesSize = nimble::varint::readVarint32(&pos);
+  pos += encodedValuesSize;
+  // Source exceptions at rows 17 and 31 become slice-local rows 1 and 15.
+  EXPECT_EQ(nimble::encoding::readUint32(pos), 1);
+  EXPECT_EQ(nimble::encoding::readUint32(pos), 15);
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding =
+      createEncoding(this->pool_.get(), sliced, options, stringBuffers);
+  nimble::Vector<DataType> result{this->pool_.get(), kLength};
+  encoding->materialize(kLength, result.data());
+  for (uint32_t i = 0; i < kLength; ++i) {
+    SCOPED_TRACE(fmt::format("i={}", i));
+    EXPECT_TRUE(
+        nimble::NimbleCompare<DataType>::equals(
+            result[i], values[kOffset + i]));
+  }
+}
+
 TYPED_TEST(ALPEncodingTest, roundTripSignedDecimals) {
   using D = typename TypeParam::data_type;
   const nimble::Encoding::Options options{

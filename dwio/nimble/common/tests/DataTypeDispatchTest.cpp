@@ -78,6 +78,11 @@ std::string dispatchNumericDataType(nimble::DataType dataType) {
   NIMBLE_RETURN_BY_NUMERIC_DATA_TYPE(dataType, T, TypeName{}.operator()<T>());
 }
 
+std::string dispatchFloatingPointDataType(nimble::DataType dataType) {
+  NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE(
+      dataType, T, TypeName{}.operator()<T>());
+}
+
 std::string dispatchIntegerDataType(nimble::DataType dataType) {
   NIMBLE_RETURN_BY_INTEGER_DATA_TYPE(dataType, T, TypeName{}.operator()<T>());
 }
@@ -146,6 +151,18 @@ TEST(DataTypeDispatchTest, dispatchesNumericDataTypes) {
   NIMBLE_ASSERT_THROW(
       dispatchNumericDataType(nimble::DataType::String),
       "Unsupported numeric data type");
+}
+
+TEST(DataTypeDispatchTest, dispatchesFloatingPointDataTypes) {
+  EXPECT_EQ(dispatchFloatingPointDataType(nimble::DataType::Float), "float");
+  EXPECT_EQ(dispatchFloatingPointDataType(nimble::DataType::Double), "double");
+
+  NIMBLE_ASSERT_THROW(
+      dispatchFloatingPointDataType(nimble::DataType::Int32),
+      "Unsupported floating point data type");
+  NIMBLE_ASSERT_THROW(
+      dispatchFloatingPointDataType(nimble::DataType::String),
+      "Unsupported floating point data type");
 }
 
 TEST(DataTypeDispatchTest, dispatchesIntegerDataTypes) {
