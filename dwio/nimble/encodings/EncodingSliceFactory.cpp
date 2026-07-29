@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
+#include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -170,6 +171,19 @@ std::string_view sliceConstant(
       ConstantEncoding<T>::slice(encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceDictionary(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_NON_BOOL_DATA_TYPE(
+      dataType,
+      T,
+      DictionaryEncoding<T>::slice(encoded, offset, length, buffer, options));
+}
+
 std::string_view sliceFixedBitWidth(
     std::string_view encoded,
     DataType dataType,
@@ -240,6 +254,9 @@ std::string_view EncodingSliceFactory::slice(
       return sliceTrivial(encoded, dataType, offset, length, buffer, options);
     case EncodingType::RLE:
       return sliceRLE(encoded, dataType, offset, length, buffer, options);
+    case EncodingType::Dictionary:
+      return sliceDictionary(
+          encoded, dataType, offset, length, buffer, options);
     case EncodingType::FixedBitWidth:
       return sliceFixedBitWidth(
           encoded, dataType, offset, length, buffer, options);

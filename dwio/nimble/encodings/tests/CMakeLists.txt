@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-add_library(nimble_encodings_tests_utils TestUtils.cpp)
+add_library(
+  nimble_encodings_tests_utils
+  TestUtils.cpp
+  ../selection/tests/RandomEncodingSelectionPolicy.cpp
+)
 target_link_libraries(nimble_encodings_tests_utils nimble_encodings)
 
 add_library(nimble_encoding_layout_test_helper EncodingLayoutTestHelper.cpp)
@@ -24,6 +28,7 @@ add_executable(
   BlockBitPackingEncodingViewTest.cpp
   ConstantEncodingViewTest.cpp
   ConstantEncodingTest.cpp
+  DictionaryEncodingTest.cpp
   DictionaryEncodingViewTest.cpp
   EncodingLayoutTest.cpp
   EncodingSelectionTest.cpp

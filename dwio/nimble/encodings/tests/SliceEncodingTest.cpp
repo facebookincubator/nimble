@@ -362,6 +362,16 @@ TYPED_TEST(SliceEncodingTypedTest, rejectsZeroLengthRange) {
   NIMBLE_ASSERT_THROW(this->slice(encoded, /*offset=*/0, /*length=*/0), "");
 }
 
+TEST_F(SliceEncodingTest, dictionaryRejectsZeroLengthRange) {
+  const auto values = makeVector<uint32_t>({10, 11, 10, 12});
+  const auto encoded =
+      nimble::test::Encoder<nimble::DictionaryEncoding<uint32_t>>::encode(
+          *buffer_, values);
+
+  NIMBLE_ASSERT_THROW(
+      slice(encoded, /*offset=*/1, /*length=*/0), "Cannot slice zero rows.");
+}
+
 TYPED_TEST(SliceEncodingTypedTest, materializesRandomRanges) {
   using EncodingType = typename TypeParam::EncodingType;
   constexpr uint32_t kIterations{64};

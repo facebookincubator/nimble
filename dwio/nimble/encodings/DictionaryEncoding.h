@@ -23,6 +23,7 @@
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingType.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -84,6 +85,13 @@ class DictionaryEncoding
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 
@@ -476,6 +484,49 @@ std::string_view DictionaryEncoding<T>::encode(
   encoding::writeBytes(serializedAlphabet, pos);
   encoding::writeBytes(serializedIndices, pos);
   NIMBLE_DCHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
+template <typename T>
+std::string_view DictionaryEncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+  NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
+
+  const char* pos = encoded.data() +
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const uint32_t alphabetSize = encoding::readUint32(pos);
+  const std::string_view alphabet{pos, alphabetSize};
+  pos += alphabetSize;
+  const std::string_view indices{pos, static_cast<size_t>(encoded.end() - pos)};
+
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  const auto slicedIndices = EncodingFactory::slice(
+      indices, offset, length, scopedBuffer.get(), options);
+
+  const uint32_t encodingSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount) +
+      sizeof(uint32_t) + alphabet.size() + slicedIndices.size();
+  char* reserved = buffer.reserve(encodingSize);
+  char* writePos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Dictionary,
+      TypeTraits<T>::dataType,
+      length,
+      options.useVarintRowCount,
+      writePos);
+  encoding::writeUint32(alphabet.size(), writePos);
+  encoding::writeBytes(alphabet, writePos);
+  encoding::writeBytes(slicedIndices, writePos);
+  NIMBLE_CHECK_EQ(writePos - reserved, encodingSize, "Encoding size mismatch.");
   return {reserved, encodingSize};
 }
 
