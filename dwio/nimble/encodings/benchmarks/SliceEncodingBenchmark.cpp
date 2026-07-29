@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
@@ -94,26 +95,36 @@ void materializeBenchmark(const std::string& encoded, uint32_t iters) {
   }
 }
 
+Vector<double> makeAlpDouble(uint32_t n = kNumElements) {
+  auto& pool = benchmarkPool();
+  Vector<double> data{pool.get()};
+  data.resize(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    data[i] = static_cast<double>(static_cast<int32_t>(i % 2048) - 1024) / 100;
+  }
+  return data;
+}
+
 } // namespace
 
-#define SLICE_BENCHMARKS(Name, EncodingT, EncodingTypeValue, DataExpr) \
-  BENCHMARK(Slice_##Name, iters) {                                     \
-    std::string encoded;                                               \
-    BENCHMARK_SUSPEND {                                                \
-      const auto data = DataExpr;                                      \
-      encoded = encodeData<EncodingT>(EncodingTypeValue, data);        \
-    }                                                                  \
-    sliceBenchmark(encoded, iters);                                    \
-  }                                                                    \
-  BENCHMARK_RELATIVE(MaterializeEncode_##Name, iters) {                \
-    std::string encoded;                                               \
-    BENCHMARK_SUSPEND {                                                \
-      const auto data = DataExpr;                                      \
-      encoded = encodeData<EncodingT>(EncodingTypeValue, data);        \
-    }                                                                  \
-    materializeEncodeBenchmark<EncodingT, uint32_t>(                   \
-        encoded, EncodingTypeValue, iters);                            \
-  }                                                                    \
+#define SLICE_BENCHMARKS(Name, EncodingT, ValueT, EncodingTypeValue, DataExpr) \
+  BENCHMARK(Slice_##Name, iters) {                                             \
+    std::string encoded;                                                       \
+    BENCHMARK_SUSPEND {                                                        \
+      const auto data = DataExpr;                                              \
+      encoded = encodeData<EncodingT>(EncodingTypeValue, data);                \
+    }                                                                          \
+    sliceBenchmark(encoded, iters);                                            \
+  }                                                                            \
+  BENCHMARK_RELATIVE(MaterializeEncode_##Name, iters) {                        \
+    std::string encoded;                                                       \
+    BENCHMARK_SUSPEND {                                                        \
+      const auto data = DataExpr;                                              \
+      encoded = encodeData<EncodingT>(EncodingTypeValue, data);                \
+    }                                                                          \
+    materializeEncodeBenchmark<EncodingT, ValueT>(                             \
+        encoded, EncodingTypeValue, iters);                                    \
+  }                                                                            \
   BENCHMARK_DRAW_LINE()
 
 #define SLICE_MATERIALIZE_BENCHMARKS(                           \
@@ -139,28 +150,39 @@ void materializeBenchmark(const std::string& encoded, uint32_t iters) {
 SLICE_BENCHMARKS(
     ConstantUint32,
     ConstantEncoding<uint32_t>,
+    uint32_t,
     EncodingType::Constant,
     makeConstant<uint32_t>(42));
 SLICE_BENCHMARKS(
     TrivialUint32,
     TrivialEncoding<uint32_t>,
+    uint32_t,
     EncodingType::Trivial,
     makeRandom<uint32_t>());
 SLICE_BENCHMARKS(
     RLEUint32,
     RLEEncoding<uint32_t>,
+    uint32_t,
     EncodingType::RLE,
     makeRunLength<uint32_t>());
 SLICE_BENCHMARKS(
     FixedBitWidthUint32,
     FixedBitWidthEncoding<uint32_t>,
+    uint32_t,
     EncodingType::FixedBitWidth,
     makeNarrow<uint32_t>(12));
 SLICE_BENCHMARKS(
     BlockBitPackingUint32,
     BlockBitPackingEncoding<uint32_t>,
+    uint32_t,
     EncodingType::BlockBitPacking,
     makeIncreasing<uint32_t>());
+SLICE_BENCHMARKS(
+    ALPDouble,
+    ALPEncoding<double>,
+    double,
+    EncodingType::ALP,
+    makeAlpDouble());
 
 BENCHMARK(Slice_BlockBitPackingUint32PartialBlock, iters) {
   std::string encoded;

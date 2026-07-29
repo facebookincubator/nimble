@@ -248,6 +248,35 @@ namespace facebook::nimble {
 #define NIMBLE_TRY_RETURN_BY_NUMERIC_DATA_TYPE(dataType, Type, expression) \
   NIMBLE_RETURN_BY_NUMERIC_DATA_TYPE_OR(dataType, Type, expression, return {})
 
+#define NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE_OR( \
+    dataType, Type, expression, ...)                  \
+  switch (dataType) {                                 \
+    case ::facebook::nimble::DataType::Float: {       \
+      using Type = float;                             \
+      return (expression);                            \
+    }                                                 \
+    case ::facebook::nimble::DataType::Double: {      \
+      using Type = double;                            \
+      return (expression);                            \
+    }                                                 \
+    default: {                                        \
+      __VA_ARGS__;                                    \
+    }                                                 \
+  }
+
+#define NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE(dataType, Type, expression) \
+  NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE_OR(                               \
+      dataType,                                                               \
+      Type,                                                                   \
+      expression,                                                             \
+      NIMBLE_UNREACHABLE(                                                     \
+          "Unsupported floating point data type {}.", dataType))
+
+#define NIMBLE_TRY_RETURN_BY_FLOATING_POINT_DATA_TYPE( \
+    dataType, Type, expression)                        \
+  NIMBLE_RETURN_BY_FLOATING_POINT_DATA_TYPE_OR(        \
+      dataType, Type, expression, return {})
+
 #define NIMBLE_RETURN_BY_INTEGER_DATA_TYPE_OR(dataType, Type, expression, ...) \
   switch (dataType) {                                                          \
     case ::facebook::nimble::DataType::Int8: {                                 \
