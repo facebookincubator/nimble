@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
@@ -234,8 +235,7 @@ TYPED_TEST(FixedBitWidthEncodingTest, slice) {
             options);
 
     for (const auto range :
-         {Range{/*offset=*/0, /*length=*/0},
-          Range{/*offset=*/0, /*length=*/5},
+         {Range{/*offset=*/0, /*length=*/5},
           Range{/*offset=*/1, /*length=*/7},
           Range{/*offset=*/4, /*length=*/8},
           Range{/*offset=*/27, /*length=*/5}}) {
@@ -265,6 +265,31 @@ TYPED_TEST(FixedBitWidthEncodingTest, slice) {
       EXPECT_EQ(result, expected);
     }
   }
+}
+
+TYPED_TEST(FixedBitWidthEncodingTest, rejectsZeroLengthSlice) {
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = TypeParam::useVarint};
+
+  nimble::Vector<uint32_t> values{this->pool_.get()};
+  for (uint32_t i = 0; i < 32; ++i) {
+    values.push_back(1000 + i);
+  }
+
+  nimble::Buffer sourceBuffer{*this->pool_};
+  const auto encoded =
+      nimble::test::Encoder<nimble::FixedBitWidthEncoding<uint32_t>>::encode(
+          sourceBuffer, values, nimble::CompressionType::Uncompressed, options);
+
+  nimble::Buffer sliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::EncodingFactory::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          sliceBuffer,
+          options),
+      "");
 }
 
 TYPED_TEST(FixedBitWidthEncodingTest, sliceCompressedSource) {

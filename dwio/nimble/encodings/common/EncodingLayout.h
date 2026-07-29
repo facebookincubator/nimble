@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/encodings/common/Encoding.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
 
 namespace facebook::nimble {
@@ -85,7 +86,9 @@ class EncodingLayoutCapture {
   /// It traverses the encoding headers in the stream and produces a serialized
   /// encoding tree layout.
   /// |encoding| - The serialized encoding
-  static EncodingLayout capture(std::string_view encoding);
+  static EncodingLayout capture(
+      std::string_view encoding,
+      const Encoding::Options& options);
 };
 
 } // namespace facebook::nimble

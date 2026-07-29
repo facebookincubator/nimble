@@ -21,6 +21,7 @@
 
 #include "dwio/nimble/common/NimbleException.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
@@ -75,7 +76,7 @@ std::string_view sliceByMaterializing(
   encoding->materialize(length, physicalValues.data());
 
   return encodeValuesWithLayout<T>(
-      EncodingLayoutCapture::capture(encoded),
+      EncodingLayoutCapture::capture(encoded, options),
       {reinterpret_cast<const T*>(physicalValues.data()),
        physicalValues.size()},
       buffer,
@@ -181,6 +182,20 @@ std::string_view sliceFixedBitWidth(
           encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceBlockBitPacking(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_NUMERIC_DATA_TYPE(
+      dataType,
+      T,
+      BlockBitPackingEncoding<T>::slice(
+          encoded, offset, length, buffer, options));
+}
+
 } // namespace
 
 std::string_view EncodingSliceFactory::slice(
@@ -189,15 +204,16 @@ std::string_view EncodingSliceFactory::slice(
     uint32_t length,
     Buffer& buffer,
     const Encoding::Options& options) {
+  const auto encodingType = EncodingPrefix::encodingType(encoded);
   const auto rowCount =
       EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
   NIMBLE_CHECK_LE(offset, rowCount);
   NIMBLE_CHECK_LE(length, rowCount - offset);
+  NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
   if (offset == 0 && length == rowCount) {
     return encoded;
   }
 
-  const auto encodingType = EncodingPrefix::encodingType(encoded);
   const auto dataType = EncodingPrefix::dataType(encoded);
   switch (encodingType) {
     case EncodingType::Constant:
@@ -208,6 +224,9 @@ std::string_view EncodingSliceFactory::slice(
       return sliceRLE(encoded, dataType, offset, length, buffer, options);
     case EncodingType::FixedBitWidth:
       return sliceFixedBitWidth(
+          encoded, dataType, offset, length, buffer, options);
+    case EncodingType::BlockBitPacking:
+      return sliceBlockBitPacking(
           encoded, dataType, offset, length, buffer, options);
     case EncodingType::Nullable:
       return sliceNullable(encoded, dataType, offset, length, buffer, options);

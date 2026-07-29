@@ -398,6 +398,14 @@ TYPED_TEST(RleEncodingTest, invalidSliceRange) {
   NIMBLE_ASSERT_THROW(
       nimble::RLEEncoding<DataType>::slice(
           encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
+  NIMBLE_ASSERT_THROW(
+      nimble::RLEEncoding<DataType>::slice(
+          encoded,
           /*offset=*/5,
           /*length=*/0,
           invalidSliceBuffer,

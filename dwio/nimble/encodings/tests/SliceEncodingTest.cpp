@@ -253,9 +253,22 @@ class SliceEncodingTest : public ::testing::Test {
     const auto sliced = slice(encoded, offset, length);
     auto encoding = createEncoding(sliced);
 
-    EXPECT_EQ(
-        encoding->encodingType(),
-        nimble::test::Encoder<EncodingType>::encodingType());
+    auto expectedEncodingType =
+        nimble::test::Encoder<EncodingType>::encodingType();
+    if constexpr (std::is_same_v<
+                      EncodingType,
+                      nimble::MainlyConstantEncoding<T>>) {
+      const auto fullRange = offset == 0 && length == values.size();
+      bool onlyCommonRows{true};
+      for (uint32_t row = offset; row < offset + length; ++row) {
+        onlyCommonRows &= row % 5 != 2;
+      }
+      if (!fullRange && onlyCommonRows) {
+        expectedEncodingType = nimble::EncodingType::Constant;
+      }
+    }
+
+    EXPECT_EQ(encoding->encodingType(), expectedEncodingType);
     EXPECT_EQ(encoding->dataType(), nimble::TypeTraits<T>::dataType);
     EXPECT_EQ(encoding->rowCount(), length);
 
@@ -338,6 +351,15 @@ TYPED_TEST(SliceEncodingTypedTest, materializesRange) {
       values,
       offset,
       length);
+}
+
+TYPED_TEST(SliceEncodingTypedTest, rejectsZeroLengthRange) {
+  using EncodingType = typename TypeParam::EncodingType;
+  const auto values = this->template makeValuesForEncoding<EncodingType>();
+  const auto encoded =
+      nimble::test::Encoder<EncodingType>::encode(*this->buffer_, values);
+
+  NIMBLE_ASSERT_THROW(this->slice(encoded, /*offset=*/0, /*length=*/0), "");
 }
 
 TYPED_TEST(SliceEncodingTypedTest, materializesRandomRanges) {

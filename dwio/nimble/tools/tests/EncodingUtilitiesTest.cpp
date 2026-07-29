@@ -21,6 +21,8 @@
 
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
@@ -43,16 +45,22 @@ class EncodingUtilitiesTest : public ::testing::Test {
   //   bytes 2-5: rowCount (uint32_t)
   //   byte 6: CompressionType::Uncompressed (0)
   //   bytes 7+: raw data (rowCount * sizeof(uint32_t))
-  std::string buildTrivialUint32Stream(const std::vector<uint32_t>& values) {
+  std::string buildTrivialUint32Stream(
+      const std::vector<uint32_t>& values,
+      bool useVarintRowCount = false) {
     uint32_t rowCount = static_cast<uint32_t>(values.size());
     uint32_t dataSize = rowCount * sizeof(uint32_t);
-    uint32_t totalSize = 6 + 1 + dataSize; // prefix + compressionType + data
+    uint32_t totalSize =
+        EncodingPrefix::serializedSize(rowCount, useVarintRowCount) + 1 +
+        dataSize;
     std::string buf(totalSize, '\0');
     char* pos = buf.data();
-    encoding::writeChar(
-        static_cast<char>(EncodingType::Trivial), pos); // byte 0
-    encoding::writeChar(static_cast<char>(DataType::Uint32), pos); // byte 1
-    encoding::writeUint32(rowCount, pos); // bytes 2-5
+    EncodingPrefix::serialize(
+        EncodingType::Trivial,
+        DataType::Uint32,
+        rowCount,
+        useVarintRowCount,
+        pos);
     encoding::writeChar(
         static_cast<char>(CompressionType::Uncompressed), pos); // byte 6
     for (auto v : values) {
@@ -117,31 +125,46 @@ class EncodingUtilitiesTest : public ::testing::Test {
   //   bytes 0-5: prefix (EncodingType::BlockBitPacking, DataType::Uint32,
   //              rowCount)
   //   byte 6: compressionType (Uncompressed)
-  //   bytes 7-8: blockSize (uint16)
-  //   bytes 9-10: numBlocks (uint16)
+  //   varint: blockSize
+  //   varint: numBlocks
   //   then the baselines / bitWidths / offsets sub-streams, each preceded by a
-  //   4-byte size.
+  //   varint size, followed by firstBlockRows.
   std::string buildBlockBitPackingUint32Stream(
       const std::string& baselines,
       const std::string& bitWidths,
       const std::string& offsets) {
-    const size_t totalSize = 6 + 1 /* compressionType */ + 2 /* blockSize */ +
-        2 /* numBlocks */ + sizeof(uint32_t) + baselines.size() +
-        sizeof(uint32_t) + bitWidths.size() + sizeof(uint32_t) + offsets.size();
+    constexpr uint32_t kRowCount{100};
+    constexpr uint32_t kBlockSize{64};
+    constexpr uint32_t kNumBlocks{2};
+    constexpr uint32_t kFirstBlockRows{kBlockSize};
+    const size_t totalSize =
+        EncodingPrefix::serializedSize(kRowCount, /*useVarint=*/false) +
+        1 /* compressionType */ + varint::varintSize(kBlockSize) +
+        varint::varintSize(kNumBlocks) +
+        varint::varintSize(static_cast<uint32_t>(baselines.size())) +
+        baselines.size() +
+        varint::varintSize(static_cast<uint32_t>(bitWidths.size())) +
+        bitWidths.size() +
+        varint::varintSize(static_cast<uint32_t>(offsets.size())) +
+        offsets.size() + varint::varintSize(kFirstBlockRows);
     std::string buf(totalSize, '\0');
     char* pos = buf.data();
-    encoding::writeChar(static_cast<char>(EncodingType::BlockBitPacking), pos);
-    encoding::writeChar(static_cast<char>(DataType::Uint32), pos);
-    encoding::writeUint32(/* rowCount */ 100, pos);
+    EncodingPrefix::serialize(
+        EncodingType::BlockBitPacking,
+        DataType::Uint32,
+        kRowCount,
+        /*useVarint=*/false,
+        pos);
     encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
-    encoding::write<uint16_t>(/* blockSize */ 64, pos);
-    encoding::write<uint16_t>(/* numBlocks */ 2, pos);
-    encoding::writeUint32(static_cast<uint32_t>(baselines.size()), pos);
+    varint::writeVarint(kBlockSize, &pos);
+    varint::writeVarint(kNumBlocks, &pos);
+    varint::writeVarint(static_cast<uint32_t>(baselines.size()), &pos);
     encoding::writeBytes(baselines, pos);
-    encoding::writeUint32(static_cast<uint32_t>(bitWidths.size()), pos);
+    varint::writeVarint(static_cast<uint32_t>(bitWidths.size()), &pos);
     encoding::writeBytes(bitWidths, pos);
-    encoding::writeUint32(static_cast<uint32_t>(offsets.size()), pos);
+    varint::writeVarint(static_cast<uint32_t>(offsets.size()), &pos);
     encoding::writeBytes(offsets, pos);
+    varint::writeVarint(kFirstBlockRows, &pos);
     return buf;
   }
 
@@ -398,9 +421,11 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelPfor) {
 // --- BlockBitPacking nested metadata sub-streams ---
 
 TEST_F(EncodingUtilitiesTest, TraverseEncodingsBlockBitPackingChildren) {
-  auto baselines = buildTrivialUint32Stream({0, 64});
-  auto bitWidths = buildTrivialUint32Stream({4, 5});
-  auto offsets = buildTrivialUint32Stream({0, 32});
+  auto baselines =
+      buildTrivialUint32Stream({0, 64}, /*useVarintRowCount=*/false);
+  auto bitWidths =
+      buildTrivialUint32Stream({4, 5}, /*useVarintRowCount=*/false);
+  auto offsets = buildTrivialUint32Stream({0, 32}, /*useVarintRowCount=*/false);
   auto stream = buildBlockBitPackingUint32Stream(baselines, bitWidths, offsets);
 
   EncodingType rootType = EncodingType::Constant; // init to something else
@@ -432,9 +457,11 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelBlockBitPacking) {
   // The rendered label surfaces the picked sub-encodings for the per-block
   // metadata, e.g. BlockBitPacking<Uint32>[Baselines:Trivial<...>,
   // BitWidths:Trivial<...>,DataOffsets:Trivial<...>].
-  auto baselines = buildTrivialUint32Stream({0, 64});
-  auto bitWidths = buildTrivialUint32Stream({4, 5});
-  auto offsets = buildTrivialUint32Stream({0, 32});
+  auto baselines =
+      buildTrivialUint32Stream({0, 64}, /*useVarintRowCount=*/false);
+  auto bitWidths =
+      buildTrivialUint32Stream({4, 5}, /*useVarintRowCount=*/false);
+  auto offsets = buildTrivialUint32Stream({0, 32}, /*useVarintRowCount=*/false);
   auto stream = buildBlockBitPackingUint32Stream(baselines, bitWidths, offsets);
 
   auto label = getEncodingLabel(stream);

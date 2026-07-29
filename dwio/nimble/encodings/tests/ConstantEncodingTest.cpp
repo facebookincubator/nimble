@@ -291,8 +291,7 @@ TYPED_TEST(ConstantEncodingTest, slice) {
           options);
 
   for (const auto range :
-       {Range{/*offset=*/0, /*length=*/0},
-        Range{/*offset=*/0, /*length=*/1},
+       {Range{/*offset=*/0, /*length=*/1},
         Range{/*offset=*/1, /*length=*/2},
         Range{/*offset=*/0, /*length=*/3},
         Range{/*offset=*/3, /*length=*/1}}) {
@@ -338,6 +337,14 @@ TYPED_TEST(ConstantEncodingTest, invalidSliceRange) {
           options);
 
   nimble::Buffer invalidSliceBuffer{*this->pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::ConstantEncoding<DataType>::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          invalidSliceBuffer,
+          options),
+      "");
   NIMBLE_ASSERT_THROW(
       nimble::ConstantEncoding<DataType>::slice(
           encoded,
@@ -394,8 +401,7 @@ TEST_F(ConstantEncodingStringTest, slice) {
             *buffer_, values, nimble::CompressionType::Uncompressed, options);
 
     for (const auto range :
-         {Range{/*offset=*/0, /*length=*/0},
-          Range{/*offset=*/1, /*length=*/2},
+         {Range{/*offset=*/1, /*length=*/2},
           Range{/*offset=*/0, /*length=*/3}}) {
       SCOPED_TRACE(
           testing::Message()
@@ -422,5 +428,39 @@ TEST_F(ConstantEncodingStringTest, slice) {
         EXPECT_EQ(result[i], values[range.offset + i]);
       }
     }
+  }
+}
+
+TEST_F(ConstantEncodingStringTest, invalidSliceRange) {
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "useVarint=" << useVarint);
+    const nimble::Encoding::Options options{.useVarintRowCount = useVarint};
+    const std::string value{"constant-value"};
+    nimble::Vector<std::string_view> values{pool_.get()};
+    for (uint32_t i = 0; i < 4; ++i) {
+      values.push_back(value);
+    }
+
+    const auto encoded = nimble::test::
+        Encoder<nimble::ConstantEncoding<std::string_view>>::encode(
+            *buffer_, values, nimble::CompressionType::Uncompressed, options);
+
+    nimble::Buffer invalidSliceBuffer{*pool_};
+    NIMBLE_ASSERT_THROW(
+        nimble::ConstantEncoding<std::string_view>::slice(
+            encoded,
+            /*offset=*/0,
+            /*length=*/0,
+            invalidSliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        nimble::ConstantEncoding<std::string_view>::slice(
+            encoded,
+            /*offset=*/3,
+            /*length=*/2,
+            invalidSliceBuffer,
+            options),
+        "");
   }
 }

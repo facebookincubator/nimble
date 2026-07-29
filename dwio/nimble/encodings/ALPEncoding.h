@@ -205,7 +205,6 @@ class ALPEncoding final
       std::span<const physicalType> values,
       Buffer& buffer,
       const Encoding::Options& options = {}) {
-    const bool useVarint = options.useVarintRowCount;
     if (values.empty()) {
       NIMBLE_INCOMPATIBLE_ENCODING("ALP encoding cannot encode empty data.");
     }
@@ -256,13 +255,18 @@ class ALPEncoding final
         (exceptionCount > 0 ? varint::varintSize(exceptionCount) : 0) +
         varint::varintSize(serializedEncoded.size());
     const uint32_t encodingSize =
-        Encoding::serializePrefixSize(rowCount, useVarint) + metadataSize +
-        serializedEncoded.size() + exceptionPositionsSize + exceptionValuesSize;
+        Encoding::serializePrefixSize(rowCount, options.useVarintRowCount) +
+        metadataSize + serializedEncoded.size() + exceptionPositionsSize +
+        exceptionValuesSize;
 
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
     Encoding::serializePrefix(
-        EncodingType::ALP, TypeTraits<T>::dataType, rowCount, useVarint, pos);
+        EncodingType::ALP,
+        TypeTraits<T>::dataType,
+        rowCount,
+        options.useVarintRowCount,
+        pos);
 
     detail::alp::writeHeader(
         detail::alp::Header{

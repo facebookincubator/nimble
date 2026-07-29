@@ -16,7 +16,7 @@
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include <gtest/gtest.h>
 #include "dwio/nimble/common/Buffer.h"
-#include "dwio/nimble/common/Exceptions.h"
+
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
@@ -104,7 +104,8 @@ nimble::EncodingLayout encodeAndCapture(
       data,
       buffer);
 
-  return nimble::EncodingLayoutCapture::capture(encoding);
+  return nimble::EncodingLayoutCapture::capture(
+      encoding, nimble::Encoding::Options{});
 }
 
 template <typename T, typename TCollection = std::vector<T>>
@@ -543,7 +544,8 @@ TEST(EncodingLayoutTests, Nullable) {
 
   std::string output;
   output.resize(1024);
-  auto captured = nimble::EncodingLayoutCapture::capture(encoding);
+  auto captured = nimble::EncodingLayoutCapture::capture(
+      encoding, nimble::Encoding::Options{});
   auto size = captured.serialize(output);
 
   auto actual = nimble::EncodingLayout::create(
@@ -642,7 +644,8 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
       std::make_unique<ForceSubIntSplitPolicy<int64_t>>(), data, buffer);
 
   // Capture must succeed and not throw.
-  auto captured = nimble::EncodingLayoutCapture::capture(encoding);
+  auto captured = nimble::EncodingLayoutCapture::capture(
+      encoding, nimble::Encoding::Options{});
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
   ASSERT_GT(captured.childrenCount(), 0u);
   EXPECT_EQ(
@@ -748,7 +751,8 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
       data,
       buffer);
 
-  auto captured = nimble::EncodingLayoutCapture::capture(encoding);
+  auto captured = nimble::EncodingLayoutCapture::capture(
+      encoding, nimble::Encoding::Options{});
   ASSERT_EQ(captured.encodingType(), nimble::EncodingType::SubIntSplit);
   auto replayedMode = captured.config().get(
       std::string(nimble::detail::subintsplit::kSplitModeConfigKey));

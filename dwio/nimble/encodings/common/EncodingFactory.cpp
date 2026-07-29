@@ -202,7 +202,7 @@ std::string_view EncodingFactory::encodeWithCapturedLayout(
     const Encoding::Options& options,
     std::string_view missingChildContext) {
   auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<T>>(
-      EncodingLayoutCapture::capture(encodedLayoutSource),
+      EncodingLayoutCapture::capture(encodedLayoutSource, options),
       CompressionOptions{},
       [missingChildContext](
           DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {

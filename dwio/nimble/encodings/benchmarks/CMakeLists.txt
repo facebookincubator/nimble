@@ -23,6 +23,21 @@ target_link_libraries(
 )
 
 add_executable(
+  nimble_block_bit_packing_encoding_benchmark
+  BlockBitPackingEncodingBenchmark.cpp
+)
+
+target_link_libraries(
+  nimble_block_bit_packing_encoding_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  Folly::follybenchmark
+  Folly::folly
+  velox_memory
+)
+
+add_executable(
   nimble_exact_bit_width_storage_benchmark
   ExactBitWidthStorageBenchmark.cpp
 )

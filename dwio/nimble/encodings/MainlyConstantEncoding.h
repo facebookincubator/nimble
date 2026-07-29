@@ -679,6 +679,7 @@ class MainlyConstantEncodingBase
         EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
     NIMBLE_CHECK_LE(offset, sourceRowCount);
     NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+    NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
 
     const char* pos = encoded.data() +
         EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
@@ -695,6 +696,24 @@ class MainlyConstantEncodingBase
         countCommonForSlice(isCommon, offset, length, buffer, options);
     const auto otherOffset = offset - commonBefore;
     const auto otherCount = length - commonInSlice;
+
+    if (otherCount == 0) {
+      const auto prefixSize =
+          EncodingPrefix::serializedSize(length, options.useVarintRowCount);
+      const auto encodingSize = prefixSize + commonValue.size();
+      char* reserved = buffer.reserve(encodingSize);
+      char* writePos = reserved;
+      EncodingPrefix::serialize(
+          EncodingType::Constant,
+          TypeTraits<T>::dataType,
+          length,
+          options.useVarintRowCount,
+          writePos);
+      encoding::writeBytes(commonValue, writePos);
+      NIMBLE_CHECK_EQ(
+          writePos - reserved, encodingSize, "Encoding size mismatch.");
+      return {reserved, encodingSize};
+    }
 
     auto* pool = &buffer.getMemoryPool();
     ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};

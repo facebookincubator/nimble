@@ -15,10 +15,12 @@
  */
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <random>
 #include <vector>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
@@ -295,6 +297,262 @@ TEST_F(BlockBitPackingEncodingTest, compressionRoundTrip) {
   std::vector<uint32_t> output(count);
   encoding->materialize(count, output.data());
   ASSERT_EQ(values, output);
+}
+
+TEST_F(BlockBitPackingEncodingTest, slice) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  std::vector<uint32_t> input(blockSize * 3 + 137);
+  for (uint32_t i = 0; i < input.size(); ++i) {
+    if (i < blockSize) {
+      input[i] = 1000 + i % 4;
+    } else if (i < blockSize * 2) {
+      input[i] = i % 256;
+    } else {
+      input[i] = 50000 + i % 17;
+    }
+  }
+
+  const auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+
+  for (const auto range :
+       {Range{/*offset=*/0, /*length=*/128},
+        Range{/*offset=*/blockSize - 13, /*length=*/64},
+        Range{/*offset=*/blockSize + 17, /*length=*/blockSize + 29},
+        Range{/*offset=*/static_cast<uint32_t>(input.size() - 137),
+              /*length=*/137}}) {
+    SCOPED_TRACE(
+        testing::Message() << "offset=" << range.offset
+                           << " length=" << range.length);
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced = nimble::EncodingFactory::slice(
+        encoded, range.offset, range.length, sliceBuffer);
+
+    EXPECT_EQ(
+        nimble::EncodingPrefix::encodingType(sliced),
+        nimble::EncodingType::BlockBitPacking);
+    EXPECT_EQ(
+        nimble::EncodingPrefix::readRowCount(sliced, /*useVarint=*/false),
+        range.length);
+
+    auto encoding = nimble::EncodingFactory{}.create(*pool_, sliced, nullptr);
+    std::vector<uint32_t> output(range.length);
+    encoding->materialize(range.length, output.data());
+    const std::vector<uint32_t> expected{
+        input.begin() + range.offset,
+        input.begin() + range.offset + range.length};
+    EXPECT_EQ(output, expected);
+  }
+}
+
+TEST_F(BlockBitPackingEncodingTest, rejectsZeroLengthSlice) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+  std::vector<uint32_t> input(blockSize + 17);
+  for (uint32_t i = 0; i < input.size(); ++i) {
+    input[i] = 1000 + i % 64;
+  }
+
+  const auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+
+  nimble::Buffer sliceBuffer{*pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::EncodingFactory::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          sliceBuffer),
+      "");
+}
+
+TEST_F(BlockBitPackingEncodingTest, sliceRandomRanges) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+  constexpr uint32_t rowCount = blockSize * 5 + 333;
+  constexpr uint32_t iterations = 100;
+
+  std::mt19937 rng{12345};
+  std::vector<uint32_t> input(rowCount);
+  for (uint32_t block = 0; block * blockSize < rowCount; ++block) {
+    const auto begin = block * blockSize;
+    const auto end = std::min<uint32_t>(begin + blockSize, rowCount);
+    const auto base = static_cast<uint32_t>(rng() % 1'000'000);
+    switch (block % 4) {
+      case 0:
+        std::fill(input.begin() + begin, input.begin() + end, base);
+        break;
+      case 1:
+        for (uint32_t i = begin; i < end; ++i) {
+          input[i] = base + static_cast<uint32_t>(rng() % 8);
+        }
+        break;
+      case 2:
+        for (uint32_t i = begin; i < end; ++i) {
+          input[i] = base + static_cast<uint32_t>(rng() % 1024);
+        }
+        break;
+      default:
+        for (uint32_t i = begin; i < end; ++i) {
+          input[i] = rng();
+        }
+        break;
+    }
+  }
+
+  const auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+  auto sourceEncoding =
+      nimble::EncodingFactory{}.create(*pool_, encoded, nullptr);
+  std::vector<uint32_t> sourceOutput(rowCount);
+  sourceEncoding->materialize(rowCount, sourceOutput.data());
+  ASSERT_EQ(sourceOutput, input);
+
+  std::uniform_int_distribution<uint32_t> offsetDistribution{0, rowCount};
+
+  for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
+    const auto offset = offsetDistribution(rng);
+    std::uniform_int_distribution<uint32_t> lengthDistribution{
+        0, rowCount - offset};
+    const auto length = lengthDistribution(rng);
+    SCOPED_TRACE(
+        testing::Message() << "iteration=" << iteration << " offset=" << offset
+                           << " length=" << length);
+
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced =
+        nimble::EncodingFactory::slice(encoded, offset, length, sliceBuffer);
+
+    auto encoding = nimble::EncodingFactory{}.create(*pool_, sliced, nullptr);
+    std::vector<uint32_t> output(length);
+    encoding->materialize(length, output.data());
+    const std::vector<uint32_t> expected{
+        input.begin() + offset, input.begin() + offset + length};
+    ASSERT_EQ(output.size(), expected.size());
+    for (uint32_t i = 0; i < length; ++i) {
+      ASSERT_EQ(output[i], expected[i]) << "sliceRow=" << i;
+    }
+  }
+}
+
+TEST_F(BlockBitPackingEncodingTest, sliceInterleavedConstantAndPayloadBlocks) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+  constexpr uint32_t rowCount = blockSize * 5;
+
+  std::vector<uint32_t> input(rowCount);
+  for (uint32_t i = 0; i < blockSize; ++i) {
+    input[i] = i % 31;
+  }
+  std::fill(input.begin() + blockSize, input.begin() + blockSize * 2, 7);
+  for (uint32_t i = blockSize * 2; i < blockSize * 3; ++i) {
+    input[i] = 1000 + i % 8;
+  }
+  std::fill(input.begin() + blockSize * 3, input.begin() + blockSize * 4, 11);
+  for (uint32_t i = blockSize * 4; i < blockSize * 5; ++i) {
+    input[i] = 50000 + i % 1024;
+  }
+
+  const auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+
+  constexpr uint32_t offset{blockSize + 7};
+  constexpr uint32_t length{blockSize * 3 + 19};
+  nimble::Buffer sliceBuffer{*pool_};
+  const auto sliced =
+      nimble::EncodingFactory::slice(encoded, offset, length, sliceBuffer);
+
+  auto encoding = nimble::EncodingFactory{}.create(*pool_, sliced, nullptr);
+  std::vector<uint32_t> output(length);
+  encoding->materialize(length, output.data());
+  const std::vector<uint32_t> expected{
+      input.begin() + offset, input.begin() + offset + length};
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(BlockBitPackingEncodingTest, sliceCompressedSource) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+
+  std::vector<uint32_t> input(blockSize * 2);
+  for (uint32_t i = 0; i < input.size(); ++i) {
+    input[i] = 7000 + i % 32;
+  }
+
+  const auto values = toVector(input);
+  const auto encoded = nimble::test::Encoder<Enc>::encode(
+      *buffer_, values, nimble::CompressionType::Zstd);
+
+  constexpr uint32_t kOffset{31};
+  constexpr uint32_t kLength{blockSize + 7};
+  nimble::Buffer sliceBuffer{*pool_};
+  const auto sliced =
+      nimble::EncodingFactory::slice(encoded, kOffset, kLength, sliceBuffer);
+
+  const auto prefixSize = nimble::EncodingPrefix::prefixSize(
+      sliced,
+      /*useVarint=*/false);
+  EXPECT_EQ(
+      static_cast<nimble::CompressionType>(
+          static_cast<uint8_t>(sliced[prefixSize])),
+      nimble::CompressionType::Uncompressed);
+
+  auto encoding = nimble::EncodingFactory{}.create(*pool_, sliced, nullptr);
+  std::vector<uint32_t> output(kLength);
+  encoding->materialize(kLength, output.data());
+  const std::vector<uint32_t> expected{
+      input.begin() + kOffset, input.begin() + kOffset + kLength};
+  EXPECT_EQ(output, expected);
+}
+
+TEST_F(BlockBitPackingEncodingTest, sliceAlignedPartialRawAndConstantPrefixes) {
+  using Enc = nimble::BlockBitPackingEncoding<uint32_t>;
+  constexpr uint32_t blockSize = Enc::kMaxBlockSize;
+
+  auto verifySlice = [&](const std::vector<uint32_t>& input) {
+    const auto values = toVector(input);
+    const auto encoded = nimble::test::Encoder<Enc>::encode(*buffer_, values);
+
+    constexpr uint32_t offset{blockSize};
+    constexpr uint32_t length{17};
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced =
+        nimble::EncodingFactory::slice(encoded, offset, length, sliceBuffer);
+
+    auto encoding = nimble::EncodingFactory{}.create(*pool_, sliced, nullptr);
+    std::vector<uint32_t> output(length);
+    encoding->materialize(length, output.data());
+    const std::vector<uint32_t> expected{
+        input.begin() + offset, input.begin() + offset + length};
+    EXPECT_EQ(output, expected);
+  };
+
+  {
+    SCOPED_TRACE("raw block prefix");
+    std::vector<uint32_t> input(blockSize * 2);
+    std::fill(input.begin(), input.begin() + blockSize, 42);
+    for (uint32_t i = blockSize; i < input.size(); ++i) {
+      input[i] = i - blockSize;
+    }
+    input[blockSize + 1] = std::numeric_limits<uint32_t>::max();
+    verifySlice(input);
+  }
+
+  {
+    SCOPED_TRACE("constant block prefix");
+    std::vector<uint32_t> input(blockSize * 2);
+    for (uint32_t i = 0; i < blockSize; ++i) {
+      input[i] = i % 31;
+    }
+    std::fill(input.begin() + blockSize, input.end(), 777);
+    verifySlice(input);
+  }
 }
 
 TEST_F(BlockBitPackingEncodingTest, uint64MultiChunk) {

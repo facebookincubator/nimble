@@ -483,7 +483,9 @@ std::string_view encodeStreamTyped(
   // time, so it stays valid regardless of a later chunk's nulls.
   if (context.options().enableEncodingSelectionCache) {
     streamContext(streamData.descriptor())
-        .setEncoding(EncodingLayoutCapture::capture(encoded));
+        .setEncoding(
+            EncodingLayoutCapture::capture(
+                encoded, context.options().buildEncodingOptions()));
   }
   return encoded;
 }
@@ -1751,10 +1753,10 @@ bool VeloxWriter::evaluateFlushPolicy() {
     }
   }
 
-  if (shouldFlush(flushPolicy.get())) {
-    return writeStripe();
+  if (!shouldFlush(flushPolicy.get())) {
+    return false;
   }
-  return false;
+  return writeStripe();
 }
 
 VeloxWriter::Stats VeloxWriter::stats() const {

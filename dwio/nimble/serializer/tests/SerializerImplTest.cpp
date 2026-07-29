@@ -1550,7 +1550,8 @@ TEST_F(EncodeTypedCompressionTest, withEncodingLayout) {
     EXPECT_EQ(decoded, data);
 
     // Verify compression type in the encoded output.
-    auto capturedLayout = EncodingLayoutCapture::capture(encoded);
+    auto capturedLayout =
+        EncodingLayoutCapture::capture(encoded, Encoding::Options{});
     if (!testData.compressionOptions.has_value()) {
       verifyLeafCompression(capturedLayout, CompressionType::Uncompressed);
     }
@@ -1584,7 +1585,8 @@ TEST_F(EncodeTypedCompressionTest, withoutEncodingLayout) {
       /*encodingLayout=*/nullptr,
       /*compressionOptions=*/CompressionOptions{});
 
-  auto capturedLayout = EncodingLayoutCapture::capture(encoded);
+  auto capturedLayout =
+      EncodingLayoutCapture::capture(encoded, Encoding::Options{});
   verifyLeafCompression(capturedLayout, CompressionType::Uncompressed);
 
   // Verify round-trip.

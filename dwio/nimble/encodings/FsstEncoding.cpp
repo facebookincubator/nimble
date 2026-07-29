@@ -280,7 +280,8 @@ void FsstEncoding::captureNestedEncoding(
     const Encoding::Options& options) {
   children.reserve(1);
   children.emplace_back(
-      EncodingLayoutCapture::capture(lengthsEncoding(encoding, options)));
+      EncodingLayoutCapture::capture(
+          lengthsEncoding(encoding, options), options));
 }
 
 void FsstEncoding::reset() {
