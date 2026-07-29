@@ -2739,7 +2739,7 @@ TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
       {
           .enableChunkIndex = true,
           // Never skip the stripe group, so the section is always written.
-          .chunkIndexMinAvgChunks = 0,
+          .chunkStatsMinAvgChunks = 0,
           .minStreamChunkRawSize = 0,
           .flushPolicyFactory =
               [&]() {
@@ -2763,7 +2763,7 @@ TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
   ASSERT_EQ(1, tablet->stripeCount());
 
   auto stripeIdentifier = tablet->stripeIdentifier(0);
-  auto chunkStats = stripeIdentifier.chunkIndex();
+  auto chunkStats = stripeIdentifier.chunkStats();
   ASSERT_NE(chunkStats, nullptr)
       << "columnar.chunk.stats section should be present";
 
@@ -5325,13 +5325,13 @@ class VeloxWriterIndexTest
          ++stripeIdx) {
       const auto stripeId = tablet.stripeIdentifier(stripeIdx);
 
-      if (stripeId.chunkIndex() == nullptr) {
+      if (stripeId.chunkStats() == nullptr) {
         // Group was skipped (no streams with >1 chunk). Skip verification.
         continue;
       }
 
       nimble::index::test::ChunkStatsTestHelper chunkHelper(
-          stripeId.chunkIndex().get());
+          stripeId.chunkStats().get());
 
       const uint32_t stripeOffsetInGroup =
           stripeIdx - chunkHelper.firstStripe();

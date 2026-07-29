@@ -56,7 +56,7 @@ ChunkStats::ChunkStats(
 
 const MetadataSection& ChunkStats::groupMetadata(uint32_t groupIndex) const {
   NIMBLE_CHECK_LT(
-      groupIndex, groupSections_.size(), "Chunk index group out of range");
+      groupIndex, groupSections_.size(), "Chunk stats group out of range");
   return groupSections_[groupIndex];
 }
 

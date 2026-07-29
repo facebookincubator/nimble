@@ -898,7 +898,7 @@ VeloxWriter::VeloxWriter(
            .streamDeduplicationEnabled =
                context_->options().enableStreamDeduplication,
            .enableChunkIndex = context_->options().enableChunkIndex,
-           .chunkIndexMinAvgChunks = context_->options().chunkIndexMinAvgChunks,
+           .chunkStatsMinAvgChunks = context_->options().chunkStatsMinAvgChunks,
            .stripeGroupEncodingLayout =
                context_->options().experimentalStripeGroupEncodingLayout,
            .stripeGroupEncodingLayoutReadFactors =

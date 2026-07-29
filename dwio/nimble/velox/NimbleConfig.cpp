@@ -262,7 +262,7 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     true);
 
 /// Enable chunk index for chunk-level seeking and per-chunk statistics
-/// for filter pushdown. When enabled, a chunk index optional section is
+/// for filter pushdown. When enabled, the chunk stats optional section is
 /// written alongside chunk position data in the file.
 // EXPERIMENTAL: Not production-ready. Do not enable for production tables
 // without consulting the Nimble team (oncall: dwios).

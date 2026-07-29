@@ -639,13 +639,13 @@ class ChunkedDecoderDataTest : public index::test::ClusterIndexTestBase,
 
     testIndexBuffers_ =
         createTestClusterIndex(indexColumns, minKey, stripes, stripeGroups);
-    testChunkIndex_ = createChunkIndex(testIndexBuffers_, 0);
-    return testChunkIndex_->createStreamIndex(0, 0, /*streamSize=*/1000);
+    testChunkStats_ = createChunkStats(testIndexBuffers_, 0);
+    return testChunkStats_->createStreamIndex(0, 0, /*streamSize=*/1000);
   }
 
  private:
   IndexBuffers testIndexBuffers_;
-  std::shared_ptr<index::ChunkStatsGroup> testChunkIndex_;
+  std::shared_ptr<index::ChunkStatsGroup> testChunkStats_;
   EncodingFactory encodingFactory_;
 };
 

@@ -55,9 +55,9 @@ struct TestFileIndex {
   std::vector<std::string> groupMetadataSections;
   // Root index data written via writeRootIndexCallback().
   std::string rootIndexData;
-  // Chunk index metadata sections for each stripe group.
-  std::vector<std::string> chunkIndexGroupSections;
-  // Root chunk index data written via writeChunkRootIndexCallback().
+  // Chunk stats metadata sections for each stripe group.
+  std::vector<std::string> chunkStatsGroupSections;
+  // Root chunk stats data written via writeChunkRootIndexCallback().
   std::string chunkRootIndexData;
 };
 
@@ -69,7 +69,7 @@ class ClusterIndexWriterTest : public ::testing::Test {
 
   void SetUp() override {
     pool_ = velox::memory::memoryManager()->addLeafPool();
-    chunkIndexWriter_ = std::make_unique<ChunkStatsWriter>(*pool_, 0);
+    chunkStatsWriter_ = std::make_unique<ChunkStatsWriter>(*pool_, 0);
   }
 
   // Returns a callback that appends key stream data to TestFileIndex.
@@ -95,10 +95,10 @@ class ClusterIndexWriterTest : public ::testing::Test {
     };
   }
 
-  // Returns a callback that stores chunk index metadata sections.
+  // Returns a callback that stores chunk stats metadata sections.
   static auto createChunkMetadataSectionCallback(TestFileIndex& fileIndex) {
     return [&fileIndex](std::string_view metadata) -> MetadataSection {
-      fileIndex.chunkIndexGroupSections.emplace_back(metadata);
+      fileIndex.chunkStatsGroupSections.emplace_back(metadata);
       return MetadataSection(0, metadata.size(), CompressionType::Uncompressed);
     };
   }
@@ -112,7 +112,7 @@ class ClusterIndexWriterTest : public ::testing::Test {
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
-  std::unique_ptr<ChunkStatsWriter> chunkIndexWriter_;
+  std::unique_ptr<ChunkStatsWriter> chunkStatsWriter_;
 };
 
 TEST_F(ClusterIndexWriterTest, basic) {
@@ -189,19 +189,19 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     auto writer = ClusterIndexWriter::create(config, *pool_);
 
     // Multi-row first stripe with equal keys - pass (no checks)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})));
 
     // Duplicate key - pass (no checks)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
     // Out of order key - pass (no checks)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})));
@@ -219,19 +219,19 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     auto writer = ClusterIndexWriter::create(config, *pool_);
 
     // Multi-row first stripe with equal keys - pass (duplicates allowed)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})));
 
     // Duplicate key - pass (duplicates allowed)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
     // Out of order key - fail
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     NIMBLE_ASSERT_USER_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})),
@@ -250,19 +250,19 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     auto writer = ClusterIndexWriter::create(config, *pool_);
 
     // Single-row first stripe with equal keys - pass
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
     // Duplicate key - pass (duplicates allowed)
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     EXPECT_NO_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
     // Out of order key - fail
-    chunkIndexWriter_->newStripe(1);
+    chunkStatsWriter_->newStripe(1);
     writer->newStripe();
     NIMBLE_ASSERT_USER_THROW(
         writer->addStripeKey(createKeyStream(buffer, {{1, "000", "000"}})),
@@ -282,7 +282,7 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     // Multi-row first stripe with equal keys - fail (implies duplicates)
     {
       auto writer = ClusterIndexWriter::create(config, *pool_);
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aaa"}})),
@@ -292,20 +292,20 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     // Multi-row first stripe with strictly ascending keys - pass
     {
       auto writer = ClusterIndexWriter::create(config, *pool_);
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "bbb"}})));
 
       // Strictly greater key across stripes - pass
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "ccc", "ddd"}})));
 
       // Duplicate key across stripes (lastKey of prev stripe == lastKey of new
       // stripe) - fail
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "ddd", "ddd"}})),
@@ -315,12 +315,12 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     // Out of order key across stripes - fail
     {
       auto writer = ClusterIndexWriter::create(config, *pool_);
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "bbb", "ccc"}})));
 
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{5, "aaa", "aab"}})),
@@ -343,17 +343,17 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     // Then duplicate key - fail
     {
       auto writer = ClusterIndexWriter::create(config, *pool_);
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})));
 
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{1, "bbb", "bbb"}})));
 
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{1, "bbb", "bbb"}})),
@@ -363,12 +363,12 @@ TEST_F(ClusterIndexWriterTest, stripeKeyEnforcementValidation) {
     // Single-row first stripe, then out of order key - fail
     {
       auto writer = ClusterIndexWriter::create(config, *pool_);
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       EXPECT_NO_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{1, "ccc", "ccc"}})));
 
-      chunkIndexWriter_->newStripe(1);
+      chunkStatsWriter_->newStripe(1);
       writer->newStripe();
       NIMBLE_ASSERT_USER_THROW(
           writer->addStripeKey(createKeyStream(buffer, {{1, "aaa", "aaa"}})),
@@ -386,7 +386,7 @@ TEST_F(ClusterIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
 
   Buffer buffer{*pool_};
   TestFileIndex fileIndex;
-  chunkIndexWriter_->newStripe(2);
+  chunkStatsWriter_->newStripe(2);
   writer->newStripe();
 
   auto keyStream = createKeyStream(buffer, {{100, "aaa", "bbb"}});
@@ -395,7 +395,7 @@ TEST_F(ClusterIndexWriterTest, checkNotFinalizedAfterWriteRootIndex) {
   writer->writeKeyStream(0, keyStream.chunks, writeStreamCallback(fileIndex));
 
   auto chunks = createChunks(buffer, {{100, 20}});
-  chunkIndexWriter_->addStream(0, chunks);
+  chunkStatsWriter_->addStream(0, chunks);
 
   // Write root index - this finalizes the writer
   writer->writeRoot({0}, writeRootIndexCallback(fileIndex));
@@ -439,7 +439,7 @@ TEST_F(ClusterIndexWriterTest, emptyStreamInStripe) {
 
   Buffer buffer{*pool_};
   TestFileIndex fileIndex;
-  chunkIndexWriter_->newStripe(3);
+  chunkStatsWriter_->newStripe(3);
   writer->newStripe();
 
   auto keyStream = createKeyStream(buffer, {{100, "aaa", "bbb"}});
@@ -449,17 +449,17 @@ TEST_F(ClusterIndexWriterTest, emptyStreamInStripe) {
 
   // Stream 0 has data
   auto chunks0 = createChunks(buffer, {{50, 10}, {50, 12}});
-  chunkIndexWriter_->addStream(0, chunks0);
+  chunkStatsWriter_->addStream(0, chunks0);
 
   // Stream 1 is empty (no addStreamIndex call)
 
   // Stream 2 has data
   auto chunks2 = createChunks(buffer, {{100, 25}});
-  chunkIndexWriter_->addStream(2, chunks2);
+  chunkStatsWriter_->addStream(2, chunks2);
 
   EXPECT_NO_THROW(
       writer->writeGroup(1, createMetadataSectionCallback(fileIndex)));
-  chunkIndexWriter_->writeGroup(
+  chunkStatsWriter_->writeGroup(
       3, 1, createChunkMetadataSectionCallback(fileIndex));
   EXPECT_EQ(fileIndex.groupMetadataSections.size(), 1);
 }
@@ -489,7 +489,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
   // Stream 1: 2 chunks (rows: 60, 40)
   // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -505,8 +505,8 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
 
     auto chunks0 = createChunks(buffer, {{30, 10}, {45, 15}, {25, 8}});
     auto chunks1 = createChunks(buffer, {{60, 20}, {40, 12}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
   }
 
   // ========== Stripe 1 ==========
@@ -516,7 +516,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
   // Key stream: 4 chunks (rows: 50, 50, 50, 50), keys: "ccc"->"ddd",
   // "ddd"->"eee", "eee"->"fff", "fff"->"ggg"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -534,8 +534,8 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
 
     auto chunks0 = createChunks(buffer, {{40, 5}, {55, 18}, {65, 22}, {40, 7}});
     auto chunks1 = createChunks(buffer, {{200, 50}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
   }
 
   // ========== Stripe 2 ==========
@@ -544,7 +544,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
   // Stream 1: 5 chunks (rows: 20, 35, 40, 25, 30)
   // Key stream: 1 chunk (rows: 150), keys: "ggg"->"hhh"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -560,18 +560,18 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
     auto chunks0 = createChunks(buffer, {{100, 30}, {50, 14}});
     auto chunks1 =
         createChunks(buffer, {{20, 6}, {35, 9}, {40, 11}, {25, 4}, {30, 16}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
   }
 
   // Write single index group containing all 3 stripes
   writer->writeGroup(3, createMetadataSectionCallback(fileIndex));
-  chunkIndexWriter_->writeGroup(
+  chunkStatsWriter_->writeGroup(
       2, 3, createChunkMetadataSectionCallback(fileIndex));
 
   // Write root index with all stripes in group 0
   writer->writeRoot({0, 0, 0}, writeRootIndexCallback(fileIndex));
-  chunkIndexWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
+  chunkStatsWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
 
   // ========== Verify written data ==========
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 1);
@@ -669,14 +669,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithSingleGroup) {
 
   // Verify chunk index for stream position data
   {
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         0,
         3,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[0],
+            fileIndex.chunkStatsGroupSections[0],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
     // Verify stream 0 position index stats
@@ -748,7 +748,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
   // Stream 1: 3 chunks (rows: 30, 40, 30)
   // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -764,10 +764,10 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
 
     auto chunks0 = createChunks(buffer, {{50, 10}, {50, 12}});
     auto chunks1 = createChunks(buffer, {{30, 8}, {40, 10}, {30, 6}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         2, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
@@ -778,7 +778,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
   // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ccc"->"ddd", "ddd"->"eee",
   // "eee"->"fff"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -795,10 +795,10 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
 
     auto chunks0 = createChunks(buffer, {{40, 8}, {60, 14}, {50, 11}});
     auto chunks1 = createChunks(buffer, {{80, 18}, {70, 15}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         2, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
@@ -808,7 +808,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
   // Stream 1: 4 chunks (rows: 25, 35, 30, 30)
   // Key stream: 2 chunks (rows: 60, 60), keys: "fff"->"ggg", "ggg"->"hhh"
   {
-    chunkIndexWriter_->newStripe(2);
+    chunkStatsWriter_->newStripe(2);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -824,16 +824,16 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
 
     auto chunks0 = createChunks(buffer, {{70, 16}, {50, 13}});
     auto chunks1 = createChunks(buffer, {{25, 5}, {35, 7}, {30, 6}, {30, 8}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         2, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
   // Write root index with stripe group indices {0, 1, 2}
   writer->writeRoot({0, 1, 2}, writeRootIndexCallback(fileIndex));
-  chunkIndexWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
+  chunkStatsWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
 
   // ========== Verify written data ==========
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 3);
@@ -907,14 +907,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
     EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         0,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[0],
+            fileIndex.chunkStatsGroupSections[0],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
     // Verify stream 0 stats: 2 chunks (rows: 50, 50)
@@ -950,14 +950,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
         keyStats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         1,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[1],
+            fileIndex.chunkStatsGroupSections[1],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
     // Verify stream 0 stats: 3 chunks (rows: 40, 60, 50)
@@ -992,14 +992,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroups) {
     EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         2,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[2],
+            fileIndex.chunkStatsGroupSections[2],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     EXPECT_EQ(chunkHelper.streamCount(), 2);
 
     // Verify stream 0 stats: 2 chunks (rows: 70, 50)
@@ -1043,7 +1043,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   // Stream 3: 2 chunks (rows: 60, 40)
   // Key stream: 2 chunks (rows: 50, 50), keys: "aaa"->"bbb", "bbb"->"ccc"
   {
-    chunkIndexWriter_->newStripe(4);
+    chunkStatsWriter_->newStripe(4);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -1061,11 +1061,11 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     auto chunks1 = createChunks(buffer, {{50, 10}, {50, 12}});
     auto chunks2 = createChunks(buffer, {{30, 8}, {40, 10}, {30, 6}});
     auto chunks3 = createChunks(buffer, {{60, 15}, {40, 10}});
-    chunkIndexWriter_->addStream(1, chunks1);
-    chunkIndexWriter_->addStream(2, chunks2);
-    chunkIndexWriter_->addStream(3, chunks3);
+    chunkStatsWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(2, chunks2);
+    chunkStatsWriter_->addStream(3, chunks3);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         4, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
@@ -1078,7 +1078,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   // Key stream: 3 chunks (rows: 50, 50, 50), keys: "ccc"->"ddd", "ddd"->"eee",
   // "eee"->"fff"
   {
-    chunkIndexWriter_->newStripe(4);
+    chunkStatsWriter_->newStripe(4);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -1097,11 +1097,11 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     // Stream 1 is empty - no addStreamIndex call
     auto chunks2 = createChunks(buffer, {{80, 18}, {70, 15}});
     auto chunks3 = createChunks(buffer, {{150, 30}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(2, chunks2);
-    chunkIndexWriter_->addStream(3, chunks3);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(2, chunks2);
+    chunkStatsWriter_->addStream(3, chunks3);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         4, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
@@ -1113,7 +1113,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   // Stream 3: 3 chunks (rows: 40, 40, 40)
   // Key stream: 2 chunks (rows: 60, 60), keys: "fff"->"ggg", "ggg"->"hhh"
   {
-    chunkIndexWriter_->newStripe(4);
+    chunkStatsWriter_->newStripe(4);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -1131,11 +1131,11 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     auto chunks1 = createChunks(buffer, {{25, 5}, {35, 7}, {30, 6}, {30, 8}});
     // Stream 2 is empty - no addStreamIndex call
     auto chunks3 = createChunks(buffer, {{40, 10}, {40, 10}, {40, 10}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
-    chunkIndexWriter_->addStream(3, chunks3);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(3, chunks3);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         4, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
@@ -1147,7 +1147,7 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
   // Stream 3: 2 chunks (rows: 30, 70)
   // Key stream: 2 chunks (rows: 50, 50), keys: "hhh"->"iii", "iii"->"jjj"
   {
-    chunkIndexWriter_->newStripe(4);
+    chunkStatsWriter_->newStripe(4);
     writer->newStripe();
     auto keyStream = createKeyStream(
         buffer,
@@ -1165,18 +1165,18 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     auto chunks1 = createChunks(buffer, {{40, 10}, {60, 14}});
     auto chunks2 = createChunks(buffer, {{100, 25}});
     auto chunks3 = createChunks(buffer, {{30, 8}, {70, 18}});
-    chunkIndexWriter_->addStream(0, chunks0);
-    chunkIndexWriter_->addStream(1, chunks1);
-    chunkIndexWriter_->addStream(2, chunks2);
-    chunkIndexWriter_->addStream(3, chunks3);
+    chunkStatsWriter_->addStream(0, chunks0);
+    chunkStatsWriter_->addStream(1, chunks1);
+    chunkStatsWriter_->addStream(2, chunks2);
+    chunkStatsWriter_->addStream(3, chunks3);
     writer->writeGroup(1, createMetadataSectionCallback(fileIndex));
-    chunkIndexWriter_->writeGroup(
+    chunkStatsWriter_->writeGroup(
         4, 1, createChunkMetadataSectionCallback(fileIndex));
   }
 
   // Write root index with stripe group indices {0, 1, 2, 3}
   writer->writeRoot({0, 1, 2, 3}, writeRootIndexCallback(fileIndex));
-  chunkIndexWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
+  chunkStatsWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
 
   // ========== Verify written data ==========
   ASSERT_EQ(fileIndex.groupMetadataSections.size(), 4);
@@ -1230,14 +1230,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"bbb", "ccc"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         0,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[0],
+            fileIndex.chunkStatsGroupSections[0],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     // All 4 streams indexed (minAvgChunksPerStream = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -1288,14 +1288,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
         keyStats.chunkKeys, (std::vector<std::string>{"ddd", "eee", "fff"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         1,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[1],
+            fileIndex.chunkStatsGroupSections[1],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     // All 4 streams indexed (minAvgChunksPerStream = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -1345,14 +1345,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"ggg", "hhh"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         2,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[2],
+            fileIndex.chunkStatsGroupSections[2],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     // All 4 streams indexed (minAvgChunksPerStream = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -1402,14 +1402,14 @@ TEST_F(ClusterIndexWriterTest, writeAndReadWithMultipleGroupsAndEmptyStream) {
     EXPECT_EQ(keyStats.chunkKeys, (std::vector<std::string>{"iii", "jjj"}));
 
     // Verify chunk index for stream position data
-    auto chunkIndex = index::ChunkStatsGroup::create(
+    auto chunkStats = index::ChunkStatsGroup::create(
         3,
         1,
         std::make_unique<MetadataBuffer>(
             *pool_,
-            fileIndex.chunkIndexGroupSections[3],
+            fileIndex.chunkStatsGroupSections[3],
             CompressionType::Uncompressed));
-    ChunkStatsTestHelper chunkHelper(chunkIndex.get());
+    ChunkStatsTestHelper chunkHelper(chunkStats.get());
     // All 4 streams indexed (minAvgChunksPerStream = 0).
     EXPECT_EQ(chunkHelper.streamCount(), 4);
 
@@ -1497,37 +1497,37 @@ TEST_F(ClusterIndexWriterTest, chunkIndexOnlyWriteAndRead) {
   Buffer buffer{*pool_};
 
   // Stripe 0: 2 streams
-  chunkIndexWriter_->newStripe(2);
+  chunkStatsWriter_->newStripe(2);
   auto chunks0 = createChunks(buffer, {{50, 10}, {50, 12}});
-  chunkIndexWriter_->addStream(0, chunks0);
+  chunkStatsWriter_->addStream(0, chunks0);
   auto chunks1 = createChunks(buffer, {{100, 25}});
-  chunkIndexWriter_->addStream(1, chunks1);
+  chunkStatsWriter_->addStream(1, chunks1);
 
   // Write standalone index group (chunk index only, no value index).
-  chunkIndexWriter_->writeGroup(
+  chunkStatsWriter_->writeGroup(
       2, 1, createChunkMetadataSectionCallback(fileIndex));
 
   // Write standalone root index (no stripe keys, no index columns).
-  chunkIndexWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
+  chunkStatsWriter_->writeRoot(writeChunkRootIndexCallback(fileIndex));
 
   // Verify data was written.
-  ASSERT_EQ(fileIndex.chunkIndexGroupSections.size(), 1);
+  ASSERT_EQ(fileIndex.chunkStatsGroupSections.size(), 1);
   ASSERT_FALSE(fileIndex.chunkRootIndexData.empty());
 
   // Verify ChunkStatsGroup can be loaded and used for chunk seeking.
-  auto chunkIndex = index::ChunkStatsGroup::create(
+  auto chunkStats = index::ChunkStatsGroup::create(
       0,
       1,
       std::make_unique<MetadataBuffer>(
           *pool_,
-          fileIndex.chunkIndexGroupSections[0],
+          fileIndex.chunkStatsGroupSections[0],
           CompressionType::Uncompressed));
 
   // Lookup via StreamIndex (public API).
   // Stream 0: chunks at rows {50, 50} -> accumulated {50, 100}
   // Stream 0: 2 chunks of {50 rows, 10 bytes} and {50 rows, 12 bytes}.
   // Total stream size = 10 + 12 = 22.
-  auto stream0 = chunkIndex->createStreamIndex(0, 0, 22);
+  auto stream0 = chunkStats->createStreamIndex(0, 0, 22);
   ASSERT_NE(stream0, nullptr);
 
   auto result00 = stream0->lookupChunk(0);
@@ -1541,7 +1541,7 @@ TEST_F(ClusterIndexWriterTest, chunkIndexOnlyWriteAndRead) {
   EXPECT_EQ(result01.rowOffset, 50);
 
   // Stream 1: 1 chunk → createStreamIndex returns nullptr.
-  EXPECT_EQ(chunkIndex->createStreamIndex(0, 1, 25), nullptr);
+  EXPECT_EQ(chunkStats->createStreamIndex(0, 1, 25), nullptr);
 }
 
 } // namespace facebook::nimble::test

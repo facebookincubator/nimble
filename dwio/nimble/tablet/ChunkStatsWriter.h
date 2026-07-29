@@ -40,9 +40,9 @@ struct Chunk;
 class ChunkStatsWriter {
  public:
   /// @param pool Memory pool for allocations.
-  /// @param minAvgChunksPerStream Skip writing chunk index for a stripe group
+  /// @param minAvgChunksPerStream Skip writing chunk stats for a stripe group
   ///        if the average number of chunks per stream is below this threshold.
-  ///        0 disables chunk index skipping.
+  ///        0 disables chunk stats skipping.
   explicit ChunkStatsWriter(
       velox::memory::MemoryPool& pool,
       float minAvgChunksPerStream = 2);
@@ -71,7 +71,7 @@ class ChunkStatsWriter {
   /// Writes the root ChunkStats table to the "columnar.chunk.stats" optional
   /// section.
   ///
-  /// @param writeOptionalSection Callback to persist the root chunk index as a
+  /// @param writeOptionalSection Callback to persist the root chunk stats as a
   ///        named optional section in the file footer.
   void writeRoot(const WriteOptionalSectionFn& writeOptionalSection);
 
@@ -105,8 +105,8 @@ class ChunkStatsWriter {
   velox::memory::MemoryPool* const pool_;
   const float minAvgChunksPerStream_;
   std::unique_ptr<GroupIndex> groupIndex_;
-  // Metadata sections for chunk index flatbuffers (used by writeRoot).
-  std::vector<MetadataSection> chunkIndexSections_;
+  // Metadata sections for chunk stats flatbuffers (used by writeRoot).
+  std::vector<MetadataSection> chunkStatsSections_;
   bool finalized_{false};
 };
 
