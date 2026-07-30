@@ -15,11 +15,14 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <string_view>
 
 #include "folly/io/IOBuf.h"
 #include "velox/common/base/BitUtil.h"
+#include "velox/common/base/Exceptions.h"
 
 // Primitives for reading and writing to a stream of bytes.
 
@@ -52,6 +55,40 @@ inline void writeUint64(uint64_t value, char*& pos) {
 inline void writeBytes(std::string_view value, char*& pos) {
   std::copy(value.cbegin(), value.cend(), pos);
   pos += value.size();
+}
+
+inline void writeVarintUint32(uint32_t value, char*& pos) {
+  while (value >= 128) {
+    *pos++ = static_cast<char>(0x80 | (value & 0x7f));
+    value >>= 7;
+  }
+  *pos++ = static_cast<char>(value);
+}
+
+// Varint byte length followed by chars.
+inline void writeVarintString(std::string_view value, char*& pos) {
+  writeVarintUint32(static_cast<uint32_t>(value.size()), pos);
+  writeBytes(value, pos);
+}
+
+// Copies a bit range from a packed source to the start of output. The caller
+// owns destination sizing and zero-filling for any unused trailing bits.
+inline void copyPackedBits(
+    std::string_view source,
+    uint64_t sourceBitOffset,
+    uint64_t bitCount,
+    char* output) {
+  VELOX_CHECK(bitCount > 0, "Cannot copy zero bits.");
+  if (sourceBitOffset % 8 == 0 && bitCount % 8 == 0) {
+    std::memcpy(output, source.data() + sourceBitOffset / 8, bitCount / 8);
+    return;
+  }
+  velox::bits::copyBits(
+      reinterpret_cast<const uint64_t*>(source.data()),
+      sourceBitOffset,
+      reinterpret_cast<uint64_t*>(output),
+      /*targetOffset=*/0,
+      bitCount);
 }
 
 // Just the buffers, no leading length.

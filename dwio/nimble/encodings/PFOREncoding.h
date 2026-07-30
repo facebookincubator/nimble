@@ -23,6 +23,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/FixedBitArray.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -57,12 +58,12 @@ namespace facebook::nimble {
 ///   sizeof(physicalType) bytes : baseline (a.k.a. min value)
 ///   1 byte                    : baseBitWidth (bits per bitpacked residual;
 ///                               range [0, 64])
-///   4 bytes                   : numExceptions (uint32_t, fixed width)
-///   4 bytes + N bytes         : exception positions sub-stream -- a 4-byte
+///   varint                    : numExceptions
+///   varint + N bytes          : exception positions sub-stream -- a varint
 ///                               size prefix followed by a nested encoding of
 ///                               the strictly ascending positions (size 0 and
 ///                               no encoding when there are no exceptions)
-///   4 bytes + N bytes         : exception values sub-stream -- a 4-byte size
+///   varint + N bytes          : exception values sub-stream -- a varint size
 ///                               prefix followed by a nested encoding of the
 ///                               full residuals, i.e. value - baseline (size 0
 ///                               and no encoding when there are no exceptions)
@@ -100,6 +101,13 @@ class PFOREncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
   std::string debugString(int offset) const final;
 
   static uint64_t estimateSize(
@@ -128,8 +136,9 @@ class PFOREncoding final
         TrivialEncoding<physicalType>::estimateSize(numExceptions),
         FixedBitWidthEncoding<physicalType>::estimateSize(
             numExceptions, statistics, options));
-    const uint64_t outerEncodingSize =
-        EncodingPrefix::kFixedPrefixSize + kPrefixSize;
+    const uint64_t outerEncodingSize = EncodingPrefix::kFixedPrefixSize +
+        kFixedHeaderSize + varint::varintSize(numExceptions) +
+        varint::varintSize(positionsSize) + varint::varintSize(valuesSize);
     return outerEncodingSize + baseValuesSize + positionsSize + valuesSize;
   }
 
@@ -166,9 +175,28 @@ class PFOREncoding final
     return {maxBitWidth, 0};
   }
 
-  /// Fixed-size header: baseline + baseBitWidth(1 byte) + numExceptions(4).
-  static constexpr int kPrefixSize =
-      sizeof(physicalType) + sizeof(uint8_t) + sizeof(uint32_t);
+  /// Fixed-size part of the PFOR header: baseline + baseBitWidth(1 byte).
+  static constexpr int kFixedHeaderSize =
+      sizeof(physicalType) + sizeof(uint8_t);
+
+  // Sliced exception child streams plus the exception count written to the
+  // sliced PFOR header.
+  struct ExceptionSlice {
+    std::string_view positions;
+    std::string_view values;
+    uint32_t count{0};
+  };
+
+  static ExceptionSlice sliceExceptions(
+      std::string_view exceptionPositions,
+      std::string_view exceptionValues,
+      uint32_t numExceptions,
+      uint32_t offset,
+      uint32_t length,
+      velox::memory::MemoryPool* pool,
+      Buffer& scratchBuffer,
+      const Encoding::Options& options);
+
   // Patches any exceptions whose absolute position falls inside
   // [row_, row_ + count) onto `output`, where output[k] corresponds to
   // absolute position row_ + k. Advances exceptionCursor_ past consumed
@@ -222,12 +250,12 @@ PFOREncoding<T>::PFOREncoding(
   } else {
     const char* pos = data.data() + this->dataOffset();
 
-    // Parse the fixed-size header: baseline, baseBitWidth, numExceptions.
+    // Parse the header: baseline, baseBitWidth, numExceptions.
     baseline_ = encoding::read<physicalType>(pos);
     baseBitWidth_ = static_cast<uint8_t>(encoding::readChar(pos));
     NIMBLE_CHECK_LE(
         baseBitWidth_, 64, "Pfor base bit width must be in [0, 64].");
-    numExceptions_ = encoding::readUint32(pos);
+    numExceptions_ = varint::readVarint32(&pos);
     NIMBLE_CHECK_LE(
         numExceptions_,
         this->rowCount_,
@@ -235,8 +263,10 @@ PFOREncoding<T>::PFOREncoding(
 
     auto readExceptionStream = [&](auto& subStream) {
       subStream.resize(numExceptions_);
-      const uint32_t size = encoding::readUint32(pos);
-      if (numExceptions_ > 0) {
+      const uint32_t size = varint::readVarint32(&pos);
+      if (numExceptions_ == 0) {
+        NIMBLE_CHECK_EQ(size, 0, "Empty Pfor exception stream has data.");
+      } else {
         auto subEncoding = EncodingFactory(options).create(
             pool, {pos, size}, stringBufferFactory);
         subEncoding->materialize(numExceptions_, subStream.data());
@@ -389,120 +419,257 @@ std::string_view PFOREncoding<T>::encode(
   if constexpr (!isIntegralType<physicalType>()) {
     NIMBLE_INCOMPATIBLE_ENCODING(
         "Pfor encoding only supports integral data types.");
-  } else {
-    static_assert(
-        std::is_same_v<
-            typename std::make_unsigned<physicalType>::type,
-            physicalType>,
-        "Pfor physical type must be unsigned.");
-    const bool useVarint = options.useVarintRowCount;
-    NIMBLE_CHECK(!values.empty(), "Pfor encoding cannot be used with 0 rows.");
-
-    const uint32_t rowCount = static_cast<uint32_t>(values.size());
-    const physicalType baseline = selection.statistics().min();
-    const physicalType maxValue = selection.statistics().max();
-    const physicalType fullRange =
-        static_cast<physicalType>(maxValue - baseline);
-    const uint8_t maxBitWidth =
-        static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
-
-    const auto [selectedBaseBitWidth, expectedExceptions] = selectBaseBitWidth(
-        selection.statistics().bucketCounts(), rowCount, maxBitWidth);
-
-    // Single pass: compute residuals, identify exceptions that overflow
-    // baseBitWidth, and zero-mask exception slots in the residual array.
-    constexpr uint32_t kBitsPerPhysicalType = sizeof(physicalType) * 8;
-    const physicalType baseMask = selectedBaseBitWidth == 0
-        ? physicalType{0}
-        : static_cast<physicalType>(velox::bits::lowMask(selectedBaseBitWidth));
-
-    auto* pool = &buffer.getMemoryPool();
-    Vector<uint32_t> exceptionPositions{pool};
-    Vector<physicalType> exceptionValues{pool};
-    // Reserve for expected exceptions based on the 90% coverage threshold.
-    exceptionPositions.reserve(expectedExceptions);
-    exceptionValues.reserve(expectedExceptions);
-
-    Vector<physicalType> maskedResiduals{pool};
-    maskedResiduals.resize(rowCount);
-    physicalType maxBaseResidual{0};
-    for (auto i = 0; i < rowCount; ++i) {
-      const physicalType residual =
-          static_cast<physicalType>(values[i] - baseline);
-      if (selectedBaseBitWidth < kBitsPerPhysicalType && residual > baseMask) {
-        exceptionPositions.emplace_back(i);
-        exceptionValues.emplace_back(residual);
-        maskedResiduals[i] = physicalType{0};
-      } else {
-        maskedResiduals[i] = residual;
-        maxBaseResidual = std::max(maxBaseResidual, residual);
-      }
-    }
-    const uint32_t numExceptions =
-        static_cast<uint32_t>(exceptionPositions.size());
-    const uint8_t exactBaseBitWidth =
-        static_cast<uint8_t>(velox::bits::bitsRequired(maxBaseResidual));
-    NIMBLE_CHECK_LE(
-        exactBaseBitWidth,
-        selectedBaseBitWidth,
-        "Pfor exact bit width should not exceed selected bit width.");
-    const uint8_t baseBitWidth = options.fixedBitWidthUseExactBits
-        ? exactBaseBitWidth
-        : selectedBaseBitWidth;
-
-    const uint64_t bitpackedSize = baseBitWidth == 0
-        ? 0
-        : FixedBitArray::bufferSize(rowCount, baseBitWidth);
-
-    // PFOR encodes the exception side-channels through recursive encoding
-    // selection so Nimble can pick the best sub-encoding.
-    // The bulk base residuals always stay raw to preserve the fast decode path.
-    ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
-    std::string_view exceptionPositionsEncoded{};
-    std::string_view exceptionValuesEncoded{};
-    if (numExceptions > 0) {
-      exceptionPositionsEncoded = selection.template encodeNested<uint32_t>(
-          EncodingIdentifiers::Pfor::ExceptionPositions,
-          std::span<const uint32_t>(exceptionPositions.data(), numExceptions),
-          scopedBuffer.get(),
-          options);
-      exceptionValuesEncoded = selection.template encodeNested<physicalType>(
-          EncodingIdentifiers::Pfor::ExceptionValues,
-          std::span<const physicalType>(exceptionValues.data(), numExceptions),
-          scopedBuffer.get(),
-          options);
-    }
-    // Two size-prefixed nested streams (positions, values) carry the exception
-    // side-channel.
-    const uint32_t encodingSize = Encoding::serializePrefixSize(
-                                      rowCount, useVarint) +
-        PFOREncoding<T>::kPrefixSize +
-        static_cast<uint32_t>(2 * sizeof(uint32_t) +
-                              exceptionPositionsEncoded.size() +
-                              exceptionValuesEncoded.size() + bitpackedSize);
-    char* reserved = buffer.reserve(encodingSize);
-    char* pos = reserved;
-    Encoding::serializePrefix(
-        EncodingType::PFOR, TypeTraits<T>::dataType, rowCount, useVarint, pos);
-    encoding::write(baseline, pos);
-    encoding::writeChar(static_cast<char>(baseBitWidth), pos);
-    encoding::writeUint32(numExceptions, pos);
-    encoding::writeString(exceptionPositionsEncoded, pos);
-    encoding::writeString(exceptionValuesEncoded, pos);
-    if (baseBitWidth > 0) {
-      std::memset(pos, 0, bitpackedSize);
-      FixedBitArray fba(pos, baseBitWidth);
-      fba.bulkSetWithBaseline(
-          /*start=*/0,
-          /*length=*/rowCount,
-          maskedResiduals.data(),
-          /*baseline=*/physicalType{0});
-      pos += bitpackedSize;
-    }
-    NIMBLE_CHECK_EQ(
-        pos - reserved, encodingSize, "Pfor encoding size mismatch.");
-    return {reserved, encodingSize};
   }
+
+  const bool useVarint = options.useVarintRowCount;
+  NIMBLE_CHECK(!values.empty(), "Pfor encoding cannot be used with 0 rows.");
+
+  const uint32_t rowCount = static_cast<uint32_t>(values.size());
+  const physicalType baseline = selection.statistics().min();
+  const physicalType maxValue = selection.statistics().max();
+  const physicalType fullRange = static_cast<physicalType>(maxValue - baseline);
+  const uint8_t maxBitWidth =
+      static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
+
+  const auto [selectedBaseBitWidth, expectedExceptions] = selectBaseBitWidth(
+      selection.statistics().bucketCounts(), rowCount, maxBitWidth);
+
+  // Single pass: compute residuals, identify exceptions that overflow
+  // baseBitWidth, and zero-mask exception slots in the residual array.
+  constexpr uint32_t kBitsPerPhysicalType = sizeof(physicalType) * 8;
+  const physicalType baseMask = selectedBaseBitWidth == 0
+      ? physicalType{0}
+      : static_cast<physicalType>(velox::bits::lowMask(selectedBaseBitWidth));
+
+  auto* pool = &buffer.getMemoryPool();
+  Vector<uint32_t> exceptionPositions{pool};
+  Vector<physicalType> exceptionValues{pool};
+  // Reserve for expected exceptions based on the 90% coverage threshold.
+  exceptionPositions.reserve(expectedExceptions);
+  exceptionValues.reserve(expectedExceptions);
+
+  Vector<physicalType> maskedResiduals{pool};
+  maskedResiduals.resize(rowCount);
+  physicalType maxBaseResidual{0};
+  for (auto i = 0; i < rowCount; ++i) {
+    const physicalType residual =
+        static_cast<physicalType>(values[i] - baseline);
+    if (selectedBaseBitWidth < kBitsPerPhysicalType && residual > baseMask) {
+      exceptionPositions.emplace_back(i);
+      exceptionValues.emplace_back(residual);
+      maskedResiduals[i] = physicalType{0};
+    } else {
+      maskedResiduals[i] = residual;
+      maxBaseResidual = std::max(maxBaseResidual, residual);
+    }
+  }
+  const uint32_t numExceptions =
+      static_cast<uint32_t>(exceptionPositions.size());
+  const uint8_t exactBaseBitWidth =
+      static_cast<uint8_t>(velox::bits::bitsRequired(maxBaseResidual));
+  NIMBLE_CHECK_LE(
+      exactBaseBitWidth,
+      selectedBaseBitWidth,
+      "Pfor exact bit width should not exceed selected bit width.");
+  const uint8_t baseBitWidth = options.fixedBitWidthUseExactBits
+      ? exactBaseBitWidth
+      : selectedBaseBitWidth;
+
+  const uint64_t bitpackedSize =
+      baseBitWidth == 0 ? 0 : FixedBitArray::bufferSize(rowCount, baseBitWidth);
+
+  // PFOR encodes the exception side-channels through recursive encoding
+  // selection so Nimble can pick the best sub-encoding.
+  // The bulk base residuals always stay raw to preserve the fast decode path.
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  std::string_view exceptionPositionsEncoded{};
+  std::string_view exceptionValuesEncoded{};
+  if (numExceptions > 0) {
+    exceptionPositionsEncoded = selection.template encodeNested<uint32_t>(
+        EncodingIdentifiers::Pfor::ExceptionPositions,
+        std::span<const uint32_t>(exceptionPositions.data(), numExceptions),
+        scopedBuffer.get(),
+        options);
+    exceptionValuesEncoded = selection.template encodeNested<physicalType>(
+        EncodingIdentifiers::Pfor::ExceptionValues,
+        std::span<const physicalType>(exceptionValues.data(), numExceptions),
+        scopedBuffer.get(),
+        options);
+  }
+  const auto exceptionPositionsEncodedSize =
+      static_cast<uint32_t>(exceptionPositionsEncoded.size());
+  const auto exceptionValuesEncodedSize =
+      static_cast<uint32_t>(exceptionValuesEncoded.size());
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(rowCount, useVarint) +
+      PFOREncoding<T>::kFixedHeaderSize + varint::varintSize(numExceptions) +
+      varint::varintSize(exceptionPositionsEncodedSize) +
+      varint::varintSize(exceptionValuesEncodedSize) +
+      exceptionPositionsEncodedSize + exceptionValuesEncodedSize +
+      static_cast<uint32_t>(bitpackedSize);
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  Encoding::serializePrefix(
+      EncodingType::PFOR, TypeTraits<T>::dataType, rowCount, useVarint, pos);
+  encoding::write(baseline, pos);
+  encoding::writeChar(static_cast<char>(baseBitWidth), pos);
+  varint::writeVarint(numExceptions, &pos);
+  encoding::writeVarintString(exceptionPositionsEncoded, pos);
+  encoding::writeVarintString(exceptionValuesEncoded, pos);
+  if (baseBitWidth > 0) {
+    std::memset(pos, 0, bitpackedSize);
+    FixedBitArray fba(pos, baseBitWidth);
+    fba.bulkSetWithBaseline(
+        /*start=*/0,
+        /*length=*/rowCount,
+        maskedResiduals.data(),
+        /*baseline=*/physicalType{0});
+    pos += bitpackedSize;
+  }
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Pfor encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
+template <typename T>
+typename PFOREncoding<T>::ExceptionSlice PFOREncoding<T>::sliceExceptions(
+    std::string_view exceptionPositions,
+    std::string_view exceptionValues,
+    uint32_t numExceptions,
+    uint32_t offset,
+    uint32_t length,
+    velox::memory::MemoryPool* pool,
+    Buffer& scratchBuffer,
+    const Encoding::Options& options) {
+  if (numExceptions == 0) {
+    return {};
+  }
+
+  NIMBLE_CHECK_NOT_NULL(pool);
+  ScopedVector<uint32_t> positions{numExceptions, pool, options.bufferPool};
+  auto positionsEncoding =
+      EncodingFactory(options).create(*pool, exceptionPositions, nullptr);
+  positionsEncoding->materialize(numExceptions, positions.data());
+
+  const auto sliceBegin =
+      std::lower_bound(positions.begin(), positions.end(), offset);
+  const auto sliceEnd =
+      std::lower_bound(sliceBegin, positions.end(), offset + length);
+  const auto exceptionOffset =
+      static_cast<uint32_t>(sliceBegin - positions.begin());
+  const auto slicedExceptionCount =
+      static_cast<uint32_t>(sliceEnd - sliceBegin);
+  if (slicedExceptionCount == 0) {
+    return {};
+  }
+
+  ScopedVector<uint32_t> rebasedPositions{
+      slicedExceptionCount, pool, options.bufferPool};
+  for (uint32_t i = 0; i < slicedExceptionCount; ++i) {
+    rebasedPositions[i] = sliceBegin[i] - offset;
+  }
+
+  return {
+      .positions = EncodingFactory::encodeWithCapturedLayout<uint32_t>(
+          exceptionPositions,
+          {rebasedPositions.data(), rebasedPositions.size()},
+          scratchBuffer,
+          options,
+          "Captured PFOR exception positions layout"),
+      .values = EncodingFactory::slice(
+          exceptionValues,
+          exceptionOffset,
+          slicedExceptionCount,
+          scratchBuffer,
+          options),
+      .count = slicedExceptionCount};
+}
+
+template <typename T>
+std::string_view PFOREncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+  NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
+
+  auto* pool = &buffer.getMemoryPool();
+  const char* readPos = encoded.data() +
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  const auto baseline = encoding::read<physicalType>(readPos);
+  const auto baseBitWidth = static_cast<uint8_t>(encoding::readChar(readPos));
+  NIMBLE_CHECK_LE(baseBitWidth, 64, "Pfor base bit width must be in [0, 64].");
+  const auto numExceptions = varint::readVarint32(&readPos);
+  NIMBLE_CHECK_LE(
+      numExceptions, sourceRowCount, "Pfor exception count exceeds row count.");
+  const auto exceptionPositionsSize = varint::readVarint32(&readPos);
+  NIMBLE_CHECK_EQ(
+      numExceptions == 0,
+      exceptionPositionsSize == 0,
+      "Pfor exception positions stream size must match exception count.");
+  const std::string_view exceptionPositions{readPos, exceptionPositionsSize};
+  readPos += exceptionPositionsSize;
+  const auto exceptionValuesSize = varint::readVarint32(&readPos);
+  NIMBLE_CHECK_EQ(
+      numExceptions == 0,
+      exceptionValuesSize == 0,
+      "Pfor exception values stream size must match exception count.");
+  const std::string_view exceptionValues{readPos, exceptionValuesSize};
+  readPos += exceptionValuesSize;
+  const std::string_view packedData{
+      readPos, static_cast<size_t>(encoded.end() - readPos)};
+
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  const auto exceptionSlice = sliceExceptions(
+      exceptionPositions,
+      exceptionValues,
+      numExceptions,
+      offset,
+      length,
+      pool,
+      scopedBuffer.get(),
+      options);
+
+  const uint32_t bitpackedSize = baseBitWidth == 0
+      ? 0
+      : static_cast<uint32_t>(FixedBitArray::bufferSize(length, baseBitWidth));
+  const auto slicedExceptionPositionsSize =
+      static_cast<uint32_t>(exceptionSlice.positions.size());
+  const auto slicedExceptionValuesSize =
+      static_cast<uint32_t>(exceptionSlice.values.size());
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(length, options.useVarintRowCount) +
+      kFixedHeaderSize + varint::varintSize(exceptionSlice.count) +
+      varint::varintSize(slicedExceptionPositionsSize) +
+      varint::varintSize(slicedExceptionValuesSize) +
+      slicedExceptionPositionsSize + slicedExceptionValuesSize + bitpackedSize;
+  char* reserved = buffer.reserve(encodingSize);
+  char* writePos = reserved;
+  Encoding::serializePrefix(
+      EncodingType::PFOR,
+      TypeTraits<T>::dataType,
+      length,
+      options.useVarintRowCount,
+      writePos);
+  encoding::write(baseline, writePos);
+  encoding::writeChar(static_cast<char>(baseBitWidth), writePos);
+  varint::writeVarint(exceptionSlice.count, &writePos);
+  encoding::writeVarintString(exceptionSlice.positions, writePos);
+  encoding::writeVarintString(exceptionSlice.values, writePos);
+  if (baseBitWidth > 0) {
+    std::memset(writePos, 0, bitpackedSize);
+    const auto sourceBitOffset = static_cast<uint64_t>(offset) * baseBitWidth;
+    const auto sliceBits = static_cast<uint64_t>(length) * baseBitWidth;
+    encoding::copyPackedBits(packedData, sourceBitOffset, sliceBits, writePos);
+    writePos += bitpackedSize;
+  }
+  NIMBLE_CHECK_EQ(
+      writePos - reserved, encodingSize, "Pfor encoding size mismatch.");
+  return {reserved, encodingSize};
 }
 
 template <typename T>

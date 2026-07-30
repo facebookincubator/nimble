@@ -255,11 +255,6 @@ class BlockBitPackingEncoding final
         varint::varintSize(firstBlockRows);
   }
 
-  static void writeSizedChild(std::string_view value, char*& pos) {
-    varint::writeVarint(static_cast<uint32_t>(value.size()), &pos);
-    encoding::writeBytes(value, pos);
-  }
-
   template <typename MetadataType>
   static uint64_t estimateMetadataSize(uint32_t rowCount) {
     const auto trivialSize =
@@ -609,20 +604,11 @@ void BlockBitPackingEncoding<T>::writeBlockSlicesPayload(
         static_cast<uint64_t>(blockSlice.rowOffset) * blockSlice.bitWidth;
     const auto sliceBits =
         static_cast<uint64_t>(blockSlice.rowCount) * blockSlice.bitWidth;
-    if (sourceBitOffset % 8 == 0 && sliceBits % 8 == 0) {
-      std::memcpy(
-          pos + dataOffset,
-          packedData.data() + blockSlice.packedOffset + sourceBitOffset / 8,
-          blockSlice.packedSize);
-    } else {
-      velox::bits::copyBits(
-          reinterpret_cast<const uint64_t*>(
-              packedData.data() + blockSlice.packedOffset),
-          sourceBitOffset,
-          reinterpret_cast<uint64_t*>(pos + dataOffset),
-          /*targetOffset=*/0,
-          sliceBits);
-    }
+    encoding::copyPackedBits(
+        packedData.substr(blockSlice.packedOffset),
+        sourceBitOffset,
+        sliceBits,
+        pos + dataOffset);
     dataOffset += blockSlice.packedSize;
   };
 
@@ -1219,9 +1205,9 @@ std::string_view BlockBitPackingEncoding<T>::encode(
       static_cast<char>(compressionEncoder.compressionType()), pos);
   varint::writeVarint(blockSize, &pos);
   varint::writeVarint(numBlocks, &pos);
-  writeSizedChild(encodedBaselines, pos);
-  writeSizedChild(encodedBitWidths, pos);
-  writeSizedChild(encodedOffsets, pos);
+  encoding::writeVarintString(encodedBaselines, pos);
+  encoding::writeVarintString(encodedBitWidths, pos);
+  encoding::writeVarintString(encodedOffsets, pos);
   varint::writeVarint(firstBlockRows, &pos);
   compressionEncoder.write(pos);
 
@@ -1365,9 +1351,9 @@ std::string_view BlockBitPackingEncoding<T>::slice(
   encoding::writeChar(static_cast<char>(CompressionType::Uncompressed), pos);
   varint::writeVarint(source.blockSize, &pos);
   varint::writeVarint(numBlocks, &pos);
-  writeSizedChild(encodedBaselines, pos);
-  writeSizedChild(encodedBitWidths, pos);
-  writeSizedChild(encodedOffsets, pos);
+  encoding::writeVarintString(encodedBaselines, pos);
+  encoding::writeVarintString(encodedBitWidths, pos);
+  encoding::writeVarintString(encodedOffsets, pos);
   varint::writeVarint(firstBlockRows, &pos);
 
   writeBlockSlicesPayload(

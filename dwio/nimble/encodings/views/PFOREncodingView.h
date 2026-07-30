@@ -18,6 +18,7 @@
 #include <algorithm>
 
 #include "dwio/nimble/common/FixedBitArray.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
@@ -42,11 +43,16 @@ class PFOREncodingView final : public TypedEncodingView<T> {
     baseline_ = encoding::read<physicalType>(pos);
     baseBitWidth_ = static_cast<uint8_t>(encoding::readChar(pos));
     NIMBLE_CHECK_LE(baseBitWidth_, sizeof(physicalType) * 8);
-    numExceptions_ = encoding::readUint32(pos);
+    numExceptions_ = varint::readVarint32(&pos);
     NIMBLE_CHECK_LE(numExceptions_, this->rowCount_);
 
-    if (numExceptions_ > 0) {
-      const auto exceptionPositionsSize = encoding::readUint32(pos);
+    const auto exceptionPositionsSize = varint::readVarint32(&pos);
+    if (numExceptions_ == 0) {
+      NIMBLE_CHECK_EQ(
+          exceptionPositionsSize,
+          0,
+          "Empty Pfor exception positions stream has data.");
+    } else {
       auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
       auto exceptionPositions = EncodingFactory(options).create(
           *this->pool_, {pos, exceptionPositionsSize}, noStringBufferFactory);
@@ -54,23 +60,24 @@ class PFOREncodingView final : public TypedEncodingView<T> {
       exceptionPositions_.resize(numExceptions_);
       exceptionPositions->materialize(
           numExceptions_, exceptionPositions_.data());
-      pos += exceptionPositionsSize;
-    } else {
-      pos += sizeof(uint32_t);
     }
+    pos += exceptionPositionsSize;
 
-    if (numExceptions_ > 0) {
-      const auto exceptionValuesSize = encoding::readUint32(pos);
+    const auto exceptionValuesSize = varint::readVarint32(&pos);
+    if (numExceptions_ == 0) {
+      NIMBLE_CHECK_EQ(
+          exceptionValuesSize,
+          0,
+          "Empty Pfor exception values stream has data.");
+    } else {
       auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
       auto exceptionValues = EncodingFactory(options).create(
           *this->pool_, {pos, exceptionValuesSize}, noStringBufferFactory);
       NIMBLE_CHECK_NOT_NULL(exceptionValues);
       exceptionValues_.resize(numExceptions_);
       exceptionValues->materialize(numExceptions_, exceptionValues_.data());
-      pos += exceptionValuesSize;
-    } else {
-      pos += sizeof(uint32_t);
     }
+    pos += exceptionValuesSize;
 
     if (baseBitWidth_ > 0) {
       fixedBitArray_ = FixedBitArray{

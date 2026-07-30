@@ -94,16 +94,17 @@ class EncodingUtilitiesTest : public ::testing::Test {
   //   bytes 0-5: prefix (EncodingType::PFOR, DataType::Uint32, rowCount)
   //   bytes 6-9: baseline (uint32)
   //   byte 10: baseBitWidth (0)
-  //   bytes 11-14: numExceptions (uint32)
+  //   byte 11+: numExceptions (varint)
   //   then the positions sub-stream and the values sub-stream, each preceded by
-  //   a 4-byte size.
+  //   a varint size.
   std::string buildPforUint32Stream(
       uint32_t numExceptions,
       const std::string& positions,
       const std::string& values) {
     const size_t totalSize = 6 + sizeof(uint32_t) /* baseline */ +
-        1 /* baseBitWidth */ + sizeof(uint32_t) /* numExceptions */ +
-        sizeof(uint32_t) + positions.size() + sizeof(uint32_t) + values.size();
+        1 /* baseBitWidth */ + varint::varintSize(numExceptions) +
+        varint::varintSize(positions.size()) + positions.size() +
+        varint::varintSize(values.size()) + values.size();
     std::string buf(totalSize, '\0');
     char* pos = buf.data();
     encoding::writeChar(static_cast<char>(EncodingType::PFOR), pos);
@@ -111,10 +112,10 @@ class EncodingUtilitiesTest : public ::testing::Test {
     encoding::writeUint32(/* rowCount */ 100, pos);
     encoding::writeUint32(/* baseline */ 0, pos);
     encoding::writeChar(/* baseBitWidth */ 0, pos);
-    encoding::writeUint32(numExceptions, pos);
-    encoding::writeUint32(static_cast<uint32_t>(positions.size()), pos);
+    varint::writeVarint(numExceptions, &pos);
+    varint::writeVarint(static_cast<uint32_t>(positions.size()), &pos);
     encoding::writeBytes(positions, pos);
-    encoding::writeUint32(static_cast<uint32_t>(values.size()), pos);
+    varint::writeVarint(static_cast<uint32_t>(values.size()), &pos);
     encoding::writeBytes(values, pos);
     return buf;
   }
