@@ -20,6 +20,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/ForEncoding.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -27,6 +28,8 @@
 #include "dwio/nimble/encodings/benchmarks/BenchmarkUtils.h"
 #include "folly/Benchmark.h"
 #include "folly/init/Init.h"
+
+#include <limits>
 
 using namespace facebook::nimble;
 using namespace facebook::nimble::benchmarks;
@@ -117,6 +120,58 @@ Vector<uint32_t> makePforUint32(uint32_t n = kNumElements) {
     data[i] = i % 10 == 7 ? 100000 + i : 50 + (i % 64);
   }
   return data;
+}
+
+Vector<std::string_view> makeFsstStrings(uint32_t n = kNumElements) {
+  static std::vector<std::string> storage;
+  if (storage.size() != n) {
+    storage.clear();
+    storage.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      storage.emplace_back(
+          "common/prefix/for/fsst/slice/benchmark/" + std::to_string(i % 257));
+    }
+  }
+
+  auto& pool = benchmarkPool();
+  Vector<std::string_view> data{pool.get()};
+  data.resize(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    data[i] = storage[i];
+  }
+  return data;
+}
+
+Encoding::Options fsstOptions() {
+  Encoding::Options options;
+  options.fsstCompressionTargetRatio = std::numeric_limits<double>::max();
+  return options;
+}
+
+void materializeEncodeFsstBenchmark(
+    const std::string& encoded,
+    uint32_t iters) {
+  auto& pool = benchmarkPool();
+  while (iters--) {
+    std::vector<facebook::velox::BufferPtr> stringBuffers;
+    auto stringBufferFactory = [&](uint32_t totalLength) {
+      auto& buffer = stringBuffers.emplace_back(
+          facebook::velox::AlignedBuffer::allocate<char>(
+              totalLength, benchmarkPool().get()));
+      return buffer->asMutable<void>();
+    };
+    auto encoding =
+        EncodingFactory{}.create(*pool, encoded, stringBufferFactory);
+    encoding->skip(kSliceOffset);
+
+    Vector<std::string_view> values{pool.get(), kSliceLength};
+    encoding->materialize(kSliceLength, values.data());
+
+    const auto materialized =
+        encodeData<FsstEncoding>(EncodingType::Fsst, values, fsstOptions());
+    folly::doNotOptimizeAway(materialized.data());
+    folly::doNotOptimizeAway(materialized.size());
+  }
 }
 
 } // namespace
@@ -221,6 +276,24 @@ SLICE_BENCHMARKS(
     double,
     EncodingType::ALP,
     makeAlpDouble());
+
+BENCHMARK(Slice_FsstString, iters) {
+  std::string encoded;
+  BENCHMARK_SUSPEND {
+    const auto data = makeFsstStrings();
+    encoded = encodeData<FsstEncoding>(EncodingType::Fsst, data, fsstOptions());
+  }
+  sliceBenchmark(encoded, iters);
+}
+BENCHMARK_RELATIVE(MaterializeEncode_FsstString, iters) {
+  std::string encoded;
+  BENCHMARK_SUSPEND {
+    const auto data = makeFsstStrings();
+    encoded = encodeData<FsstEncoding>(EncodingType::Fsst, data, fsstOptions());
+  }
+  materializeEncodeFsstBenchmark(encoded, iters);
+}
+BENCHMARK_DRAW_LINE();
 
 BENCHMARK(Slice_BlockBitPackingUint32PartialBlock, iters) {
   std::string encoded;

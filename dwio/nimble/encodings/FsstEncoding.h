@@ -69,9 +69,9 @@ namespace facebook::nimble {
 ///
 /// Binary layout:
 /// - Encoding::kPrefixSize bytes: standard Encoding prefix
-/// - 4 bytes: serialized FSST symbol table size
+/// - varint: serialized FSST symbol table size
 /// - N bytes: serialized FSST symbol table (~2KB typical)
-/// - 4 bytes: lengths encoding size
+/// - varint: lengths encoding size
 /// - M bytes: nested encoding of compressed string lengths
 /// - K bytes: compressed string blob (concatenated FSST-compressed strings)
 ///
@@ -98,6 +98,13 @@ class FsstEncoding final
   static std::string_view encode(
       EncodingSelection<physicalType>& selection,
       std::span<const physicalType> values,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
       Buffer& buffer,
       const Encoding::Options& options = {});
 
@@ -199,9 +206,7 @@ class FsstEncoding final
       const char* compressedData,
       uint32_t compressedLength);
 
-  // Allocates a new string page of at least minSize bytes via
-  // stringBufferFactory_.
-  void allocatePage(size_t minSize);
+  void ensurePage(size_t requiredBytes);
 
   const std::function<void*(uint32_t)> stringBufferFactory_;
 
