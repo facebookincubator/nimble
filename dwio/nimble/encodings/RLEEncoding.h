@@ -501,25 +501,38 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
       vector_size_t numSelected,
       const vector_size_t* scatterRows);
 
-  /// RLE wraps an inner Dictionary encoding. The dictionary is identical
-  /// to the inner encoding's dictionary.
   bool dictionaryEnabled() const override {
-    return dictValues_ != nullptr;
+    if (dictValues_ != nullptr) {
+      return true;
+    }
+    if (valuesEncoding_ == nullptr) {
+      return false;
+    }
+    return valuesEncoding_->dictionaryEnabled();
   }
 
   uint32_t dictionarySize() const override {
-    NIMBLE_CHECK_NOT_NULL(dictValues_);
-    return dictValues_->dictionarySize();
+    if (dictValues_ != nullptr) {
+      return dictValues_->dictionarySize();
+    }
+    NIMBLE_CHECK(
+        valuesEncoding_ != nullptr,
+        "dictionary metadata unavailable — flat mode was already initialized");
+    return valuesEncoding_->dictionarySize();
   }
 
   const void* dictionaryEntry(uint32_t index) const override {
-    NIMBLE_CHECK_NOT_NULL(dictValues_);
     return static_cast<const physicalType*>(dictionaryEntries()) + index;
   }
 
   const void* dictionaryEntries() const override {
-    NIMBLE_CHECK_NOT_NULL(dictValues_);
-    return dictValues_->dictionaryEntries();
+    if (dictValues_ != nullptr) {
+      return dictValues_->dictionaryEntries();
+    }
+    NIMBLE_CHECK(
+        valuesEncoding_ != nullptr,
+        "dictionary metadata unavailable — flat mode was already initialized");
+    return valuesEncoding_->dictionaryEntries();
   }
 
   /// Materializes composed dictionary indices for rowCount dense non-null rows.
@@ -527,8 +540,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   /// value→index map, then fills the buffer with that index repeated for
   /// the run length.
   void materializeIndices(uint32_t rowCount, uint32_t* buffer) override {
-    NIMBLE_CHECK_NOT_NULL(dictValues_);
-    NIMBLE_CHECK_NULL(values_);
+    ensureDictValues();
     uint32_t rowsLeft = rowCount;
     uint32_t numOutputRows = 0;
     while (rowsLeft > 0) {
@@ -550,9 +562,7 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
   void readIndicesWithVisitor(
       IndicesVisitor& visitor,
       ReadWithVisitorParams& params) {
-    NIMBLE_CHECK(
-        this->dictionaryEnabled(),
-        "readIndicesWithVisitor requires dictionary-enabled inner encoding");
+    ensureDictValues();
     NIMBLE_CHECK(
         !IndicesVisitor::kHasHook,
         "readIndicesWithVisitor does not support value hooks");
@@ -652,6 +662,43 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
 
   void advanceRunValue();
 
+  void ensureValues() {
+    NIMBLE_CHECK_NULL(
+        dictValues_,
+        "flat mode unavailable — dict mode was already initialized");
+    if (values_) {
+      return;
+    }
+    NIMBLE_CHECK_NOT_NULL(valuesEncoding_);
+    values_ = std::make_unique<detail::BufferedEncoding<physicalType, 128>>(
+        std::move(valuesEncoding_));
+    for (uint32_t i = 0; i < pendingSkips_; ++i) {
+      this->currentValue_ = values_->nextValue();
+    }
+    pendingSkips_ = 0;
+  }
+
+  void ensureDictValues() {
+    NIMBLE_CHECK_NULL(
+        values_, "dict mode unavailable — flat mode was already initialized");
+    if (dictValues_) {
+      return;
+    }
+    NIMBLE_CHECK_NOT_NULL(valuesEncoding_);
+    NIMBLE_CHECK(
+        valuesEncoding_->dictionaryEnabled(),
+        "dict mode unavailable — inner encoding is not dictionary-compatible");
+    dictValues_ =
+        std::make_unique<detail::BufferedDictEncoding<physicalType, 128>>(
+            std::move(valuesEncoding_));
+    alphabet_ =
+        static_cast<const physicalType*>(dictValues_->dictionaryEntries());
+    for (uint32_t i = 0; i < pendingSkips_; ++i) {
+      currentIndex_ = dictValues_->nextIndex();
+    }
+    pendingSkips_ = 0;
+  }
+
   uint32_t advanceRunIndex() {
     currentIndex_ = dictValues_->nextIndex();
     return currentIndex_;
@@ -672,10 +719,14 @@ class RLEEncoding final : public internal::RLEEncodingBase<T, RLEEncoding<T>> {
     return indicesBuffer_->asMutable<uint32_t>();
   }
 
-  // Exactly one of values_ or dictValues_ is active. When the inner
-  // encoding is dictionary-enabled, dictValues_ loads indices in pages
-  // and reconstructs values from the alphabet. Otherwise values_ loads
-  // values directly via materialize().
+  // Exactly one of valuesEncoding_, values_, or dictValues_ is non-null.
+  // valuesEncoding_ holds the raw inner encoding until the first read chooses
+  // flat vs dict mode, then it is moved into values_ or dictValues_.
+  // When the inner encoding is dictionary-enabled, dictValues_ loads indices
+  // in pages and reconstructs values from the alphabet. Otherwise values_
+  // loads values directly via materialize().
+  std::unique_ptr<Encoding> valuesEncoding_;
+  uint32_t pendingSkips_{0};
   std::unique_ptr<detail::BufferedEncoding<physicalType, 128>> values_;
   std::unique_ptr<detail::BufferedDictEncoding<physicalType, 128>> dictValues_;
   const physicalType* alphabet_{nullptr};
@@ -777,18 +828,10 @@ RLEEncoding<T>::RLEEncoding(
       static_cast<size_t>(
           data.end() -
           internal::RLEEncodingBase<T, RLEEncoding<T>>::getValuesStart())};
-  auto valuesEncoding =
+  valuesEncoding_ =
       EncodingFactory(options).create(pool, valuesView, stringBufferFactory);
-  if (options.preserveDictionaryEncoding && isStringType<physicalType>() &&
-      valuesEncoding->dictionaryEnabled()) {
-    dictValues_ =
-        std::make_unique<detail::BufferedDictEncoding<physicalType, 128>>(
-            std::move(valuesEncoding));
-    alphabet_ =
-        static_cast<const physicalType*>(dictValues_->dictionaryEntries());
-  } else {
-    values_ = std::make_unique<detail::BufferedEncoding<physicalType, 128>>(
-        std::move(valuesEncoding));
+  if (!isStringType<physicalType>() || !valuesEncoding_->dictionaryEnabled()) {
+    ensureValues();
   }
   this->reset();
 }
@@ -798,13 +841,7 @@ RLEEncoding<T>::RLEEncoding(
 // advanceRunIndex() is used instead.
 template <typename T>
 void RLEEncoding<T>::advanceRunValue() {
-  if constexpr (isStringType<physicalType>()) {
-    NIMBLE_CHECK_NULL(dictValues_);
-    NIMBLE_CHECK_NOT_NULL(values_);
-  } else {
-    NIMBLE_DCHECK_NULL(dictValues_);
-    NIMBLE_DCHECK_NOT_NULL(values_);
-  }
+  ensureValues();
   this->currentValue_ = values_->nextValue();
 }
 
@@ -826,7 +863,11 @@ void RLEEncoding<T>::skip(uint32_t rowCount) {
     }
     rowsLeft -= this->copiesRemaining_;
     advanceRunLength();
-    if (dictValues_ != nullptr) {
+    if (valuesEncoding_ != nullptr) {
+      // Mode not yet chosen — defer the value consumption until
+      // ensureValues() or ensureDictValues() wraps the encoding.
+      ++pendingSkips_;
+    } else if (dictValues_ != nullptr) {
       advanceRunIndex();
     } else {
       advanceRunValue();
@@ -836,6 +877,7 @@ void RLEEncoding<T>::skip(uint32_t rowCount) {
 
 template <typename T>
 void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
+  ensureValues();
   uint32_t rowsLeft = rowCount;
   auto* output = static_cast<physicalType*>(buffer);
   while (rowsLeft > 0) {
@@ -856,44 +898,25 @@ void RLEEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
 
 template <typename T>
 typename RLEEncoding<T>::physicalType RLEEncoding<T>::nextValue() {
-  if constexpr (isStringType<physicalType>()) {
-    NIMBLE_CHECK_NOT_NULL(values_);
-    NIMBLE_CHECK_NULL(dictValues_);
-  } else {
-    NIMBLE_DCHECK_NOT_NULL(values_);
-    NIMBLE_DCHECK_NULL(dictValues_);
-  }
+  ensureValues();
   return values_->nextValue();
 }
 
 template <typename T>
 uint32_t RLEEncoding<T>::nextIndex() {
-  if constexpr (isStringType<physicalType>()) {
-    NIMBLE_CHECK_NOT_NULL(dictValues_);
-    NIMBLE_CHECK_NULL(values_);
-  } else {
-    NIMBLE_DCHECK_NOT_NULL(dictValues_);
-    NIMBLE_DCHECK_NULL(values_);
-  }
+  ensureDictValues();
   return dictValues_->nextIndex();
 }
 
 template <typename T>
 void RLEEncoding<T>::resetValues() {
   if (dictValues_ != nullptr) {
-    if constexpr (isStringType<physicalType>()) {
-      NIMBLE_CHECK_NULL(values_);
-    } else {
-      NIMBLE_DCHECK_NULL(values_);
-    }
     dictValues_->reset();
-  } else {
-    if constexpr (isStringType<physicalType>()) {
-      NIMBLE_CHECK_NOT_NULL(values_);
-    } else {
-      NIMBLE_DCHECK_NOT_NULL(values_);
-    }
+  } else if (values_ != nullptr) {
     values_->reset();
+  } else if (valuesEncoding_ != nullptr) {
+    valuesEncoding_->reset();
+    pendingSkips_ = 0;
   }
 }
 
@@ -931,13 +954,7 @@ void RLEEncoding<T>::bulkScan(
     const vector_size_t* selectedRows,
     vector_size_t numSelected,
     const vector_size_t* scatterRows) {
-  if constexpr (isStringType<physicalType>()) {
-    NIMBLE_CHECK_NULL(
-        dictValues_,
-        "bulkScan should not be called in dictionary mode for string types");
-  } else {
-    NIMBLE_DCHECK_NULL(dictValues_);
-  }
+  ensureValues();
   using DataType = typename V::DataType;
   using ValueType = detail::ValueType<DataType>;
   constexpr bool kScatterValues = kScatter && !V::kHasFilter && !V::kHasHook;
@@ -1017,13 +1034,7 @@ template <typename V>
 void RLEEncoding<T>::readWithVisitor(
     V& visitor,
     ReadWithVisitorParams& params) {
-  if constexpr (isStringType<physicalType>()) {
-    NIMBLE_CHECK_NULL(
-        dictValues_,
-        "readWithVisitor should not be called in dictionary mode for string types");
-  } else {
-    NIMBLE_DCHECK_NULL(dictValues_);
-  }
+  ensureValues();
   auto* nulls = visitor.reader().rawNullsInReadRange();
   if (velox::dwio::common::useFastPath(visitor, nulls)) {
     detail::readWithVisitorFast(*this, visitor, params, nulls);

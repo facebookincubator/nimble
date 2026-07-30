@@ -1115,11 +1115,8 @@ class DictionaryApiTypedTest : public ::testing::Test {
   }
 
   /// Creates an Encoding from serialized bytes using EncodingFactory.
-  std::unique_ptr<nimble::Encoding> decodeEncoding(
-      std::string_view data,
-      bool preserveDictionaryEncoding = false) {
+  std::unique_ptr<nimble::Encoding> decodeEncoding(std::string_view data) {
     nimble::Encoding::Options options{};
-    options.preserveDictionaryEncoding = preserveDictionaryEncoding;
     return nimble::EncodingFactory(options).create(
         *pool_, data, [this](uint32_t size) {
           stringBuffers_.push_back(
@@ -1292,7 +1289,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> encodeMainlyConstantDictionary(
       const std::vector<T>& values) {
     auto serialized = serializeMainlyConstantDictionary(values, *buffer_);
-    return decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+    return decodeEncoding(serialized);
   }
 
   /// Encodes data as Nullable wrapping MainlyConstant wrapping Dictionary.
@@ -1339,9 +1336,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
     nimble::encoding::writeString(serializedMC, pos);
     nimble::encoding::writeBytes(serializedNulls, pos);
 
-    return decodeEncoding(
-        std::string_view(reserved, encodingSize),
-        /*preserveDictionaryEncoding=*/true);
+    return decodeEncoding(std::string_view(reserved, encodingSize));
   }
 
   /// Serializes values as RLE wrapping Dictionary into outputBuffer.
@@ -1403,7 +1398,7 @@ class DictionaryApiTypedTest : public ::testing::Test {
   std::unique_ptr<nimble::Encoding> encodeRleDictionary(
       const std::vector<T>& values) {
     auto serialized = serializeRleDictionary(values, *buffer_);
-    return decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+    return decodeEncoding(serialized);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -2411,10 +2406,8 @@ TYPED_TEST(DictionaryApiTypedTest, rleMaterializeAfterSkip) {
     }
   }
 
-  // Construct with dict mode disabled — uses flat values path.
   auto serialized = this->serializeRleDictionary(data, *this->buffer_);
   auto encoding = this->decodeEncoding(serialized);
-  ASSERT_FALSE(encoding->dictionaryEnabled());
 
   // Skip exactly to the first run boundary (5 rows).
   encoding->skip(5);
@@ -2545,11 +2538,10 @@ TYPED_TEST(DictionaryApiTypedTest, rleSkipAndMaterializeAlternating) {
   }
 }
 
-// Verifies that preserveDictionaryEncoding=false forces the flat values path
-// when the inner encoding is dictionary-enabled. The encoding should behave
-// identically to a non-dict RLE — materialize returns correct values but
-// dictionaryEnabled() is false.
-TYPED_TEST(DictionaryApiTypedTest, rleDictionaryDisabledByOption) {
+// RLE wrapping a dictionary-enabled inner encoding reports
+// dictionaryEnabled()=true for string types before mode is chosen.
+// materialize() can still be called (lazily enters flat mode).
+TYPED_TEST(DictionaryApiTypedTest, rleDictionaryLazyMaterialize) {
   using T = TypeParam;
   std::vector<T> data;
   if constexpr (std::is_same_v<T, std::string_view>) {
@@ -2572,18 +2564,14 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryDisabledByOption) {
   // Serialize as RLE→Dictionary.
   auto serialized = this->serializeRleDictionary(data, *this->buffer_);
 
-  // Decode without preserveDictionaryEncoding — should use flat values path.
-  nimble::Encoding::Options options{};
-  auto encoding = nimble::EncodingFactory(options).create(
-      *this->pool_, serialized, [this](uint32_t size) {
-        this->stringBuffers_.push_back(
-            velox::AlignedBuffer::allocate<char>(size, this->pool_.get()));
-        return this->stringBuffers_.back()->template asMutable<void>();
-      });
+  auto encoding = this->decodeEncoding(serialized);
 
-  EXPECT_FALSE(encoding->dictionaryEnabled());
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    EXPECT_TRUE(encoding->dictionaryEnabled());
+  } else {
+    EXPECT_FALSE(encoding->dictionaryEnabled());
+  }
 
-  // Materialize should still produce correct values.
   using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
   std::vector<PhysicalType> materialized(data.size());
   encoding->materialize(data.size(), materialized.data());
@@ -2591,6 +2579,256 @@ TYPED_TEST(DictionaryApiTypedTest, rleDictionaryDisabledByOption) {
     EXPECT_EQ(materialized[i], reinterpret_cast<const PhysicalType&>(data[i]))
         << "row " << i;
   }
+}
+
+// Dictionary(alphabet=RLE(runValues=Constant)). With lazy loading, the
+// DictionaryEncoding constructor calls materialize() on the alphabet RLE,
+// which lazily enters flat mode. No crash.
+TYPED_TEST(DictionaryApiTypedTest, nestedDictionaryRleConstantAlphabet) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha"};
+    for (int32_t i = 0; i < 8; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+  } else {
+    for (int32_t i = 0; i < 8; ++i) {
+      data.push_back(T(42));
+    }
+  }
+  const auto rowCount = static_cast<uint32_t>(data.size());
+
+  // Alphabet has one entry.
+  nimble::Vector<PhysicalType> alphabet{this->pool_.get()};
+  alphabet.push_back(reinterpret_cast<const PhysicalType&>(data[0]));
+  nimble::Vector<uint32_t> indices{this->pool_.get(), rowCount};
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    indices[i] = 0;
+  }
+
+  // Encode alphabet as RLE(runValues=Constant).
+  nimble::Vector<uint32_t> runLengths{this->pool_.get()};
+  runLengths.push_back(1);
+  auto rlSpan = std::span<const uint32_t>(runLengths.data(), runLengths.size());
+  nimble::Buffer rlBuf{*this->pool_};
+  nimble::EncodingSelection<uint32_t> rlSel{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<uint32_t>::create(rlSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+          false, false)};
+  auto serializedRunLengths =
+      nimble::TrivialEncoding<uint32_t>::encode(rlSel, rlSpan, rlBuf);
+
+  // Run values as Constant (dictionaryEnabled()=true).
+  auto rvSpan = std::span<const PhysicalType>(alphabet.data(), alphabet.size());
+  nimble::Buffer rvBuf{*this->pool_};
+  nimble::EncodingSelection<PhysicalType> rvSel{
+      {.encodingType = nimble::EncodingType::Constant},
+      nimble::Statistics<PhysicalType>::create(rvSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
+  auto serializedRunValues =
+      nimble::ConstantEncoding<T>::encode(rvSel, rvSpan, rvBuf);
+
+  // Assemble alphabet as RLE binary.
+  nimble::Buffer alpBuf{*this->pool_};
+  const auto alpEncodingSize = static_cast<uint32_t>(
+      nimble::Encoding::kPrefixSize + 4 + serializedRunLengths.size() +
+      serializedRunValues.size());
+  char* alpPos = alpBuf.reserve(alpEncodingSize);
+  char* alpWrite = alpPos;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::RLE), alpWrite);
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::TypeTraits<T>::dataType), alpWrite);
+  nimble::encoding::writeUint32(alphabet.size(), alpWrite);
+  nimble::encoding::writeString(serializedRunLengths, alpWrite);
+  nimble::encoding::writeBytes(serializedRunValues, alpWrite);
+  auto serializedAlphabet = std::string_view(alpPos, alpEncodingSize);
+
+  // Encode indices as Trivial<uint32_t>.
+  auto idxSpan = std::span<const uint32_t>(indices.data(), indices.size());
+  nimble::Buffer idxBuf{*this->pool_};
+  nimble::EncodingSelection<uint32_t> idxSel{
+      {.encodingType = nimble::EncodingType::Trivial},
+      nimble::Statistics<uint32_t>::create(idxSpan),
+      std::make_unique<TestTrivialEncodingSelectionPolicy<uint32_t>>(
+          false, false)};
+  auto serializedIndices =
+      nimble::TrivialEncoding<uint32_t>::encode(idxSel, idxSpan, idxBuf);
+
+  // Assemble outer Dictionary binary.
+  nimble::Buffer dictBuf{*this->pool_};
+  const auto dictSize = static_cast<uint32_t>(
+      nimble::Encoding::kPrefixSize + 4 + serializedAlphabet.size() +
+      serializedIndices.size());
+  char* dictPos = dictBuf.reserve(dictSize);
+  char* dictWrite = dictPos;
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::EncodingType::Dictionary), dictWrite);
+  nimble::encoding::writeChar(
+      static_cast<char>(nimble::TypeTraits<T>::dataType), dictWrite);
+  nimble::encoding::writeUint32(rowCount, dictWrite);
+  nimble::encoding::writeUint32(
+      static_cast<uint32_t>(serializedAlphabet.size()), dictWrite);
+  std::memcpy(dictWrite, serializedAlphabet.data(), serializedAlphabet.size());
+  dictWrite += serializedAlphabet.size();
+  std::memcpy(dictWrite, serializedIndices.data(), serializedIndices.size());
+  auto serialized = std::string_view(dictPos, dictSize);
+
+  auto encoding = this->decodeEncoding(serialized);
+
+  EXPECT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->rowCount(), rowCount);
+
+  std::vector<PhysicalType> materialized(rowCount);
+  encoding->materialize(rowCount, materialized.data());
+  for (uint32_t i = 0; i < rowCount; ++i) {
+    EXPECT_EQ(materialized[i], reinterpret_cast<const PhysicalType&>(data[i]))
+        << "row " << i;
+  }
+}
+
+// Skip then dict read: skip() accumulates pendingSkips_, then
+// materializeIndices() drains them on first ensureDictValues().
+TYPED_TEST(DictionaryApiTypedTest, skipThenMaterializeIndices) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo", "charlie"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[2]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(30));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    return;
+  }
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+
+  // Skip past the first run (5 rows).
+  encoding->skip(5);
+
+  const auto remaining = static_cast<uint32_t>(data.size() - 5);
+  std::vector<uint32_t> indices(remaining);
+  encoding->materializeIndices(remaining, indices.data());
+
+  const auto* entries =
+      static_cast<const PhysicalType*>(encoding->dictionaryEntries());
+  for (uint32_t i = 0; i < remaining; ++i) {
+    EXPECT_EQ(
+        entries[indices[i]], reinterpret_cast<const PhysicalType&>(data[5 + i]))
+        << "row " << i;
+  }
+}
+
+// Dict metadata is available before mode is chosen (delegates to
+// valuesEncoding_), but unsupported if flat mode is used.
+TYPED_TEST(DictionaryApiTypedTest, dictMetadataBeforeModeChosen) {
+  using T = TypeParam;
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+  } else {
+    for (int i = 0; i < 5; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 3; ++i) {
+      data.push_back(T(20));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    return;
+  }
+
+  // Query metadata before any read — delegates to valuesEncoding_.
+  ASSERT_TRUE(encoding->dictionaryEnabled());
+  EXPECT_EQ(encoding->dictionarySize(), 2);
+  EXPECT_NE(encoding->dictionaryEntries(), nullptr);
+
+  // Verify alphabet entries are correct.
+  const auto* entries =
+      static_cast<const PhysicalType*>(encoding->dictionaryEntries());
+  std::set<PhysicalType> alphabetSet(entries, entries + 2);
+  EXPECT_EQ(alphabetSet.size(), 2);
+
+  // Commit to flat mode — metadata is no longer available.
+  std::vector<PhysicalType> values(data.size());
+  encoding->materialize(data.size(), values.data());
+  EXPECT_FALSE(encoding->dictionaryEnabled());
+  EXPECT_THROW(encoding->dictionarySize(), nimble::NimbleInternalError);
+  EXPECT_THROW(encoding->dictionaryEntries(), nimble::NimbleInternalError);
+}
+
+// Mode conflict guard: calling flat API then dict API on the same instance
+// must fail. The ensureDictValues() check catches the conflict.
+TYPED_TEST(DictionaryApiTypedTest, modeConflictFlatThenDict) {
+  using T = TypeParam;
+
+  std::vector<T> data;
+  if constexpr (std::is_same_v<T, std::string_view>) {
+    this->stringPool_ = {"alpha", "bravo"};
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[0]));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(std::string_view(this->stringPool_[1]));
+    }
+  } else {
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(10));
+    }
+    for (int i = 0; i < 4; ++i) {
+      data.push_back(T(20));
+    }
+  }
+
+  auto encoding = this->encodeRleDictionary(data);
+  if constexpr (!nimble::isStringType<T>()) {
+    return;
+  }
+
+  // Commit to flat mode.
+  using PhysicalType = typename nimble::TypeTraits<T>::physicalType;
+  std::vector<PhysicalType> values(4);
+  encoding->materialize(4, values.data());
+
+  // Attempting dict API after flat mode must fail.
+  std::vector<uint32_t> indices(4);
+  EXPECT_THROW(
+      encoding->materializeIndices(4, indices.data()),
+      nimble::NimbleInternalError);
 }
 
 TYPED_TEST(DictionaryApiTypedTest, materializeIndicesRleDictionaryFuzz) {
@@ -2731,8 +2969,7 @@ TYPED_TEST(DictionaryApiTypedTest, constantDictionaryBasics) {
           span),
       std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
   auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
-  auto encoding =
-      this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+  auto encoding = this->decodeEncoding(serialized);
 
   EXPECT_TRUE(encoding->dictionaryEnabled());
   EXPECT_EQ(encoding->dictionarySize(), 1);
@@ -2771,8 +3008,7 @@ TYPED_TEST(DictionaryApiTypedTest, buildAlphabetConstant) {
           span),
       std::make_unique<TestTrivialEncodingSelectionPolicy<T>>(false, false)};
   auto serialized = nimble::ConstantEncoding<T>::encode(sel, span, encBuf);
-  auto encoding =
-      this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+  auto encoding = this->decodeEncoding(serialized);
 
   auto alphabet = nimble::buildEncodingDictionaryAlphabet<T>(encoding.get());
   ASSERT_EQ(alphabet.size(), 1);
@@ -2815,8 +3051,7 @@ TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithSingleOtherValue) {
     } else {
       auto serialized =
           this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
-      encoding =
-          this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+      encoding = this->decodeEncoding(serialized);
     }
 
     ASSERT_TRUE(encoding->dictionaryEnabled());
@@ -2894,9 +3129,8 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeaf) {
   nimble::encoding::writeString(serializedRunLengths, pos);
   nimble::encoding::writeBytes(serializedRunValues, pos);
 
-  auto encoding = this->decodeEncoding(
-      std::string_view(reserved, encodingSize),
-      /*preserveDictionaryEncoding=*/true);
+  auto encoding =
+      this->decodeEncoding(std::string_view(reserved, encodingSize));
   if constexpr (!nimble::isStringType<T>()) {
     EXPECT_FALSE(encoding->dictionaryEnabled());
     std::vector<T> result(totalRows);
@@ -2970,8 +3204,7 @@ TYPED_TEST(DictionaryApiTypedTest, mainlyConstantWithConstantLeafFuzz) {
     nimble::Buffer mcBuffer{*this->pool_};
     auto serialized =
         this->serializeMainlyConstantWithConstantOthers(data, mcBuffer);
-    auto encoding =
-        this->decodeEncoding(serialized, /*preserveDictionaryEncoding=*/true);
+    auto encoding = this->decodeEncoding(serialized);
 
     ASSERT_TRUE(encoding->dictionaryEnabled());
     ASSERT_EQ(encoding->dictionarySize(), 2);
@@ -3064,9 +3297,8 @@ TYPED_TEST(DictionaryApiTypedTest, rleWithConstantLeafFuzz) {
     nimble::encoding::writeString(serializedRunLengths, pos);
     nimble::encoding::writeBytes(serializedRunValues, pos);
 
-    auto encoding = this->decodeEncoding(
-        std::string_view(reserved, encodingSize),
-        /*preserveDictionaryEncoding=*/true);
+    auto encoding =
+        this->decodeEncoding(std::string_view(reserved, encodingSize));
     if constexpr (!nimble::isStringType<T>()) {
       EXPECT_FALSE(encoding->dictionaryEnabled());
       std::vector<T> result(totalRows);
