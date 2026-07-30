@@ -2808,6 +2808,34 @@ TEST_F(VeloxWriterTest, chunkNullCountsForStructNullStream) {
   EXPECT_EQ(6, totalChunkNullCount);
 }
 
+TEST_F(VeloxWriterTest, chunkStatsAbsentWhenChunkIndexDisabled) {
+  // encodeChunk sets chunk.nullCount unconditionally; the chunk stats section
+  // (and its null counts) must still be written only when the chunk index is
+  // enabled. With the index off, no section should be produced.
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vec = vectorMaker.rowVector(
+      {"c1"}, {vectorMaker.flatVector<int32_t>({1, 2, 3})});
+  vec->setNull(1, /*isNull=*/true);
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriter writer(
+      vec->type(),
+      std::move(writeFile),
+      *rootPool_,
+      {.enableChunkIndex = false});
+  writer.write(vec);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  ASSERT_EQ(1, tablet->stripeCount());
+  auto stripeIdentifier = tablet->stripeIdentifier(0);
+  EXPECT_EQ(stripeIdentifier.chunkStats(), nullptr)
+      << "no chunk stats section should be written when the index is disabled";
+}
+
 TEST_F(VeloxWriterTest, chunkedStreamsRowNoNullsNoChunks) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
 
