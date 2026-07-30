@@ -29,6 +29,7 @@ add_executable(
   DataTypeDispatchTest.cpp
   ExceptionHelperTest.cpp
   ExceptionTests.cpp
+  FeatureGateTest.cpp
   FixedBitArrayTests.cpp
   VarintTests.cpp
   VectorTest.cpp

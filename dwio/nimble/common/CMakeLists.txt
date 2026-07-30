@@ -19,6 +19,7 @@ add_library(
   Checksum.cpp
   DataTypeDispatch.h
   Exceptions.cpp
+  FeatureGate.cpp
   FixedBitArray.cpp
   MetricsLogger.cpp
   NimbleException.cpp
