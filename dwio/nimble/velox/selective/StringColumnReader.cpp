@@ -382,14 +382,6 @@ bool StringColumnReader::readWithDictionary(
       dictionaryPreservable(),
       "readWithDictionary entered when the dictionary is not preservable");
 
-  // Entering the dictionary read path: load any chunk this read advances into
-  // (via prepareRead's skip below) with dictionary encoding preserved, so a
-  // between-batch skip that lands in a preserve-gated encoding (e.g.
-  // RLE<Dictionary>) stays dictionary-convertible instead of being flattened.
-  // abandonDictionaryEncoding sets it back to false when the dictionary path is
-  // given up.
-  decoder_.setPreserveDictionaryEncoding(true);
-
   // A cross-chunk merged alphabet is per-read: getValues() clears it (and snaps
   // its backing into the output DictionaryVector) once the read is consumed.
   // But the parent struct reader skips this column's getValues() when it
@@ -411,22 +403,17 @@ bool StringColumnReader::readWithDictionary(
   // the skip lands exactly on a chunk boundary, the last chunk it skipped
   // through. Loading here rather than before prepareRead ensures the
   // convertibility check below inspects the chunk that will be read, not a
-  // stale one. It loads with dictionary encoding preserved — the same mode the
-  // skip's own chunk loads use (the flag set above) — which is what lets this
-  // move after the skip. The callback clears stale dictionary state so
+  // stale one. The callback clears stale dictionary state so
   // ensureDictionaryState rebuilds from the new chunk.
-  decoder_.ensureLoaded(
-      /*preserveDictionaryEncoding=*/true, [this] {
-        clearDictionaryState();
-        return true;
-      });
+  decoder_.ensureLoaded([this] {
+    clearDictionaryState();
+    return true;
+  });
 
   const auto endReadRow = rows.back() + 1;
-  // Check convertibility once, on that chunk. A between-batch skip may load it
-  // in dictionary mode (preserve flag above), so a dict-convertible chunk stays
-  // convertible here; only a genuinely non-dictionary encoding (e.g. Trivial)
-  // fails it. When it is not convertible, no dictionary indices were
-  // materialized; re-type the value buffer to StringView
+  // Check convertibility once, on that chunk. Only a genuinely non-dictionary
+  // encoding (e.g. Trivial) fails it. When it is not convertible, no dictionary
+  // indices were materialized; re-type the value buffer to StringView
   // (abandonDictionaryEncoding handles numValues_ == 0) so read()'s flat
   // continuation fills it. Crucially, read() must NOT run a second prepareRead
   // in this case — that would advance the null/in-map decoders a second time
@@ -673,9 +660,6 @@ void StringColumnReader::abandonDictionaryEncoding(vector_size_t endReadRow) {
   valueSize_ = sizeof(StringView);
   clearDictionaryState();
   crossChunkRead_ = false;
-  // The dictionary path is given up: subsequent chunk loads (including any
-  // skip) revert to flat mode until the next readWithDictionary re-enters it.
-  decoder_.setPreserveDictionaryEncoding(false);
 }
 
 void StringColumnReader::getValues(const RowSet& rows, VectorPtr* result) {

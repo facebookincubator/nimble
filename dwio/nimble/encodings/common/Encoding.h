@@ -126,12 +126,6 @@ class Encoding {
     /// nested child streams.
     EncodingBufferPool* encodingBufferPool = nullptr;
 
-    /// When true, encodings that support dictionary mode (e.g., RLE) will
-    /// use the dictionary index path when the inner encoding is
-    /// dictionary-enabled. False by default — only the selective
-    /// reader enables this for dictionary vector output.
-    bool preserveDictionaryEncoding = false;
-
     /// FrequencyPartitionEncoding index type (cast to FreqPartIndexType).
     /// 0 = NoIndex (default, backward-compatible), 1 = PerTierBitmaps,
     /// 2 = TierTagArray, 3 = EliasFano.

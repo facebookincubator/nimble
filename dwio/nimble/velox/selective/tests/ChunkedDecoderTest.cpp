@@ -1509,12 +1509,12 @@ TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresCallbackOnReload) {
   };
 
   // First load fires the callback.
-  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+  decoder.ensureLoaded(onChunkBoundary);
   EXPECT_EQ(callbackCount, 1);
   EXPECT_EQ(decoder.remainingValues(), 3);
 
   // ensureLoaded with remaining > 0 does not fire.
-  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+  decoder.ensureLoaded(onChunkBoundary);
   EXPECT_EQ(callbackCount, 1);
 
   // Consume chunk 1.
@@ -1522,7 +1522,7 @@ TEST_P(ChunkedDecoderDataTest, ensureLoadedFiresCallbackOnReload) {
   EXPECT_EQ(decoder.remainingValues(), 0);
 
   // ensureLoaded reloads chunk 2, firing the callback.
-  decoder.ensureLoaded(/*preserveDictionaryEncoding=*/false, onChunkBoundary);
+  decoder.ensureLoaded(onChunkBoundary);
   EXPECT_EQ(callbackCount, 2);
   EXPECT_EQ(decoder.remainingValues(), 3);
 }
