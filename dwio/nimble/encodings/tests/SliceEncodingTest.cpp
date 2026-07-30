@@ -33,6 +33,7 @@
 #include "dwio/nimble/encodings/DeltaEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
 #include "dwio/nimble/encodings/NullableEncoding.h"
@@ -332,6 +333,7 @@ using SliceEncodingTypes = ::testing::Types<
     SliceEncodingConfig<nimble::PFOREncoding<uint32_t>>,
     SliceEncodingConfig<nimble::SimdForBitpackEncoding<uint32_t>>,
     SliceEncodingConfig<nimble::HuffmanEncoding<uint32_t>>,
+    SliceEncodingConfig<nimble::ForEncoding<uint32_t>>,
     SliceEncodingConfig<nimble::ALPEncoding<double>>>;
 
 template <typename Config>

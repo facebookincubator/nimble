@@ -283,6 +283,32 @@ TEST(EncodingLayoutTests, Pfor) {
   EXPECT_TRUE(captured.child(1).has_value());
 }
 
+TEST(EncodingLayoutTests, for) {
+  // FOR nests three frame metadata sub-streams: bit widths, references, and
+  // bit offsets. Capture records each present sub-stream recursively so a
+  // captured layout reproduces the full FOR tree.
+  nimble::EncodingLayout forLayout{
+      nimble::EncodingType::FOR,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt, std::nullopt}};
+
+  testSerialization(forLayout);
+
+  std::vector<uint32_t> data;
+  data.reserve(500);
+  for (uint32_t i = 0; i < 500; ++i) {
+    data.push_back((i / 128) * 1000 + (i % 37));
+  }
+
+  auto captured = encodeAndCapture<uint32_t>(forLayout, data);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::FOR);
+  ASSERT_EQ(captured.childrenCount(), 3);
+  EXPECT_TRUE(captured.child(0).has_value());
+  EXPECT_TRUE(captured.child(1).has_value());
+  EXPECT_TRUE(captured.child(2).has_value());
+}
+
 TEST(EncodingLayoutTests, BlockBitPacking) {
   // BlockBitPacking nests three per-block metadata sub-streams (baselines, bit
   // widths, data offsets). Capture records each present sub-stream recursively,

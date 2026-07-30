@@ -25,6 +25,7 @@
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/EncodingSliceFactory.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/MainlyConstantEncoding.h"
@@ -146,6 +147,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Huffman: {
       RETURN_ENCODING_BY_INTEGER_TYPE(HuffmanEncoding, dataType);
+    }
+    case EncodingType::FOR: {
+      RETURN_ENCODING_BY_INTEGER_TYPE(ForEncoding, dataType);
     }
     default: {
       NIMBLE_UNREACHABLE(
@@ -382,6 +386,14 @@ std::string_view EncodingFactory::encode(
       }
       NIMBLE_INCOMPATIBLE_ENCODING(
           "Huffman encoding only supports integral data types, got {}.",
+          TypeTraits<T>::dataType);
+    }
+    case EncodingType::FOR: {
+      if constexpr (isIntegralType<physicalType>()) {
+        return ForEncoding<T>::encode(selection, castedValues, buffer, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "FOR encoding only supports integral data types, got {}.",
           TypeTraits<T>::dataType);
     }
     default: {

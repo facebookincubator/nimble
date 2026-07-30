@@ -15,6 +15,8 @@
  */
 #include "dwio/nimble/encodings/common/Encoding.h"
 
+#include <algorithm>
+
 namespace facebook::nimble {
 
 Encoding::Encoding(
