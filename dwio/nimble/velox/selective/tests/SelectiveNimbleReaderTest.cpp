@@ -16,6 +16,9 @@
 
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
+#include <algorithm>
+#include <array>
+
 #include <fmt/format.h>
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -990,6 +993,99 @@ TEST_P(SelectiveNimbleReaderTest, byteRle) {
       23,
       [&](auto& data, auto i) {
         return !data->isNullAt(i) && 4 <= i / 13 && i / 13 <= 6;
+      },
+      stringDecoderZeroCopy);
+}
+
+// Pushes down a BIGINT IN-list filter (createBigintValues). The batch reader
+// covers IN-lists, but the selective path only exercised BigintRange; migration
+// workloads use IN heavily, so cover it here.
+TEST_P(SelectiveNimbleReaderTest, bigintInList) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  const std::vector<int64_t> inList{3, 17, 42, 88, 500};
+  auto inValue = [&](int64_t v) {
+    return std::find(inList.begin(), inList.end(), v) != inList.end();
+  };
+  runTestCase(
+      [&](bool hasNulls) {
+        return makeFlatVector<int64_t>(
+            1009, folly::identity, hasNulls ? nullEvery(11) : nullptr);
+      },
+      *common::createBigintValues(inList, /*nullAllowed=*/false),
+      101,
+      [&](auto& data, auto i) { return !data->isNullAt(i) && inValue(i); },
+      stringDecoderZeroCopy);
+}
+
+// Pushes down a VARCHAR IN-list filter (BytesValues). Strings were only
+// read-verified before; equality/IN pushdown on VARCHAR was untested.
+TEST_P(SelectiveNimbleReaderTest, stringInList) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  static constexpr std::array<const char*, 5> kValues{
+      "aaa", "bbb", "ccc", "ddd", "eee"};
+  const std::vector<std::string> inList{"aaa", "ccc", "eee"};
+  runTestCase(
+      [&](bool hasNulls) {
+        return makeFlatVector<std::string>(
+            101,
+            [](auto i) { return std::string(kValues[i % kValues.size()]); },
+            hasNulls ? nullEvery(11) : nullptr);
+      },
+      common::BytesValues(inList, /*nullAllowed=*/false),
+      23,
+      [&](auto& data, auto i) {
+        // kValues at even offsets (aaa/ccc/eee) are in the IN-list.
+        return !data->isNullAt(i) && (i % kValues.size()) % 2 == 0;
+      },
+      stringDecoderZeroCopy);
+}
+
+// Pushes down a VARCHAR bounded range filter (BytesRange), i.e. WHERE col
+// BETWEEN 'bbb' AND 'ddd'.
+TEST_P(SelectiveNimbleReaderTest, stringRange) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  static constexpr std::array<const char*, 5> kValues{
+      "aaa", "bbb", "ccc", "ddd", "eee"};
+  runTestCase(
+      [&](bool hasNulls) {
+        return makeFlatVector<std::string>(
+            101,
+            [](auto i) { return std::string(kValues[i % kValues.size()]); },
+            hasNulls ? nullEvery(11) : nullptr);
+      },
+      common::BytesRange(
+          "bbb",
+          /*lowerUnbounded=*/false,
+          /*lowerExclusive=*/false,
+          "ddd",
+          /*upperUnbounded=*/false,
+          /*upperExclusive=*/false,
+          /*nullAllowed=*/false),
+      23,
+      [&](auto& data, auto i) {
+        // Keeps bbb/ccc/ddd (offsets 1..3).
+        const auto offset = i % kValues.size();
+        return !data->isNullAt(i) && offset >= 1 && offset <= 3;
+      },
+      stringDecoderZeroCopy);
+}
+
+// Pushes down a REAL (float32) range filter. The double range path is covered
+// by `floats`; REAL is a distinct decoder path used by migration workloads.
+TEST_P(SelectiveNimbleReaderTest, realRange) {
+  const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
+  runTestCase(
+      [&](bool hasNulls) {
+        return makeFlatVector<float>(
+            101,
+            [](auto i) { return static_cast<float>(sin(i)); },
+            hasNulls ? nullEvery(11) : nullptr);
+      },
+      common::FloatingPointRange<float>(
+          -INFINITY, true, false, 0.5f, false, false, false),
+      23,
+      [&](auto& data, auto i) {
+        return !data->isNullAt(i) && static_cast<float>(sin(i)) <= 0.5f;
       },
       stringDecoderZeroCopy);
 }

@@ -2913,6 +2913,69 @@ TEST_P(VeloxReaderTest, fuzzComplex) {
   }
 }
 
+// Round-trips (writer -> reader) the exact complex column types observed in the
+// DWRF->Nimble migration workload (D113606229): bigint/varchar arrays,
+// string-keyed maps, and a bigint-keyed boolean-valued map. fuzzComplex covers
+// INTEGER-keyed maps and REAL arrays but none of these key/value combos, so
+// this pins the round-trip for them, with and without nulls.
+TEST_P(VeloxReaderTest, fuzzMigrationComplexTypes) {
+  auto type = velox::ROW({
+      {"array_bigint", velox::ARRAY(velox::BIGINT())},
+      {"array_varchar", velox::ARRAY(velox::VARCHAR())},
+      {"map_varchar_varchar", velox::MAP(velox::VARCHAR(), velox::VARCHAR())},
+      {"map_varchar_double", velox::MAP(velox::VARCHAR(), velox::DOUBLE())},
+      {"map_bigint_boolean", velox::MAP(velox::BIGINT(), velox::BOOLEAN())},
+  });
+  auto rowType = std::dynamic_pointer_cast<const velox::RowType>(type);
+  uint32_t seed = FLAGS_reader_tests_seed > 0 ? FLAGS_reader_tests_seed
+                                              : folly::Random::rand32();
+  LOG(INFO) << "seed: " << seed;
+
+  size_t batchSize = 10;
+  velox::VectorFuzzer noNulls(
+      {
+          .vectorSize = batchSize,
+          .nullRatio = 0,
+          .stringLength = 20,
+          .stringVariableLength = true,
+          .containerLength = 5,
+          .containerVariableLength = true,
+      },
+      leafPool_.get(),
+      seed);
+  velox::VectorFuzzer hasNulls(
+      {
+          .vectorSize = batchSize,
+          .nullRatio = 0.1,
+          .stringLength = 10,
+          .stringVariableLength = true,
+          .containerLength = 5,
+          .containerVariableLength = true,
+      },
+      leafPool_.get(),
+      seed);
+
+  auto iterations = 10;
+  auto batches = 10;
+  std::mt19937 rng{seed};
+  for (auto i = 0; i < iterations; ++i) {
+    writeAndVerify(
+        rng,
+        *leafPool_,
+        rowType,
+        [&](auto& rowType) { return noNulls.fuzzInputRow(rowType); },
+        vectorEquals,
+        batches);
+    writeAndVerify(
+        rng,
+        *leafPool_,
+        rowType,
+        [&](auto& rowType) { return hasNulls.fuzzInputRow(rowType); },
+        vectorEquals,
+        batches);
+  }
+}
+
 TEST_P(VeloxReaderTest, arrayWithOffsets) {
   auto type = velox::ROW({
       {"dictionaryArray", velox::ARRAY(velox::INTEGER())},
@@ -3606,6 +3669,53 @@ TEST_P(VeloxReaderTest, flatMapDictionaryWrappedFlatMapVector) {
   nimble::VeloxWriter writer(
       type, std::move(writeFile), *rootPool_, std::move(writerOptions));
   writer.write(rowVector);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  velox::VectorPtr output;
+  uint64_t rowCount = numRows;
+  ASSERT_TRUE(reader.next(rowCount, output));
+  ASSERT_EQ(output->size(), numRows);
+  for (auto i = 0; i < numRows; ++i) {
+    EXPECT_TRUE(vectorEquals(expected, output, i)) << "Mismatch at row " << i;
+  }
+}
+
+TEST_P(VeloxReaderTest, flatMapMigrationTypes) {
+  auto type = velox::ROW({
+      {"map_bigint_boolean", velox::MAP(velox::BIGINT(), velox::BOOLEAN())},
+      {"map_varchar_double", velox::MAP(velox::VARCHAR(), velox::DOUBLE())},
+  });
+
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+
+  auto expected = vectorMaker.rowVector(
+      {"map_bigint_boolean", "map_varchar_double"},
+      {
+          vectorMaker.mapVector<int64_t, bool>(
+              {{{100, true}, {200, false}, {300, true}},
+               {{100, false}, {200, true}, {300, false}},
+               {{100, true}, {200, true}, {300, false}},
+               {{100, false}, {200, false}, {300, true}}}),
+          vectorMaker.mapVector<std::string, double>(
+              {{{"f0", 1.5}, {"f1", 2.5}, {"f2", 3.5}},
+               {{"f0", 4.5}, {"f1", 5.5}, {"f2", 6.5}},
+               {{"f0", 7.5}, {"f1", 8.5}, {"f2", 9.5}},
+               {{"f0", 10.5}, {"f1", 11.5}, {"f2", 12.5}}}),
+      });
+  auto numRows = expected->size();
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto writerOptions = createFlatMapWriterOptions();
+  writerOptions.flatMapColumns["map_bigint_boolean"];
+  writerOptions.flatMapColumns["map_varchar_double"];
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(writerOptions));
+  writer.write(expected);
   writer.close();
 
   velox::InMemoryReadFile readFile(file);
