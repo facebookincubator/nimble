@@ -19,6 +19,7 @@
 #include <memory>
 #include <numeric>
 
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -118,10 +119,10 @@ FsstEncoding::CompressedValues::CompressedValues(
 
 FsstEncoding::Header FsstEncoding::parseHeader(const char* pos) {
   Header header{};
-  header.symbolTableSize = encoding::readUint32(pos);
+  header.symbolTableSize = varint::readVarint32(&pos);
   header.symbolTable = pos;
   pos += header.symbolTableSize;
-  header.lengthsSize = encoding::readUint32(pos);
+  header.lengthsSize = varint::readVarint32(&pos);
   header.lengths = pos;
   header.blob = pos + header.lengthsSize;
   return header;
@@ -334,9 +335,7 @@ std::string_view FsstEncoding::decompressToStringBuffer(
       0,
       "FSST decompression failed for non-empty compressed string.");
 
-  if (pageCapacityBytes_ - pageUsedBytes_ < decompressedSize) {
-    allocatePage(std::max(kStringPageSize, decompressedSize));
-  }
+  ensurePage(decompressedSize);
 
   std::memcpy(
       currentPage_ + pageUsedBytes_,
@@ -347,9 +346,13 @@ std::string_view FsstEncoding::decompressToStringBuffer(
   return result;
 }
 
-void FsstEncoding::allocatePage(size_t minSize) {
-  currentPage_ = static_cast<char*>(stringBufferFactory_(minSize));
-  pageCapacityBytes_ = minSize;
+void FsstEncoding::ensurePage(size_t requiredBytes) {
+  if (pageCapacityBytes_ - pageUsedBytes_ >= requiredBytes) {
+    return;
+  }
+  const auto pageSize = std::max(kStringPageSize, requiredBytes);
+  currentPage_ = static_cast<char*>(stringBufferFactory_(pageSize));
+  pageCapacityBytes_ = pageSize;
   pageUsedBytes_ = 0;
 }
 
@@ -373,9 +376,10 @@ std::string_view FsstEncoding::encode(
     const auto valueCount = static_cast<uint32_t>(values.size());
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(valueCount, useVarint) +
-        4 /* symbolTableSize */ + compressedValues.symbolTableSize +
-        4 /* lengthsSize */ + serializedLengths.size() +
-        compressedValues.totalCompressedSize;
+        varint::varintSize(compressedValues.symbolTableSize) +
+        compressedValues.symbolTableSize +
+        varint::varintSize(serializedLengths.size()) +
+        serializedLengths.size() + compressedValues.totalCompressedSize;
 
     if (meetsCompressionTarget(
             compressedValues.totalInputSize,
@@ -386,20 +390,16 @@ std::string_view FsstEncoding::encode(
       char* pos = reserved;
       Encoding::serializePrefix(
           EncodingType::Fsst, DataType::String, valueCount, useVarint, pos);
-      encoding::writeUint32(compressedValues.symbolTableSize, pos);
-      std::memcpy(
-          pos,
-          compressedValues.symbolTableData,
-          compressedValues.symbolTableSize);
-      pos += compressedValues.symbolTableSize;
-      encoding::writeUint32(serializedLengths.size(), pos);
-      encoding::writeBytes(serializedLengths, pos);
+      encoding::writeVarintString(
+          {reinterpret_cast<const char*>(compressedValues.symbolTableData),
+           compressedValues.symbolTableSize},
+          pos);
+      encoding::writeVarintString(serializedLengths, pos);
       for (uint32_t i = 0; i < valueCount; ++i) {
-        std::memcpy(
-            pos,
-            compressedValues.compressedPtrs[i],
-            compressedValues.compressedLengths[i]);
-        pos += compressedValues.compressedLengths[i];
+        encoding::writeBytes(
+            {reinterpret_cast<const char*>(compressedValues.compressedPtrs[i]),
+             compressedValues.compressedLengths[i]},
+            pos);
       }
 
       NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
@@ -413,6 +413,69 @@ std::string_view FsstEncoding::encode(
       encodeTrivialFallback(selection, values, trivialBuffer, options));
 }
 
+std::string_view FsstEncoding::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+  NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
+
+  const auto header = parseHeader(
+      encoded.data() +
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount));
+  const std::string_view lengths{
+      header.lengths, static_cast<size_t>(header.lengthsSize)};
+
+  const auto rowEnd = offset + length;
+  Vector<uint32_t> materializedLengths{&buffer.getMemoryPool(), rowEnd};
+  EncodingFactory{}
+      .create(
+          buffer.getMemoryPool(),
+          lengths,
+          [](uint32_t /*totalLength*/) -> void* { return nullptr; },
+          options)
+      ->materialize(rowEnd, materializedLengths.data());
+
+  const auto blobOffset = std::accumulate(
+      materializedLengths.begin(),
+      materializedLengths.begin() + offset,
+      uint32_t{0});
+  const auto blobBytes = std::accumulate(
+      materializedLengths.begin() + offset,
+      materializedLengths.end(),
+      uint32_t{0});
+
+  auto* pool = &buffer.getMemoryPool();
+  ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
+  const auto slicedLengths = EncodingFactory::slice(
+      lengths, offset, length, scopedBuffer.get(), options);
+
+  const uint32_t encodingSize =
+      EncodingPrefix::serializedSize(length, options.useVarintRowCount) +
+      varint::varintSize(header.symbolTableSize) + header.symbolTableSize +
+      varint::varintSize(slicedLengths.size()) + slicedLengths.size() +
+      blobBytes;
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  EncodingPrefix::serialize(
+      EncodingType::Fsst,
+      DataType::String,
+      length,
+      options.useVarintRowCount,
+      pos);
+  encoding::writeVarintString(
+      {header.symbolTable, static_cast<size_t>(header.symbolTableSize)}, pos);
+  encoding::writeVarintString(slicedLengths, pos);
+  encoding::writeBytes({header.blob + blobOffset, blobBytes}, pos);
+  NIMBLE_CHECK_EQ(pos - reserved, encodingSize, "Encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
 uint64_t FsstEncoding::estimateSize(
     uint64_t rowCount,
     const Statistics<std::string_view>& statistics,
@@ -424,8 +487,10 @@ uint64_t FsstEncoding::estimateSize(
   const uint64_t estimatedLengthsSize =
       FixedBitWidthEncoding<uint32_t>::estimateSize(
           rowCount, 0, estimatedMaxCompressedLength, options);
-  return kSymbolTableOverhead + estimatedBlobSize + estimatedLengthsSize +
-      EncodingPrefix::kFixedPrefixSize;
+  return Encoding::serializePrefixSize(rowCount, options.useVarintRowCount) +
+      varint::varintSize(kSymbolTableOverhead) + kSymbolTableOverhead +
+      varint::varintSize(estimatedLengthsSize) + estimatedLengthsSize +
+      estimatedBlobSize;
 }
 
 std::string FsstEncoding::debugString(int offset) const {
