@@ -30,9 +30,7 @@ namespace facebook::nimble {
 using namespace facebook::velox;
 using velox::common::testutil::TestValue;
 
-bool ChunkedDecoder::loadNextChunk(
-    bool preserveDictionaryEncoding,
-    const ChunkBoundaryCallback& onChunkLoaded) {
+bool ChunkedDecoder::loadNextChunk(const ChunkBoundaryCallback& onChunkLoaded) {
   auto ret = ensureInput(kChunkHeaderSize);
   NIMBLE_CHECK(ret, "Failed to read chunk header");
   const auto [length, compressionType] = readChunkHeader(inputData_);
@@ -77,7 +75,6 @@ bool ChunkedDecoder::loadNextChunk(
   auto data = std::string_view(chunkData, chunkSize);
   // Copy, not reference.
   auto options = encodingFactory_->options();
-  options.preserveDictionaryEncoding = preserveDictionaryEncoding;
   options.decodingStats = decodingStats_;
   encoding_ =
       encodingFactory_->create(*pool_, data, stringBufferFactory, options);
@@ -275,7 +272,7 @@ void ChunkedDecoder::skipWithoutIndex(
     const ChunkBoundaryCallback& onChunkBoundary) {
   while (numValues > 0) {
     if (FOLLY_UNLIKELY(remainingValues_ == 0)) {
-      loadNextChunk(preserveDictionaryEncoding_, onChunkBoundary);
+      loadNextChunk(onChunkBoundary);
     }
     if (numValues < remainingValues_) {
       encoding_->skip(numValues);
@@ -302,7 +299,7 @@ void ChunkedDecoder::seekToChunk(
   remainingValues_ = 0;
 
   // Load the chunk at this position
-  loadNextChunk(preserveDictionaryEncoding_, onChunkBoundary);
+  loadNextChunk(onChunkBoundary);
 }
 
 std::optional<size_t> ChunkedDecoder::estimateRowCount() const {

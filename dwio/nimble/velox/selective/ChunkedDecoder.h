@@ -287,14 +287,13 @@ class ChunkedDecoder {
   // that the caller sees the encoding and remainingValues of the chunk that
   // will actually be read.
   void ensureLoaded(
-      bool preserveDictionaryEncoding = false,
       const ChunkBoundaryCallback& onChunkBoundary = kNoopAtChunkBoundary) {
     if (encoding_ != nullptr && remainingValues_ != 0) {
       return;
     }
 
     if (hasMoreChunks()) {
-      loadNextChunk(preserveDictionaryEncoding, onChunkBoundary);
+      loadNextChunk(onChunkBoundary);
     }
   }
 
@@ -308,17 +307,6 @@ class ChunkedDecoder {
   /// Nullable→Dict, and MC→Dict via virtual dispatch.
   /// Caller must call ensureLoaded() first.
   bool dictionaryConvertible() const;
-
-  /// Controls whether the skip paths (skipWithoutIndex, seekToChunk) load the
-  /// chunk they advance into (the chunk after the skip) with dictionary
-  /// encoding preserved. The string dictionary reader sets this so a
-  /// between-batch skip that lands in a preserve-gated encoding (e.g.
-  /// RLE<Dictionary>) loads that chunk in dictionary mode instead of flattening
-  /// it. All other readers leave it at the default (false), so their skips are
-  /// unaffected.
-  void setPreserveDictionaryEncoding(bool preserve) {
-    preserveDictionaryEncoding_ = preserve;
-  }
 
   int64_t remainingValues() const {
     return remainingValues_;
@@ -481,8 +469,8 @@ class ChunkedDecoder {
       // kReadAllChunks=false) rather than reused from the flat testNulls path.
       // Both paths read one chunk per pass and stop at its boundary; the
       // difference is where the boundary load lives. In the flat path it lives
-      // inside the testNulls bit-scan and is bare: no
-      // preserveDictionaryEncoding, and no seam at which to run onChunkBoundary
+      // inside the testNulls bit-scan and is bare: no seam at which
+      // to run onChunkBoundary
       // (merge the per-chunk alphabet
       // + refresh scan state) or to abandon to the flat fallback when the next
       // chunk is not dictionary-compatible. Hoisting the load here gives those
@@ -493,7 +481,7 @@ class ChunkedDecoder {
         // flat !kHasNulls path does).
         const bool needMoreValues = kHasNulls ? (remainingValues > 0) : true;
         if (needMoreValues) {
-          loadNextChunk(/*preserveDictionaryEncoding=*/true);
+          loadNextChunk();
           if (!onChunkBoundary()) {
             // The new chunk is not dictionary-compatible. readOffset_ has not
             // moved during this read, so it still holds the read's start
@@ -845,15 +833,10 @@ class ChunkedDecoder {
 
   // Loads the next chunk from the input stream and creates a new encoding.
   //
-  // @param preserveDictionaryEncoding When true, creates the encoding with
-  //   dictionary mode enabled so that RLE enters dict index mode. Only the
-  //   string dictionary reader passes true; all other callers use the
-  //   default (false).
   // @param onChunkLoaded Callback invoked after loading. Returns true to
   //   continue reading, false to stop (e.g., the new chunk is not
   //   dictionary-compatible). Defaults to kNoopAtChunkBoundary.
   bool loadNextChunk(
-      bool preserveDictionaryEncoding = false,
       const ChunkBoundaryCallback& onChunkLoaded = kNoopAtChunkBoundary);
 
   void prepareInputBuffer(int32_t size);
@@ -903,11 +886,6 @@ class ChunkedDecoder {
   const bool decodeValuesWithNulls_;
   const EncodingFactory* const encodingFactory_;
   const bool stringDecoderZeroCopy_{false};
-  // When true, the skip paths (skipWithoutIndex, seekToChunk) load the chunk
-  // they advance into (the chunk after the skip) with dictionary encoding
-  // preserved. Set by the string dictionary reader; all other decoders keep the
-  // default so their skips load chunks in flat mode.
-  bool preserveDictionaryEncoding_{false};
   // Optional stream index for accelerating skip operations
   const std::shared_ptr<index::StreamIndex> streamIndex_;
   // Total row count in the stream, set from stream index if available.

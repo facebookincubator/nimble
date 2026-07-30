@@ -1078,8 +1078,8 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryDictRecovery) {
 //
 // readWithDictionary checks dictionaryConvertible() on the chunk that is
 // current at entry (chunk1, Dictionary → passes), but then prepareRead<int32_t>
-// runs seekTo → skip, which loads the landed chunk with
-// preserveDictionaryEncoding=false. When that chunk is a non-dict encoding
+// runs seekTo → skip, which loads a new chunk. When that chunk is a non-dict
+// encoding
 // (here Trivial, forced by high-cardinality unique strings), the stale guard no
 // longer matches the current encoding, and ensureDictionaryState() calls
 // buildEncodingDictionaryAlphabet() on it → NIMBLE_CHECK(dictionaryEnabled())
@@ -1415,12 +1415,9 @@ EncodingLayoutTree makeSecondChildRleDictionaryLayoutTree() {
 // readWithDictionary's post-prepareRead dictionaryConvertible() check passes
 // and the chunk is read in dictionary mode across the skip.
 //
-// Before the skip paths honored the preserve flag, skipWithoutIndex/seekToChunk
-// hardcoded loadNextChunk(preserveDictionaryEncoding=false), so a benign
-// dict-convertible chunk was materialized in FLAT mode (dictValues_ null,
-// dictionaryEnabled()==false) and read flat (VectorEncoding FLAT) for the
-// remainder of the chunk — losing the dictionary/zero-copy path even though
-// nothing about the chunk required abandoning it.
+// With lazy dict/flat mode in RLE, the mode is determined by the caller's API
+// choice, not a flag at construction time. skipWithoutIndex/seekToChunk load
+// chunks without committing to a mode; the subsequent read determines it.
 //
 // Mirrors skipAcrossChunkBoundaryDictRecovery scenario 1 (kChunkRows=400,
 // accept [0,349] u [600,799], batchSize=250), but forces BOTH chunks of the
