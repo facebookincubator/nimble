@@ -20,11 +20,15 @@
 #include <random>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/views/EncodingViewFactory.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/memory/Memory.h"
 
 using namespace ::facebook;
@@ -73,6 +77,16 @@ class SimdForBitpackEncodingTest : public ::testing::Test {
     for (size_t i = 0; i < values.size(); ++i) {
       EXPECT_EQ(decoded[i], values[i]) << "mismatch at index " << i;
     }
+  }
+
+  uint32_t firstGroupRows(
+      std::string_view encoded,
+      const Encoding::Options& options) {
+    const char* pos = encoded.data() +
+        EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+    pos += sizeof(typename TypeTraits<T>::physicalType);
+    ++pos;
+    return varint::readVarint32(&pos);
   }
 
   std::shared_ptr<velox::memory::MemoryPool> pool_;
@@ -200,6 +214,260 @@ TYPED_TEST(SimdForBitpackEncodingTest, skipAcrossGroupBoundary) {
   }
 }
 
+TYPED_TEST(SimdForBitpackEncodingTest, slice) {
+  using T = TypeParam;
+
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  std::vector<T> values;
+  values.reserve(300);
+  for (uint32_t i = 0; i < 300; ++i) {
+    values.push_back(static_cast<T>(1000 + (i % 127)));
+  }
+  const auto valueCount = static_cast<uint32_t>(values.size());
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    for (const auto range :
+         {Range{/*offset=*/0, /*length=*/1},
+          Range{/*offset=*/17, /*length=*/7},
+          Range{/*offset=*/1, /*length=*/37},
+          Range{/*offset=*/31, /*length=*/64},
+          Range{/*offset=*/32, /*length=*/64},
+          Range{/*offset=*/63, /*length=*/2},
+          Range{/*offset=*/valueCount - 43, /*length=*/43}}) {
+      SCOPED_TRACE(
+          fmt::format("offset={}, length={}", range.offset, range.length));
+      Buffer sliceBuffer{*this->pool_};
+      const auto sliced = SimdForBitpackEncoding<T>::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+
+      SimdForBitpackEncoding<T> encoding{
+          *this->pool_, sliced, nullptr, options};
+      EXPECT_EQ(encoding.encodingType(), EncodingType::SimdForBitpack);
+      EXPECT_EQ(encoding.dataType(), TypeTraits<T>::dataType);
+      EXPECT_EQ(encoding.rowCount(), range.length);
+
+      std::vector<T> output(range.length);
+      encoding.materialize(range.length, output.data());
+      EXPECT_EQ(
+          output,
+          std::vector<T>(
+              values.begin() + range.offset,
+              values.begin() + range.offset + range.length));
+    }
+  }
+}
+
+TYPED_TEST(SimdForBitpackEncodingTest, sliceFirstGroupRows) {
+  using T = TypeParam;
+
+  std::vector<T> values;
+  values.reserve(160);
+  for (uint32_t i = 0; i < 160; ++i) {
+    values.push_back(static_cast<T>(1000 + (i % 127)));
+  }
+
+  struct Case {
+    uint32_t offset;
+    uint32_t length;
+    uint32_t expectedFirstGroupRows;
+  };
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    for (const auto testCase :
+         {Case{/*offset=*/0, /*length=*/64, /*expectedFirstGroupRows=*/32},
+          Case{/*offset=*/17, /*length=*/64, /*expectedFirstGroupRows=*/15},
+          Case{/*offset=*/31, /*length=*/33, /*expectedFirstGroupRows=*/1},
+          Case{/*offset=*/63, /*length=*/2, /*expectedFirstGroupRows=*/1},
+          Case{/*offset=*/145, /*length=*/15, /*expectedFirstGroupRows=*/15}}) {
+      SCOPED_TRACE(
+          fmt::format(
+              "offset={}, length={}", testCase.offset, testCase.length));
+      Buffer sliceBuffer{*this->pool_};
+      const auto sliced = SimdForBitpackEncoding<T>::slice(
+          encoded, testCase.offset, testCase.length, sliceBuffer, options);
+      EXPECT_EQ(
+          this->firstGroupRows(sliced, options),
+          testCase.expectedFirstGroupRows);
+    }
+  }
+}
+
+TYPED_TEST(SimdForBitpackEncodingTest, slicedFirstGroupReadsThroughView) {
+  using T = TypeParam;
+
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  std::vector<T> values;
+  values.reserve(160);
+  for (uint32_t i = 0; i < 160; ++i) {
+    values.push_back(static_cast<T>(1000 + (i % 127)));
+  }
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    for (const auto range :
+         {Range{/*offset=*/17, /*length=*/7},
+          Range{/*offset=*/31, /*length=*/33},
+          Range{/*offset=*/63, /*length=*/34},
+          Range{/*offset=*/145, /*length=*/15}}) {
+      SCOPED_TRACE(
+          fmt::format("offset={}, length={}", range.offset, range.length));
+      Buffer sliceBuffer{*this->pool_};
+      const auto sliced = SimdForBitpackEncoding<T>::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+
+      const std::vector<T> expected{
+          values.begin() + range.offset,
+          values.begin() + range.offset + range.length};
+      SimdForBitpackEncoding<T> encoding{
+          *this->pool_, sliced, nullptr, options};
+      std::vector<T> encodingOutput(range.length);
+      encoding.materialize(range.length, encodingOutput.data());
+      EXPECT_EQ(encodingOutput, expected);
+
+      auto view = createEncodingView(sliced, this->pool_.get(), options);
+      ASSERT_NE(view, nullptr);
+
+      std::vector<T> viewOutput(range.length);
+      view->read(/*offset=*/0, range.length, viewOutput.data());
+      EXPECT_EQ(viewOutput, expected);
+
+      T value;
+      view->readAt(/*offset=*/0, &value);
+      EXPECT_EQ(value, values[range.offset]);
+      view->readAt(range.length - 1, &value);
+      EXPECT_EQ(value, values[range.offset + range.length - 1]);
+    }
+  }
+}
+
+TYPED_TEST(SimdForBitpackEncodingTest, invalidSliceRange) {
+  using T = TypeParam;
+
+  std::vector<T> values;
+  values.reserve(16);
+  for (uint32_t i = 0; i < 16; ++i) {
+    values.push_back(static_cast<T>(i + 1));
+  }
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    Buffer sliceBuffer{*this->pool_};
+    NIMBLE_ASSERT_THROW(
+        SimdForBitpackEncoding<T>::slice(
+            encoded,
+            /*offset=*/0,
+            /*length=*/0,
+            sliceBuffer,
+            options),
+        "Cannot slice zero rows.");
+    NIMBLE_ASSERT_THROW(
+        SimdForBitpackEncoding<T>::slice(
+            encoded,
+            /*offset=*/values.size() + 1,
+            /*length=*/1,
+            sliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        SimdForBitpackEncoding<T>::slice(
+            encoded,
+            /*offset=*/values.size() - 1,
+            /*length=*/2,
+            sliceBuffer,
+            options),
+        "");
+  }
+}
+
+TEST(SimdForBitpackBufferPoolTest, sliceDoesNotUseScratchBuffer) {
+  using Value = uint64_t;
+  using Encoding = SimdForBitpackEncoding<Value>;
+
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Buffer encodeBuffer{*pool};
+  std::vector<Value> input;
+  input.reserve(300);
+  for (uint32_t i = 0; i < 300; ++i) {
+    input.push_back(static_cast<Value>(1000 + (i % 127)));
+  }
+
+  Vector<Value> values{pool.get()};
+  values.insert(values.end(), input.data(), input.data() + input.size());
+  EncodingLayout layout{
+      EncodingType::SimdForBitpack, {}, CompressionType::Uncompressed};
+  ManualEncodingSelectionPolicyFactory manualFactory;
+  EncodingSelectionPolicyCreator creator = [&manualFactory](DataType dataType) {
+    return manualFactory.createPolicy(dataType);
+  };
+  auto policy = std::make_unique<ReplayedEncodingSelectionPolicy<Value>>(
+      std::move(layout), CompressionOptions{}, creator);
+  const auto encoded = EncodingFactory::encode<Value>(
+      std::move(policy),
+      std::span<const Value>{values.data(), values.size()},
+      encodeBuffer);
+  const std::string encodedStorage{encoded};
+
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
+  const Encoding::Options options{.bufferPool = &bufferPool};
+  Buffer sliceBuffer{*pool};
+  const auto sliced = Encoding::slice(
+      encodedStorage,
+      /*offset=*/17,
+      /*length=*/128,
+      sliceBuffer,
+      options);
+
+  EXPECT_EQ(bufferPool.size(), 0);
+
+  Encoding encoding{*pool, sliced, nullptr, options};
+  std::vector<Value> output(128);
+  encoding.materialize(static_cast<uint32_t>(output.size()), output.data());
+  EXPECT_EQ(
+      output, std::vector<Value>(input.begin() + 17, input.begin() + 17 + 128));
+}
+
 TYPED_TEST(SimdForBitpackEncodingTest, debugString) {
   std::vector<TypeParam> values;
   values.reserve(8);
@@ -269,6 +537,27 @@ class SimdForBitpackFuzzerTest : public ::testing::Test {
         ASSERT_EQ(decoded[i], values[i])
             << "iter=" << iter << " i=" << i << " size=" << numValues;
       }
+
+      encoding->reset();
+      const uint32_t sliceOffset =
+          std::uniform_int_distribution<uint32_t>{0, numValues - 1}(rng);
+      const uint32_t sliceLength = std::uniform_int_distribution<uint32_t>{
+          1, numValues - sliceOffset}(rng);
+      Buffer sliceBuffer{*pool_};
+      const auto sliced = SimdForBitpackEncoding<T>::slice(
+          {storage.data(), storage.size()},
+          sliceOffset,
+          sliceLength,
+          sliceBuffer);
+      SimdForBitpackEncoding<T> slicedEncoding{
+          *pool_, sliced, nullptr, Encoding::Options{}};
+      std::vector<T> slicedOutput(sliceLength);
+      slicedEncoding.materialize(sliceLength, slicedOutput.data());
+      EXPECT_EQ(
+          slicedOutput,
+          std::vector<T>(
+              values.begin() + sliceOffset,
+              values.begin() + sliceOffset + sliceLength));
 
       encoding->reset();
       std::uniform_int_distribution<uint32_t> stepDist(0, numValues);

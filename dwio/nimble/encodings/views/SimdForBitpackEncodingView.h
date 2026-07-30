@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingView.h"
@@ -35,46 +36,43 @@ class SimdForBitpackEncodingView final : public TypedEncodingView<T> {
       const Encoding::Options& options)
       : TypedEncodingView<T>{data, pool, options} {
     NIMBLE_CHECK_EQ(this->encodingType_, EncodingType::SimdForBitpack);
-    const char* pos = data.data() + this->dataOffset_;
-    baseline_ = encoding::read<physicalType>(pos);
-    bitWidth_ = static_cast<uint8_t>(encoding::readChar(pos));
-    NIMBLE_CHECK_LE(bitWidth_, sizeof(physicalType) * 8);
-    packedData_ = pos;
+    source_ = SimdForBitpackEncoding<T>::parseSourceHeader(data, options);
+    NIMBLE_CHECK_EQ(source_.rowCount, this->rowCount_);
   }
 
  private:
   T readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
-    if (bitWidth_ == 0) {
-      return detail::castFromPhysicalType<T>(baseline_);
+    if (source_.bitWidth == 0) {
+      return detail::castFromPhysicalType<T>(source_.baseline);
     }
 
-    const auto groupIndex = index / kGroupSize;
-    std::array<physicalType, kGroupSize> group{};
-    unpackGroup(groupIndex, group.data());
-    return detail::castFromPhysicalType<T>(
-        static_cast<physicalType>(group[index % kGroupSize] + baseline_));
+    const auto position = SimdForBitpackEncoding<T>::groupInfo(source_, index);
+    std::array<physicalType, kGroupSize> residuals{};
+    unpackGroup(position.groupIndex, residuals.data());
+    return detail::castFromPhysicalType<T>(static_cast<physicalType>(
+        residuals[position.rowOffset] + source_.baseline));
   }
 
   void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
       const final {
     this->checkReadRange(offset, length);
-    if (bitWidth_ == 0) {
-      std::fill(output, output + length, baseline_);
+    if (source_.bitWidth == 0) {
+      std::fill(output, output + length, source_.baseline);
       return;
     }
 
     uint32_t outputOffset{0};
     while (outputOffset < length) {
-      const auto groupIndex = offset / kGroupSize;
-      const auto groupOffset = offset % kGroupSize;
-      const auto count =
-          std::min<uint32_t>(length - outputOffset, kGroupSize - groupOffset);
-      std::array<physicalType, kGroupSize> group{};
-      unpackGroup(groupIndex, group.data());
+      const auto position =
+          SimdForBitpackEncoding<T>::groupInfo(source_, offset);
+      const auto count = std::min<uint32_t>(
+          length - outputOffset, position.rowCount - position.rowOffset);
+      std::array<physicalType, kGroupSize> residuals{};
+      unpackGroup(position.groupIndex, residuals.data());
       for (uint32_t i = 0; i < count; ++i) {
-        output[outputOffset + i] =
-            static_cast<physicalType>(group[groupOffset + i] + baseline_);
+        output[outputOffset + i] = static_cast<physicalType>(
+            residuals[position.rowOffset + i] + source_.baseline);
       }
       outputOffset += count;
       offset += count;
@@ -90,27 +88,26 @@ class SimdForBitpackEncodingView final : public TypedEncodingView<T> {
             isFourByteIntegralType<physicalType>() ||
             isEightByteIntegralType<physicalType>(),
         "Unexpected SimdForBitpack physical type width.");
-    const auto* groupStart = reinterpret_cast<const uint32_t*>(packedData_) +
-        static_cast<uint64_t>(groupIndex) * bitWidth_;
+    const auto* groupStart =
+        reinterpret_cast<const uint32_t*>(source_.packedData) +
+        static_cast<uint64_t>(groupIndex) * source_.bitWidth;
     if constexpr (isEightByteIntegralType<physicalType>()) {
       facebook::velox::fastpforlib::fastunpack(
-          groupStart, reinterpret_cast<uint64_t*>(output), bitWidth_);
+          groupStart, reinterpret_cast<uint64_t*>(output), source_.bitWidth);
     } else if constexpr (isFourByteIntegralType<physicalType>()) {
       facebook::velox::fastpforlib::fastunpack(
-          groupStart, reinterpret_cast<uint32_t*>(output), bitWidth_);
+          groupStart, reinterpret_cast<uint32_t*>(output), source_.bitWidth);
     } else {
       std::array<uint32_t, kGroupSize> temp{};
       facebook::velox::fastpforlib::fastunpack(
-          groupStart, temp.data(), bitWidth_);
+          groupStart, temp.data(), source_.bitWidth);
       for (uint32_t i = 0; i < kGroupSize; ++i) {
         output[i] = static_cast<physicalType>(temp[i]);
       }
     }
   }
 
-  physicalType baseline_{};
-  uint8_t bitWidth_{0};
-  const char* packedData_{nullptr};
+  typename SimdForBitpackEncoding<T>::SourceHeader source_;
 };
 
 } // namespace facebook::nimble
