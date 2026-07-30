@@ -83,8 +83,8 @@ TabletReader::Options TabletReader::configureOptions(
       std::string(kSchemaSection), std::string(kVectorizedStatsSection)};
   tabletOptions.loadClusterIndex = options.loadClusterIndex();
   tabletOptions.preloadIndex = options.preloadIndex();
-  tabletOptions.loadChunkIndex = options.loadChunkIndex();
-  if (tabletOptions.loadChunkIndex) {
+  tabletOptions.loadChunkStats = options.loadChunkStats();
+  if (tabletOptions.loadChunkStats) {
     tabletOptions.preloadOptionalSections.emplace_back(kChunkStatsSection);
   }
   tabletOptions.pinMetadata = options.pinMetadata();
@@ -186,7 +186,7 @@ TabletReader::TabletReader(
       file_{std::move(readFile)},
       loadClusterIndex_{options.loadClusterIndex},
       clusterIndexName_{options.clusterIndexName},
-      loadChunkIndex_{options.loadChunkIndex},
+      loadChunkStats_{options.loadChunkStats},
       loadDenseIndexes_{options.loadDenseIndexes},
       ioOptions_{[&]() {
         NIMBLE_CHECK(options.ioOptions.has_value(), "ioOptions is not set.");
@@ -232,7 +232,7 @@ TabletReader::TabletReader(
             return loadStripeGroup(stripeGroupIndex);
           },
           options.pinMetadata},
-      chunkIndexCache_{
+      chunkStatsCache_{
           [this](uint32_t stripeGroupIndex) {
             return loadChunkStatsGroup(stripeGroupIndex);
           },
@@ -282,7 +282,7 @@ void TabletReader::init(const Options& options) {
   initStripes(footerView, footerOffset);
   initIndexDescriptors();
   initClusterIndex();
-  initChunkIndex(footerView, footerOffset);
+  initChunkStats(footerView, footerOffset);
   initDenseIndexes();
 
   cacheMetadata(footerView, footerOffset);
@@ -407,7 +407,7 @@ bool TabletReader::initFromCache(const Options& options) {
   initStripes();
   initIndexDescriptors();
   initClusterIndex();
-  initChunkIndex();
+  initChunkStats();
   initDenseIndexes();
   return true;
 }
@@ -468,9 +468,9 @@ void TabletReader::cacheMetadata(
   }
 
   if (chunkStats_ != nullptr) {
-    auto chunkIndexIt = optionalSections_.find(std::string{kChunkStatsSection});
-    NIMBLE_CHECK(chunkIndexIt != optionalSections_.end());
-    cacheSection(chunkIndexIt->second);
+    auto chunkStatsIt = optionalSections_.find(std::string{kChunkStatsSection});
+    NIMBLE_CHECK(chunkStatsIt != optionalSections_.end());
+    cacheSection(chunkStatsIt->second);
 
     const auto& firstSection = chunkStats_->groupMetadata(0);
     if (firstSection.size() > 0) {
@@ -505,7 +505,7 @@ void TabletReader::loadStripes(
   if (options.loadClusterIndex || options.loadDenseIndexes) {
     updateOffset(kIndexSection);
   }
-  if (options.loadChunkIndex) {
+  if (options.loadChunkStats) {
     updateOffset(kChunkStatsSection);
   }
   const uint64_t requiredSize = fileSize_ - requiredOffset;
@@ -815,11 +815,11 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   const auto groupSection =
       toMetadataSection(footer->stripe_groups()->Get(stripeGroupIndex));
 
-  const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
+  const bool hasChunkStats = this->hasChunkStats(stripeGroupIndex);
 
   std::vector<MetadataSection> sections;
   sections.emplace_back(groupSection);
-  if (hasChunkIndex) {
+  if (hasChunkStats) {
     sections.emplace_back(chunkStats_->groupMetadata(stripeGroupIndex));
   }
 
@@ -830,13 +830,13 @@ TabletReader::StripeGroupMetadata TabletReader::loadStripeGroupMetadata(
   StripeGroupMetadata result;
   result.stripeGroup = std::make_shared<StripeGroup>(
       stripeGroupIndex, *stripes_, std::move(groupMetadata), pool_);
-  if (hasChunkIndex) {
-    auto chunkIndexMetadata =
+  if (hasChunkStats) {
+    auto chunkStatsMetadata =
         std::make_unique<MetadataBuffer>(std::move(*results[1]));
-    result.chunkIndex = ChunkStatsGroup::create(
+    result.chunkStats = ChunkStatsGroup::create(
         result.stripeGroup->firstStripe(),
         result.stripeGroup->stripeCount(),
-        std::move(chunkIndexMetadata));
+        std::move(chunkStatsMetadata));
   }
   return result;
 }
@@ -880,22 +880,22 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
   NIMBLE_CHECK_LT(stripeIndex, stripeCount_, "Stripe is out of range.");
   const auto stripeGroupIndex = this->stripeGroupIndex(stripeIndex);
 
-  const bool hasChunkIndex = this->hasChunkIndex(stripeGroupIndex);
+  const bool hasChunkStats = this->hasChunkStats(stripeGroupIndex);
 
   // Check which metadata is already cached.
   const bool stripeGroupCached =
       stripeGroupCache_.hasCacheEntry(stripeGroupIndex);
-  const bool chunkIndexCached =
-      hasChunkIndex && chunkIndexCache_.hasCacheEntry(stripeGroupIndex);
+  const bool chunkStatsCached =
+      hasChunkStats && chunkStatsCache_.hasCacheEntry(stripeGroupIndex);
 
   // If all needed metadata is cached, load each individually (cache hits).
   const bool allCached =
-      stripeGroupCached && (!hasChunkIndex || chunkIndexCached);
+      stripeGroupCached && (!hasChunkStats || chunkStatsCached);
   if (allCached) {
     return StripeIdentifier{
         stripeIndex,
         stripeGroup(stripeGroupIndex),
-        hasChunkIndex ? chunkIndex(stripeGroupIndex) : nullptr};
+        hasChunkStats ? chunkStats(stripeGroupIndex) : nullptr};
   }
 
   // At least one is not cached — use coalesced loading.
@@ -907,15 +907,15 @@ StripeIdentifier TabletReader::stripeIdentifier(uint32_t stripeIndex) const {
       stripeGroupIndex,
       [&loaded](uint32_t) { return std::move(loaded.stripeGroup); });
 
-  std::shared_ptr<ChunkStatsGroup> cachedChunkIndex;
-  if (hasChunkIndex) {
-    cachedChunkIndex = chunkIndexCache_.getOrCreate(
+  std::shared_ptr<ChunkStatsGroup> cachedChunkStats;
+  if (hasChunkStats) {
+    cachedChunkStats = chunkStatsCache_.getOrCreate(
         stripeGroupIndex,
-        [&loaded](uint32_t) { return std::move(loaded.chunkIndex); });
+        [&loaded](uint32_t) { return std::move(loaded.chunkStats); });
   }
 
   return StripeIdentifier{
-      stripeIndex, std::move(cachedStripeGroup), std::move(cachedChunkIndex)};
+      stripeIndex, std::move(cachedStripeGroup), std::move(cachedChunkStats)};
 }
 
 std::vector<std::unique_ptr<StreamLoader>> TabletReader::load(
@@ -1062,7 +1062,7 @@ std::optional<Section> TabletReader::loadOptionalSection(
   return Section{std::move(*readMetadata(it->second))};
 }
 
-bool TabletReader::hasChunkIndexSection() const {
+bool TabletReader::hasChunkStatsSection() const {
   return hasOptionalSection(std::string{kChunkStatsSection});
 }
 
@@ -1182,13 +1182,13 @@ void TabletReader::initDenseIndexes() {
       std::move(entries), indexOptions_, pool_);
 }
 
-void TabletReader::initChunkIndex(
+void TabletReader::initChunkStats(
     std::string_view footerBuf,
     uint64_t footerOffset) {
-  if (!loadChunkIndex_) {
+  if (!loadChunkStats_) {
     return;
   }
-  if (!hasChunkIndexSection()) {
+  if (!hasChunkStatsSection()) {
     return;
   }
 
@@ -1196,12 +1196,12 @@ void TabletReader::initChunkIndex(
       loadOptionalSection(std::string{kChunkStatsSection}, /*keepCache=*/false);
   NIMBLE_CHECK(section.has_value(), "Failed to load chunk stats section.");
 
-  auto chunkIndex = ChunkStats::create(std::move(section.value()));
-  if (chunkIndex->numGroups() > 0) {
-    chunkStats_ = std::move(chunkIndex);
+  auto chunkStats = ChunkStats::create(std::move(section.value()));
+  if (chunkStats->numGroups() > 0) {
+    chunkStats_ = std::move(chunkStats);
   }
 
-  // Eagerly pin the first chunk index group if covered by the speculative
+  // Eagerly pin the first chunk stats group if covered by the speculative
   // buffer.
   if (chunkStats_ != nullptr && chunkStats_->numGroups() == 1) {
     const auto& groupMetadata = chunkStats_->groupMetadata(0);
@@ -1209,7 +1209,7 @@ void TabletReader::initChunkIndex(
       auto metadataBuffer =
           tryExtractFromBuffer(footerBuf, footerOffset, groupMetadata, pool_);
       if (metadataBuffer != nullptr) {
-        chunkIndexCache_.pin(
+        chunkStatsCache_.pin(
             0,
             ChunkStatsGroup::create(
                 firstStripe(0), stripeCount(0), std::move(metadataBuffer)));
@@ -1264,18 +1264,18 @@ uint32_t TabletReader::stripeCount(uint32_t stripeGroupIndex) const {
   return count;
 }
 
-std::shared_ptr<ChunkStatsGroup> TabletReader::chunkIndex(
+std::shared_ptr<ChunkStatsGroup> TabletReader::chunkStats(
     uint32_t stripeGroupIndex) const {
-  return chunkIndexCache_.getOrCreate(stripeGroupIndex);
+  return chunkStatsCache_.getOrCreate(stripeGroupIndex);
 }
 
 std::shared_ptr<ChunkStatsGroup> TabletReader::loadChunkStatsGroup(
     uint32_t stripeGroupIndex) const {
-  NIMBLE_CHECK_NOT_NULL(chunkStats_, "Chunk index not initialized.");
+  NIMBLE_CHECK_NOT_NULL(chunkStats_, "Chunk stats not initialized.");
   NIMBLE_CHECK_LT(
       stripeGroupIndex,
       chunkStats_->numGroups(),
-      "Chunk index group out of range");
+      "Chunk stats group out of range");
 
   const auto& section = chunkStats_->groupMetadata(stripeGroupIndex);
   if (section.size() == 0) {

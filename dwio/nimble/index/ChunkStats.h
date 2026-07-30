@@ -25,8 +25,8 @@ namespace facebook::nimble::index {
 /// ChunkStats provides access to chunk-level position index metadata for Nimble
 /// tablets.
 ///
-/// This is the root-level chunk index that contains per-stripe-group
-/// MetadataSection references. Each stripe group's chunk index data
+/// This is the root-level chunk stats that contains per-stripe-group
+/// MetadataSection references. Each stripe group's chunk stats data
 /// (ChunkStatsGroup) can be loaded on demand using the metadata sections
 /// provided by this class.
 ///
@@ -34,9 +34,9 @@ namespace facebook::nimble::index {
 /// exposes per-group metadata for on-demand loading.
 class ChunkStats {
  public:
-  /// Creates a ChunkStats from the root chunk index optional section.
+  /// Creates a ChunkStats from the root chunk stats optional section.
   ///
-  /// @param indexSection The section containing the serialized root chunk index
+  /// @param indexSection The section containing the serialized root chunk stats
   /// @return A unique pointer to a newly created ChunkStats, or nullptr if the
   ///         section contains no stripe indexes
   static std::unique_ptr<ChunkStats> create(Section indexSection);
@@ -46,7 +46,7 @@ class ChunkStats {
     return groupSections_.size();
   }
 
-  /// Returns the metadata section for a specific stripe group's chunk index.
+  /// Returns the metadata section for a specific stripe group's chunk stats.
   ///
   /// @param groupIndex The zero-based stripe group index
   /// @return MetadataSection containing offset, size, and compression info

@@ -80,7 +80,7 @@ What Goes Where
      - FlatBuffers
      - Random
      - TabletReader → CachedMetadataInput (lazy)
-   * - Cluster / chunk index
+   * - Cluster / chunk stats
      - FlatBuffers
      - Random
      - TabletReader → CachedMetadataInput
@@ -151,7 +151,7 @@ Stripe N
 
 3
 
-Pointers to StripeChunkIndex 0, 1…
+Pointers to StripeChunkStats 0, 1…
 
 
 stripe_indexes: [MetadataSection]
@@ -312,11 +312,11 @@ Metadata Cache Contents
         partitions: [MetadataSection{off, sz, comp, uncomp}, ...]
 
     Cache key {fileId, ci.offset}
-      ChunkIndex root:
+      ChunkStats root:
         stripe_indexes: [MetadataSection{off, sz, comp, uncomp}, ...]
 
     Cache key {fileId, cig[0].offset}
-      ChunkIndex group[0]:
+      ChunkStats group[0]:
         Per-chunk stream boundaries within stripe group 0
 
     Cached values are decompressed contiguous bytes.
@@ -366,7 +366,7 @@ footerSize, compressionType, checksum, version, magic
     │ └──────────────────────────────────────────────────────────────────────┘ │
     ├──────────────────────────────────────────────────────────────────────────┤
     │ StripeGroup 0 Metadata (FlatBuffers: stream_offsets[], stream_sizes[])  │
-    │ Chunk Index Group 0    (FlatBuffers: chunk_rows[], chunk_offsets[])     │
+    │ Chunk Stats Group 0    (FlatBuffers: chunk_rows[], chunk_offsets[])     │
     │ Cluster Index Group 0  (FlatBuffers, optional: key boundaries)          │
     │ StripeStrideIndex 0    (FlatBuffers, *** NEW ***: min/max per stride)   │
     ├──────────────────────────────────────────────────────────────────────────┤
@@ -377,7 +377,7 @@ footerSize, compressionType, checksum, version, magic
     │   Schema         "columnar.schema"          — type tree                 │
     │   Metadata       "columnar.metadata"        — key-value pairs           │
     │   Stats          "columnar.vectorized_stats"— per-column stats          │
-    │   ChunkIndex     "columnar.chunk.index"     — root → per-group blobs   │
+    │   ChunkStats     "columnar.chunk.stats"     — root → per-group blobs   │
     │   FileIndexes    "columnar.indexes"         — named index manifest     │
     │   StrideIndex    "columnar.stride.index"    — root → per-group blobs   │
     ├──────────────────────────────────────────────────────────────────────────┤
@@ -400,7 +400,7 @@ Per-Group FlatBuffer Details
       stream_sizes:    [uint32]   flattened [stripe x stream]
           ↑ locates individual stream bytes within stripe data
 
-    StripeChunkIndex (one per group)
+    StripeChunkStats (one per group)
       stream_count:          uint32
       stream_chunk_counts:   [uint32]   prefix-sum [stripe x stream]
       stream_chunk_rows:     [uint32]   prefix-sum row counts per chunk
@@ -435,14 +435,14 @@ Footer = Directory of Pointers
                        │                                                {0x9000, 248, Zstd}]
                        │                              optional_sections:
                        │                                "columnar.schema"        → {0xB000, ...}
-                       │                                "columnar.chunk.index"   → {0xC000, ...}
+                       │                                "columnar.chunk.stats"   → {0xC000, ...}
                        │                                "columnar.indexes"       → {0xD000, ...}
                        │
                        ├─ 0x8000: StripeGroup 0 blob
                        ├─ 0x9000: StripeGroup 1 blob
                        ├─ 0xA000: Stripes blob
                        ├─ 0xB000: Schema blob
-                       ├─ 0xC000: ChunkIndex root blob
+                       ├─ 0xC000: ChunkStats root blob
                        └─ 0xD000: File index manifest blob
 
     One field (row_count) gives the answer directly.
@@ -533,7 +533,7 @@ Section Status
      - Legacy (replaced by vectorized_stats)
    * - columnar.vectorized_stats
      - Active
-   * - columnar.chunk.index
+   * - columnar.chunk.stats
      - Active
    * - columnar.indexes
      - Active file index manifest
@@ -549,13 +549,13 @@ Write Order Example
 
     [stripe 0..66 data]
                               ← metadata threshold hit, flush group 0
-    [StripeGroup 0] [ChunkIndex 0] [ClusterIndex 0] [StrideIndex 0]
+    [StripeGroup 0] [ChunkStats 0] [ClusterIndex 0] [StrideIndex 0]
 
     [stripe 67..120 data]
                               ← close(), force flush group 1
-    [StripeGroup 1] [ChunkIndex 1] [ClusterIndex 1] [StrideIndex 1]
+    [StripeGroup 1] [ChunkStats 1] [ClusterIndex 1] [StrideIndex 1]
 
-    [ChunkIndex root]         ← pointers to ChunkIndex 0, 1
+    [ChunkStats root]         ← pointers to ChunkStats 0, 1
     [ClusterIndex root]       ← pointers to ClusterIndex 0, 1
     [StrideIndex root]        ← pointers to StrideIndex 0, 1
     [Stripes blob]            ← row counts, offsets for all 121 stripes
@@ -610,7 +610,7 @@ Each metadata section is compressed independently when it is larger than the def
      - 2KB
      - No
      - 2KB < 64KB
-   * - ChunkIndex Root
+   * - ChunkStats Root
      - 90KB
      - Zstd
      - 90KB > 64KB
@@ -673,9 +673,9 @@ Cold Path
       if one stripe group and the group is in buf:
         eagerly pin StripeGroup[0] into stripeGroupCache_
 
-    initClusterIndex() / initChunkIndex(buf)    // no IO
+    initClusterIndex() / initChunkStats(buf)    // no IO
       parse index roots from cache
-      if chunk index group 0 is in buf:
+      if chunk stats group 0 is in buf:
         pin it
 
     cacheMetadata(buf)                          // no IO

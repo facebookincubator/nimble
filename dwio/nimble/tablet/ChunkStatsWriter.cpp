@@ -96,13 +96,13 @@ void ChunkStatsWriter::writeGroup(
     }
   }
 
-  // Check threshold: skip chunk index for this group if average chunks
+  // Check threshold: skip chunk stats for this group if average chunks
   // per stream is below threshold.
   if (minAvgChunksPerStream_ > 0) {
     const float avgChunks =
         static_cast<float>(totalNumChunks) / static_cast<float>(streamCount);
     if (avgChunks < minAvgChunksPerStream_) {
-      chunkIndexSections_.emplace_back(0, 0, CompressionType::Uncompressed);
+      chunkStatsSections_.emplace_back(0, 0, CompressionType::Uncompressed);
       return;
     }
   }
@@ -150,16 +150,16 @@ void ChunkStatsWriter::writeGroup(
   }
 
   flatbuffers::FlatBufferBuilder builder(kInitialFooterSize);
-  auto chunkIndex = serialization::CreateStripeChunkStats(
+  auto chunkStats = serialization::CreateStripeChunkStats(
       builder,
       static_cast<uint32_t>(streamCount),
       builder.CreateVector(flattenedStreamChunkCounts),
       builder.CreateVector(flattenedChunkRows),
       builder.CreateVector(flattenedChunkOffsets),
       builder.CreateVector(flattenedChunkNullCounts));
-  builder.Finish(chunkIndex);
+  builder.Finish(chunkStats);
 
-  chunkIndexSections_.push_back(createMetadataSection(asView(builder)));
+  chunkStatsSections_.push_back(createMetadataSection(asView(builder)));
 }
 
 void ChunkStatsWriter::writeRoot(
@@ -169,11 +169,11 @@ void ChunkStatsWriter::writeRoot(
     finalized_ = true;
   };
 
-  // Skip writing the chunk_index section if all groups were skipped or no
+  // Skip writing the chunk stats section if all groups were skipped or no
   // groups were written.
   const bool hasNonEmptyGroup = std::any_of(
-      chunkIndexSections_.begin(),
-      chunkIndexSections_.end(),
+      chunkStatsSections_.begin(),
+      chunkStatsSections_.end(),
       [](const auto& section) { return section.size() > 0; });
   if (!hasNonEmptyGroup) {
     return;
@@ -183,15 +183,15 @@ void ChunkStatsWriter::writeRoot(
 
   auto stripeIndexesVector =
       builder.CreateVector<flatbuffers::Offset<serialization::MetadataSection>>(
-          chunkIndexSections_.size(), [&builder, this](size_t i) {
+          chunkStatsSections_.size(), [&builder, this](size_t i) {
             return serialization::CreateMetadataSection(
                 builder,
-                chunkIndexSections_[i].offset(),
-                chunkIndexSections_[i].size(),
+                chunkStatsSections_[i].offset(),
+                chunkStatsSections_[i].size(),
                 static_cast<serialization::CompressionType>(
-                    chunkIndexSections_[i].compressionType()),
-                chunkIndexSections_[i].uncompressedSize().value_or(
-                    chunkIndexSections_[i].size()));
+                    chunkStatsSections_[i].compressionType()),
+                chunkStatsSections_[i].uncompressedSize().value_or(
+                    chunkStatsSections_[i].size()));
           });
 
   builder.Finish(serialization::CreateChunkStats(builder, stripeIndexesVector));

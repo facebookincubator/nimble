@@ -73,7 +73,7 @@ class ChunkStatsGroup : public std::enable_shared_from_this<ChunkStatsGroup> {
     NIMBLE_CHECK_LT(
         offset,
         stripeCount_,
-        "Stripe offset is out of range for this chunk index group");
+        "Stripe offset is out of range for this chunk stats group");
     return offset;
   }
 
@@ -93,7 +93,7 @@ class ChunkStatsGroup : public std::enable_shared_from_this<ChunkStatsGroup> {
 class StreamIndex {
  public:
   static std::shared_ptr<StreamIndex> create(
-      std::shared_ptr<const ChunkStatsGroup> chunkIndex,
+      std::shared_ptr<const ChunkStatsGroup> chunkStats,
       uint32_t streamId,
       uint32_t startChunkOffset,
       uint32_t endChunkOffset,
@@ -117,7 +117,7 @@ class StreamIndex {
 
  private:
   StreamIndex(
-      std::shared_ptr<const ChunkStatsGroup> chunkIndex,
+      std::shared_ptr<const ChunkStatsGroup> chunkStats,
       uint32_t streamId,
       uint32_t startChunkOffset,
       uint32_t endChunkOffset,

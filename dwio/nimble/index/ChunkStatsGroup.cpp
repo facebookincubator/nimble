@@ -87,13 +87,13 @@ std::shared_ptr<StreamIndex> ChunkStatsGroup::createStreamIndex(
 }
 
 std::shared_ptr<StreamIndex> StreamIndex::create(
-    std::shared_ptr<const ChunkStatsGroup> chunkIndex,
+    std::shared_ptr<const ChunkStatsGroup> chunkStats,
     uint32_t streamId,
     uint32_t startChunkOffset,
     uint32_t endChunkOffset,
     uint32_t streamSize) {
   return std::shared_ptr<StreamIndex>(new StreamIndex(
-      std::move(chunkIndex),
+      std::move(chunkStats),
       streamId,
       startChunkOffset,
       endChunkOffset,
@@ -101,12 +101,12 @@ std::shared_ptr<StreamIndex> StreamIndex::create(
 }
 
 StreamIndex::StreamIndex(
-    std::shared_ptr<const ChunkStatsGroup> chunkIndex,
+    std::shared_ptr<const ChunkStatsGroup> chunkStats,
     uint32_t streamId,
     uint32_t startChunkOffset,
     uint32_t endChunkOffset,
     uint32_t streamSize)
-    : chunkStats_(std::move(chunkIndex)),
+    : chunkStats_(std::move(chunkStats)),
       streamId_(streamId),
       startChunkOffset_(startChunkOffset),
       endChunkOffset_(endChunkOffset),

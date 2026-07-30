@@ -42,10 +42,12 @@ TabletWriter::TabletWriter(
       pool_(&pool),
       options_(std::move(options)),
       checksum_{ChecksumFactory::create(options_.checksumType)},
-      chunkIndexWriter_{
+      // TODO: keeps the chunkIndex name for now; rename to the chunkStats
+      // naming once per-chunk null/min/max stats are fully rolled out.
+      chunkStatsWriter_{
           options_.enableChunkIndex ? std::make_unique<ChunkStatsWriter>(
                                           pool,
-                                          options_.chunkIndexMinAvgChunks)
+                                          options_.chunkStatsMinAvgChunks)
                                     : nullptr} {}
 
 namespace {
@@ -194,8 +196,8 @@ void TabletWriter::close() {
 
   invokeCloseCallback();
 
-  // Write chunk index root.
-  writeChunkIndexRoot();
+  // Write chunk stats root.
+  writeChunkStatsRoot();
 
   // write stripes
   MetadataSection stripes = writeStripes(stripeCount);
@@ -341,7 +343,7 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
             static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
 
         writeStreamWithChecksum(stream);
-        addStreamChunkIndex(stream.offset, stream.chunks);
+        addStreamChunkStats(stream.offset, stream.chunks);
 
         NIMBLE_DCHECK_LT(
             file_->size() -
@@ -366,7 +368,7 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
         stripeStreamOffsets[index] = it.first->second.first;
         // @lint-ignore CLANGTIDY facebook-hte-LocalUncheckedArrayBounds
         stripeStreamSizes[index] = it.first->second.second;
-        addStreamChunkIndex(index, it.first->first->chunks);
+        addStreamChunkStats(index, it.first->first->chunks);
       }
     }
   } else {
@@ -390,7 +392,7 @@ void TabletWriter::writeStripe(uint32_t rowCount, std::vector<Stream> streams) {
           static_cast<uint32_t>(file_->size() - stripeOffsets_.back());
 
       writeStreamWithChecksum(stream);
-      addStreamChunkIndex(stream.offset, stream.chunks);
+      addStreamChunkStats(stream.offset, stream.chunks);
 
       NIMBLE_DCHECK_LT(
           file_->size() - (stripeStreamOffsets[index] + stripeOffsets_.back()),
@@ -733,38 +735,38 @@ void TabletWriter::writeStreamWithChecksum(const Stream& stream) {
 }
 
 void TabletWriter::finishStripeChunkStats(size_t streamCount) {
-  if (hasChunkIndex()) {
-    chunkIndexWriter_->newStripe(streamCount);
+  if (hasChunkStats()) {
+    chunkStatsWriter_->newStripe(streamCount);
   }
 }
 
-void TabletWriter::addStreamChunkIndex(
+void TabletWriter::addStreamChunkStats(
     uint32_t streamIndex,
     const std::vector<Chunk>& chunks) {
-  if (!hasChunkIndex()) {
+  if (!hasChunkStats()) {
     return;
   }
-  chunkIndexWriter_->addStream(streamIndex, chunks);
+  chunkStatsWriter_->addStream(streamIndex, chunks);
 }
 
 void TabletWriter::writeChunkStatsGroup(
     size_t streamCount,
     size_t stripeCount) {
-  if (hasChunkIndex()) {
+  if (hasChunkStats()) {
     auto createMetadataFn = [this](std::string_view metadata) {
       return createMetadataSection(metadata);
     };
-    chunkIndexWriter_->writeGroup(streamCount, stripeCount, createMetadataFn);
+    chunkStatsWriter_->writeGroup(streamCount, stripeCount, createMetadataFn);
   }
 }
 
-void TabletWriter::writeChunkIndexRoot() {
-  if (hasChunkIndex()) {
+void TabletWriter::writeChunkStatsRoot() {
+  if (hasChunkStats()) {
     auto writeOptionalSectionFn =
         [this](std::string name, std::string_view content) {
           writeOptionalSection(std::move(name), content);
         };
-    chunkIndexWriter_->writeRoot(writeOptionalSectionFn);
+    chunkStatsWriter_->writeRoot(writeOptionalSectionFn);
   }
 }
 } // namespace facebook::nimble

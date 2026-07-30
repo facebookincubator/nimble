@@ -83,10 +83,10 @@ class StripeIdentifier {
   StripeIdentifier(
       uint32_t stripeId,
       std::shared_ptr<StripeGroup> stripeGroup,
-      std::shared_ptr<ChunkStatsGroup> chunkIndex = nullptr)
+      std::shared_ptr<ChunkStatsGroup> chunkStats = nullptr)
       : stripeId_{stripeId},
         stripeGroup_{std::move(stripeGroup)},
-        chunkStats_{std::move(chunkIndex)} {}
+        chunkStats_{std::move(chunkStats)} {}
 
   uint32_t stripeId() const {
     return stripeId_;
@@ -96,7 +96,7 @@ class StripeIdentifier {
     return stripeGroup_;
   }
 
-  const std::shared_ptr<ChunkStatsGroup>& chunkIndex() const {
+  const std::shared_ptr<ChunkStatsGroup>& chunkStats() const {
     return chunkStats_;
   }
 
@@ -140,8 +140,8 @@ class TabletReader {
     /// Default false.
     bool preloadIndex{false};
 
-    /// Whether to load the chunk index during initialization. Default true.
-    bool loadChunkIndex{true};
+    /// Whether to load the chunk stats during initialization. Default true.
+    bool loadChunkStats{true};
 
     /// Whether to load the dense indexes during initialization. Default false.
     bool loadDenseIndexes{false};
@@ -235,8 +235,8 @@ class TabletReader {
       const std::string& name,
       bool keepCache = false) const;
 
-  // Returns true if the file has a chunk index optional section.
-  bool hasChunkIndexSection() const;
+  // Returns true if the file has a chunk stats optional section.
+  bool hasChunkStatsSection() const;
 
   // Returns true if the file has an index optional section.
   bool hasIndexSection() const;
@@ -246,9 +246,9 @@ class TabletReader {
     return clusterIndex_ != nullptr;
   }
 
-  // Returns true if the chunk index is loaded and has data for the given
+  // Returns true if the chunk stats is loaded and has data for the given
   // stripe group.
-  inline bool hasChunkIndex(uint32_t stripeGroupIndex) const {
+  inline bool hasChunkStats(uint32_t stripeGroupIndex) const {
     return chunkStats_ != nullptr &&
         chunkStats_->groupMetadata(stripeGroupIndex).size() > 0;
   }
@@ -475,10 +475,10 @@ class TabletReader {
   // Holds the result of a coalesced metadata load for a stripe group.
   struct StripeGroupMetadata {
     std::shared_ptr<StripeGroup> stripeGroup;
-    std::shared_ptr<ChunkStatsGroup> chunkIndex;
+    std::shared_ptr<ChunkStatsGroup> chunkStats;
   };
 
-  // Loads stripe group and chunk index together using coalesced IO via
+  // Loads stripe group and chunk stats together using coalesced IO via
   // MetadataInput.
   StripeGroupMetadata loadStripeGroupMetadata(uint32_t stripeGroupIndex) const;
 
@@ -497,14 +497,14 @@ class TabletReader {
 
   void initDenseIndexes();
 
-  // Loads chunk index and preloads the first group from footerBuf
+  // Loads chunk stats and preloads the first group from footerBuf
   // when available.
-  void initChunkIndex(
+  void initChunkStats(
       std::string_view footerBuf = {},
       uint64_t footerOffset = 0);
 
   // Returns the cached ChunkStatsGroup for the given stripe group index.
-  std::shared_ptr<ChunkStatsGroup> chunkIndex(uint32_t stripeGroupIndex) const;
+  std::shared_ptr<ChunkStatsGroup> chunkStats(uint32_t stripeGroupIndex) const;
 
   // Loads the ChunkStatsGroup for the given stripe group index from file.
   std::shared_ptr<ChunkStatsGroup> loadChunkStatsGroup(
@@ -520,7 +520,7 @@ class TabletReader {
   const std::shared_ptr<velox::ReadFile> file_;
   const bool loadClusterIndex_;
   const std::string clusterIndexName_;
-  const bool loadChunkIndex_;
+  const bool loadChunkStats_;
   const bool loadDenseIndexes_;
   // IO options copied from Options.ioOptions (required, with non-null
   // metadataIoStats).
@@ -558,7 +558,7 @@ class TabletReader {
 
   // Chunk stats root, loaded from the "columnar.chunk.stats" optional section.
   std::unique_ptr<ChunkStats> chunkStats_;
-  mutable MetadataCache<uint32_t, ChunkStatsGroup> chunkIndexCache_;
+  mutable MetadataCache<uint32_t, ChunkStatsGroup> chunkStatsCache_;
 
   std::unordered_map<std::string, MetadataSection> optionalSections_;
   mutable folly::Synchronized<
