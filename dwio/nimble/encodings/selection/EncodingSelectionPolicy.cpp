@@ -51,7 +51,7 @@ ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
   for (const auto& part : parts) {
     std::vector<std::string> kv;
     folly::split('=', part, kv);
-    NIMBLE_CHECK_EQ(
+    NIMBLE_USER_CHECK_EQ(
         kv.size(),
         2,
         "Invalid read factor format. "
@@ -59,7 +59,7 @@ ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
         "Unable to parse '{}'.",
         part);
     const auto value = folly::tryTo<float>(kv[1]);
-    NIMBLE_CHECK(
+    NIMBLE_USER_CHECK(
         value.hasValue(),
         "Unable to parse read factor value '{}' in '{}'. Expected valid float value.",
         kv[1],
@@ -75,13 +75,53 @@ ManualEncodingSelectionPolicyFactory::parseEncodingReadFactors(
         break;
       }
     }
-    NIMBLE_CHECK(
+    NIMBLE_USER_CHECK(
         found,
         "Unknown or unexpected read factor encoding '{}'. Allowed values: {}",
         key,
         folly::join(",", possibleEncodingStrs));
   }
   return encodingReadFactors;
+}
+
+/* static */ std::optional<ManualEncodingSelectionPolicyFactory>
+ManualEncodingSelectionPolicyFactory::create(
+    std::string_view configStr,
+    std::optional<CompressionOptions> compressionOptions) {
+  std::optional<std::string_view> readFactors;
+  std::vector<std::string_view> entries;
+  folly::split(',', configStr, entries);
+  for (const auto entry : entries) {
+    const auto colonPos = entry.find(':');
+    NIMBLE_USER_CHECK(
+        colonPos != std::string_view::npos,
+        "Malformed nimble.encoding_selection_config entry '{}'; want key:value.",
+        entry);
+    const auto key = entry.substr(0, colonPos);
+    const auto value = entry.substr(colonPos + 1);
+    if (key == "type") {
+      // The dispatcher (createEncodingSelectionPolicyFactory) routes here only
+      // for type 'default'; reject a mismatched type reaching this factory.
+      NIMBLE_USER_CHECK_EQ(
+          value,
+          "default",
+          "nimble.encoding_selection_config type is not valid for the default encoding selection policy.");
+      continue;
+    } else if (key == "read_factors") {
+      // A repeated read_factors key takes the last value (last-one-wins).
+      readFactors = value;
+    } else {
+      NIMBLE_USER_FAIL(
+          "Unknown nimble.encoding_selection_config key '{}' for type 'default'.",
+          key);
+    }
+  }
+  if (!readFactors.has_value()) {
+    return std::nullopt;
+  }
+  return ManualEncodingSelectionPolicyFactory{
+      parseEncodingReadFactors(std::string(*readFactors)),
+      std::move(compressionOptions)};
 }
 
 ManualEncodingSelectionPolicyFactory::ManualEncodingSelectionPolicyFactory(

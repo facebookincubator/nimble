@@ -282,6 +282,18 @@ class ManualEncodingSelectionPolicyFactory {
   static std::vector<std::pair<nimble::EncodingType, float>>
   parseEncodingReadFactors(const std::string& readFactorsConfig);
 
+  /// Builds a factory from a nimble.encoding_selection_config string of the
+  /// form "type:default[,read_factors:<E1>=<f1>;<E2>=<f2>;...]". Ignores the
+  /// 'type' key (already used by createEncodingSelectionPolicyFactory). Returns
+  /// nullopt when no 'read_factors' are given, so the caller keeps the
+  /// nimble.manual_encoding_selection_read_factors default; otherwise a factory
+  /// whose read factors override that config. NimbleUserError on a malformed
+  /// entry or unknown key.
+  static std::optional<ManualEncodingSelectionPolicyFactory> create(
+      std::string_view configStr,
+      std::optional<CompressionOptions> compressionOptions =
+          CompressionOptions{});
+
   ManualEncodingSelectionPolicyFactory(
       std::vector<std::pair<EncodingType, float>> encodingReadFactors =
           defaultEncodingReadFactors(),

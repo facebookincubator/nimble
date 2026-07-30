@@ -91,8 +91,12 @@ class Config : public velox::config::ConfigBase {
   ///       candidate set; streams with no compatible encoding in the set (e.g.
   ///       empty streams) still fall back to Trivial. Test/fuzz only; not for
   ///       production.
-  /// An empty/unset config keeps the default (manual) policy. See
-  /// RandomEncodingSelectionPolicy. E.g. "type:random,seed:42".
+  ///   type:default[,read_factors:<E1>=<f1>;<E2>=<f2>;...]
+  ///       Default (manual) selection; 'read_factors' (optional) overrides the
+  ///       MANUAL_ENCODING_SELECTION_READ_FACTORS config.
+  /// An empty/unset config, or type:default without read_factors, keeps the
+  /// default (manual) policy. See RandomEncodingSelectionPolicy. E.g.
+  /// "type:random,seed:42" or "type:default,read_factors:Trivial=0.5".
   // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
   static Entry<std::string> ENCODING_SELECTION_CONFIG;
 
