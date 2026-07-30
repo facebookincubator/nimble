@@ -19,6 +19,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/ForEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -208,6 +209,12 @@ SLICE_BENCHMARKS(
     uint32_t,
     EncodingType::SimdForBitpack,
     makeNarrow<uint32_t>(12));
+SLICE_BENCHMARKS(
+    FORUint32,
+    ForEncoding<uint32_t>,
+    uint32_t,
+    EncodingType::FOR,
+    makeIncreasing<uint32_t>());
 SLICE_BENCHMARKS(
     ALPDouble,
     ALPEncoding<double>,

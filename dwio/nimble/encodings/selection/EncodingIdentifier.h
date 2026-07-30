@@ -102,6 +102,12 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier Offsets = 2;
   };
 
+  struct For {
+    static constexpr NestedEncodingIdentifier BitWidths = 0;
+    static constexpr NestedEncodingIdentifier References = 1;
+    static constexpr NestedEncodingIdentifier BitOffsets = 2;
+  };
+
   struct Fsst {
     static constexpr NestedEncodingIdentifier Lengths = 0;
   };

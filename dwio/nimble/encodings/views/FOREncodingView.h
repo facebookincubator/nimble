@@ -19,6 +19,7 @@
 #include <cstring>
 #include <type_traits>
 
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingViewFactory.h"
 #include "velox/common/base/BitUtil.h"
@@ -50,14 +51,21 @@ class FOREncodingView final : public TypedEncodingView<T> {
         compressionType,
         CompressionType::Uncompressed,
         "EncodingView does not support compressed FOR streams.");
-    frameSize_ = encoding::readUint32(pos);
-    numFrames_ = encoding::readUint32(pos);
-    enableBitOffsets_ = static_cast<bool>(encoding::readChar(pos));
+    frameSize_ = varint::readVarint32(&pos);
+    numFrames_ = varint::readVarint32(&pos);
+    firstFrameRows_ = varint::readVarint32(&pos);
     NIMBLE_CHECK_GT(frameSize_, 0);
+    NIMBLE_CHECK_GT(firstFrameRows_, 0);
+    NIMBLE_CHECK_LE(firstFrameRows_, frameSize_);
     NIMBLE_CHECK_EQ(
-        numFrames_, (this->rowCount_ + frameSize_ - 1) / frameSize_);
+        numFrames_,
+        this->rowCount_ <= firstFrameRows_ ? 1
+                                           : 1 +
+                velox::bits::divRoundUp(this->rowCount_ - firstFrameRows_,
+                                        frameSize_));
+    lastFrameRows_ = this->rowCount_ - frameRowOffset(numFrames_ - 1);
 
-    const auto bitWidthsSize = encoding::readUint32(pos);
+    const auto bitWidthsSize = varint::readVarint32(&pos);
     auto bitWidths = detail::createTypedEncodingView<uint8_t>(
         {pos, bitWidthsSize}, pool, options);
     NIMBLE_CHECK_NOT_NULL(bitWidths);
@@ -68,7 +76,7 @@ class FOREncodingView final : public TypedEncodingView<T> {
     }
     pos += bitWidthsSize;
 
-    const auto referencesSize = encoding::readUint32(pos);
+    const auto referencesSize = varint::readVarint32(&pos);
     auto references = detail::createTypedEncodingView<physicalType>(
         {pos, referencesSize}, pool, options);
     NIMBLE_CHECK_NOT_NULL(references);
@@ -80,25 +88,17 @@ class FOREncodingView final : public TypedEncodingView<T> {
     pos += referencesSize;
 
     bitOffsets_.resize(numFrames_);
-    if (enableBitOffsets_) {
-      const auto bitOffsetsSize = encoding::readUint32(pos);
-      auto bitOffsets = detail::createTypedEncodingView<uint64_t>(
-          {pos, bitOffsetsSize}, pool, options);
-      NIMBLE_CHECK_NOT_NULL(bitOffsets);
-      NIMBLE_CHECK_EQ(bitOffsets->rowCount(), numFrames_);
-      for (uint32_t frame = 0; frame < numFrames_; ++frame) {
-        bitOffsets_[frame] = bitOffsets->readAt(frame);
-      }
-      pos += bitOffsetsSize;
-    } else {
-      uint64_t cumulativeBitOffset{0};
-      for (uint32_t frame = 0; frame < numFrames_; ++frame) {
-        bitOffsets_[frame] = cumulativeBitOffset;
-        cumulativeBitOffset += frameRowCount(frame) * bitWidths_[frame];
-      }
+    const auto bitOffsetsSize = varint::readVarint32(&pos);
+    auto bitOffsets = detail::createTypedEncodingView<uint64_t>(
+        {pos, bitOffsetsSize}, pool, options);
+    NIMBLE_CHECK_NOT_NULL(bitOffsets);
+    NIMBLE_CHECK_EQ(bitOffsets->rowCount(), numFrames_);
+    for (uint32_t frame = 0; frame < numFrames_; ++frame) {
+      bitOffsets_[frame] = bitOffsets->readAt(frame);
     }
+    pos += bitOffsetsSize;
 
-    const auto packedDataSize = encoding::readUint32(pos);
+    const auto packedDataSize = varint::readVarint32(&pos);
     packedData_ = pos;
     pos += packedDataSize;
     NIMBLE_CHECK_EQ(pos, data.end(), "Unexpected FOR view end.");
@@ -112,8 +112,29 @@ class FOREncodingView final : public TypedEncodingView<T> {
 
  private:
   uint32_t frameRowCount(uint32_t frame) const {
-    const auto startRow = frame * frameSize_;
-    return std::min(frameSize_, this->rowCount_ - startRow);
+    if (frame == numFrames_ - 1) {
+      return lastFrameRows_;
+    }
+    if (frame == 0) {
+      return firstFrameRows_;
+    }
+    return frameSize_;
+  }
+
+  uint32_t frameRowOffset(uint32_t frame) const {
+    if (frame == 0) {
+      return 0;
+    }
+    return firstFrameRows_ + (frame - 1) * frameSize_;
+  }
+
+  uint32_t frameIndex(uint32_t row) const {
+    if (row < firstFrameRows_) {
+      return 0;
+    }
+    const auto frame = 1 + (row - firstFrameRows_) / frameSize_;
+    NIMBLE_CHECK_LT(frame, numFrames_);
+    return frame;
   }
 
   uint64_t bitOffset(uint32_t frame) const {
@@ -183,8 +204,8 @@ class FOREncodingView final : public TypedEncodingView<T> {
 
   T readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
-    const auto frame = index / frameSize_;
-    const auto positionInFrame = index % frameSize_;
+    const auto frame = frameIndex(index);
+    const auto positionInFrame = index - frameRowOffset(frame);
     const auto bitWidth = bitWidths_[frame];
     NIMBLE_CHECK_LE(bitWidth, sizeof(physicalType) * 8);
     const auto residual =
@@ -198,10 +219,10 @@ class FOREncodingView final : public TypedEncodingView<T> {
     this->checkReadRange(offset, length);
     uint32_t outputOffset{0};
     while (outputOffset < length) {
-      const auto frame = offset / frameSize_;
-      const auto positionInFrame = offset % frameSize_;
+      const auto frame = frameIndex(offset);
+      const auto positionInFrame = offset - frameRowOffset(frame);
       const auto count = std::min<uint32_t>(
-          length - outputOffset, frameSize_ - positionInFrame);
+          length - outputOffset, frameRowCount(frame) - positionInFrame);
       readFrameRange(frame, positionInFrame, count, output + outputOffset);
       outputOffset += count;
       offset += count;
@@ -225,7 +246,8 @@ class FOREncodingView final : public TypedEncodingView<T> {
 
   uint32_t frameSize_{0};
   uint32_t numFrames_{0};
-  bool enableBitOffsets_{false};
+  uint32_t firstFrameRows_{0};
+  uint32_t lastFrameRows_{0};
   Vector<uint8_t> bitWidths_;
   Vector<physicalType> references_;
   Vector<uint64_t> bitOffsets_;
