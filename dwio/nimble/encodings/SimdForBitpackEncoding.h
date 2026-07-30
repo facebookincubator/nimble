@@ -24,7 +24,10 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/Encoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/selection/EncodingSelection.h"
 #include "folly/Likely.h"
@@ -37,11 +40,17 @@
 
 namespace facebook::nimble {
 
+template <typename T>
+class SimdForBitpackEncodingView;
+
 /// SIMD Frame-of-Reference bitpacking for integer streams.
 ///
 /// Wire format (after Encoding prefix):
-///   [baseline: sizeof(T)] [bitWidth: 1B] [packed groups]
+///   [baseline: sizeof(T)] [bitWidth: 1B] [firstGroupRows: varint]
+///   [packed groups]
 ///   Each group = bitWidth * 4 bytes (32 values). Omitted when bitWidth == 0.
+///   firstGroupRows is only less than 32 for sliced streams whose first group
+///   starts from a partial source group.
 template <typename T>
 class SimdForBitpackEncoding final
     : public TypedEncoding<T, typename TypeTraits<T>::physicalType> {
@@ -75,29 +84,82 @@ class SimdForBitpackEncoding final
       Buffer& buffer,
       const Encoding::Options& options = {});
 
+  static std::string_view slice(
+      std::string_view encoded,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      const Encoding::Options& options = {});
+
   std::string debugString(int offset) const final;
 
   /// Return the fixed-prefix encoded size estimate used by encoding selection.
   static uint64_t
   estimateSize(uint64_t rowCount, physicalType min, physicalType max) {
-    return EncodingPrefix::kFixedPrefixSize + kPrefixSize +
-        packedDataSize(rowCount, bitWidth(min, max));
+    const auto firstGroupRows = firstGroupRowCount(rowCount);
+    return EncodingPrefix::kFixedPrefixSize + fixedHeaderSize() +
+        varint::varintSize(firstGroupRows) +
+        packedDataSize(numGroups(rowCount), bitWidth(min, max));
   }
 
  private:
-  static constexpr int kPrefixSize = sizeof(physicalType) + sizeof(uint8_t);
+  friend class SimdForBitpackEncodingView<T>;
 
-  // Return the number of FastPFor groups needed to cover `rowCount` values.
-  static constexpr uint64_t numGroups(uint64_t rowCount) {
-    return velox::bits::divRoundUp(rowCount, kGroupSize);
+  // Parsed stream metadata shared by normal decode and native slice. The
+  // packed data pointer references the first byte of the group payload.
+  struct SourceHeader {
+    uint32_t rowCount{0};
+    physicalType baseline{};
+    uint8_t bitWidth{0};
+    uint32_t firstGroupRows{0};
+    uint32_t lastGroupRows{0};
+    uint32_t numGroups{0};
+    const char* packedData{nullptr};
+  };
+
+  // Describes where a row falls in a packed group. During normal reads this is
+  // relative to the current encoding. During slice construction this is
+  // relative to the source encoding group that feeds an output slice group.
+  struct GroupInfo {
+    // Packed group containing the row.
+    uint32_t groupIndex{0};
+    // Row offset inside that packed group.
+    uint32_t rowOffset{0};
+    // Number of rows represented by that packed group.
+    uint32_t rowCount{0};
+  };
+
+  static constexpr uint32_t fixedHeaderSize() {
+    return sizeof(physicalType) + sizeof(uint8_t);
+  }
+
+  static constexpr uint32_t firstGroupRowCount(uint64_t rowCount) {
+    return static_cast<uint32_t>(std::min<uint64_t>(rowCount, kGroupSize));
+  }
+
+  static constexpr uint32_t numGroups(uint64_t rowCount) {
+    return static_cast<uint32_t>(velox::bits::divRoundUp(rowCount, kGroupSize));
+  }
+
+  static constexpr uint32_t numGroups(const SourceHeader& source) {
+    if (source.rowCount == 0) {
+      return 0;
+    }
+    if (source.rowCount <= source.firstGroupRows) {
+      return 1;
+    }
+    return static_cast<uint32_t>(
+        1 +
+        velox::bits::divRoundUp(
+            source.rowCount - source.firstGroupRows, kGroupSize));
   }
 
   // Return the total packed data size in bytes.
   // FastPFor emits `bitWidth` uint32_t words per 32-value group.
   static constexpr uint64_t packedDataSize(
-      uint64_t rowCount,
+      uint32_t groupCount,
       uint8_t bitWidth) {
-    return numGroups(rowCount) * bitWidth * sizeof(uint32_t);
+    return static_cast<uint64_t>(groupCount) * bitWidth * sizeof(uint32_t);
   }
 
   static uint8_t bitWidth(physicalType min, physicalType max) {
@@ -106,6 +168,65 @@ class SimdForBitpackEncoding final
         ? uint8_t{0}
         : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
   }
+
+  static void populateGroupCounts(SourceHeader& source) {
+    source.numGroups = numGroups(source);
+    source.lastGroupRows =
+        source.rowCount - groupRowOffset(source, source.numGroups - 1);
+  }
+
+  static uint32_t groupRowOffset(
+      const SourceHeader& source,
+      uint32_t groupIndex) {
+    if (groupIndex == 0) {
+      return 0;
+    }
+    return source.firstGroupRows + (groupIndex - 1) * kGroupSize;
+  }
+
+  static uint32_t groupRowCount(
+      const SourceHeader& source,
+      uint32_t groupIndex) {
+    if (groupIndex == 0) {
+      return source.firstGroupRows;
+    }
+    if (groupIndex == source.numGroups - 1) {
+      return source.lastGroupRows;
+    }
+    return kGroupSize;
+  }
+
+  static GroupInfo groupInfo(const SourceHeader& source, uint32_t row) {
+    const auto groupIndex = row < source.firstGroupRows
+        ? uint32_t{0}
+        : 1 + (row - source.firstGroupRows) / kGroupSize;
+    NIMBLE_CHECK_LT(groupIndex, source.numGroups);
+    return {
+        .groupIndex = groupIndex,
+        .rowOffset = row - groupRowOffset(source, groupIndex),
+        .rowCount = groupRowCount(source, groupIndex),
+    };
+  }
+
+  static SourceHeader parseSourceHeader(
+      std::string_view encoded,
+      const Encoding::Options& options);
+
+  static void unpackGroup(
+      const char* packedData,
+      uint8_t bitWidth,
+      uint32_t groupIndex,
+      physicalType* output);
+
+  static void
+  packGroup(const physicalType* residuals, uint8_t bitWidth, uint32_t* output);
+
+  static void writeSlicedGroupsPayload(
+      const SourceHeader& source,
+      const SourceHeader& sliceSource,
+      uint32_t offset,
+      uint64_t packedSize,
+      char*& pos);
 
   // Unpack a single group at the given group index into `output`.
   // `output` must have room for kGroupSize elements.
@@ -118,9 +239,7 @@ class SimdForBitpackEncoding final
       uint32_t count,
       physicalType* output) const;
 
-  physicalType baseline_{};
-  uint8_t bitWidth_{0};
-  const char* packedData_{nullptr};
+  SourceHeader source_;
   uint32_t row_{0};
 
   // Avoid re-unpacking when consecutive rows hit the same group.
@@ -142,25 +261,9 @@ SimdForBitpackEncoding<T>::SimdForBitpackEncoding(
   if constexpr (!isIntegralType<physicalType>()) {
     NIMBLE_INCOMPATIBLE_ENCODING(
         "SimdForBitpack encoding only supports integral data types.");
-  } else {
-    const char* pos = data.data() + this->dataOffset();
-    baseline_ = encoding::read<physicalType>(pos);
-    bitWidth_ = static_cast<uint8_t>(encoding::readChar(pos));
-    constexpr uint8_t kMaxBits = static_cast<uint8_t>(sizeof(physicalType) * 8);
-    NIMBLE_CHECK_LE(
-        bitWidth_,
-        kMaxBits,
-        "SimdForBitpack bit width exceeds physical type size.");
-
-    if (bitWidth_ > 0) {
-      const uint64_t expectedSize = packedDataSize(this->rowCount_, bitWidth_);
-      NIMBLE_CHECK_GE(
-          static_cast<size_t>(data.end() - pos),
-          expectedSize,
-          "SimdForBitpack packed region underruns wire data.");
-      packedData_ = pos;
-    }
   }
+  source_ = parseSourceHeader(data, options);
+  NIMBLE_CHECK_EQ(source_.rowCount, this->rowCount_);
   reset();
 }
 
@@ -176,31 +279,161 @@ void SimdForBitpackEncoding<T>::skip(uint32_t rowCount) {
 }
 
 template <typename T>
+typename SimdForBitpackEncoding<T>::SourceHeader
+SimdForBitpackEncoding<T>::parseSourceHeader(
+    std::string_view encoded,
+    const Encoding::Options& options) {
+  SourceHeader source;
+  source.rowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_GT(
+      source.rowCount, 0, "SimdForBitpack stream must contain rows.");
+  const char* pos = encoded.data() +
+      EncodingPrefix::prefixSize(encoded, options.useVarintRowCount);
+  source.baseline = encoding::read<physicalType>(pos);
+  source.bitWidth = static_cast<uint8_t>(encoding::readChar(pos));
+  source.firstGroupRows = varint::readVarint32(&pos);
+  NIMBLE_CHECK_GT(
+      source.firstGroupRows, 0, "First group row count must be set.");
+  NIMBLE_CHECK_LE(
+      source.firstGroupRows,
+      kGroupSize,
+      "Invalid SimdForBitpack first group row count.");
+  populateGroupCounts(source);
+  constexpr uint8_t kMaxBits = static_cast<uint8_t>(sizeof(physicalType) * 8);
+  NIMBLE_CHECK_LE(
+      source.bitWidth,
+      kMaxBits,
+      "SimdForBitpack bit width exceeds physical type size.");
+  source.packedData = pos;
+  return source;
+}
+
+template <typename T>
 void SimdForBitpackEncoding<T>::unpackGroup(
+    const char* packedData,
+    uint8_t bitWidth,
     uint32_t groupIndex,
-    physicalType* output) const {
+    physicalType* output) {
   static_assert(
       isOneByteIntegralType<physicalType>() ||
           isTwoByteIntegralType<physicalType>() ||
           isFourByteIntegralType<physicalType>() ||
           isEightByteIntegralType<physicalType>(),
       "Unexpected SimdForBitpack physical type width.");
-  const uint32_t* groupStart = reinterpret_cast<const uint32_t*>(packedData_) +
-      static_cast<uint64_t>(groupIndex) * bitWidth_;
+  const uint32_t* groupStart = reinterpret_cast<const uint32_t*>(packedData) +
+      static_cast<uint64_t>(groupIndex) * bitWidth;
   if constexpr (isEightByteIntegralType<physicalType>()) {
     facebook::velox::fastpforlib::fastunpack(
-        groupStart, reinterpret_cast<uint64_t*>(output), bitWidth_);
+        groupStart, reinterpret_cast<uint64_t*>(output), bitWidth);
   } else if constexpr (isFourByteIntegralType<physicalType>()) {
     facebook::velox::fastpforlib::fastunpack(
-        groupStart, reinterpret_cast<uint32_t*>(output), bitWidth_);
+        groupStart, reinterpret_cast<uint32_t*>(output), bitWidth);
   } else {
     std::array<uint32_t, kGroupSize> temp{};
-    facebook::velox::fastpforlib::fastunpack(
-        groupStart, temp.data(), bitWidth_);
+    facebook::velox::fastpforlib::fastunpack(groupStart, temp.data(), bitWidth);
     for (uint32_t i = 0; i < kGroupSize; ++i) {
       output[i] = static_cast<physicalType>(temp[i]);
     }
   }
+}
+
+template <typename T>
+void SimdForBitpackEncoding<T>::packGroup(
+    const physicalType* residuals,
+    uint8_t bitWidth,
+    uint32_t* output) {
+  if constexpr (isEightByteIntegralType<physicalType>()) {
+    facebook::velox::fastpforlib::fastpack(
+        reinterpret_cast<const uint64_t*>(residuals), output, bitWidth);
+  } else if constexpr (isFourByteIntegralType<physicalType>()) {
+    facebook::velox::fastpforlib::fastpack(
+        reinterpret_cast<const uint32_t*>(residuals), output, bitWidth);
+  } else {
+    std::array<uint32_t, kGroupSize> widenedResiduals{};
+    for (uint32_t i = 0; i < kGroupSize; ++i) {
+      widenedResiduals[i] = static_cast<uint32_t>(residuals[i]);
+    }
+    facebook::velox::fastpforlib::fastpack(
+        widenedResiduals.data(), output, bitWidth);
+  }
+}
+
+template <typename T>
+void SimdForBitpackEncoding<T>::writeSlicedGroupsPayload(
+    const SourceHeader& source,
+    const SourceHeader& sliceSource,
+    uint32_t offset,
+    uint64_t packedSize,
+    char*& pos) {
+  std::memset(pos, 0, packedSize);
+  char* outputData = pos;
+  std::array<physicalType, kGroupSize> sourceResiduals{};
+  std::array<physicalType, kGroupSize> sliceResiduals{};
+
+  const auto groupBytes =
+      static_cast<uint64_t>(source.bitWidth) * sizeof(uint32_t);
+  const auto getSliceGroupSource = [&](uint32_t group) {
+    return groupInfo(source, offset + groupRowOffset(sliceSource, group));
+  };
+  const auto isPartialGroup = [&](uint32_t group,
+                                  const GroupInfo& sourceSlice) {
+    return sourceSlice.rowOffset != 0 ||
+        groupRowCount(sliceSource, group) != sourceSlice.rowCount;
+  };
+  const auto copyPartialGroup = [&](uint32_t group,
+                                    const GroupInfo& sourceSlice) {
+    const uint32_t rowCount = groupRowCount(sliceSource, group);
+    unpackGroup(
+        source.packedData,
+        source.bitWidth,
+        sourceSlice.groupIndex,
+        sourceResiduals.data());
+    std::fill(sliceResiduals.begin(), sliceResiduals.end(), physicalType{0});
+    for (uint32_t i = 0; i < rowCount; ++i) {
+      sliceResiduals[i] = sourceResiduals[sourceSlice.rowOffset + i];
+    }
+    packGroup(
+        sliceResiduals.data(),
+        source.bitWidth,
+        reinterpret_cast<uint32_t*>(outputData + group * groupBytes));
+  };
+
+  const auto firstSourceSlice = getSliceGroupSource(0);
+  const bool firstPartialGroup = isPartialGroup(0, firstSourceSlice);
+  if (firstPartialGroup) {
+    copyPartialGroup(0, firstSourceSlice);
+  }
+
+  const uint32_t copyBegin = firstPartialGroup ? 1 : 0;
+  const uint32_t lastGroup = sliceSource.numGroups - 1;
+  const auto lastSourceSlice = getSliceGroupSource(lastGroup);
+  const bool lastPartialGroup =
+      lastGroup != 0 && isPartialGroup(lastGroup, lastSourceSlice);
+  const uint32_t copyEnd = lastPartialGroup ? lastGroup : sliceSource.numGroups;
+  if (copyBegin < copyEnd) {
+    const auto beginSourceSlice = getSliceGroupSource(copyBegin);
+    NIMBLE_CHECK_EQ(beginSourceSlice.rowOffset, 0);
+    NIMBLE_CHECK_EQ(
+        groupRowCount(sliceSource, copyBegin), beginSourceSlice.rowCount);
+    std::memcpy(
+        outputData + static_cast<uint64_t>(copyBegin) * groupBytes,
+        source.packedData +
+            static_cast<uint64_t>(beginSourceSlice.groupIndex) * groupBytes,
+        static_cast<uint64_t>(copyEnd - copyBegin) * groupBytes);
+  }
+
+  if (lastPartialGroup) {
+    copyPartialGroup(lastGroup, lastSourceSlice);
+  }
+  pos += packedSize;
+}
+
+template <typename T>
+void SimdForBitpackEncoding<T>::unpackGroup(
+    uint32_t groupIndex,
+    physicalType* output) const {
+  unpackGroup(source_.packedData, source_.bitWidth, groupIndex, output);
 }
 
 template <typename T>
@@ -212,7 +445,8 @@ inline void SimdForBitpackEncoding<T>::materializePartialGroup(
   std::array<physicalType, kGroupSize> temp{};
   unpackGroup(groupIndex, temp.data());
   for (uint32_t i = 0; i < count; ++i) {
-    output[i] = static_cast<physicalType>(temp[offsetInGroup + i] + baseline_);
+    output[i] =
+        static_cast<physicalType>(temp[offsetInGroup + i] + source_.baseline);
   }
 }
 
@@ -223,9 +457,9 @@ void SimdForBitpackEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   }
   auto* output = static_cast<physicalType*>(buffer);
 
-  if (bitWidth_ == 0) {
+  if (source_.bitWidth == 0) {
     // All values match the baseline, so there are no residual bits to unpack.
-    std::fill(output, output + rowCount, baseline_);
+    std::fill(output, output + rowCount, source_.baseline);
     row_ += rowCount;
     return;
   }
@@ -234,33 +468,35 @@ void SimdForBitpackEncoding<T>::materialize(uint32_t rowCount, void* buffer) {
   uint32_t outputIndex = 0;
 
   // Partial first group.
-  const uint32_t offsetInGroup = row_ % kGroupSize;
-  if (offsetInGroup != 0) {
-    const uint32_t groupIndex = row_ / kGroupSize;
-    const uint32_t available = kGroupSize - offsetInGroup;
+  const auto firstGroup = groupInfo(source_, row_);
+  if (firstGroup.rowOffset != 0) {
+    const uint32_t available = firstGroup.rowCount - firstGroup.rowOffset;
     const uint32_t toCopy = std::min(available, remaining);
     materializePartialGroup(
-        groupIndex, offsetInGroup, toCopy, output + outputIndex);
+        firstGroup.groupIndex,
+        firstGroup.rowOffset,
+        toCopy,
+        output + outputIndex);
     outputIndex += toCopy;
     remaining -= toCopy;
   }
 
-  // Full groups.
-  while (remaining >= kGroupSize) {
-    const uint32_t groupIndex = (row_ + outputIndex) / kGroupSize;
-    unpackGroup(groupIndex, output + outputIndex);
-    for (uint32_t i = 0; i < kGroupSize; ++i) {
-      output[outputIndex + i] += baseline_;
+  // Full groups can unpack directly into the caller's output. Short groups
+  // need the bounded path because FastPFor always writes 32 values.
+  while (remaining > 0) {
+    const auto group = groupInfo(source_, row_ + outputIndex);
+    const uint32_t toCopy = std::min(remaining, group.rowCount);
+    if (toCopy == kGroupSize) {
+      unpackGroup(group.groupIndex, output + outputIndex);
+      for (uint32_t i = 0; i < kGroupSize; ++i) {
+        output[outputIndex + i] += source_.baseline;
+      }
+    } else {
+      materializePartialGroup(
+          group.groupIndex, 0, toCopy, output + outputIndex);
     }
-    outputIndex += kGroupSize;
-    remaining -= kGroupSize;
-  }
-
-  // Partial last group.
-  if (remaining > 0) {
-    const uint32_t groupIndex = (row_ + outputIndex) / kGroupSize;
-    materializePartialGroup(groupIndex, 0, remaining, output + outputIndex);
-    outputIndex += remaining;
+    outputIndex += toCopy;
+    remaining -= toCopy;
   }
 
   row_ += rowCount;
@@ -277,17 +513,16 @@ void SimdForBitpackEncoding<T>::readWithVisitor(
       [&](auto toSkip) { skip(toSkip); },
       [&]() {
         physicalType value;
-        if (bitWidth_ == 0) {
-          value = baseline_;
+        if (source_.bitWidth == 0) {
+          value = source_.baseline;
         } else {
-          const uint32_t groupIndex = row_ / kGroupSize;
-          const uint32_t offsetInGroup = row_ % kGroupSize;
-          if (groupIndex != cachedGroupIndex_) {
-            unpackGroup(groupIndex, cachedGroup_.data());
-            cachedGroupIndex_ = groupIndex;
+          const auto group = groupInfo(source_, row_);
+          if (group.groupIndex != cachedGroupIndex_) {
+            unpackGroup(group.groupIndex, cachedGroup_.data());
+            cachedGroupIndex_ = group.groupIndex;
           }
           value = static_cast<physicalType>(
-              cachedGroup_[offsetInGroup] + baseline_);
+              cachedGroup_[group.rowOffset] + source_.baseline);
         }
         ++row_;
         return value;
@@ -303,103 +538,135 @@ std::string_view SimdForBitpackEncoding<T>::encode(
   if constexpr (!isIntegralType<physicalType>()) {
     NIMBLE_INCOMPATIBLE_ENCODING(
         "SimdForBitpack encoding only supports integral data types.");
-  } else {
-    static_assert(
-        std::is_same_v<
-            typename std::make_unsigned<physicalType>::type,
-            physicalType>,
-        "SimdForBitpack physical type must be unsigned.");
-    static_assert(
-        isOneByteIntegralType<physicalType>() ||
-            isTwoByteIntegralType<physicalType>() ||
-            isFourByteIntegralType<physicalType>() ||
-            isEightByteIntegralType<physicalType>(),
-        "Unexpected SimdForBitpack physical type width.");
-    const bool useVarint = options.useVarintRowCount;
-    if (values.empty()) {
-      NIMBLE_INCOMPATIBLE_ENCODING(
-          "SimdForBitpack encoding cannot be used with 0 rows.");
-    }
-    const uint32_t rowCount = static_cast<uint32_t>(values.size());
-    const physicalType baseline = selection.statistics().min();
-    const physicalType maxValue = selection.statistics().max();
-    const physicalType fullRange =
-        static_cast<physicalType>(maxValue - baseline);
-    const uint8_t bitWidth = fullRange == 0
-        ? uint8_t{0}
-        : static_cast<uint8_t>(velox::bits::bitsRequired(fullRange));
-
-    const uint32_t numGroupsTotal = static_cast<uint32_t>(numGroups(rowCount));
-    const uint64_t packedSize = packedDataSize(rowCount, bitWidth);
-
-    const uint32_t encodingSize =
-        Encoding::serializePrefixSize(rowCount, useVarint) + kPrefixSize +
-        static_cast<uint32_t>(packedSize);
-
-    char* reserved = buffer.reserve(encodingSize);
-    char* pos = reserved;
-    Encoding::serializePrefix(
-        EncodingType::SimdForBitpack,
-        TypeTraits<T>::dataType,
-        rowCount,
-        useVarint,
-        pos);
-    encoding::write(baseline, pos);
-    encoding::writeChar(static_cast<char>(bitWidth), pos);
-
-    if (bitWidth > 0) {
-      auto* packedOut = reinterpret_cast<uint32_t*>(pos);
-      std::array<physicalType, kGroupSize> residuals{};
-
-      // FastPFor packs one group of 32 residuals at a time:
-      //
-      //   32 values * bitWidth bits/value = bitWidth uint32_t words
-      //
-      // The last group is zero-padded before packing when rowCount is not a
-      // multiple of 32.
-      for (uint32_t group = 0; group < numGroupsTotal; ++group) {
-        const uint32_t groupStart = group * kGroupSize;
-        const uint32_t groupEnd = std::min(groupStart + kGroupSize, rowCount);
-        const uint32_t groupLen = groupEnd - groupStart;
-
-        // Only zero-fill the last partial group; full groups overwrite all 32.
-        if (groupLen < kGroupSize) {
-          std::fill(residuals.begin(), residuals.end(), physicalType{0});
-        }
-        for (uint32_t i = 0; i < groupLen; ++i) {
-          residuals[i] =
-              static_cast<physicalType>(values[groupStart + i] - baseline);
-        }
-
-        if constexpr (isEightByteIntegralType<physicalType>()) {
-          facebook::velox::fastpforlib::fastpack(
-              reinterpret_cast<const uint64_t*>(residuals.data()),
-              packedOut,
-              bitWidth);
-        } else if constexpr (isFourByteIntegralType<physicalType>()) {
-          facebook::velox::fastpforlib::fastpack(
-              reinterpret_cast<const uint32_t*>(residuals.data()),
-              packedOut,
-              bitWidth);
-        } else {
-          std::array<uint32_t, kGroupSize> widenedResiduals{};
-          for (uint32_t i = 0; i < kGroupSize; ++i) {
-            widenedResiduals[i] = static_cast<uint32_t>(residuals[i]);
-          }
-          facebook::velox::fastpforlib::fastpack(
-              widenedResiduals.data(), packedOut, bitWidth);
-        }
-        // `packedOut` is a uint32_t pointer. One packed group occupies
-        // `bitWidth` uint32_t words.
-        packedOut += bitWidth;
-      }
-      pos += packedSize;
-    }
-
-    NIMBLE_CHECK_EQ(
-        pos - reserved, encodingSize, "SimdForBitpack encoding size mismatch.");
-    return {reserved, encodingSize};
   }
+
+  static_assert(
+      std::is_same_v<
+          typename std::make_unsigned<physicalType>::type,
+          physicalType>,
+      "SimdForBitpack physical type must be unsigned.");
+  static_assert(
+      isOneByteIntegralType<physicalType>() ||
+          isTwoByteIntegralType<physicalType>() ||
+          isFourByteIntegralType<physicalType>() ||
+          isEightByteIntegralType<physicalType>(),
+      "Unexpected SimdForBitpack physical type width.");
+  const bool useVarint = options.useVarintRowCount;
+  NIMBLE_CHECK(
+      !values.empty(), "SimdForBitpack encoding cannot be used with 0 rows.");
+  SourceHeader source{
+      .rowCount = static_cast<uint32_t>(values.size()),
+      .baseline = selection.statistics().min(),
+      .bitWidth =
+          bitWidth(selection.statistics().min(), selection.statistics().max()),
+      .firstGroupRows =
+          firstGroupRowCount(static_cast<uint32_t>(values.size())),
+  };
+  populateGroupCounts(source);
+  const uint64_t packedSize = packedDataSize(source.numGroups, source.bitWidth);
+
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(source.rowCount, useVarint) +
+      fixedHeaderSize() + varint::varintSize(source.firstGroupRows) +
+      static_cast<uint32_t>(packedSize);
+
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  Encoding::serializePrefix(
+      EncodingType::SimdForBitpack,
+      TypeTraits<T>::dataType,
+      source.rowCount,
+      useVarint,
+      pos);
+  encoding::write(source.baseline, pos);
+  encoding::writeChar(static_cast<char>(source.bitWidth), pos);
+  varint::writeVarint(source.firstGroupRows, &pos);
+
+  if (source.bitWidth > 0) {
+    auto* packedOut = reinterpret_cast<uint32_t*>(pos);
+    std::array<physicalType, kGroupSize> residuals{};
+
+    // FastPFor packs one group of 32 residuals at a time:
+    //
+    //   32 values * bitWidth bits/value = bitWidth uint32_t words
+    //
+    // The last group is zero-padded before packing when rowCount is not a
+    // multiple of 32.
+    for (uint32_t group = 0; group < source.numGroups; ++group) {
+      const uint32_t groupStart = groupRowOffset(source, group);
+      const uint32_t groupLen = groupRowCount(source, group);
+
+      // Only zero-fill the last partial group; full groups overwrite all 32.
+      if (groupLen < kGroupSize) {
+        std::fill(residuals.begin(), residuals.end(), physicalType{0});
+      }
+      for (uint32_t i = 0; i < groupLen; ++i) {
+        residuals[i] =
+            static_cast<physicalType>(values[groupStart + i] - source.baseline);
+      }
+
+      packGroup(residuals.data(), source.bitWidth, packedOut);
+      // `packedOut` is a uint32_t pointer. One packed group occupies
+      // `bitWidth` uint32_t words.
+      packedOut += source.bitWidth;
+    }
+    pos += packedSize;
+  }
+
+  NIMBLE_CHECK_EQ(
+      pos - reserved, encodingSize, "SimdForBitpack encoding size mismatch.");
+  return {reserved, encodingSize};
+}
+
+template <typename T>
+std::string_view SimdForBitpackEncoding<T>::slice(
+    std::string_view encoded,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  const auto sourceRowCount =
+      EncodingPrefix::readRowCount(encoded, options.useVarintRowCount);
+  NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
+  NIMBLE_CHECK_LE(offset, sourceRowCount);
+  NIMBLE_CHECK_LE(length, sourceRowCount - offset);
+
+  const auto source = parseSourceHeader(encoded, options);
+  const auto firstGroup = groupInfo(source, offset);
+  SourceHeader sliceSource;
+  sliceSource.rowCount = length;
+  sliceSource.baseline = source.baseline;
+  sliceSource.bitWidth = source.bitWidth;
+  sliceSource.firstGroupRows =
+      std::min(length, firstGroup.rowCount - firstGroup.rowOffset);
+  populateGroupCounts(sliceSource);
+  const uint64_t packedSize =
+      packedDataSize(sliceSource.numGroups, sliceSource.bitWidth);
+
+  const bool useVarint = options.useVarintRowCount;
+  const uint32_t encodingSize =
+      Encoding::serializePrefixSize(length, useVarint) + fixedHeaderSize() +
+      varint::varintSize(sliceSource.firstGroupRows) +
+      static_cast<uint32_t>(packedSize);
+  char* reserved = buffer.reserve(encodingSize);
+  char* pos = reserved;
+  Encoding::serializePrefix(
+      EncodingType::SimdForBitpack,
+      TypeTraits<T>::dataType,
+      length,
+      useVarint,
+      pos);
+  encoding::write(sliceSource.baseline, pos);
+  encoding::writeChar(static_cast<char>(sliceSource.bitWidth), pos);
+  varint::writeVarint(sliceSource.firstGroupRows, &pos);
+
+  if (sliceSource.bitWidth > 0) {
+    writeSlicedGroupsPayload(source, sliceSource, offset, packedSize, pos);
+  }
+
+  NIMBLE_CHECK_EQ(
+      pos - reserved, encodingSize, "SimdForBitpack encoding size mismatch.");
+  return {reserved, encodingSize};
 }
 
 template <typename T>
@@ -410,7 +677,7 @@ std::string SimdForBitpackEncoding<T>::debugString(int offset) const {
       Encoding::encodingType(),
       Encoding::dataType(),
       Encoding::rowCount(),
-      static_cast<int>(bitWidth_));
+      static_cast<int>(source_.bitWidth));
 }
 
 } // namespace facebook::nimble

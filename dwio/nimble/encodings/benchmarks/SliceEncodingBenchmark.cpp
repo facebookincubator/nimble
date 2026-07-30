@@ -21,6 +21,7 @@
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/benchmarks/BenchmarkUtils.h"
 #include "folly/Benchmark.h"
@@ -201,6 +202,12 @@ SLICE_BENCHMARKS(
     uint32_t,
     EncodingType::PFOR,
     makePforUint32());
+SLICE_BENCHMARKS(
+    SimdForBitpackUint32,
+    SimdForBitpackEncoding<uint32_t>,
+    uint32_t,
+    EncodingType::SimdForBitpack,
+    makeNarrow<uint32_t>(12));
 SLICE_BENCHMARKS(
     ALPDouble,
     ALPEncoding<double>,

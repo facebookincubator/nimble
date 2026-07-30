@@ -31,6 +31,7 @@
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
@@ -226,6 +227,20 @@ std::string_view slicePFOR(
       PFOREncoding<T>::slice(encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceSimdForBitpack(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_NUMERIC_DATA_TYPE(
+      dataType,
+      T,
+      SimdForBitpackEncoding<T>::slice(
+          encoded, offset, length, buffer, options));
+}
+
 std::string_view sliceALP(
     std::string_view encoded,
     DataType dataType,
@@ -279,6 +294,9 @@ std::string_view EncodingSliceFactory::slice(
           encoded, dataType, offset, length, buffer, options);
     case EncodingType::PFOR:
       return slicePFOR(encoded, dataType, offset, length, buffer, options);
+    case EncodingType::SimdForBitpack:
+      return sliceSimdForBitpack(
+          encoded, dataType, offset, length, buffer, options);
     case EncodingType::ALP:
       return sliceALP(encoded, dataType, offset, length, buffer, options);
     case EncodingType::Nullable:

@@ -421,6 +421,12 @@ std::string_view PFOREncoding<T>::encode(
         "Pfor encoding only supports integral data types.");
   }
 
+  static_assert(
+      std::is_same_v<
+          typename std::make_unsigned<physicalType>::type,
+          physicalType>,
+      "Pfor physical type must be unsigned.");
+
   const bool useVarint = options.useVarintRowCount;
   NIMBLE_CHECK(!values.empty(), "Pfor encoding cannot be used with 0 rows.");
 
