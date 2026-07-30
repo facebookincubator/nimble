@@ -18,8 +18,11 @@
 #include <fmt/core.h>
 #include <gtest/gtest.h>
 #include <limits>
+#include <random>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
@@ -34,7 +37,9 @@ namespace {
 class FsstEncodingTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
-    velox::memory::MemoryManager::initialize({});
+    if (!velox::memory::MemoryManager::testInstance()) {
+      velox::memory::MemoryManager::initialize({});
+    }
   }
 
   void SetUp() override {
@@ -245,6 +250,170 @@ TEST_F(FsstEncodingTest, roundTripStrings) {
 
   for (const auto& testCase : testCases) {
     roundTrip(testCase.values, testCase.name, testCase.expectedEncodingType);
+  }
+}
+
+TEST_F(FsstEncodingTest, slice) {
+  const std::vector<std::string> storage{
+      "common/prefix/value/0000",
+      "common/prefix/value/0001",
+      "common/prefix/value/0002",
+      "common/prefix/value/0003",
+      "common/prefix/value/0004",
+      "common/prefix/value/0005",
+  };
+  std::vector<std::string_view> values;
+  values.reserve(storage.size());
+  for (const auto& value : storage) {
+    values.push_back(value);
+  }
+
+  Buffer buffer{*pool_};
+  const auto encoded = encodeFsst(values, buffer);
+  ASSERT_EQ(EncodingPrefix::encodingType(encoded), EncodingType::Fsst);
+
+  Buffer sliceBuffer{*pool_};
+  const auto sliced = EncodingFactory::slice(
+      encoded,
+      /*offset=*/2,
+      /*length=*/3,
+      sliceBuffer,
+      {.fsstCompressionTargetRatio = std::numeric_limits<double>::max()});
+
+  auto encoding =
+      EncodingFactory({}).create(*pool_, sliced, createStringBufferFactory());
+  ASSERT_EQ(encoding->encodingType(), EncodingType::Fsst);
+  ASSERT_EQ(encoding->dataType(), DataType::String);
+  ASSERT_EQ(encoding->rowCount(), 3);
+
+  std::vector<std::string_view> decoded(3);
+  encoding->materialize(decoded.size(), decoded.data());
+
+  const std::vector<std::string_view> expected{values[2], values[3], values[4]};
+  EXPECT_EQ(decoded, expected);
+}
+
+TEST_F(FsstEncodingTest, capturesLengthsLayoutWithVarintHeaderSizes) {
+  std::vector<std::string> storage;
+  storage.reserve(512);
+  for (uint32_t i = 0; i < 512; ++i) {
+    storage.emplace_back(
+        fmt::format("common/prefix/for/fsst/layout/{:04}", i % 97));
+  }
+
+  std::vector<std::string_view> values;
+  values.reserve(storage.size());
+  for (const auto& value : storage) {
+    values.push_back(value);
+  }
+
+  Buffer buffer{*pool_};
+  const auto encoded = encodeFsst(values, buffer);
+  ASSERT_EQ(EncodingPrefix::encodingType(encoded), EncodingType::Fsst);
+
+  const char* pos =
+      encoded.data() + EncodingPrefix::prefixSize(encoded, /*useVarint=*/false);
+  const auto symbolTableSize = varint::readVarint32(&pos);
+  ASSERT_GT(symbolTableSize, 0);
+  pos += symbolTableSize;
+  const auto lengthsSize = varint::readVarint32(&pos);
+  ASSERT_GT(lengthsSize, 0);
+
+  const auto lengths = FsstEncoding::lengthsEncoding(encoded);
+  EXPECT_EQ(lengths.data(), pos);
+  EXPECT_EQ(lengths.size(), lengthsSize);
+
+  const auto captured = EncodingLayoutCapture::capture(encoded, {});
+  ASSERT_EQ(captured.encodingType(), EncodingType::Fsst);
+  ASSERT_EQ(captured.childrenCount(), 1);
+  ASSERT_TRUE(captured.child(EncodingIdentifiers::Fsst::Lengths).has_value());
+  EXPECT_EQ(
+      captured.child(EncodingIdentifiers::Fsst::Lengths)->encodingType(),
+      EncodingType::Trivial);
+}
+
+TEST_F(FsstEncodingTest, invalidSliceRange) {
+  const std::vector<std::string> storage{
+      "common/prefix/value/0000",
+      "common/prefix/value/0001",
+      "common/prefix/value/0002",
+      "common/prefix/value/0003",
+  };
+  std::vector<std::string_view> values;
+  values.reserve(storage.size());
+  for (const auto& value : storage) {
+    values.push_back(value);
+  }
+
+  Buffer buffer{*pool_};
+  const auto encoded = encodeFsst(values, buffer);
+
+  Buffer sliceBuffer{*pool_};
+  NIMBLE_ASSERT_THROW(
+      FsstEncoding::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          sliceBuffer,
+          Encoding::Options{}),
+      "Cannot slice zero rows.");
+  NIMBLE_ASSERT_THROW(
+      FsstEncoding::slice(
+          encoded,
+          /*offset=*/values.size(),
+          /*length=*/1,
+          sliceBuffer,
+          Encoding::Options{}),
+      "");
+}
+
+TEST_F(FsstEncodingTest, sliceRandomRanges) {
+  std::vector<std::string> storage;
+  storage.reserve(256);
+  for (uint32_t i = 0; i < 256; ++i) {
+    storage.emplace_back(
+        fmt::format("common/prefix/for/random/fsst/range/{:04}", i % 37));
+  }
+  std::vector<std::string_view> values;
+  values.reserve(storage.size());
+  for (const auto& value : storage) {
+    values.push_back(value);
+  }
+
+  Buffer buffer{*pool_};
+  const auto encoded = encodeFsst(values, buffer);
+  ASSERT_EQ(EncodingPrefix::encodingType(encoded), EncodingType::Fsst);
+
+  std::mt19937 rng{0x5eed};
+  const auto rowCount = static_cast<uint32_t>(values.size());
+  for (uint32_t iteration = 0; iteration < 64; ++iteration) {
+    const auto offset =
+        std::uniform_int_distribution<uint32_t>{0, rowCount - 1}(rng);
+    const auto length =
+        std::uniform_int_distribution<uint32_t>{1, rowCount - offset}(rng);
+    SCOPED_TRACE(
+        testing::Message() << "iteration=" << iteration << ", offset=" << offset
+                           << ", length=" << length);
+
+    Buffer sliceBuffer{*pool_};
+    const auto sliced = EncodingFactory::slice(
+        encoded,
+        offset,
+        length,
+        sliceBuffer,
+        {.fsstCompressionTargetRatio = std::numeric_limits<double>::max()});
+
+    stringBuffers_.clear();
+    auto encoding =
+        EncodingFactory({}).create(*pool_, sliced, createStringBufferFactory());
+    ASSERT_EQ(encoding->encodingType(), EncodingType::Fsst);
+    ASSERT_EQ(encoding->rowCount(), length);
+
+    std::vector<std::string_view> decoded(length);
+    encoding->materialize(length, decoded.data());
+    for (uint32_t i = 0; i < length; ++i) {
+      ASSERT_EQ(decoded[i], values[offset + i]) << "row " << i;
+    }
   }
 }
 

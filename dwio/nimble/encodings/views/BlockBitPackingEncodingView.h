@@ -45,8 +45,7 @@ class BlockBitPackingEncodingView final : public TypedEncodingView<T> {
         blocks_{this->template getVectorBuffer<BlockMeta>()},
         blockRowOffsets_{this->template getVectorBuffer<uint32_t>()} {
     NIMBLE_CHECK_EQ(this->encodingType_, EncodingType::BlockBitPacking);
-    const auto source =
-        BlockBitPackingEncoding<T>::parseSourceHeader(data, options);
+    const auto source = BlockBitPackingEncoding<T>::parseHeader(data, options);
     NIMBLE_CHECK_EQ(
         source.compressionType,
         CompressionType::Uncompressed,

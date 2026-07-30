@@ -283,6 +283,70 @@ TEST(EncodingLayoutTests, Pfor) {
   EXPECT_TRUE(captured.child(1).has_value());
 }
 
+TEST(EncodingLayoutTests, for) {
+  // FOR nests three frame metadata sub-streams: bit widths, references, and
+  // bit offsets. Capture records each present sub-stream recursively so a
+  // captured layout reproduces the full FOR tree.
+  nimble::EncodingLayout forLayout{
+      nimble::EncodingType::FOR,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {std::nullopt, std::nullopt, std::nullopt}};
+
+  testSerialization(forLayout);
+
+  std::vector<uint32_t> data;
+  data.reserve(500);
+  for (uint32_t i = 0; i < 500; ++i) {
+    data.push_back((i / 128) * 1000 + (i % 37));
+  }
+
+  auto captured = encodeAndCapture<uint32_t>(forLayout, data);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::FOR);
+  ASSERT_EQ(captured.childrenCount(), 3);
+  EXPECT_TRUE(captured.child(0).has_value());
+  EXPECT_TRUE(captured.child(1).has_value());
+  EXPECT_TRUE(captured.child(2).has_value());
+}
+
+TEST(EncodingLayoutTests, fsst) {
+  nimble::EncodingLayout fsstLayout{
+      nimble::EncodingType::Fsst,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::Trivial,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+
+  testSerialization(fsstLayout);
+
+  std::vector<std::string> storage;
+  storage.reserve(500);
+  for (uint32_t i = 0; i < 500; ++i) {
+    storage.emplace_back(
+        "common/prefix/for/fsst/layout/" + std::to_string(i % 31));
+  }
+
+  std::vector<std::string_view> data;
+  data.reserve(storage.size());
+  for (const auto& value : storage) {
+    data.push_back(value);
+  }
+
+  auto captured = encodeAndCapture<std::string_view>(fsstLayout, data);
+  ASSERT_EQ(captured.encodingType(), nimble::EncodingType::Fsst);
+  ASSERT_EQ(captured.childrenCount(), 1);
+  ASSERT_TRUE(
+      captured.child(nimble::EncodingIdentifiers::Fsst::Lengths).has_value());
+  EXPECT_EQ(
+      captured.child(nimble::EncodingIdentifiers::Fsst::Lengths)
+          ->encodingType(),
+      nimble::EncodingType::Trivial);
+}
+
 TEST(EncodingLayoutTests, BlockBitPacking) {
   // BlockBitPacking nests three per-block metadata sub-streams (baselines, bit
   // widths, data offsets). Capture records each present sub-stream recursively,
