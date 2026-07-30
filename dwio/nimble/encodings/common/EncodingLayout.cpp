@@ -181,7 +181,8 @@ EncodingLayout EncodingLayoutCapture::capture(
 
   if (encodingType == EncodingType::FixedBitWidth ||
       encodingType == EncodingType::Trivial ||
-      encodingType == EncodingType::BlockBitPacking) {
+      encodingType == EncodingType::BlockBitPacking ||
+      encodingType == EncodingType::FOR) {
     compressionType =
         encoding::peek<uint8_t, CompressionType>(encoding.data() + prefixSize);
   }
@@ -195,7 +196,6 @@ EncodingLayout EncodingLayoutCapture::capture(
     case EncodingType::DeltaBlock:
     case EncodingType::SimdForBitpack:
     case EncodingType::SubIntSplit:
-    case EncodingType::FOR:
     case EncodingType::FrequencyPartition:
     case EncodingType::Huffman:
       // Non nested encodings have zero children
@@ -243,6 +243,22 @@ EncodingLayout EncodingLayoutCapture::capture(
       captureChild(children, pos, bitWidthsBytes, options);
       const auto dataOffsetsBytes = varint::readVarint32(&pos);
       captureChild(children, pos, dataOffsetsBytes, options);
+      break;
+    }
+    case EncodingType::FOR: {
+      const char* pos = encoding.data() + prefixSize;
+      encoding::readChar(pos); // compressionType
+      varint::readVarint32(&pos); // frameSize
+      varint::readVarint32(&pos); // numFrames
+      varint::readVarint32(&pos); // firstFrameRows
+
+      children.reserve(3);
+      const auto bitWidthsBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, bitWidthsBytes, options);
+      const auto referencesBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, referencesBytes, options);
+      const auto bitOffsetsBytes = varint::readVarint32(&pos);
+      captureChild(children, pos, bitOffsetsBytes, options);
       break;
     }
     case EncodingType::Trivial: {

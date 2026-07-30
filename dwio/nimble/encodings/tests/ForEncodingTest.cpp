@@ -19,9 +19,14 @@
 #include <algorithm>
 #include <memory>
 #include <random>
+#include <string_view>
+#include <vector>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Vector.h"
+#include "dwio/nimble/common/tests/GTestUtils.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
+#include "dwio/nimble/encodings/views/EncodingViewFactory.h"
 #include "folly/Random.h"
 #include "velox/common/memory/Memory.h"
 
@@ -44,6 +49,206 @@ class ForEncodingTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::unique_ptr<nimble::Buffer> buffer_;
 };
+
+TEST_F(ForEncodingTest, slicePartialFrames) {
+  nimble::Vector<uint32_t> data(pool_.get());
+  data.reserve(384);
+  for (uint32_t i = 0; i < 384; ++i) {
+    data.push_back(1000 + (i / 128) * 100 + (i % 17));
+  }
+
+  const auto encoded =
+      nimble::test::Encoder<nimble::ForEncoding<uint32_t>>::encode(
+          *buffer_, data);
+
+  struct Range {
+    std::string_view name;
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  for (const auto range :
+       {Range{"partialFirstAndLast", /*offset=*/64, /*length=*/192},
+        Range{"misalignedMiddle", /*offset=*/65, /*length=*/130},
+        Range{"crossFrameBoundary", /*offset=*/127, /*length=*/2},
+        Range{"fullFrame", /*offset=*/128, /*length=*/128}}) {
+    SCOPED_TRACE(
+        testing::Message() << "name=" << range.name << ", offset="
+                           << range.offset << ", length=" << range.length);
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced = nimble::ForEncoding<uint32_t>::slice(
+        encoded,
+        range.offset,
+        range.length,
+        sliceBuffer,
+        nimble::Encoding::Options{});
+
+    nimble::ForEncoding<uint32_t> encoding{
+        *pool_, sliced, [](uint32_t /*totalLength*/) -> void* {
+          return nullptr;
+        }};
+    nimble::Vector<uint32_t> output(pool_.get(), range.length);
+    encoding.materialize(range.length, output.data());
+
+    auto view = nimble::detail::createTypedEncodingView<uint32_t>(
+        sliced, pool_.get(), nimble::Encoding::Options{});
+    ASSERT_NE(view, nullptr);
+    nimble::Vector<uint32_t> viewOutput(pool_.get(), range.length);
+    view->read(/*offset=*/0, range.length, viewOutput.data());
+
+    for (uint32_t i = 0; i < range.length; ++i) {
+      ASSERT_EQ(output[i], data[range.offset + i]) << "encoding row " << i;
+      ASSERT_EQ(viewOutput[i], data[range.offset + i]) << "view row " << i;
+    }
+  }
+}
+
+TEST_F(ForEncodingTest, sliceRandomRanges) {
+  constexpr uint32_t kIterations{64};
+  std::mt19937 rng{0x5eed};
+
+  for (uint32_t iteration = 0; iteration < kIterations; ++iteration) {
+    const auto rowCount = std::uniform_int_distribution<uint32_t>{1, 512}(rng);
+    nimble::Vector<uint32_t> data(pool_.get());
+    data.reserve(rowCount);
+    for (uint32_t row = 0; row < rowCount; ++row) {
+      data.push_back(
+          (row / 128) * 1000 +
+          std::uniform_int_distribution<uint32_t>{0, 127}(rng));
+    }
+
+    const auto offset =
+        std::uniform_int_distribution<uint32_t>{0, rowCount - 1}(rng);
+    const auto length =
+        std::uniform_int_distribution<uint32_t>{1, rowCount - offset}(rng);
+    SCOPED_TRACE(
+        testing::Message() << "iteration=" << iteration
+                           << ", rowCount=" << rowCount << ", offset=" << offset
+                           << ", length=" << length);
+
+    const auto encoded =
+        nimble::test::Encoder<nimble::ForEncoding<uint32_t>>::encode(
+            *buffer_, data);
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced = nimble::ForEncoding<uint32_t>::slice(
+        encoded, offset, length, sliceBuffer, nimble::Encoding::Options{});
+
+    nimble::ForEncoding<uint32_t> encoding{
+        *pool_, sliced, [](uint32_t /*totalLength*/) -> void* {
+          return nullptr;
+        }};
+    nimble::Vector<uint32_t> output(pool_.get(), length);
+    encoding.materialize(length, output.data());
+
+    auto view = nimble::detail::createTypedEncodingView<uint32_t>(
+        sliced, pool_.get(), nimble::Encoding::Options{});
+    ASSERT_NE(view, nullptr);
+    nimble::Vector<uint32_t> viewOutput(pool_.get(), length);
+    view->read(/*offset=*/0, length, viewOutput.data());
+
+    const std::vector<uint32_t> expected(
+        data.begin() + offset, data.begin() + offset + length);
+    EXPECT_EQ(std::vector<uint32_t>(output.begin(), output.end()), expected);
+    EXPECT_EQ(
+        std::vector<uint32_t>(viewOutput.begin(), viewOutput.end()), expected);
+  }
+}
+
+TEST_F(ForEncodingTest, slicePreservesMetadataLayout) {
+  nimble::Vector<uint32_t> data(pool_.get());
+  data.reserve(4096);
+  for (uint32_t i = 0; i < 4096; ++i) {
+    data.push_back(1000 + (i % 3));
+  }
+
+  struct SourceCompression {
+    nimble::CompressionType type;
+    std::string_view name;
+  };
+
+  for (const auto sourceCompression :
+       {SourceCompression{
+            nimble::CompressionType::Uncompressed, "uncompressed"},
+        SourceCompression{nimble::CompressionType::Zstd, "zstd"}}) {
+    SCOPED_TRACE(
+        testing::Message() << "sourceCompression=" << sourceCompression.name);
+    const auto encoded =
+        nimble::test::Encoder<nimble::ForEncoding<uint32_t>>::encode(
+            *buffer_, data, sourceCompression.type);
+    const auto sourceLayout = nimble::EncodingLayoutCapture::capture(
+        encoded, nimble::Encoding::Options{});
+    ASSERT_EQ(sourceLayout.encodingType(), nimble::EncodingType::FOR);
+    ASSERT_EQ(sourceLayout.compressionType(), sourceCompression.type);
+
+    constexpr uint32_t offset{129};
+    constexpr uint32_t length{257};
+    nimble::Buffer sliceBuffer{*pool_};
+    const auto sliced = nimble::ForEncoding<uint32_t>::slice(
+        encoded, offset, length, sliceBuffer, nimble::Encoding::Options{});
+    const auto sliceLayout = nimble::EncodingLayoutCapture::capture(
+        sliced, nimble::Encoding::Options{});
+    ASSERT_EQ(sliceLayout.encodingType(), nimble::EncodingType::FOR);
+    EXPECT_EQ(
+        sliceLayout.compressionType(), nimble::CompressionType::Uncompressed);
+    ASSERT_EQ(sourceLayout.childrenCount(), 3);
+    ASSERT_EQ(sliceLayout.childrenCount(), 3);
+    for (uint32_t child = 0; child < 3; ++child) {
+      SCOPED_TRACE(testing::Message() << "child=" << child);
+      ASSERT_TRUE(sourceLayout.child(child).has_value());
+      ASSERT_TRUE(sliceLayout.child(child).has_value());
+      EXPECT_EQ(
+          sliceLayout.child(child)->encodingType(),
+          sourceLayout.child(child)->encodingType());
+    }
+
+    nimble::ForEncoding<uint32_t> encoding{
+        *pool_, sliced, [](uint32_t /*totalLength*/) -> void* {
+          return nullptr;
+        }};
+    nimble::Vector<uint32_t> output(pool_.get(), length);
+    encoding.materialize(length, output.data());
+
+    auto view = nimble::detail::createTypedEncodingView<uint32_t>(
+        sliced, pool_.get(), nimble::Encoding::Options{});
+    ASSERT_NE(view, nullptr);
+    nimble::Vector<uint32_t> viewOutput(pool_.get(), length);
+    view->read(/*offset=*/0, length, viewOutput.data());
+
+    const std::vector<uint32_t> expected{
+        data.begin() + offset, data.begin() + offset + length};
+    EXPECT_EQ(std::vector<uint32_t>(output.begin(), output.end()), expected);
+    EXPECT_EQ(
+        std::vector<uint32_t>(viewOutput.begin(), viewOutput.end()), expected);
+  }
+}
+
+TEST_F(ForEncodingTest, sliceRejectsInvalidRange) {
+  nimble::Vector<uint32_t> data(pool_.get());
+  for (uint32_t i = 0; i < 16; ++i) {
+    data.push_back(i);
+  }
+  const auto encoded =
+      nimble::test::Encoder<nimble::ForEncoding<uint32_t>>::encode(
+          *buffer_, data);
+
+  nimble::Buffer sliceBuffer{*pool_};
+  NIMBLE_ASSERT_THROW(
+      nimble::ForEncoding<uint32_t>::slice(
+          encoded,
+          /*offset=*/0,
+          /*length=*/0,
+          sliceBuffer,
+          nimble::Encoding::Options{}),
+      "Cannot slice zero rows.");
+  NIMBLE_ASSERT_THROW(
+      nimble::ForEncoding<uint32_t>::slice(
+          encoded,
+          /*offset=*/data.size(),
+          /*length=*/1,
+          sliceBuffer,
+          nimble::Encoding::Options{}),
+      "");
+}
 
 TEST_F(ForEncodingTest, BasicEncodeDecode) {
   nimble::Vector<int32_t> data(pool_.get());
