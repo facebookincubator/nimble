@@ -16,6 +16,7 @@
 #include "dwio/nimble/velox/writer/EncodingSelectionPolicyFactory.h"
 
 #include <folly/String.h>
+#include <glog/logging.h>
 #include <vector>
 
 #include "dwio/nimble/encodings/selection/tests/RandomEncodingSelectionPolicy.h"
@@ -57,7 +58,23 @@ createEncodingSelectionPolicyFactory(
       !type.empty(),
       "nimble.encoding_selection_config '{}' is missing a 'type'.",
       configStr);
+  if (type == "default") {
+    // The manual factory parses its own keys; nullopt (no read_factors) keeps
+    // the nimble.manual_encoding_selection_read_factors default.
+    auto manualFactory = ManualEncodingSelectionPolicyFactory::create(
+        configStr, std::move(compressionOptions));
+    if (!manualFactory.has_value()) {
+      return std::nullopt;
+    }
+    return
+        [factory = std::move(*manualFactory)](
+            DataType dataType) -> std::unique_ptr<EncodingSelectionPolicyBase> {
+          return factory.createPolicy(dataType);
+        };
+  }
   if (type == "random") {
+    LOG(WARNING)
+        << "Using test-only Nimble random encoding selection; not for production use.";
     return
         [factory = testing::RandomEncodingSelectionPolicyFactory::create(
              configStr, std::move(compressionOptions))](
@@ -66,7 +83,7 @@ createEncodingSelectionPolicyFactory(
         };
   }
   NIMBLE_USER_FAIL(
-      "Invalid nimble.encoding_selection_config type '{}'. Valid: 'random'.",
+      "Invalid nimble.encoding_selection_config type '{}'. Valid: 'default', 'random'.",
       type);
 }
 
