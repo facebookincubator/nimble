@@ -201,14 +201,14 @@ void traverseEncodings(
     }
     case EncodingType::PFOR: {
       // Layout after the common prefix: baseline [dataTypeSize bytes],
-      // baseBitWidth [1 byte], numExceptions [4 bytes], then two
-      // self-describing nested sub-streams, each preceded by a 4-byte size:
+      // baseBitWidth [1 byte], numExceptions [varint], then two
+      // self-describing nested sub-streams, each preceded by a varint size:
       // the exception positions and the exception residual values.
       const char* pos = stream.data() + dataOffset;
       pos += detail::dataTypeSize(dataType); // baseline
       encoding::readChar(pos); // baseBitWidth
-      encoding::readUint32(pos); // numExceptions
-      const uint32_t positionsSize = encoding::readUint32(pos);
+      varint::readVarint32(&pos); // numExceptions
+      const uint32_t positionsSize = varint::readVarint32(&pos);
       if (positionsSize > 0) {
         traverseEncodings(
             {pos, positionsSize},
@@ -219,7 +219,7 @@ void traverseEncodings(
             visitor);
       }
       pos += positionsSize;
-      const uint32_t valuesSize = encoding::readUint32(pos);
+      const uint32_t valuesSize = varint::readVarint32(&pos);
       if (valuesSize > 0) {
         traverseEncodings(
             {pos, valuesSize},

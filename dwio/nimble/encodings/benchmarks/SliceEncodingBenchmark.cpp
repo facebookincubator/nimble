@@ -19,6 +19,7 @@
 #include "dwio/nimble/encodings/ConstantEncoding.h"
 #include "dwio/nimble/encodings/DictionaryEncoding.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
+#include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
 #include "dwio/nimble/encodings/benchmarks/BenchmarkUtils.h"
@@ -106,6 +107,16 @@ Vector<double> makeAlpDouble(uint32_t n = kNumElements) {
   return data;
 }
 
+Vector<uint32_t> makePforUint32(uint32_t n = kNumElements) {
+  auto& pool = benchmarkPool();
+  Vector<uint32_t> data{pool.get()};
+  data.resize(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    data[i] = i % 10 == 7 ? 100000 + i : 50 + (i % 64);
+  }
+  return data;
+}
+
 } // namespace
 
 #define SLICE_BENCHMARKS(Name, EncodingT, ValueT, EncodingTypeValue, DataExpr) \
@@ -184,6 +195,12 @@ SLICE_BENCHMARKS(
     uint32_t,
     EncodingType::BlockBitPacking,
     makeIncreasing<uint32_t>());
+SLICE_BENCHMARKS(
+    PFORUint32,
+    PFOREncoding<uint32_t>,
+    uint32_t,
+    EncodingType::PFOR,
+    makePforUint32());
 SLICE_BENCHMARKS(
     ALPDouble,
     ALPEncoding<double>,

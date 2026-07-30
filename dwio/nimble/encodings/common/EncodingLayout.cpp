@@ -219,12 +219,12 @@ EncodingLayout EncodingLayoutCapture::capture(
       const char* pos = encoding.data() + prefixSize;
       pos += detail::dataTypeSize(dataType); // baseline
       encoding::readChar(pos); // baseBitWidth
-      encoding::readUint32(pos); // numExceptions
+      varint::readVarint32(&pos); // numExceptions
 
       children.reserve(2);
-      const auto positionsBytes = encoding::readUint32(pos);
+      const auto positionsBytes = varint::readVarint32(&pos);
       captureChild(children, pos, positionsBytes, options);
-      const auto valuesBytes = encoding::readUint32(pos);
+      const auto valuesBytes = varint::readVarint32(&pos);
       captureChild(children, pos, valuesBytes, options);
       break;
     }

@@ -28,6 +28,8 @@
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/DecoderUtil.h"
 
+#include <algorithm>
+#include <string_view>
 #include <type_traits>
 
 /// The Encoding class defines an interface for interacting with encodings

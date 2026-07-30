@@ -21,6 +21,7 @@
 #include <random>
 
 #include "dwio/nimble/common/Buffer.h"
+#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
@@ -50,10 +51,10 @@ PforWireInfo readPforWireInfo(
   const char* pos = encoded.data() + prefixSize;
   pos += sizeof(uint32_t);
   const auto baseBitWidth = static_cast<uint8_t>(encoding::readChar(pos));
-  const auto numExceptions = encoding::readUint32(pos);
-  const auto exceptionPositionsSize = encoding::readUint32(pos);
+  const auto numExceptions = varint::readVarint32(&pos);
+  const auto exceptionPositionsSize = varint::readVarint32(&pos);
   pos += exceptionPositionsSize;
-  const auto exceptionValuesSize = encoding::readUint32(pos);
+  const auto exceptionValuesSize = varint::readVarint32(&pos);
   pos += exceptionValuesSize;
   return {
       .baseBitWidth = baseBitWidth,
@@ -213,6 +214,44 @@ TEST(PFOREncodingBufferPoolTest, reusesExceptionBuffers) {
   EXPECT_EQ(decodePool->stats().numAllocs, numAllocsAfterFirstDecode);
 }
 
+TEST(PFOREncodingBufferPoolTest, sliceReturnsScratchBufferToPool) {
+  using Value = uint64_t;
+  using EncodingType = PFOREncoding<Value>;
+
+  auto pool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Buffer encodeBuffer{*pool};
+  std::vector<Value> input;
+  input.reserve(300);
+  for (uint32_t i = 0; i < 300; ++i) {
+    input.push_back(
+        i % 10 == 7 ? static_cast<Value>(100000 + i)
+                    : static_cast<Value>(50 + (i % 64)));
+  }
+
+  Vector<Value> values{pool.get()};
+  values.insert(values.end(), input.data(), input.data() + input.size());
+  const auto encoded = Encoder<EncodingType>::encode(encodeBuffer, values);
+  const std::string encodedStorage{encoded};
+
+  velox::BufferPool bufferPool{velox::BufferPool::kDefaultCapacity};
+  const Encoding::Options options{.bufferPool = &bufferPool};
+  Buffer sliceBuffer{*pool};
+  const auto sliced = EncodingType::slice(
+      encodedStorage,
+      /*offset=*/17,
+      /*length=*/128,
+      sliceBuffer,
+      options);
+
+  EXPECT_GT(bufferPool.size(), 0);
+
+  EncodingType encoding{*pool, sliced, nullptr, options};
+  std::vector<Value> output(128);
+  encoding.materialize(static_cast<uint32_t>(output.size()), output.data());
+  EXPECT_EQ(
+      output, std::vector<Value>(input.begin() + 17, input.begin() + 17 + 128));
+}
+
 struct PforBitWidthStorageParam {
   bool fixedBitWidthUseExactBits;
   uint8_t expectedBaseBitWidth;
@@ -353,6 +392,110 @@ TYPED_TEST(PFOREncodingTest, skipAndMaterialize) {
   }
 }
 
+TYPED_TEST(PFOREncodingTest, slice) {
+  using T = TypeParam;
+
+  struct Range {
+    uint32_t offset;
+    uint32_t length;
+  };
+
+  std::vector<T> values;
+  values.reserve(300);
+  for (uint32_t i = 0; i < 300; ++i) {
+    if constexpr (sizeof(T) >= 4) {
+      values.push_back(
+          static_cast<T>(i % 10 == 7 ? 100000 + i : 50 + (i % 64)));
+    } else {
+      values.push_back(static_cast<T>(50 + (i % 64)));
+    }
+  }
+  const auto valueCount = static_cast<uint32_t>(values.size());
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    for (const auto range :
+         {Range{/*offset=*/0, /*length=*/1},
+          Range{/*offset=*/1, /*length=*/37},
+          Range{/*offset=*/127, /*length=*/64},
+          Range{/*offset=*/valueCount - 43, /*length=*/43}}) {
+      SCOPED_TRACE(
+          fmt::format("offset={}, length={}", range.offset, range.length));
+      Buffer sliceBuffer{*this->pool_};
+      const auto sliced = PFOREncoding<T>::slice(
+          encoded, range.offset, range.length, sliceBuffer, options);
+
+      PFOREncoding<T> encoding{*this->pool_, sliced, nullptr, options};
+      EXPECT_EQ(encoding.encodingType(), EncodingType::PFOR);
+      EXPECT_EQ(encoding.dataType(), TypeTraits<T>::dataType);
+      EXPECT_EQ(encoding.rowCount(), range.length);
+
+      std::vector<T> output(range.length);
+      encoding.materialize(range.length, output.data());
+      EXPECT_EQ(
+          output,
+          std::vector<T>(
+              values.begin() + range.offset,
+              values.begin() + range.offset + range.length));
+    }
+  }
+}
+
+TYPED_TEST(PFOREncodingTest, invalidSliceRange) {
+  using T = TypeParam;
+
+  std::vector<T> values;
+  values.reserve(16);
+  for (uint32_t i = 0; i < 16; ++i) {
+    values.push_back(static_cast<T>(i + 1));
+  }
+
+  for (const bool useVarint : {false, true}) {
+    SCOPED_TRACE(fmt::format("useVarint={}", useVarint));
+    const Encoding::Options options{.useVarintRowCount = useVarint};
+    Buffer buffer{*this->pool_};
+    const auto encoded = EncodingFactory::encode<T>(
+        this->createSelectionPolicy(),
+        std::span<const T>{values.data(), values.size()},
+        buffer,
+        options);
+
+    Buffer sliceBuffer{*this->pool_};
+    NIMBLE_ASSERT_THROW(
+        PFOREncoding<T>::slice(
+            encoded,
+            /*offset=*/0,
+            /*length=*/0,
+            sliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        PFOREncoding<T>::slice(
+            encoded,
+            /*offset=*/values.size() + 1,
+            /*length=*/1,
+            sliceBuffer,
+            options),
+        "");
+    NIMBLE_ASSERT_THROW(
+        PFOREncoding<T>::slice(
+            encoded,
+            /*offset=*/values.size() - 1,
+            /*length=*/2,
+            sliceBuffer,
+            options),
+        "");
+  }
+}
+
 TYPED_TEST(PFOREncodingTest, exceptionAtFirstAndLastRow) {
   // Edge case: exceptions land on the first row, the last row, and a
   // middle row. Verifies cursor handling at the bounds.
@@ -453,6 +596,26 @@ class PFOREncodingFuzzerTest : public ::testing::Test {
       for (size_t i = 0; i < values.size(); ++i) {
         ASSERT_EQ(decoded[i], values[i])
             << "iter=" << iter << " i=" << i << " size=" << numValues;
+      }
+
+      std::uniform_int_distribution<uint32_t> offsetDist(0, numValues - 1);
+      const uint32_t sliceOffset = offsetDist(rng);
+      std::uniform_int_distribution<uint32_t> lengthDist(
+          1, numValues - sliceOffset);
+      const uint32_t sliceLength = lengthDist(rng);
+      Buffer sliceBuffer{*pool_};
+      const auto sliced = PFOREncoding<T>::slice(
+          {storage.data(), storage.size()},
+          sliceOffset,
+          sliceLength,
+          sliceBuffer);
+      PFOREncoding<T> slicedEncoding{*pool_, sliced, nullptr};
+      std::vector<T> slicedValues(sliceLength);
+      slicedEncoding.materialize(sliceLength, slicedValues.data());
+      for (uint32_t i = 0; i < sliceLength; ++i) {
+        ASSERT_EQ(slicedValues[i], values[sliceOffset + i])
+            << "iter=" << iter << " sliceOffset=" << sliceOffset << " i=" << i
+            << " sliceLength=" << sliceLength;
       }
 
       // Random skip/materialize sequence.

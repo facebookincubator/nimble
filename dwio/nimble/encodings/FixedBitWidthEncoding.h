@@ -467,16 +467,7 @@ std::string_view FixedBitWidthEncoding<T>::slice(
     std::memset(pos, 0, packedBytes);
     const auto sourceBitOffset = static_cast<uint64_t>(offset) * bitWidth;
     const auto sliceBits = static_cast<uint64_t>(length) * bitWidth;
-    if (sourceBitOffset % 8 == 0 && sliceBits % 8 == 0) {
-      std::memcpy(pos, packedData.data() + sourceBitOffset / 8, packedBytes);
-    } else {
-      velox::bits::copyBits(
-          reinterpret_cast<const uint64_t*>(packedData.data()),
-          sourceBitOffset,
-          reinterpret_cast<uint64_t*>(pos),
-          /*targetOffset=*/0,
-          sliceBits);
-    }
+    encoding::copyPackedBits(packedData, sourceBitOffset, sliceBits, pos);
     pos += packedBytes;
   }
 
