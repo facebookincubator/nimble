@@ -16,6 +16,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -81,8 +82,16 @@ class DeltaBlockEncodingView final : public TypedEncodingView<T> {
   }
 
  private:
+  // Monotonic per-instantiation id. A freed view's address can be reused by a
+  // new view, so the pointer is not a safe key for the shared thread-local
+  // cache; a never-reused id disambiguates instances across their lifetimes.
+  static uint64_t nextViewId() {
+    static std::atomic_uint64_t counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
+  }
+
   struct ReadCache {
-    const DeltaBlockEncodingView<T>* owner{nullptr};
+    uint64_t viewId{0};
     const char* packedData{nullptr};
     uint32_t rowCount{0};
     uint16_t blockSize{0};
@@ -99,13 +108,13 @@ class DeltaBlockEncodingView final : public TypedEncodingView<T> {
   }
 
   void resetCacheIfNeeded(ReadCache& cache) const {
-    if (cache.owner == this && cache.packedData == packedData_ &&
+    if (cache.viewId == viewId_ && cache.packedData == packedData_ &&
         cache.rowCount == this->rowCount_ && cache.blockSize == blockSize_) {
       return;
     }
 
     cache = ReadCache{};
-    cache.owner = this;
+    cache.viewId = viewId_;
     cache.packedData = packedData_;
     cache.rowCount = this->rowCount_;
     cache.blockSize = blockSize_;
@@ -147,23 +156,28 @@ class DeltaBlockEncodingView final : public TypedEncodingView<T> {
     return DeltaBlockEncoding<T>::fromOrdered(cache.ordered);
   }
 
-  T readTypedAt(uint32_t index) const final {
-    NIMBLE_CHECK_LT(index, this->rowCount_);
+  ReadCache* readCache() const {
     static thread_local ReadCache cache;
     resetCacheIfNeeded(cache);
-    return readWithCache(cache, index);
+    return &cache;
+  }
+
+  T readTypedAt(uint32_t index) const final {
+    NIMBLE_CHECK_LT(index, this->rowCount_);
+    ReadCache* cache = readCache();
+    return readWithCache(*cache, index);
   }
 
   void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
       const final {
     this->checkReadRange(offset, length);
-    ReadCache cache;
-    resetCacheIfNeeded(cache);
+    ReadCache* cache = readCache();
     for (uint32_t i = 0; i < length; ++i) {
-      output[i] = readWithCache(cache, offset + i);
+      output[i] = readWithCache(*cache, offset + i);
     }
   }
 
+  const uint64_t viewId_{nextViewId()};
   uint16_t blockSize_{0};
   uint32_t numBlocks_{0};
   Vector<physicalType> blockBases_;
