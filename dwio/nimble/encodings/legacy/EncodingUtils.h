@@ -15,7 +15,9 @@
  */
 #pragma once
 
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/DeltaBlockEncoding.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -68,6 +70,8 @@ auto encodingTypeDispatchString(Encoding& encoding, F f) {
     case EncodingType::MainlyConstant:
       return f(
           static_cast<MainlyConstantEncoding<std::string_view>&>(encoding));
+    case EncodingType::Fsst:
+      return f(static_cast<::facebook::nimble::FsstEncoding&>(encoding));
     default:
       NIMBLE_UNSUPPORTED(toString(encoding.encodingType()));
   }
@@ -150,6 +154,14 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
             static_cast<::facebook::nimble::HuffmanEncoding<T>&>(encoding));
       } else {
         NIMBLE_UNREACHABLE("{}", encoding.dataType());
+      }
+    case EncodingType::ALP:
+      if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        return f(static_cast<::facebook::nimble::ALPEncoding<T>&>(encoding));
+      } else {
+        NIMBLE_UNREACHABLE(
+            "ALP encoding only supports float and double data types, got {}.",
+            encoding.dataType());
       }
     // SubIntSplit integration commented out (disabled):
     /*

@@ -16,7 +16,7 @@ add_library(
   TestUtils.cpp
   ../selection/tests/RandomEncodingSelectionPolicy.cpp
 )
-target_link_libraries(nimble_encodings_tests_utils nimble_encodings)
+target_link_libraries(nimble_encodings_tests_utils nimble_encodings fsst)
 
 add_library(nimble_encoding_layout_test_helper EncodingLayoutTestHelper.cpp)
 target_link_libraries(nimble_encoding_layout_test_helper nimble_encodings)
