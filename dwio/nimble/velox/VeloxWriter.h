@@ -21,6 +21,7 @@
 #include "dwio/nimble/velox/BufferPolicy.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "velox/buffer/BufferPool.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/file/File.h"
 #include "velox/dwio/common/TypeWithId.h"
@@ -130,6 +131,7 @@ class VeloxWriter {
       uint64_t maxChunkSize,
       bool ensureFullChunks,
       Stream& stream,
+      velox::BufferPool* encodingScratchBufferPool,
       EncodingBufferPool* encodingBufferPool,
       uint64_t& streamBytes,
       std::atomic_uint64_t& chunkBytes,
@@ -140,16 +142,19 @@ class VeloxWriter {
   uint32_t encodeChunk(
       const StreamData& chunkView,
       Chunk& chunk,
+      velox::BufferPool* encodingScratchBufferPool,
       EncodingBufferPool* encodingBufferPool);
 
   void encodeStream(
       StreamData& streamData,
+      velox::BufferPool* encodingScratchBufferPool,
       EncodingBufferPool* encodingBufferPool,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
 
   void processStream(
       StreamData& streamData,
+      velox::BufferPool* encodingScratchBufferPool,
       EncodingBufferPool* encodingBufferPool,
       uint64_t& streamSize,
       std::atomic_uint64_t& chunkSize);
@@ -206,12 +211,19 @@ class VeloxWriter {
   void ensureEncodingBuffer();
   void clearEncodingBuffer();
 
-  // Nested encoding scratch pools. Pool 0 is used by sequential writes;
-  // parallel writes use one pool per concurrent encode task because the pool is
+  // Scratch vector buffer pools. Pool 0 is used by sequential writes; parallel
+  // writes use one pool per concurrent encode task because velox::BufferPool is
   // not thread-safe.
+  std::unique_ptr<velox::BufferPool> makeEncodingScratchBufferPool() const;
+
+  // Nested encoding buffer pools used by ScopedEncodingBuffer. Pool 0 is used
+  // by sequential writes; parallel writes use one pool per concurrent encode
+  // task because EncodingBufferPool is not thread-safe.
   std::unique_ptr<EncodingBufferPool> makeEncodingBufferPool() const;
   uint32_t encodingConcurrency(uint32_t taskCount) const;
+  void ensureEncodingScratchBufferPools(uint32_t poolCount);
   void ensureEncodingBufferPools(uint32_t poolCount);
+  velox::BufferPool* encodingScratchBufferPool(uint32_t index = 0);
   EncodingBufferPool* encodingBufferPool(uint32_t index = 0);
 
   void ensureWriteStreams();
@@ -231,6 +243,15 @@ class VeloxWriter {
 
   std::unique_ptr<FieldWriter> rootWriter_;
   std::unique_ptr<Buffer> encodingBuffer_;
+
+  // Per-encode-task scratch vector buffer caches. They are retained across
+  // flushes for reuse, cleared under memory arbitration, and released when the
+  // writer is destroyed.
+  std::vector<std::unique_ptr<velox::BufferPool>> encodingScratchBufferPools_;
+
+  // Per-encode-task temporary encoded-buffer caches used by
+  // ScopedEncodingBuffer. They follow the same lifetime as the scratch vector
+  // buffer caches above.
   std::vector<std::unique_ptr<EncodingBufferPool>> encodingBufferPools_;
   std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;

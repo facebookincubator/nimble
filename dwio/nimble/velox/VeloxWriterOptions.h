@@ -207,6 +207,13 @@ struct VeloxWriterOptions {
   /// ALP is production-ready.
   bool allowNestedAlpSelection{false};
 
+  /// Maximum number of scratch vector buffers retained by each per-encode-task
+  /// scratch pool. 0 disables scratch vector buffer caching. Disabled by
+  /// default; benchmark callers can set a non-zero value to opt in. Memory is
+  /// bounded by cached buffer count, not bytes, and cached buffers are dropped
+  /// under memory arbitration.
+  uint32_t maxCachedEncodingScratchBuffers{0};
+
   /// Maximum number of scratch buffers retained by each nested encoding buffer
   /// pool. 0 disables nested encoding buffer caching. Disabled by default;
   /// callers can set a non-zero value to opt in.
