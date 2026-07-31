@@ -14,8 +14,10 @@
  * limitations under the License.
  */
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
+#include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/BlockBitPackingEncoding.h"
 #include "dwio/nimble/encodings/DeltaBlockEncoding.h"
+#include "dwio/nimble/encodings/FsstEncoding.h"
 #include "dwio/nimble/encodings/HuffmanEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
@@ -321,6 +323,28 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     case EncodingType::Huffman: {
       RETURN_ENCODING_BY_INTEGRAL_TYPE(
           ::facebook::nimble::HuffmanEncoding, dataType);
+    }
+    case EncodingType::ALP: {
+      switch (dataType) {
+        case DataType::Float:
+          return std::make_unique<::facebook::nimble::ALPEncoding<float>>(
+              memoryPool, data, stringBufferFactory);
+        case DataType::Double:
+          return std::make_unique<::facebook::nimble::ALPEncoding<double>>(
+              memoryPool, data, stringBufferFactory);
+        default:
+          NIMBLE_INCOMPATIBLE_ENCODING(
+              "ALP encoding only supports float and double data types, got {}.",
+              dataType);
+      }
+    }
+    case EncodingType::Fsst: {
+      NIMBLE_CHECK_EQ(
+          dataType,
+          DataType::String,
+          "Trying to deserialize a FsstEncoding with a non-string data type.");
+      return std::make_unique<::facebook::nimble::FsstEncoding>(
+          memoryPool, data, stringBufferFactory);
     }
     default: {
       NIMBLE_UNREACHABLE(

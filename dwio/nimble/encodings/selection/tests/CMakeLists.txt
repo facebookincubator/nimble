@@ -19,5 +19,6 @@ add_library(
 target_link_libraries(
   nimble_random_encoding_selection_policy
   nimble_encodings
+  fsst
   Folly::folly
 )

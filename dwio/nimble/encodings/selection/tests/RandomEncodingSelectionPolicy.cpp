@@ -73,6 +73,9 @@ RandomEncodingSelectionPolicyFactory::defaultEncodingChoices() {
       EncodingType::Dictionary,
       EncodingType::RLE,
       EncodingType::Varint,
+      EncodingType::ALP,
+      EncodingType::BlockBitPacking,
+      EncodingType::Fsst,
   };
 }
 
