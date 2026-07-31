@@ -372,6 +372,7 @@ std::string_view encode(
     std::optional<EncodingLayout> encodingLayout,
     detail::WriterContext& context,
     Buffer& buffer,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   NIMBLE_DCHECK_EQ(
@@ -408,6 +409,7 @@ std::string_view encode(
   }
 
   auto encodingOptions = context.options().buildEncodingOptions();
+  encodingOptions.bufferPool = encodingScratchBufferPool;
   encodingOptions.encodingBufferPool = encodingBufferPool;
   velox::common::testutil::TestValue::adjust(
       "facebook::nimble::VeloxWriter::encode", &encodingOptions);
@@ -433,6 +435,7 @@ std::string_view encodeWithFallback(
     const EncodingLayout* encodingLayout,
     detail::WriterContext& context,
     Buffer& buffer,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   NIMBLE_CHECK_NOT_NULL(
@@ -440,13 +443,23 @@ std::string_view encodeWithFallback(
       "encodeWithFallback requires a saved encoding layout to replay.");
   try {
     return encode<T>(
-        *encodingLayout, context, buffer, encodingBufferPool, streamData);
+        *encodingLayout,
+        context,
+        buffer,
+        encodingScratchBufferPool,
+        encodingBufferPool,
+        streamData);
   } catch (const std::exception&) {
     // A saved layout can fail to apply to this chunk's data in ways beyond a
     // clean IncompatibleEncoding, so retry on any error rather than keying off
     // a specific (unreliable) error code.
     return encode<T>(
-        std::nullopt, context, buffer, encodingBufferPool, streamData);
+        std::nullopt,
+        context,
+        buffer,
+        encodingScratchBufferPool,
+        encodingBufferPool,
+        streamData);
   }
 }
 
@@ -454,6 +467,7 @@ template <typename T>
 std::string_view encodeStreamTyped(
     detail::WriterContext& context,
     Buffer& buffer,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   const auto* writerStreamContext =
@@ -468,13 +482,19 @@ std::string_view encodeStreamTyped(
         writerStreamContext->encoding(),
         context,
         buffer,
+        encodingScratchBufferPool,
         encodingBufferPool,
         streamData);
   }
 
   // No layout to replay: run a fresh selection.
-  auto encoded =
-      encode<T>(std::nullopt, context, buffer, encodingBufferPool, streamData);
+  auto encoded = encode<T>(
+      std::nullopt,
+      context,
+      buffer,
+      encodingScratchBufferPool,
+      encodingBufferPool,
+      streamData);
 
   // Cache the data layout from this first encode so later chunks/stripes replay
   // it, skipping the full selection cascade. EncodingLayoutCapture::capture()
@@ -493,41 +513,82 @@ std::string_view encodeStreamTyped(
 std::string_view encodeStreamData(
     detail::WriterContext& context,
     Buffer& buffer,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
   auto scalarKind = streamData.descriptor().scalarKind();
   switch (scalarKind) {
     case ScalarKind::Bool:
       return encodeStreamTyped<bool>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Int8:
       return encodeStreamTyped<int8_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Int16:
       return encodeStreamTyped<int16_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::UInt16:
       return encodeStreamTyped<uint16_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Int32:
       return encodeStreamTyped<int32_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::UInt32:
       return encodeStreamTyped<uint32_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Int64:
       return encodeStreamTyped<int64_t>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Float:
       return encodeStreamTyped<float>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::Double:
       return encodeStreamTyped<double>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     case ScalarKind::String:
     case ScalarKind::Binary:
       return encodeStreamTyped<std::string_view>(
-          context, buffer, encodingBufferPool, streamData);
+          context,
+          buffer,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamData);
     default:
       NIMBLE_UNREACHABLE("Unsupported scalar kind {}", toString(scalarKind));
   }
@@ -1272,13 +1333,19 @@ void VeloxWriter::ensureEncodingBuffer() {
   }
 }
 
+std::unique_ptr<velox::BufferPool> VeloxWriter::makeEncodingScratchBufferPool()
+    const {
+  const auto maxCachedBuffers =
+      context_->options().maxCachedEncodingScratchBuffers;
+  NIMBLE_CHECK_GT(maxCachedBuffers, 0);
+  return std::make_unique<velox::BufferPool>(maxCachedBuffers);
+}
+
 std::unique_ptr<EncodingBufferPool> VeloxWriter::makeEncodingBufferPool()
     const {
   const auto maxCachedBuffers =
       context_->options().maxCachedNestedEncodingBuffers;
-  if (maxCachedBuffers == 0) {
-    return nullptr;
-  }
+  NIMBLE_CHECK_GT(maxCachedBuffers, 0);
   return std::make_unique<EncodingBufferPool>(
       encodingMemoryPool_.get(), maxCachedBuffers);
 }
@@ -1294,6 +1361,18 @@ uint32_t VeloxWriter::encodingConcurrency(uint32_t taskCount) const {
   return std::min(taskCount, options.maxEncodeParallelism);
 }
 
+void VeloxWriter::ensureEncodingScratchBufferPools(uint32_t poolCount) {
+  if (context_->options().maxCachedEncodingScratchBuffers == 0) {
+    NIMBLE_CHECK(
+        encodingScratchBufferPools_.empty(),
+        "Encoding scratch buffer pools should not be created when caching is disabled.");
+    return;
+  }
+  while (encodingScratchBufferPools_.size() < poolCount) {
+    encodingScratchBufferPools_.emplace_back(makeEncodingScratchBufferPool());
+  }
+}
+
 void VeloxWriter::ensureEncodingBufferPools(uint32_t poolCount) {
   if (context_->options().maxCachedNestedEncodingBuffers == 0) {
     NIMBLE_CHECK(
@@ -1304,6 +1383,15 @@ void VeloxWriter::ensureEncodingBufferPools(uint32_t poolCount) {
   while (encodingBufferPools_.size() < poolCount) {
     encodingBufferPools_.emplace_back(makeEncodingBufferPool());
   }
+}
+
+velox::BufferPool* VeloxWriter::encodingScratchBufferPool(uint32_t index) {
+  if (context_->options().maxCachedEncodingScratchBuffers == 0) {
+    return nullptr;
+  }
+  ensureEncodingScratchBufferPools(index + 1);
+  NIMBLE_CHECK_LT(index, encodingScratchBufferPools_.size());
+  return encodingScratchBufferPools_[index].get();
 }
 
 EncodingBufferPool* VeloxWriter::encodingBufferPool(uint32_t index) {
@@ -1321,6 +1409,7 @@ void VeloxWriter::clearEncodingBuffer() {
   }
   if (velox::memory::underMemoryArbitration()) {
     // Under memory arbitration, free the buffer and pools.
+    encodingScratchBufferPools_.clear();
     encodingBufferPools_.clear();
     encodingBuffer_.reset();
   } else {
@@ -1352,6 +1441,7 @@ void VeloxWriter::writeStreams() {
     const auto& streams = context_->streams();
     const auto streamCount = static_cast<uint32_t>(streams.size());
     const auto concurrency = encodingConcurrency(streamCount);
+    ensureEncodingScratchBufferPools(concurrency);
     ensureEncodingBufferPools(concurrency);
 
     if (concurrency > 1) {
@@ -1364,15 +1454,22 @@ void VeloxWriter::writeStreams() {
         const auto batchSize = std::min(concurrency, streamCount - start);
         for (uint32_t index = 0; index < batchSize; ++index) {
           auto& [nodeId, streamData] = streams[start + index];
+          auto* encodingScratchBufferPool =
+              this->encodingScratchBufferPool(index);
           auto* encodingBufferPool = this->encodingBufferPool(index);
           barrier.add([&,
                        statsCollector = context_->getStatsCollector(nodeId),
                        _streamData = streamData.get(),
+                       encodingScratchBufferPool,
                        encodingBufferPool]() {
             uint64_t startCpuNs = velox::process::threadCpuNanos();
             uint64_t streamSize{0};
             processStream(
-                *_streamData, encodingBufferPool, streamSize, chunkSize);
+                *_streamData,
+                encodingScratchBufferPool,
+                encodingBufferPool,
+                streamSize,
+                chunkSize);
             if (statsCollector) {
               statsCollector->addPhysicalSize(streamSize);
             }
@@ -1384,12 +1481,18 @@ void VeloxWriter::writeStreams() {
         barrier.waitAll();
       }
     } else {
+      auto* encodingScratchBufferPool = this->encodingScratchBufferPool();
       auto* encodingBufferPool = this->encodingBufferPool();
       for (auto& [nodeId, streamData] : streams) {
         auto statsCollector = context_->getStatsCollector(nodeId);
         uint64_t startCpuNs = velox::process::threadCpuNanos();
         uint64_t streamSize{0};
-        processStream(*streamData, encodingBufferPool, streamSize, chunkSize);
+        processStream(
+            *streamData,
+            encodingScratchBufferPool,
+            encodingBufferPool,
+            streamSize,
+            chunkSize);
         if (statsCollector) {
           statsCollector->addPhysicalSize(streamSize);
         }
@@ -1412,6 +1515,7 @@ void VeloxWriter::writeStreams() {
 
 void VeloxWriter::encodeStream(
     StreamData& streamData,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     uint64_t& streamSize,
     std::atomic_uint64_t& chunkSize) {
@@ -1423,7 +1527,8 @@ void VeloxWriter::encodeStream(
   // used in non-chunked mode.
   NIMBLE_CHECK(encodedStream.chunks.empty());
   auto& chunk = encodedStream.chunks.emplace_back();
-  const auto chunkBytes = encodeChunk(streamData, chunk, encodingBufferPool);
+  const auto chunkBytes = encodeChunk(
+      streamData, chunk, encodingScratchBufferPool, encodingBufferPool);
   streamSize += chunkBytes;
   chunkSize += chunkBytes;
   streamData.reset();
@@ -1431,6 +1536,7 @@ void VeloxWriter::encodeStream(
 
 void VeloxWriter::processStream(
     StreamData& streamData,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     uint64_t& streamSize,
     std::atomic_uint64_t& chunkSize) {
@@ -1442,7 +1548,12 @@ void VeloxWriter::processStream(
     // boolean data.
     if (streamData.hasNullValues()) {
       NullsAsDataStreamData nullsStreamData{streamData};
-      encodeStream(nullsStreamData, encodingBufferPool, streamSize, chunkSize);
+      encodeStream(
+          nullsStreamData,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamSize,
+          chunkSize);
     }
   } else if (
       (context != nullptr) && context->isInMapStream() &&
@@ -1456,12 +1567,22 @@ void VeloxWriter::processStream(
     // skipConstantFlatMapInMapStreams to remain false.
     streamData.materialize();
     if (!isConstantBoolStream(streamData.data())) {
-      encodeStream(streamData, encodingBufferPool, streamSize, chunkSize);
+      encodeStream(
+          streamData,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamSize,
+          chunkSize);
     }
   } else {
     streamData.materialize();
     if (!streamData.data().empty()) {
-      encodeStream(streamData, encodingBufferPool, streamSize, chunkSize);
+      encodeStream(
+          streamData,
+          encodingScratchBufferPool,
+          encodingBufferPool,
+          streamSize,
+          chunkSize);
     }
   }
 }
@@ -1472,6 +1593,7 @@ bool VeloxWriter::encodeStreamChunk(
     uint64_t maxChunkSize,
     bool ensureFullChunks,
     Stream& encodedStream,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     uint64_t& streamBytes,
     std::atomic_uint64_t& chunkBytes,
@@ -1489,8 +1611,8 @@ bool VeloxWriter::encodeStreamChunk(
   uint64_t encodedChunkBytes{0};
   while (auto chunkView = chunker->next()) {
     auto& streamChunk = streamChunks.emplace_back();
-    encodedChunkBytes +=
-        encodeChunk(*chunkView, streamChunk, encodingBufferPool);
+    encodedChunkBytes += encodeChunk(
+        *chunkView, streamChunk, encodingScratchBufferPool, encodingBufferPool);
     writtenChunk = true;
   }
   streamBytes += encodedChunkBytes;
@@ -1504,9 +1626,14 @@ bool VeloxWriter::encodeStreamChunk(
 uint32_t VeloxWriter::encodeChunk(
     const StreamData& chunkView,
     Chunk& chunk,
+    velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool) {
   std::string_view encoded = encodeStreamData(
-      *context_, *encodingBuffer_, encodingBufferPool, chunkView);
+      *context_,
+      *encodingBuffer_,
+      encodingScratchBufferPool,
+      encodingBufferPool,
+      chunkView);
   NIMBLE_DCHECK(!encoded.empty());
   if (encoded.empty()) {
     return 0;
@@ -1547,6 +1674,7 @@ bool VeloxWriter::writeChunks(
     const auto& streams = context_->streams();
     const auto streamCount = static_cast<uint32_t>(streamIndices.size());
     const auto concurrency = encodingConcurrency(streamCount);
+    ensureEncodingScratchBufferPools(concurrency);
     ensureEncodingBufferPools(concurrency);
 
     if (concurrency > 1) {
@@ -1562,10 +1690,13 @@ bool VeloxWriter::writeChunks(
           auto& [nodeId, streamData] = streams[streamIndex];
           const auto offset = streamData->descriptor().offset();
           auto* encodedStream = &encodedStreams_[offset];
+          auto* encodingScratchBufferPool =
+              this->encodingScratchBufferPool(index);
           auto* encodingBufferPool = this->encodingBufferPool(index);
           barrier.add([&,
                        streamData = streamData.get(),
                        encodedStream,
+                       encodingScratchBufferPool,
                        encodingBufferPool,
                        statsCollector = context_->getStatsCollector(nodeId)] {
             uint64_t startCpuNs = velox::process::threadCpuNanos();
@@ -1576,6 +1707,7 @@ bool VeloxWriter::writeChunks(
                     maxChunkSize,
                     ensureFullChunks,
                     *encodedStream,
+                    encodingScratchBufferPool,
                     encodingBufferPool,
                     streamSize,
                     chunkBytes,
@@ -1593,6 +1725,7 @@ bool VeloxWriter::writeChunks(
         barrier.waitAll();
       }
     } else {
+      auto* encodingScratchBufferPool = this->encodingScratchBufferPool();
       auto* encodingBufferPool = this->encodingBufferPool();
       for (auto streamIndex : streamIndices) {
         auto& [nodeId, streamData] = streams[streamIndex];
@@ -1606,6 +1739,7 @@ bool VeloxWriter::writeChunks(
                 maxChunkSize,
                 ensureFullChunks,
                 encodedStreams_[offset],
+                encodingScratchBufferPool,
                 encodingBufferPool,
                 streamSize,
                 chunkBytes,

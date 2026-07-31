@@ -564,7 +564,7 @@ TEST_F(VeloxWriterTest, mainlyConstantRoundTrip) {
   ASSERT_FALSE(reader.next(1, result));
 }
 
-DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingBufferPoolPassedToEncodeOptions) {
+DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingPoolsPassedToEncodeOptions) {
   velox::common::testutil::TestValue::enable();
 
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
@@ -583,65 +583,122 @@ DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingBufferPoolPassedToEncodeOptions) {
 
   struct TestCase {
     const char* name;
+    uint32_t maxCachedEncodingScratchBuffers;
     bool setMaxCachedNestedEncodingBuffers;
     uint32_t maxCachedNestedEncodingBuffers;
     uint32_t maxEncodeParallelism;
+    bool expectEncodingScratchBufferPool;
     bool expectEncodingBufferPool;
-    size_t expectedPoolCount;
+    size_t expectedScratchPoolCount;
+    size_t expectedEncodingPoolCount;
   };
 
   for (const auto& testCase : std::vector<TestCase>{
            {
                .name = "default",
+               .maxCachedEncodingScratchBuffers = 0,
                .setMaxCachedNestedEncodingBuffers = false,
                .maxCachedNestedEncodingBuffers = 0,
                .maxEncodeParallelism = 0,
+               .expectEncodingScratchBufferPool = false,
                .expectEncodingBufferPool = false,
-               .expectedPoolCount = 0,
+               .expectedScratchPoolCount = 0,
+               .expectedEncodingPoolCount = 0,
            },
            {
-               .name = "cache disabled",
+               .name = "nested cache disabled",
+               .maxCachedEncodingScratchBuffers = 0,
                .setMaxCachedNestedEncodingBuffers = true,
                .maxCachedNestedEncodingBuffers = 0,
                .maxEncodeParallelism = 0,
+               .expectEncodingScratchBufferPool = false,
                .expectEncodingBufferPool = false,
-               .expectedPoolCount = 0,
+               .expectedScratchPoolCount = 0,
+               .expectedEncodingPoolCount = 0,
            },
            {
-               .name = "cache enabled",
+               .name = "encoding scratch cache enabled",
+               .maxCachedEncodingScratchBuffers = 1,
+               .setMaxCachedNestedEncodingBuffers = false,
+               .maxCachedNestedEncodingBuffers = 0,
+               .maxEncodeParallelism = 0,
+               .expectEncodingScratchBufferPool = true,
+               .expectEncodingBufferPool = false,
+               .expectedScratchPoolCount = 1,
+               .expectedEncodingPoolCount = 0,
+           },
+           {
+               .name = "nested cache enabled",
+               .maxCachedEncodingScratchBuffers = 0,
                .setMaxCachedNestedEncodingBuffers = true,
                .maxCachedNestedEncodingBuffers = 1,
                .maxEncodeParallelism = 0,
+               .expectEncodingScratchBufferPool = false,
                .expectEncodingBufferPool = true,
-               .expectedPoolCount = 1,
+               .expectedScratchPoolCount = 0,
+               .expectedEncodingPoolCount = 1,
            },
            {
-               .name = "parallel cache enabled",
+               .name = "parallel encoding scratch cache enabled",
+               .maxCachedEncodingScratchBuffers = 1,
+               .setMaxCachedNestedEncodingBuffers = false,
+               .maxCachedNestedEncodingBuffers = 0,
+               .maxEncodeParallelism = 2,
+               .expectEncodingScratchBufferPool = true,
+               .expectEncodingBufferPool = false,
+               .expectedScratchPoolCount = 2,
+               .expectedEncodingPoolCount = 0,
+           },
+           {
+               .name = "parallel nested cache enabled",
+               .maxCachedEncodingScratchBuffers = 0,
                .setMaxCachedNestedEncodingBuffers = true,
                .maxCachedNestedEncodingBuffers = 1,
                .maxEncodeParallelism = 2,
+               .expectEncodingScratchBufferPool = false,
                .expectEncodingBufferPool = true,
-               .expectedPoolCount = 2,
+               .expectedScratchPoolCount = 0,
+               .expectedEncodingPoolCount = 2,
+           },
+           {
+               .name = "parallel caches enabled",
+               .maxCachedEncodingScratchBuffers = 1,
+               .setMaxCachedNestedEncodingBuffers = true,
+               .maxCachedNestedEncodingBuffers = 1,
+               .maxEncodeParallelism = 2,
+               .expectEncodingScratchBufferPool = true,
+               .expectEncodingBufferPool = true,
+               .expectedScratchPoolCount = 2,
+               .expectedEncodingPoolCount = 2,
            },
        }) {
     SCOPED_TRACE(testCase.name);
 
     uint32_t encodeCount{0};
-    uint32_t pooledEncodeCount{0};
-    std::set<const void*> observedPools;
+    uint32_t pooledScratchEncodeCount{0};
+    uint32_t pooledEncodingBufferCount{0};
+    std::set<const void*> observedScratchPools;
+    std::set<const void*> observedEncodingBufferPools;
     SCOPED_TESTVALUE_SET(
         "facebook::nimble::VeloxWriter::encode",
         std::function<void(nimble::Encoding::Options*)>(
             [&](nimble::Encoding::Options* encodingOptions) {
               ++encodeCount;
+              if (encodingOptions->bufferPool != nullptr) {
+                ++pooledScratchEncodeCount;
+                observedScratchPools.insert(encodingOptions->bufferPool);
+              }
               if (encodingOptions->encodingBufferPool != nullptr) {
-                ++pooledEncodeCount;
-                observedPools.insert(encodingOptions->encodingBufferPool);
+                ++pooledEncodingBufferCount;
+                observedEncodingBufferPools.insert(
+                    encodingOptions->encodingBufferPool);
               }
             }));
 
     std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
     nimble::VeloxWriterOptions options;
+    options.maxCachedEncodingScratchBuffers =
+        testCase.maxCachedEncodingScratchBuffers;
     if (testCase.setMaxCachedNestedEncodingBuffers) {
       options.maxCachedNestedEncodingBuffers =
           testCase.maxCachedNestedEncodingBuffers;
@@ -662,8 +719,14 @@ DEBUG_ONLY_TEST_F(VeloxWriterTest, encodingBufferPoolPassedToEncodeOptions) {
 
     EXPECT_GT(encodeCount, 0);
     EXPECT_EQ(
-        pooledEncodeCount, testCase.expectEncodingBufferPool ? encodeCount : 0);
-    EXPECT_EQ(observedPools.size(), testCase.expectedPoolCount);
+        pooledScratchEncodeCount,
+        testCase.expectEncodingScratchBufferPool ? encodeCount : 0);
+    EXPECT_EQ(
+        pooledEncodingBufferCount,
+        testCase.expectEncodingBufferPool ? encodeCount : 0);
+    EXPECT_EQ(observedScratchPools.size(), testCase.expectedScratchPoolCount);
+    EXPECT_EQ(
+        observedEncodingBufferPools.size(), testCase.expectedEncodingPoolCount);
   }
 }
 
