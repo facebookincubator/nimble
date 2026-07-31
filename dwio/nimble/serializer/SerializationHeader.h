@@ -16,13 +16,16 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
+#include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/RowRange.h"
@@ -55,8 +58,38 @@ struct SerializationHeader {
 namespace detail {
 
 template <typename T>
+void reserveForAppend(T& /* buffer */, uint64_t /* requiredSize */) {}
+
+/// Reserves geometrically for Vector<char> append paths (starting at 4 KB and
+/// doubling) so repeated appends stay amortized O(1); the exact final payload
+/// size is unknown without buffering or a dry run. No-op for other buffer
+/// types.
+inline void reserveForAppend(Vector<char>& buffer, uint64_t requiredSize) {
+  constexpr uint64_t kInitialAppendCapacity = 4096;
+  constexpr uint64_t kMaxDoublingCapacity =
+      std::numeric_limits<uint64_t>::max() / 2;
+
+  if (requiredSize <= buffer.capacity()) {
+    return;
+  }
+
+  uint64_t newCapacity = buffer.capacity() == 0
+      ? std::max(kInitialAppendCapacity, requiredSize)
+      : buffer.capacity();
+  while (newCapacity < requiredSize) {
+    if (newCapacity > kMaxDoublingCapacity) {
+      newCapacity = requiredSize;
+      break;
+    }
+    newCapacity *= 2;
+  }
+  buffer.reserve(newCapacity);
+}
+
+template <typename T>
 char* extend(T& buffer, uint32_t size) {
   const auto oldSize = buffer.size();
+  reserveForAppend(buffer, oldSize + size);
   buffer.resize(oldSize + size);
   return buffer.data() + oldSize;
 }

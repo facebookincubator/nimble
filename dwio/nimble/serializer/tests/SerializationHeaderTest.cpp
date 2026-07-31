@@ -291,6 +291,47 @@ TabletChunkHeader roundTripTabletChunkHeader(const TabletChunkHeader& in) {
 
 // ---- SerializationHeader tests ----
 
+TEST(SerializationHeaderTest, reserveForAppendIsNoOpForOtherBuffers) {
+  std::vector<char> buffer;
+  const auto originalCapacity = buffer.capacity();
+
+  facebook::nimble::serde::detail::reserveForAppend(buffer, 1);
+
+  EXPECT_EQ(buffer.capacity(), originalCapacity);
+}
+
+TEST(SerializationHeaderTest, reserveForAppendGrowsVectorGeometrically) {
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Vector<char> buffer{pool.get()};
+  Vector<char> expectedBuffer{pool.get()};
+
+  expectedBuffer.reserve(4096);
+
+  facebook::nimble::serde::detail::reserveForAppend(buffer, 1);
+  const auto initialCapacity = buffer.capacity();
+  EXPECT_EQ(initialCapacity, expectedBuffer.capacity());
+
+  facebook::nimble::serde::detail::reserveForAppend(buffer, initialCapacity);
+  EXPECT_EQ(buffer.capacity(), initialCapacity);
+
+  expectedBuffer.reserve(initialCapacity * 2);
+  facebook::nimble::serde::detail::reserveForAppend(
+      buffer, initialCapacity + 1);
+  EXPECT_EQ(buffer.capacity(), expectedBuffer.capacity());
+}
+
+TEST(SerializationHeaderTest, reserveForAppendUsesLargeInitialSize) {
+  auto pool = facebook::velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  Vector<char> buffer{pool.get()};
+  Vector<char> expectedBuffer{pool.get()};
+  constexpr uint64_t kRequiredSize = 5000;
+
+  expectedBuffer.reserve(kRequiredSize);
+  facebook::nimble::serde::detail::reserveForAppend(buffer, kRequiredSize);
+
+  EXPECT_EQ(buffer.capacity(), expectedBuffer.capacity());
+}
+
 class SerializationHeaderRoundTripTest
     : public ::testing::TestWithParam<SerializationHeaderRoundTripParam> {};
 
