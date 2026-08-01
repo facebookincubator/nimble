@@ -198,6 +198,7 @@ target_link_libraries(
   raw_size_utils
   velox_dwio_common
   velox_key_encoder
+  absl::flat_hash_map
   Folly::folly
 )
 
