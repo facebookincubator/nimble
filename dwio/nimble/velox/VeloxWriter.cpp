@@ -19,17 +19,20 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/index/ClusterIndexFactory.h"
 #include "dwio/nimble/index/DenseIndexFactory.h"
 #include "dwio/nimble/index/HashIndexWriter.h"
 #include "dwio/nimble/index/IndexSerialization.h"
 #include "dwio/nimble/index/SortedIndexWriter.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileFeatures.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
@@ -45,6 +48,7 @@
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
+#include "folly/container/F14Map.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
@@ -231,10 +235,184 @@ class WriterContext : public FieldWriterContext {
 
 namespace {
 
+using SchemaAttributeValues = std::vector<std::pair<std::string, std::string>>;
+using SchemaAttributes = folly::F14FastMap<uint32_t, SchemaAttributeValues>;
+
 std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
   return {
       reinterpret_cast<const char*>(builder.GetBufferPointer()),
       builder.GetSize()};
+}
+
+const index::ClusterIndexConfig& clusterIndexConfig(
+    const VeloxWriterOptions& options) {
+  NIMBLE_USER_CHECK_NOT_NULL(
+      options.clusterIndexConfig,
+      "Cluster index key column storage can only be omitted when cluster index is enabled");
+  return index::checkedIndexConfig<index::ClusterIndexConfig>(
+      *options.clusterIndexConfig);
+}
+
+bool omitClusterIndexKeyColumnStorage(const VeloxWriterOptions& options) {
+  if (!options.experimentalOmitClusterIndexKeyColumnStorage) {
+    return false;
+  }
+  NIMBLE_USER_CHECK_NOT_NULL(
+      options.clusterIndexConfig,
+      "Cluster index key column storage can only be omitted when cluster index is enabled");
+  return true;
+}
+
+std::vector<velox::column_index_t> storedInputColumnIndices(
+    const velox::TypePtr& type,
+    const VeloxWriterOptions& options) {
+  NIMBLE_USER_CHECK(
+      omitClusterIndexKeyColumnStorage(options),
+      "storedInputColumnIndices is only used when cluster index key column storage is omitted");
+
+  const auto rowType = velox::asRowType(type);
+  std::vector<velox::column_index_t> indices;
+  indices.reserve(rowType->size());
+
+  const auto& indexOptions = clusterIndexConfig(options);
+  std::unordered_set<std::string> keyColumns;
+  keyColumns.reserve(indexOptions.columns.size());
+  for (const auto& column : indexOptions.columns) {
+    NIMBLE_USER_CHECK(
+        rowType->containsChild(column),
+        "Cluster index key column '{}' not found in input schema: {}",
+        column,
+        rowType->toString());
+    keyColumns.insert(column);
+  }
+
+  for (auto i = 0; i < rowType->size(); ++i) {
+    if (keyColumns.find(rowType->nameOf(i)) == keyColumns.end()) {
+      indices.push_back(i);
+    }
+  }
+  return indices;
+}
+
+velox::RowTypePtr storedDataType(
+    const velox::TypePtr& type,
+    const VeloxWriterOptions& options) {
+  if (!omitClusterIndexKeyColumnStorage(options)) {
+    return velox::asRowType(type);
+  }
+
+  const auto rowType = velox::asRowType(type);
+  const auto indices = storedInputColumnIndices(type, options);
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  names.reserve(indices.size());
+  types.reserve(indices.size());
+  for (auto index : indices) {
+    names.push_back(rowType->nameOf(index));
+    types.push_back(rowType->childAt(index));
+  }
+  return velox::ROW(std::move(names), std::move(types));
+}
+
+void mapSchemaAttributeNode(
+    const velox::dwio::common::TypeWithId& inputNode,
+    const velox::dwio::common::TypeWithId& storedNode,
+    const SchemaAttributes& inputAttributes,
+    SchemaAttributes& remappedAttributes) {
+  // schemaAttributes is sparse; nodes without caller-provided attributes are
+  // intentionally skipped.
+  auto it = inputAttributes.find(inputNode.id());
+  if (it != inputAttributes.end()) {
+    remappedAttributes[storedNode.id()] = it->second;
+  }
+
+  NIMBLE_CHECK_EQ(
+      inputNode.size(),
+      storedNode.size(),
+      "Stored schema subtree must match input schema subtree");
+  for (auto i = 0; i < inputNode.size(); ++i) {
+    mapSchemaAttributeNode(
+        *inputNode.childAt(i),
+        *storedNode.childAt(i),
+        inputAttributes,
+        remappedAttributes);
+  }
+}
+
+SchemaAttributes remapSchemaAttributes(
+    const velox::TypePtr& inputType,
+    const velox::TypePtr& storedType,
+    const std::vector<velox::column_index_t>& storedInputColumnIndices,
+    const SchemaAttributes& inputAttributes) {
+  const auto input = velox::dwio::common::TypeWithId::create(inputType);
+  const auto stored = velox::dwio::common::TypeWithId::create(storedType);
+  SchemaAttributes remappedAttributes;
+
+  auto rootAttributes = inputAttributes.find(input->id());
+  if (rootAttributes != inputAttributes.end()) {
+    remappedAttributes[stored->id()] = rootAttributes->second;
+  }
+  for (auto storedIndex = 0; storedIndex < storedInputColumnIndices.size();
+       ++storedIndex) {
+    mapSchemaAttributeNode(
+        *input->childAt(storedInputColumnIndices[storedIndex]),
+        *stored->childAt(storedIndex),
+        inputAttributes,
+        remappedAttributes);
+  }
+  return remappedAttributes;
+}
+
+VeloxWriterOptions storedWriterOptions(
+    const velox::TypePtr& inputType,
+    const velox::TypePtr& storedType,
+    const std::vector<velox::column_index_t>& storedInputColumnIndices,
+    VeloxWriterOptions options) {
+  if (!omitClusterIndexKeyColumnStorage(options)) {
+    return options;
+  }
+
+  if (!options.schemaAttributes.empty()) {
+    // schemaAttributes is keyed by input TypeWithId ids, while field writers
+    // are built from storedDataType(). When key columns are omitted, stored
+    // TypeWithId ids can differ from input ids, so attributes such as Iceberg
+    // field ids must be translated to the matching stored schema nodes.
+    options.schemaAttributes = remapSchemaAttributes(
+        inputType,
+        storedType,
+        storedInputColumnIndices,
+        options.schemaAttributes);
+  }
+
+  if (!options.featureReordering.has_value()) {
+    return options;
+  }
+
+  // Field writers and the layout planner are built from storedDataType().
+  // When key columns are omitted, stored column ordinals can differ from input
+  // ordinals, so feature reordering must be translated to stored ordinals
+  // before it reaches the layout planner.
+  folly::F14FastMap<velox::column_index_t, size_t> storedIndexByInputIndex;
+  storedIndexByInputIndex.reserve(storedInputColumnIndices.size());
+  for (auto storedIndex = 0; storedIndex < storedInputColumnIndices.size();
+       ++storedIndex) {
+    storedIndexByInputIndex.emplace(
+        storedInputColumnIndices[storedIndex], storedIndex);
+  }
+
+  std::vector<std::tuple<size_t, std::vector<int64_t>>> remapped;
+  remapped.reserve(options.featureReordering->size());
+  for (auto& [originalIndex, keys] : *options.featureReordering) {
+    auto it = storedIndexByInputIndex.find(originalIndex);
+    NIMBLE_USER_CHECK(
+        it != storedIndexByInputIndex.end(),
+        "Feature reordering cannot target hidden cluster index key column at index {}",
+        originalIndex);
+    remapped.emplace_back(it->second, std::move(keys));
+  }
+  options.featureReordering = std::move(remapped);
+
+  return options;
 }
 
 void writeIndexSection(
@@ -919,8 +1097,13 @@ VeloxWriter::VeloxWriter(
     std::unique_ptr<velox::WriteFile> file,
     velox::memory::MemoryPool& pool,
     VeloxWriterOptions options)
-    : schema_{velox::dwio::common::TypeWithId::create(type)},
-      writerMemoryPool_{MemoryPoolHolder::create(
+    : storedDataType_{storedDataType(type, options)},
+      storedInputColumnIndices_{
+          omitClusterIndexKeyColumnStorage(options)
+              ? storedInputColumnIndices(type, options)
+              : std::vector<velox::column_index_t>{}},
+      schema_{velox::dwio::common::TypeWithId::create(storedDataType_)},
+      pool_{MemoryPoolHolder::create(
           pool,
           [&](auto& pool) {
             return pool.addAggregateChild(
@@ -928,14 +1111,18 @@ VeloxWriter::VeloxWriter(
                 options.reclaimerFactory());
           })},
       encodingMemoryPool_{MemoryPoolHolder::create(
-          *writerMemoryPool_,
+          *pool_,
           [&](auto& pool) {
             return pool.addLeafChild(
                 "encoding", true, options.reclaimerFactory());
           })},
       context_{std::make_unique<detail::WriterContext>(
-          *writerMemoryPool_,
-          std::move(options))},
+          *pool_,
+          storedWriterOptions(
+              type,
+              storedDataType_,
+              storedInputColumnIndices_,
+              std::move(options)))},
       file_{std::move(file)},
       clusterIndexWriter_{createClusterIndexWriter(
           context_->options(),
@@ -986,6 +1173,7 @@ VeloxWriter::VeloxWriter(
                    const WriteDataFn& writeDataFn,
                    const CreateMetadataSectionFn& createMetadataFn,
                    const WriteOptionalSectionFn& writeMetadataFn) {
+                 writeFeatures(writeMetadataFn);
                  writeIndexes(writeDataFn, createMetadataFn, writeMetadataFn);
                }})},
       bufferPolicy_{
@@ -1088,6 +1276,7 @@ bool VeloxWriter::flushInputBuffers(bool finalize) {
 
 void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
   const auto numRows = input->size();
+  const auto storedData = storedDataInput(input);
   // When enableStatsConsistencyCheck is true, compute raw size using
   // RawSizeUtils to verify consistency with column statistics.
   // Otherwise, skip this computation as column statistics will provide
@@ -1100,7 +1289,7 @@ void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
     // passthrough flatmaps.
     RawSizeContext context;
     const auto rawSize = nimble::getRawSizeFromVector(
-        input,
+        storedData,
         velox::common::Ranges::of(0, numRows),
         context,
         schema_.get(),
@@ -1112,7 +1301,7 @@ void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
 
   {
     velox::CpuWallTimer ingestionTimer{context_->ingestionTiming()};
-    rootWriter_->write(input, OrderedRanges::of(0, numRows));
+    rootWriter_->write(storedData, OrderedRanges::of(0, numRows));
   }
   addIndexKey(input);
 
@@ -1125,6 +1314,28 @@ void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
   context_->updateRowsInFile(numRows);
   context_->updateRowsInStripe(numRows);
   context_->setBytesWritten(file_->size());
+}
+
+velox::VectorPtr VeloxWriter::storedDataInput(
+    const velox::VectorPtr& input) const {
+  if (!omitClusterIndexKeyColumnStorage(context_->options())) {
+    return input;
+  }
+
+  auto loaded = velox::BaseVector::loadedVectorShared(input);
+  auto rowInput = velox::checkedPointerCast<const velox::RowVector>(loaded);
+
+  std::vector<velox::VectorPtr> children;
+  children.reserve(storedInputColumnIndices_.size());
+  for (auto index : storedInputColumnIndices_) {
+    children.push_back(rowInput->childAt(index));
+  }
+  return std::make_shared<velox::RowVector>(
+      pool_.get(),
+      velox::asRowType(storedDataType_),
+      loaded->nulls(),
+      loaded->size(),
+      std::move(children));
 }
 
 void VeloxWriter::writeMetadata() {
@@ -1193,6 +1404,30 @@ void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
   for (const auto& denseIndex : denseIndexWriters_) {
     denseIndex.writer->write(input);
   }
+}
+
+void VeloxWriter::writeFeatures(const WriteOptionalSectionFn& writeMetadataFn) {
+  const bool compactRowCountEncoding =
+      context_->options().experimentalCompactRowCountEncoding;
+  bool clusterIndexKeyColumnStorageOmitted{false};
+  std::vector<std::string> clusterIndexKeyColumnsWithOmittedStorage;
+  if (omitClusterIndexKeyColumnStorage(context_->options())) {
+    const auto& indexOptions = clusterIndexConfig(context_->options());
+    clusterIndexKeyColumnStorageOmitted = true;
+    clusterIndexKeyColumnsWithOmittedStorage = indexOptions.columns;
+  }
+
+  if (!compactRowCountEncoding && !clusterIndexKeyColumnStorageOmitted) {
+    return;
+  }
+
+  const auto serialized =
+      FileFeatures{
+          compactRowCountEncoding,
+          clusterIndexKeyColumnStorageOmitted,
+          std::move(clusterIndexKeyColumnsWithOmittedStorage)}
+          .serialize();
+  writeMetadataFn(std::string(kFeaturesSection), serialized);
 }
 
 void VeloxWriter::writeIndexes(

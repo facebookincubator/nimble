@@ -362,6 +362,10 @@ std::map<uint64_t, float> parseGrowthConfigMap(const std::string& str) {
     "nimble.index.max_rows_per_key_chunk",
     10'000);
 
+/* static */ Config::Entry<bool> Config::INDEX_OMIT_KEY_COLUMN_STORAGE(
+    "nimble.index.omit_key_column_storage",
+    false);
+
 // EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
 // enable for production tables without consulting the Nimble team
 // (oncall: dwios).

@@ -1356,6 +1356,88 @@ TEST_F(VeloxWriterTest, featureReorderingStreamCollocation) {
   }
 }
 
+TEST_F(
+    VeloxWriterTest,
+    featureReorderingUsesInputOrdinalWithOmittedClusterIndexKey) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+
+  const std::vector<int64_t> reorderedKeys = {4, 2, 0};
+  constexpr int kNumRows = 1'000;
+  auto vector = vectorMaker.rowVector(
+      {"key", "flatmap"},
+      {
+          vectorMaker.flatVector<int64_t>(
+              kNumRows, [](auto row) { return static_cast<int64_t>(row); }),
+          vectorMaker.mapVector<int32_t, int32_t>(
+              kNumRows,
+              [](auto) { return 5; },
+              [](auto, auto mapIndex) { return mapIndex; },
+              [](auto row, auto mapIndex) { return row * 10 + mapIndex; },
+              [](auto) { return false; }),
+      });
+
+  std::string file;
+  {
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options;
+    options.flatMapColumns = {{"flatmap", {}}};
+    options.clusterIndexConfig =
+        nimble::index::ClusterIndexConfigBuilder{}
+            .withKeyColumns({"key"})
+            .withSortOrders({nimble::SortOrder{.ascending = true}})
+            .withEnforceKeyOrder(true)
+            .build();
+    options.experimentalOmitClusterIndexKeyColumnStorage = true;
+    // The option is expressed against the input schema where key=0 and
+    // flatmap=1. The stored schema omits key, so the writer must remap this to
+    // stored ordinal 0 before handing it to the layout planner.
+    options.featureReordering =
+        std::vector<std::tuple<size_t, std::vector<int64_t>>>{
+            {1, reorderedKeys}};
+
+    nimble::VeloxWriter writer(
+        vector->type(), std::move(writeFile), *rootPool_, std::move(options));
+    writer.write(vector);
+    writer.close();
+  }
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  ASSERT_GE(tablet->stripeCount(), 1);
+  ASSERT_NE(tablet->clusterIndex(), nullptr);
+
+  auto stripeId = tablet->stripeIdentifier(0);
+  const auto streamCount = tablet->streamCount(stripeId);
+  std::vector<uint32_t> offsets(streamCount);
+  std::vector<uint32_t> sizes(streamCount);
+  tablet->streamOffsets(stripeId, offsets);
+  tablet->streamSizes(stripeId, sizes);
+
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  const auto& rowSchema = reader.schema()->asRow();
+  ASSERT_EQ(1, rowSchema.childrenCount());
+  EXPECT_EQ("flatmap", rowSchema.nameAt(0));
+  const auto& flatMap = rowSchema.childAt(0)->asFlatMap();
+
+  std::unordered_map<std::string, uint32_t> keyToValueStreamId;
+  for (size_t i = 0; i < flatMap.childrenCount(); ++i) {
+    keyToValueStreamId[flatMap.nameAt(i)] =
+        flatMap.childAt(i)->asScalar().scalarDescriptor().offset();
+  }
+
+  for (size_t i = 1; i < reorderedKeys.size(); ++i) {
+    const auto prevKey = folly::to<std::string>(reorderedKeys[i - 1]);
+    const auto currKey = folly::to<std::string>(reorderedKeys[i]);
+    const auto prevStreamId = keyToValueStreamId.at(prevKey);
+    const auto currStreamId = keyToValueStreamId.at(currKey);
+    EXPECT_EQ(
+        offsets[prevStreamId] + sizes[prevStreamId], offsets[currStreamId])
+        << "Key " << prevKey << " value stream should be adjacent to key "
+        << currKey;
+  }
+}
+
 TEST_F(VeloxWriterTest, duplicateFlatmapKey) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   // Vector with constant but duplicate key set. Potentially omitting in map
@@ -5933,6 +6015,173 @@ TEST_P(VeloxWriterIndexTest, multipleGroups) {
 
   // Verify value index maps each key to correct row position
   verifyValueIndex(*tablet, readFile.get(), type, batches, {"key_col"});
+}
+
+TEST_F(VeloxWriterTest, compactRowCountEncodingIsPersistedAsFileFeature) {
+  auto type = velox::ROW({{"c0", velox::BIGINT()}});
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch = vectorMaker.rowVector(
+      {"c0"}, {vectorMaker.flatVector<int64_t>({1, 2, 3, 4})});
+
+  auto writeWithCompactRowCountEncoding = [&](bool enabled) {
+    std::string file;
+    auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+    nimble::VeloxWriterOptions options;
+    options.experimentalCompactRowCountEncoding = enabled;
+
+    nimble::VeloxWriter writer(
+        type, std::move(writeFile), *rootPool_, std::move(options));
+    writer.write(batch);
+    writer.close();
+    return file;
+  };
+
+  for (const bool enabled : {false, true}) {
+    SCOPED_TRACE(
+        testing::Message() << "experimentalCompactRowCountEncoding="
+                           << enabled);
+    auto readFile = std::make_shared<velox::InMemoryReadFile>(
+        writeWithCompactRowCountEncoding(enabled));
+    auto tablet = nimble::TabletReader::create(
+        readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+    EXPECT_EQ(tablet->features().compactRowCountEncoding(), enabled);
+  }
+}
+
+TEST_P(VeloxWriterIndexTest, omitClusterIndexKeyColumnStorage) {
+  auto type = velox::ROW({
+      {"key_col", velox::BIGINT()},
+      {"value_col", velox::INTEGER()},
+      {"payload", velox::VARCHAR()},
+  });
+  auto storedType = velox::ROW({
+      {"value_col", velox::INTEGER()},
+      {"payload", velox::VARCHAR()},
+  });
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch = vectorMaker.rowVector(
+      {"key_col", "value_col", "payload"},
+      {
+          vectorMaker.flatVector<int64_t>({10, 20, 30, 40}),
+          vectorMaker.flatVector<int32_t>({1, 2, 3, 4}),
+          vectorMaker.flatVector<std::string>(
+              {"first", "second", "third", "fourth"}),
+      });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto options = createWriterOptions(createIndexConfig({"key_col"}));
+  options.experimentalOmitClusterIndexKeyColumnStorage = true;
+
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(options));
+  writer.write(batch);
+  writer.close();
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  auto tablet = nimble::TabletReader::create(
+      readFile, leafPool_.get(), makeTestTabletOptions(leafPool_.get()));
+  ASSERT_NE(tablet->clusterIndex(), nullptr);
+  EXPECT_EQ(
+      tablet->clusterIndex()->indexColumns(),
+      (std::vector<std::string>{"key_col"}));
+  EXPECT_TRUE(tablet->features().clusterIndexKeyColumnStorageOmitted());
+  EXPECT_EQ(
+      tablet->features().clusterIndexKeyColumnsWithOmittedStorage(),
+      (std::vector<std::string>{"key_col"}));
+
+  auto tabletOptions = makeTestTabletOptions(leafPool_.get());
+  tabletOptions.loadClusterIndex = false;
+  auto tabletWithoutIndex =
+      nimble::TabletReader::create(readFile, leafPool_.get(), tabletOptions);
+  EXPECT_EQ(tabletWithoutIndex->clusterIndex(), nullptr);
+  EXPECT_TRUE(
+      tabletWithoutIndex->features().clusterIndexKeyColumnStorageOmitted());
+  EXPECT_EQ(
+      tabletWithoutIndex->features().clusterIndexKeyColumnsWithOmittedStorage(),
+      (std::vector<std::string>{"key_col"}));
+
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  auto actualStoredType = nimble::convertToVeloxType(*reader.schema());
+  EXPECT_EQ(*storedType, *actualStoredType);
+
+  velox::VectorPtr result;
+  ASSERT_TRUE(reader.next(10, result));
+  ASSERT_EQ(result->size(), batch->size());
+  auto expected = vectorMaker.rowVector(
+      {"value_col", "payload"},
+      {
+          batch->childAt(1),
+          batch->childAt(2),
+      });
+  for (velox::vector_size_t i = 0; i < result->size(); ++i) {
+    EXPECT_TRUE(result->equalValueAt(expected.get(), i, i));
+  }
+  EXPECT_FALSE(reader.next(10, result));
+
+  verifyValueIndex(*tablet, readFile.get(), type, {batch}, {"key_col"});
+}
+
+TEST_P(
+    VeloxWriterIndexTest,
+    omittedClusterIndexKeyColumnStorageRemapsSchemaAttributes) {
+  auto nestedType = velox::ROW({{"score", velox::INTEGER()}});
+  auto type = velox::ROW({
+      {"key_col", velox::BIGINT()},
+      {"value_col", velox::VARCHAR()},
+      {"nested_col", nestedType},
+  });
+
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto batch = vectorMaker.rowVector(
+      {"key_col", "value_col", "nested_col"},
+      {
+          vectorMaker.flatVector<int64_t>({10, 20}),
+          vectorMaker.flatVector<std::string>({"first", "second"}),
+          vectorMaker.rowVector(
+              {"score"}, {vectorMaker.flatVector<int32_t>({1, 2})}),
+      });
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  auto options = createWriterOptions(createIndexConfig({"key_col"}));
+  options.experimentalOmitClusterIndexKeyColumnStorage = true;
+  // Input TypeWithId ids: key_col=1, value_col=2, nested_col=3, score=4.
+  // key_col is omitted from the stored schema; remaining ids must be remapped
+  // onto the stored TypeWithId tree while preserving the field-id values.
+  options.schemaAttributes[1] = {{"iceberg.id", "101"}};
+  options.schemaAttributes[2] = {{"iceberg.id", "102"}};
+  options.schemaAttributes[3] = {{"iceberg.id", "103"}};
+  options.schemaAttributes[4] = {{"iceberg.id", "104"}};
+
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *rootPool_, std::move(options));
+  writer.write(batch);
+  writer.close();
+
+  velox::InMemoryReadFile readFile(file);
+  nimble::VeloxReader reader(&readFile, *leafPool_);
+  const auto& rowSchema = reader.schema()->asRow();
+  ASSERT_EQ(2, rowSchema.childrenCount());
+  EXPECT_EQ("value_col", rowSchema.nameAt(0));
+  EXPECT_EQ("nested_col", rowSchema.nameAt(1));
+
+  EXPECT_EQ(
+      rowSchema.childAt(0)->attributes(),
+      (std::vector<std::pair<std::string, std::string>>{
+          {"iceberg.id", "102"}}));
+
+  const auto& nestedSchema = rowSchema.childAt(1);
+  ASSERT_EQ(nimble::Kind::Row, nestedSchema->kind());
+  EXPECT_EQ(
+      nestedSchema->attributes(),
+      (std::vector<std::pair<std::string, std::string>>{
+          {"iceberg.id", "103"}}));
+  EXPECT_EQ(
+      nestedSchema->asRow().childAt(0)->attributes(),
+      (std::vector<std::pair<std::string, std::string>>{
+          {"iceberg.id", "104"}}));
 }
 
 TEST_P(VeloxWriterIndexTest, multipleIndexColumns) {

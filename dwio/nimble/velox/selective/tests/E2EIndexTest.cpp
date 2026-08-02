@@ -19,6 +19,7 @@
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
+#include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/velox/VeloxWriter.h"
@@ -3646,6 +3647,99 @@ TEST_F(E2EIndexTestBase, CreateIndexReaderWithoutClusterIndex) {
 
     // Files without cluster index return nullptr instead of throwing.
     EXPECT_EQ(reader->createIndexReader(rowReaderOpts), nullptr);
+  }
+}
+
+TEST_F(E2EIndexTestBase, createIndexReaderRejectsHiddenKeyReadAccess) {
+  auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+  auto storedType = ROW({"value"}, {INTEGER()});
+  auto batch = vectorMaker_->rowVector(
+      {"key", "value"},
+      {vectorMaker_->flatVector<int64_t>({1, 2, 3}),
+       vectorMaker_->flatVector<int32_t>({10, 20, 30})});
+
+  sinkData_.clear();
+  auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
+  VeloxWriterOptions options;
+  options.clusterIndexConfig =
+      ClusterIndexConfigBuilder{}
+          .withKeyColumns({"key"})
+          .withSortOrders({SortOrder{.ascending = true}})
+          .withEnforceKeyOrder(true)
+          .build();
+  options.experimentalOmitClusterIndexKeyColumnStorage = true;
+
+  VeloxWriter writer(
+      rowType, std::move(writeFile), *rootPool_, std::move(options));
+  writer.write(batch);
+  writer.close();
+
+  // Hidden key columns are still usable for cluster index bounds.
+  {
+    auto reader = createReader();
+    RowReaderOptions rowReaderOpts;
+    rowReaderOpts.setRequestedType(storedType);
+    rowReaderOpts.setScanSpec(createScanSpec(storedType, {}));
+    auto indexReader = reader->createIndexReader(rowReaderOpts);
+    ASSERT_NE(indexReader, nullptr);
+
+    auto bound = vectorMaker_->rowVector(
+        {"key"}, {vectorMaker_->flatVector<int64_t>({2})});
+    serializer::IndexBounds bounds;
+    bounds.indexColumns = {"key"};
+    bounds.set(
+        serializer::IndexBound{bound, /*inclusive=*/true},
+        serializer::IndexBound{bound, /*inclusive=*/true});
+    indexReader->startLookup(bounds, {});
+
+    ASSERT_TRUE(indexReader->hasNext());
+    auto result = indexReader->next(10);
+    ASSERT_NE(result, nullptr);
+    ASSERT_EQ(result->output->size(), 1);
+    EXPECT_EQ(
+        result->output->childAt(0)->asFlatVector<int32_t>()->valueAt(0), 20);
+    EXPECT_FALSE(indexReader->hasNext());
+  }
+
+  struct Scenario {
+    std::string name;
+    RowTypePtr requestedType;
+    bool remainingFilter;
+    std::string expectedMessage;
+  };
+  const std::vector<Scenario> scenarios{
+      {
+          // Hidden key columns cannot be read from normal data streams.
+          .name = "projection",
+          .requestedType = rowType,
+          .remainingFilter = false,
+          .expectedMessage =
+              "Cluster index key column 'key' cannot be projected",
+      },
+      {
+          // Remaining filters require normal data streams; index bounds are
+          // the supported hidden-key filter path.
+          .name = "remainingFilter",
+          .requestedType = storedType,
+          .remainingFilter = true,
+          .expectedMessage =
+              "Cluster index key column 'key' cannot be used as a remaining scan filter",
+      },
+  };
+
+  for (const auto& scenario : scenarios) {
+    SCOPED_TRACE(fmt::format("scenario={}", scenario.name));
+    auto reader = createReader();
+    RowReaderOptions rowReaderOpts;
+    rowReaderOpts.setRequestedType(scenario.requestedType);
+    std::unordered_map<std::string, std::unique_ptr<Filter>> filters;
+    if (scenario.remainingFilter) {
+      filters["key"] = std::make_unique<BigintRange>(1, 3, false);
+    }
+    rowReaderOpts.setScanSpec(createScanSpec(rowType, filters));
+
+    NIMBLE_ASSERT_THROW(
+        reader->createIndexReader(rowReaderOpts), scenario.expectedMessage);
   }
 }
 

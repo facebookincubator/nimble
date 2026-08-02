@@ -44,6 +44,12 @@ using namespace facebook::velox;
 
 namespace {
 
+Encoding::Options encodingOptions(const TabletReader& tablet) {
+  Encoding::Options options;
+  options.useVarintRowCount = tablet.features().compactRowCountEncoding();
+  return options;
+}
+
 // Converts index column names from nimble schema (internal file names) to
 // file schema (user-facing names). The nimble schema and file schema have
 // the same structure but potentially different column names due to the
@@ -124,8 +130,10 @@ class SelectiveNimbleRowReader : public dwio::common::RowReader {
         options_{options},
         encodingFactory_(
             options.stringDecoderZeroCopy()
-                ? std::make_unique<const EncodingFactory>()
-                : std::make_unique<const legacy::EncodingFactory>()),
+                ? std::make_unique<const EncodingFactory>(
+                      encodingOptions(readerBase_->tablet()))
+                : std::make_unique<const legacy::EncodingFactory>(
+                      encodingOptions(readerBase_->tablet()))),
         streams_(readerBase_),
         rowSizeTracker_{
             std::make_unique<RowSizeTracker>(readerBase->fileSchemaWithId())} {
@@ -685,6 +693,9 @@ class SelectiveNimbleReader : public dwio::common::Reader {
       const dwio::common::RowReaderOptions& options) const override;
 
  private:
+  void validateOmittedKeyColumnStorageAccess(
+      const dwio::common::RowReaderOptions& options) const;
+
   const std::shared_ptr<ReaderBase> readerBase_;
   const dwio::common::ReaderOptions options_;
 };
@@ -715,18 +726,46 @@ SelectiveNimbleReader::typeWithId() const {
 
 std::unique_ptr<dwio::common::RowReader> SelectiveNimbleReader::createRowReader(
     const dwio::common::RowReaderOptions& options) const {
+  validateOmittedKeyColumnStorageAccess(options);
   return std::make_unique<SelectiveNimbleRowReader>(readerBase_, options);
 }
 
 std::unique_ptr<dwio::common::IndexReader>
 SelectiveNimbleReader::createIndexReader(
     const dwio::common::RowReaderOptions& options) const {
+  validateOmittedKeyColumnStorageAccess(options);
   // Empty files (no stripes) have no cluster index even when index config
   // is set. Return nullptr so the caller handles it as no-index.
   if (readerBase_->tablet().clusterIndex() == nullptr) {
     return nullptr;
   }
   return std::make_unique<SelectiveNimbleIndexReader>(readerBase_, options);
+}
+
+void SelectiveNimbleReader::validateOmittedKeyColumnStorageAccess(
+    const dwio::common::RowReaderOptions& options) const {
+  const auto& features = readerBase_->tablet().features();
+  if (!features.clusterIndexKeyColumnStorageOmitted()) {
+    return;
+  }
+
+  const auto outputType = options.requestedType() ? options.requestedType()
+                                                  : readerBase_->fileSchema();
+  const auto* scanSpec = options.scanSpec().get();
+  for (const auto& column :
+       features.clusterIndexKeyColumnsWithOmittedStorage()) {
+    NIMBLE_USER_CHECK(
+        !outputType->containsChild(column),
+        "Cluster index key column '{}' cannot be projected because this file stores it only in the cluster index key stream",
+        column);
+    if (scanSpec != nullptr) {
+      const auto* childSpec = scanSpec->childByName(column);
+      NIMBLE_USER_CHECK(
+          childSpec == nullptr || !childSpec->hasFilter(),
+          "Cluster index key column '{}' cannot be used as a remaining scan filter because this file stores it only in the cluster index key stream",
+          column);
+    }
+  }
 }
 
 } // namespace

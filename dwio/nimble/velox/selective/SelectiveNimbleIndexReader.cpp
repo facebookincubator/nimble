@@ -21,7 +21,6 @@
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/legacy/EncodingFactory.h"
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
 #include "dwio/nimble/velox/selective/ReaderBase.h"
 #include "dwio/nimble/velox/selective/RowSizeTracker.h"
@@ -35,25 +34,10 @@ using RuntimeCounter = velox::RuntimeCounter;
 
 namespace {
 
-// Converts index column names from nimble schema (internal file names) to
-// file schema (user-facing names).
-std::vector<std::string> convertIndexColumnsToFileSchema(
-    const std::vector<std::string>& nimbleIndexColumns,
-    const std::shared_ptr<const Type>& nimbleSchema,
-    const RowTypePtr& fileSchema) {
-  const auto nimbleRowType = asRowType(convertToVeloxType(*nimbleSchema));
-  std::vector<std::string> convertedIndexColumns;
-  convertedIndexColumns.reserve(nimbleIndexColumns.size());
-  for (const auto& nimbleColName : nimbleIndexColumns) {
-    const auto colIndex = nimbleRowType->getChildIdxIfExists(nimbleColName);
-    NIMBLE_CHECK(
-        colIndex.has_value(),
-        "Index column '{}' not found in nimble schema: {}",
-        nimbleColName,
-        nimbleRowType->toString());
-    convertedIndexColumns.push_back(fileSchema->nameOf(colIndex.value()));
-  }
-  return convertedIndexColumns;
+Encoding::Options encodingOptions(const TabletReader& tablet) {
+  Encoding::Options options;
+  options.useVarintRowCount = tablet.features().compactRowCountEncoding();
+  return options;
 }
 
 // Converts nimble SortOrders to velox::core::SortOrders.
@@ -150,8 +134,10 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
       options_(options),
       encodingFactory_(
           options.stringDecoderZeroCopy()
-              ? std::make_unique<const EncodingFactory>()
-              : std::make_unique<const legacy::EncodingFactory>()),
+              ? std::make_unique<const EncodingFactory>(
+                    encodingOptions(readerBase_->tablet()))
+              : std::make_unique<const legacy::EncodingFactory>(
+                    encodingOptions(readerBase_->tablet()))),
       rowSizeTracker_(
           std::make_unique<RowSizeTracker>(readerBase_->fileSchemaWithId())),
       hasFilters_(options.scanSpec()->hasFilter()),
@@ -163,10 +149,6 @@ SelectiveNimbleIndexReader::SelectiveNimbleIndexReader(
           readerBase_->fileSchema(),
           *options.scanSpec())),
       clusterIndex_{readerBase_->tablet().clusterIndex()},
-      indexColumns_{convertIndexColumnsToFileSchema(
-          clusterIndex_->indexColumns(),
-          readerBase_->nimbleSchema(),
-          readerBase_->fileSchema())},
       streams_{readerBase_},
       numStripes_{static_cast<int32_t>(readerBase_->tablet().stripeCount())},
       stats_{

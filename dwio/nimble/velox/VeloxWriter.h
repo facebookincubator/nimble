@@ -116,6 +116,14 @@ class VeloxWriter {
   // Adds index keys to all configured index writers.
   void addIndexKey(const velox::VectorPtr& input);
 
+  void writeFeatures(const WriteOptionalSectionFn& writeMetadataFn);
+
+  // Returns the vector written to data streams. When cluster index key column
+  // storage is omitted, this is a top-level row projection excluding key
+  // columns; index writers still consume the original input. In that mode,
+  // write input must load to a top-level RowVector.
+  velox::VectorPtr storedDataInput(const velox::VectorPtr& input) const;
+
   bool shouldFlush(FlushPolicy* policy) const;
 
   bool shouldChunk(FlushPolicy* policy) const;
@@ -229,8 +237,15 @@ class VeloxWriter {
   void ensureWriteStreams();
   void resetFieldWriter();
 
+  // Schema used to build normal data stream writers. Usually the input schema;
+  // when cluster index key column storage is omitted, excludes the key columns
+  // so no normal data streams are created for them.
+  const velox::TypePtr storedDataType_;
+  // Input column indices retained in storedDataType_. Empty unless key column
+  // storage is omitted.
+  const std::vector<velox::column_index_t> storedInputColumnIndices_;
   const std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
-  MemoryPoolHolder writerMemoryPool_;
+  MemoryPoolHolder pool_;
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
   std::unique_ptr<velox::WriteFile> file_;

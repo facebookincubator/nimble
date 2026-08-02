@@ -14,6 +14,7 @@
 add_executable(
   nimble_tablet_tests
   CompressionTest.cpp
+  FileFeaturesTest.cpp
   FileLayoutTest.cpp
   MetadataBufferTest.cpp
   TabletTest.cpp
