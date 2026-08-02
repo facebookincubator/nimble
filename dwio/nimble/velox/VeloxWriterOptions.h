@@ -46,6 +46,7 @@ struct VeloxWriterOptions {
   /// Builds Encoding::Options from VeloxWriterOptions fields.
   Encoding::Options buildEncodingOptions() const {
     return {
+        .useVarintRowCount = experimentalCompactRowCountEncoding,
         .blockBitPackingBlockSize = blockBitPackingBlockSize,
         .fixedBitWidthUseExactBits = fixedBitWidthUseExactBits,
         .allowNestedAlpSelection = allowNestedAlpSelection,
@@ -101,6 +102,20 @@ struct VeloxWriterOptions {
   /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
   /// production tables without consulting the Nimble team (oncall: dwios).
   std::shared_ptr<const index::IndexConfig> clusterIndexConfig;
+
+  /// Whether to omit cluster index key columns from normal data storage. The
+  /// key columns must still be present in write input batches.
+  /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+  /// production tables without consulting the Nimble team (oncall: dwios).
+  bool experimentalOmitClusterIndexKeyColumnStorage{false};
+
+  /// Enables compact varint row-count encoding for encoded data streams. The
+  /// value is persisted in file features so readers can select the matching
+  /// decoding behavior.
+  /// EXPERIMENTAL: Compact row-count encoding is not production-ready. Do not
+  /// enable for production tables without consulting the Nimble team (oncall:
+  /// dwios).
+  bool experimentalCompactRowCountEncoding{false};
 
   /// Dense index configurations, grouped by factory name. Each factory creates
   /// one writer that may produce multiple logical indexes.

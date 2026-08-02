@@ -31,6 +31,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/TestUtils.h"
 #include "dwio/nimble/index/ChunkStatsGroup.h"
+#include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/index/HashIndexConfig.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/index/SortedIndexConfig.h"
@@ -4207,6 +4208,49 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
       EXPECT_EQ(indexIoStats->rawBytesRead(), 0);
     }
   }
+}
+
+TEST_P(TabletTest, features) {
+  auto type =
+      velox::ROW({{"id", velox::INTEGER()}, {"value", velox::INTEGER()}});
+  auto ids = velox::BaseVector::create(velox::INTEGER(), 3, pool_.get());
+  auto values = velox::BaseVector::create(velox::INTEGER(), 3, pool_.get());
+  auto* flatIds = ids->asFlatVector<int32_t>();
+  auto* flatValues = values->asFlatVector<int32_t>();
+  for (int i = 0; i < 3; ++i) {
+    flatIds->set(i, i);
+    flatValues->set(i, i * 10);
+  }
+  auto batch = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      type,
+      nullptr,
+      3,
+      std::vector<velox::VectorPtr>{ids, values});
+
+  std::string file;
+  auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
+  nimble::VeloxWriterOptions writerOptions;
+  writerOptions.experimentalCompactRowCountEncoding = true;
+  writerOptions.clusterIndexConfig =
+      nimble::index::ClusterIndexConfigBuilder{}
+          .withKeyColumns({"id"})
+          .withSortOrders({SortOrder{.ascending = true}})
+          .withEnforceKeyOrder(true)
+          .build();
+  writerOptions.experimentalOmitClusterIndexKeyColumnStorage = true;
+  nimble::VeloxWriter writer(
+      type, std::move(writeFile), *pool_, std::move(writerOptions));
+  writer.write(batch);
+  writer.close();
+
+  auto tablet = createTabletReader(file);
+
+  EXPECT_TRUE(tablet->features().compactRowCountEncoding());
+  EXPECT_TRUE(tablet->features().clusterIndexKeyColumnStorageOmitted());
+  EXPECT_EQ(
+      tablet->features().clusterIndexKeyColumnsWithOmittedStorage(),
+      (std::vector<std::string>{"id"}));
 }
 
 TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {

@@ -129,6 +129,13 @@ class Config : public velox::config::ConfigBase {
   /// chunk per partition), which can hang on large tables. Default: 10000.
   static Entry<uint64_t> INDEX_MAX_ROWS_PER_KEY_CHUNK;
 
+  /// Whether cluster index key columns are omitted from normal data storage.
+  /// The columns must still be present in write input batches.
+  /// EXPERIMENTAL: Cluster index is not production-ready. Do not enable for
+  /// production tables without consulting the Nimble team (oncall: dwios).
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<bool> INDEX_OMIT_KEY_COLUMN_STORAGE;
+
   // EXPERIMENTAL: BlockBitPacking encoding is not production-ready. Do not
   // enable for production tables without consulting the Nimble team
   // (oncall: dwios).

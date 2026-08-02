@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "dwio/nimble/common/Types.h"
@@ -32,6 +33,7 @@
 #include "dwio/nimble/index/IndexConstants.h"
 #include "dwio/nimble/index/IndexLookup.h"
 #include "dwio/nimble/tablet/Constants.h"
+#include "dwio/nimble/tablet/FileFeatures.h"
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/tablet/MetadataCache.h"
@@ -256,6 +258,11 @@ class TabletReader {
   // Returns the cluster index if available, nullptr otherwise.
   const ClusterIndex* clusterIndex() const {
     return clusterIndex_.get();
+  }
+
+  /// Returns file-level feature state. Missing section means default features.
+  const FileFeatures& features() const {
+    return features_;
   }
 
   /// Finds the dense index matching the given columns, or nullptr if none.
@@ -487,6 +494,8 @@ class TabletReader {
   // Parses optional sections metadata from footer into optionalSections_ map.
   void initOptionalSections();
 
+  void initFeatures();
+
   // Returns the list of optional section names to preload: the user-specified
   // sections plus the index section if present.
   std::vector<std::string> preloadSectionNames(const Options& options) const;
@@ -553,6 +562,7 @@ class TabletReader {
   // Index related fields.
   std::vector<index::IndexDescriptor> indexDescriptors_;
   std::unique_ptr<ClusterIndex> clusterIndex_;
+  FileFeatures features_{false, false, {}};
 
   std::unique_ptr<index::DenseIndexRegistry> denseIndexRegistry_;
 
