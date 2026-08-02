@@ -359,9 +359,9 @@ struct VeloxWriterOptions {
   /// with column statistics for non-deduplicated columns.
   bool enableStatsConsistencyCheck{true};
 
-  // Cache the encoding layout from the first encoding of each stream and
+  // Cache the last successfully selected encoding layout for each stream and
   // replay it on subsequent chunks/stripes, skipping the full encoding
-  // selection cascade.
+  // selection cascade while the layout remains compatible.
   bool enableEncodingSelectionCache{false};
 };
 
