@@ -4675,24 +4675,23 @@ TEST_F(VeloxWriterTest, cachedEncodingLayoutFuzz) {
     ASSERT_EQ(controlLayouts.size(), static_cast<size_t>(kChunkCount));
     ASSERT_EQ(cachedLayouts.size(), static_cast<size_t>(kChunkCount));
 
-    // The encoding selection cache is best-effort: each chunk either
-    // successfully replays chunk 0's cached encoding, or the cached encoding
-    // was incompatible with the chunk's data, raising IncompatibleEncoding
-    // which the writer catches and falls back to a fresh selection — the same
-    // encoding the uncached writer chose for that chunk (see
-    // encodeWithFallback).
+    // The encoding selection cache is best-effort: each chunk either replays a
+    // previously selected compatible layout, or the cached layout is
+    // incompatible and the writer falls back to a fresh selection. Fallback
+    // refreshes the cache, so a later chunk may replay any earlier fresh
+    // layout.
     for (int chunk = 0; chunk < kChunkCount; ++chunk) {
-      EXPECT_TRUE(
-          cachedLayouts[chunk].encodingType() ==
-              cachedLayouts.front().encodingType() ||
-          cachedLayouts[chunk].encodingType() ==
-              controlLayouts[chunk].encodingType())
-          << "seed=" << seed << " chunk=" << chunk
-          << " cached=" << static_cast<int>(cachedLayouts[chunk].encodingType())
-          << " cached0="
-          << static_cast<int>(cachedLayouts.front().encodingType())
-          << " control="
-          << static_cast<int>(controlLayouts[chunk].encodingType());
+      bool matchedEarlierFreshLayout = false;
+      for (int previous = 0; previous <= chunk; ++previous) {
+        if (cachedLayouts[chunk].encodingType() ==
+            controlLayouts[previous].encodingType()) {
+          matchedEarlierFreshLayout = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(matchedEarlierFreshLayout)
+          << "seed=" << seed << " chunk=" << chunk << " cached="
+          << static_cast<int>(cachedLayouts[chunk].encodingType());
     }
   };
 
@@ -4711,9 +4710,7 @@ TEST_F(VeloxWriterTest, cachedEncodingLayoutIncompatibleFallback) {
   // constant); replaying the cached Constant onto it raises
   // IncompatibleEncoding (ConstantEncoding requires constant data), which the
   // writer catches and falls back to a fresh selection for that chunk. The
-  // fallback does not re-cache (it only caches when no layout is cached yet),
-  // so chunks 2-4 are fully constant again and still replay the original cached
-  // Constant.
+  // fallback refreshes the cache, so chunks 2-4 replay chunk 1's fresh layout.
   constexpr int kRowsPerChunk = 1000;
   constexpr int64_t kDominantValue = 7;
   constexpr uint32_t kSeed = 0xC0FFEE;
@@ -4777,14 +4774,11 @@ TEST_F(VeloxWriterTest, cachedEncodingLayoutIncompatibleFallback) {
       cachedLayouts[1].encodingType(), cachedLayouts.front().encodingType());
   EXPECT_EQ(cachedLayouts[1].encodingType(), controlLayouts[1].encodingType());
 
-  // The incompatible chunk does not disrupt the cache: the fully-constant
-  // chunks all replay the first chunk's cached encoding.
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[2].encodingType());
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[3].encodingType());
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[4].encodingType());
+  // The incompatible chunk refreshes the cache: the later fully-constant chunks
+  // replay chunk 1's fresh fallback layout.
+  EXPECT_EQ(cachedLayouts[1].encodingType(), cachedLayouts[2].encodingType());
+  EXPECT_EQ(cachedLayouts[1].encodingType(), cachedLayouts[3].encodingType());
+  EXPECT_EQ(cachedLayouts[1].encodingType(), cachedLayouts[4].encodingType());
 }
 
 TEST_F(
@@ -4799,8 +4793,9 @@ TEST_F(
   // catchable IncompatibleEncoding (this is the exact shape that used to
   // DCHECK-abort the process before the empty-Dictionary replay was made
   // catchable). The writer catches it and falls back to a fresh selection for
-  // that chunk. Chunks 2-4 repeat chunk 0's data and replay the cached
-  // MainlyConstant successfully.
+  // that chunk. The fallback refreshes the cache to Constant; chunk 2 then
+  // falls back to MainlyConstant and refreshes the cache again, so chunks 3-4
+  // replay chunk 2's layout.
   constexpr int kRowsPerChunk = 1000;
   constexpr int64_t kDominantValue = 7;
   constexpr uint32_t kSeed = 0xC0FFEE;
@@ -4878,14 +4873,13 @@ TEST_F(
       cachedLayouts[1].encodingType(), cachedLayouts.front().encodingType());
   EXPECT_EQ(cachedLayouts[1].encodingType(), controlLayouts[1].encodingType());
 
-  // The incompatible chunk does not disrupt the cache: the mainly-constant
-  // chunks all replay the first chunk's cached MainlyConstant.
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[2].encodingType());
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[3].encodingType());
-  EXPECT_EQ(
-      cachedLayouts.front().encodingType(), cachedLayouts[4].encodingType());
+  // The fully-constant fallback refreshes the cache, so chunk 2 must fall back
+  // to a fresh MainlyConstant layout. Later mainly-constant chunks replay that
+  // refreshed layout.
+  EXPECT_EQ(cachedLayouts[2].encodingType(), controlLayouts[2].encodingType());
+  EXPECT_NE(cachedLayouts[2].encodingType(), cachedLayouts[1].encodingType());
+  EXPECT_EQ(cachedLayouts[2].encodingType(), cachedLayouts[3].encodingType());
+  EXPECT_EQ(cachedLayouts[2].encodingType(), cachedLayouts[4].encodingType());
 }
 
 TEST_F(VeloxWriterTest, cachedEncodingLayoutNestedDictionaryReplay) {
@@ -5126,6 +5120,67 @@ DEBUG_ONLY_TEST_F(VeloxWriterTest, cachedEncodingLayoutReplayRetry) {
     EXPECT_EQ(
         fullSelectionCount, 2); // chunk 0 seed (ok) + chunk 1 retry (threw)
   }
+}
+
+DEBUG_ONLY_TEST_F(
+    VeloxWriterTest,
+    cachedEncodingLayoutRefreshesAfterReplayFallback) {
+  velox::common::testutil::TestValue::enable();
+
+  constexpr int kChunkCount = 3;
+  constexpr int kRowsPerChunk = 1000;
+  auto chunkData =
+      makeDivergentInt64Chunks(kChunkCount, kRowsPerChunk, /*seed=*/0xC0FFEE);
+
+  auto makeOptions = [](bool enableEncodingSelectionCache) {
+    nimble::VeloxWriterOptions options;
+    options.enableEncodingSelectionCache = enableEncodingSelectionCache;
+    options.enableChunking = true;
+    options.minStreamChunkRawSize = 0;
+    options.flushPolicyFactory = [] {
+      return std::make_unique<nimble::LambdaFlushPolicy>(
+          /*flushLambda=*/[](auto&) { return false; },
+          /*chunkLambda=*/[](auto&) { return true; });
+    };
+    return options;
+  };
+
+  const auto uncached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/false),
+      /*expectedStripeCount=*/1);
+  ASSERT_EQ(uncached.size(), static_cast<size_t>(kChunkCount));
+  ASSERT_FALSE(encodingLayoutsEqual(uncached[0], uncached[1]));
+
+  bool failNextReplay = true;
+  int fullSelectionCount = 0;
+  int replayCount = 0;
+  SCOPED_TESTVALUE_SET(
+      "facebook::nimble::encode",
+      std::function<void(const bool*)>([&](const bool* hasEncodingLayout) {
+        if (!*hasEncodingLayout) {
+          ++fullSelectionCount;
+          return;
+        }
+        ++replayCount;
+        if (failNextReplay) {
+          failNextReplay = false;
+          throw std::runtime_error("injected replay failure");
+        }
+      }));
+
+  const auto cached = writeAndCaptureChunkLayouts(
+      chunkData,
+      makeOptions(/*enableEncodingSelectionCache=*/true),
+      /*expectedStripeCount=*/1);
+  ASSERT_EQ(cached.size(), static_cast<size_t>(kChunkCount));
+
+  EXPECT_EQ(fullSelectionCount, 2); // chunk 0 seed + chunk 1 fallback.
+  EXPECT_EQ(replayCount, 2); // chunk 1 fails, chunk 2 replays refreshed cache.
+  EXPECT_TRUE(encodingLayoutsEqual(cached[0], uncached[0]));
+  EXPECT_TRUE(encodingLayoutsEqual(cached[1], uncached[1]));
+  EXPECT_FALSE(encodingLayoutsEqual(cached[2], cached[0]));
+  EXPECT_TRUE(encodingLayoutsEqual(cached[2], cached[1]));
 }
 
 DEBUG_ONLY_TEST_F(VeloxWriterTest, cachedEncodingLayoutSelectionCount) {

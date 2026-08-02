@@ -336,22 +336,34 @@ class WriterStreamContext : public StreamContext {
     isInMapStream_ = value;
   }
 
-  // The layout to replay for this stream: overlaid from the EncodingLayoutTree
-  // at setup, or captured from this stream's first encode when
-  // encoding-selection caching is enabled. Empty until one of those populates
-  // it.
-  const EncodingLayout* encoding() const {
-    return encoding_.has_value() ? &*encoding_ : nullptr;
+  const EncodingLayout* encodingLayoutOverride() const {
+    return encodingLayoutOverride_.has_value() ? &*encodingLayoutOverride_
+                                               : nullptr;
   }
 
-  void setEncoding(EncodingLayout value) {
-    encoding_.emplace(std::move(value));
+  void setEncodingLayoutOverride(EncodingLayout value) {
+    encodingLayoutOverride_.emplace(std::move(value));
+  }
+
+  const EncodingLayout* cachedEncoding() const {
+    return cachedEncoding_.has_value() ? &*cachedEncoding_ : nullptr;
+  }
+
+  void setCachedEncoding(EncodingLayout value) {
+    cachedEncoding_.emplace(std::move(value));
   }
 
  private:
   bool isNullStream_{false};
   bool isInMapStream_{false};
-  std::optional<EncodingLayout> encoding_;
+
+  // The layout overlaid from an explicit EncodingLayoutTree at setup. This
+  // takes precedence over runtime cache learning.
+  std::optional<EncodingLayout> encodingLayoutOverride_;
+
+  // The layout captured from this stream's latest successful fresh encode when
+  // encoding-selection caching is enabled.
+  std::optional<EncodingLayout> cachedEncoding_;
 };
 
 class FlatmapEncodingLayoutContext : public TypeBuilderContext {
@@ -424,14 +436,17 @@ std::string_view encode(
   }
 }
 
-// Encodes streamData by replaying a saved layout -- either an external
-// EncodingLayoutTree layout or one cached from this stream's first encode. Only
-// entered once the stream has a saved layout to replay (checked below). Replay
-// is best-effort: if it throws for any reason (e.g. the layout no longer fits
-// this chunk's data), retry once with a fresh selection, letting any failure of
-// that retry propagate.
+struct EncodeWithFallbackResult {
+  std::string_view encoded;
+  bool usedFreshSelection;
+};
+
+// Encodes streamData by replaying a saved layout. Replay is best-effort: if it
+// throws for any reason (e.g. the layout no longer fits this chunk's data),
+// retry once with a fresh selection, letting any failure of that retry
+// propagate.
 template <typename T>
-std::string_view encodeWithFallback(
+EncodeWithFallbackResult encodeWithFallback(
     const EncodingLayout* encodingLayout,
     detail::WriterContext& context,
     Buffer& buffer,
@@ -442,24 +457,28 @@ std::string_view encodeWithFallback(
       encodingLayout,
       "encodeWithFallback requires a saved encoding layout to replay.");
   try {
-    return encode<T>(
-        *encodingLayout,
-        context,
-        buffer,
-        encodingScratchBufferPool,
-        encodingBufferPool,
-        streamData);
+    return {
+        encode<T>(
+            *encodingLayout,
+            context,
+            buffer,
+            encodingScratchBufferPool,
+            encodingBufferPool,
+            streamData),
+        false};
   } catch (const std::exception&) {
     // A saved layout can fail to apply to this chunk's data in ways beyond a
     // clean IncompatibleEncoding, so retry on any error rather than keying off
     // a specific (unreliable) error code.
-    return encode<T>(
-        std::nullopt,
-        context,
-        buffer,
-        encodingScratchBufferPool,
-        encodingBufferPool,
-        streamData);
+    return {
+        encode<T>(
+            std::nullopt,
+            context,
+            buffer,
+            encodingScratchBufferPool,
+            encodingBufferPool,
+            streamData),
+        true};
   }
 }
 
@@ -470,21 +489,41 @@ std::string_view encodeStreamTyped(
     velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
     const StreamData& streamData) {
-  const auto* writerStreamContext =
+  auto* writerStreamContext =
       streamData.descriptor().context<WriterStreamContext>();
 
-  // Replay an externally provided (EncodingLayoutTree) or previously captured
-  // layout, falling back to a fresh selection if it no longer fits the data.
+  // Replay an explicitly provided EncodingLayoutTree layout, falling back to a
+  // fresh selection if it no longer fits the data. Overrides are not replaced
+  // by runtime cache learning.
   // TODO: Replace the exception-based best-effort replay in encodeWithFallback
   // with a non-throwing compatibility check before the replay attempt.
-  if (writerStreamContext && writerStreamContext->encoding()) {
+  if (writerStreamContext && writerStreamContext->encodingLayoutOverride()) {
     return encodeWithFallback<T>(
-        writerStreamContext->encoding(),
+               writerStreamContext->encodingLayoutOverride(),
+               context,
+               buffer,
+               encodingScratchBufferPool,
+               encodingBufferPool,
+               streamData)
+        .encoded;
+  }
+
+  // Replay the last successfully captured layout. If the layout no longer fits
+  // this chunk, the fallback fresh selection becomes the new cached layout.
+  if (writerStreamContext && writerStreamContext->cachedEncoding()) {
+    auto result = encodeWithFallback<T>(
+        writerStreamContext->cachedEncoding(),
         context,
         buffer,
         encodingScratchBufferPool,
         encodingBufferPool,
         streamData);
+    if (result.usedFreshSelection) {
+      writerStreamContext->setCachedEncoding(
+          EncodingLayoutCapture::capture(
+              result.encoded, context.options().buildEncodingOptions()));
+    }
+    return result.encoded;
   }
 
   // No layout to replay: run a fresh selection.
@@ -496,14 +535,14 @@ std::string_view encodeStreamTyped(
       encodingBufferPool,
       streamData);
 
-  // Cache the data layout from this first encode so later chunks/stripes replay
-  // it, skipping the full selection cascade. EncodingLayoutCapture::capture()
-  // already strips any Nullable/Sentinel wrapper, so the cached layout is the
-  // data encoding alone — Nimble re-applies per-chunk nullability at encode
-  // time, so it stays valid regardless of a later chunk's nulls.
+  // Cache the data layout from this fresh encode so later chunks/stripes can
+  // replay it, skipping the full selection cascade. EncodingLayoutCapture::
+  // capture() already strips any Nullable/Sentinel wrapper, so the cached
+  // layout is the data encoding alone — Nimble re-applies per-chunk nullability
+  // at encode time, so it stays valid regardless of a later chunk's nulls.
   if (context.options().enableEncodingSelectionCache) {
     streamContext(streamData.descriptor())
-        .setEncoding(
+        .setCachedEncoding(
             EncodingLayoutCapture::capture(
                 encoded, context.options().buildEncodingOptions()));
   }
@@ -683,10 +722,11 @@ void initializeEncodingLayouts(
     const TypeBuilder& typeBuilder,
     const EncodingLayoutTree& encodingLayoutTree) {
   {
-#define SET_STREAM_CONTEXT(builder, descriptor, identifier)           \
-  if (auto* encodingLayout = encodingLayoutTree.encodingLayout(       \
-          EncodingLayoutTree::StreamIdentifiers::identifier)) {       \
-    streamContext(builder.descriptor()).setEncoding(*encodingLayout); \
+#define SET_STREAM_CONTEXT(builder, descriptor, identifier)     \
+  if (auto* encodingLayout = encodingLayoutTree.encodingLayout( \
+          EncodingLayoutTree::StreamIdentifiers::identifier)) { \
+    streamContext(builder.descriptor())                         \
+        .setEncodingLayoutOverride(*encodingLayout);            \
   }
 
     if (typeBuilder.kind() == Kind::FlatMap) {
