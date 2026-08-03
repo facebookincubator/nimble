@@ -81,8 +81,10 @@ std::optional<std::string> readEmbeddedResumeKey(const folly::IOBuf& slice) {
 
 // Coalesces the chunk slice IOBuf chain into a single contiguous buffer for
 // passing to Deserializer. The Deserializer reads the per-slice header
-// natively (consuming the row range and resume-key fields) but does not
-// slice its output — it over-fetches by decoding the full stripe.
+// natively (consuming the row range and resume-key fields) and honors the
+// row range at decode time via skip+next, so the downstream deserialized
+// vector contains only the rows in `[rowRange.startRow, rowRange.endRow)`
+// — no over-fetch.
 folly::IOBuf coalesceChunkSlice(const folly::IOBuf& slice) {
   return slice.cloneCoalescedAsValue();
 }
@@ -333,38 +335,14 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     return deserializeProjectedBatches(projector, batches);
   }
 
-  VectorPtr makeOutputRange(
-      const VectorPtr& output,
-      uint32_t outputOffset,
-      vector_size_t numRows) {
-    if (outputOffset == 0 && output->size() == numRows) {
-      return output;
-    }
-
-    auto indices = allocateIndices(numRows, leafPool_.get());
-    auto* rawIndices = indices->asMutable<vector_size_t>();
-    for (vector_size_t i = 0; i < numRows; ++i) {
-      rawIndices[i] = static_cast<vector_size_t>(outputOffset) + i;
-    }
-    return BaseVector::wrapInDictionary(nullptr, indices, numRows, output);
-  }
-
-  // Compares decoded output rows with a compact expected vector. The
-  // deserializer returns full stripes, so range tests dictionary-wrap the
-  // selected rows before using Velox's vector equality assertion.
-  void expectVectorRows(
-      const VectorPtr& output,
-      uint32_t expectedRows,
-      const VectorPtr& expected,
-      uint32_t outputOffset = 0) {
+  // Compares decoded output rows with an expected vector. The Deserializer
+  // honors the header's row range via skip+next at decode time, so output
+  // contains exactly the requested rows starting at index 0.
+  // `assertEqualVectors` internally asserts equal size.
+  void expectVectorRows(const VectorPtr& output, const VectorPtr& expected) {
     ASSERT_NE(output, nullptr);
     ASSERT_NE(expected, nullptr);
-    ASSERT_EQ(output->size(), expectedRows);
-    ASSERT_LE(
-        static_cast<uint64_t>(outputOffset) + expected->size(),
-        static_cast<uint64_t>(output->size()));
-    velox::test::assertEqualVectors(
-        expected, makeOutputRange(output, outputOffset, expected->size()));
+    velox::test::assertEqualVectors(expected, output);
   }
 
   // Creates encoded key bounds for a point lookup on a single int64 key.
@@ -538,13 +516,13 @@ TEST_P(NimbleIndexProjectorTest, basicColumnProjection) {
 
   auto* rowResult = deserialized->as<RowVector>();
   ASSERT_NE(rowResult, nullptr);
-  // Over-fetch: Deserializer returns the full stripe; the requested row
-  // sits at position rowRange.startRow within the output.
-  ASSERT_GE(rowResult->size(), rowRange.endRow);
+  // The Deserializer honors the header's row range at decode time, so the
+  // output contains exactly the requested rows starting at index 0.
+  ASSERT_EQ(rowResult->size(), rowRange.numRows());
   auto* colAResult = rowResult->childAt(0)->as<FlatVector<int32_t>>();
   ASSERT_NE(colAResult, nullptr);
-  // key=50 -> colA=500
-  EXPECT_EQ(colAResult->valueAt(rowRange.startRow), 500);
+  // key=50 -> colA=500 (single-row point lookup).
+  EXPECT_EQ(colAResult->valueAt(0), 500);
 }
 
 // Every IOBuf node in a result slice chain should be managed (own/refcount its
@@ -832,7 +810,6 @@ TEST_P(NimbleIndexProjectorTest, deduplicatedProjectedStreamsReadOnce) {
        vectorMaker_->flatVector<int32_t>(values)});
   expectVectorRows(
       deserializeProjectedSlice(*projector, result.responses[0].slices[0]),
-      static_cast<uint32_t>(numRows),
       expected);
 }
 
@@ -871,9 +848,7 @@ TEST_P(NimbleIndexProjectorTest, projectedNullableDataDeserializes) {
           [](auto row) { return (row + 10) % 5 == 0; })});
   expectVectorRows(
       deserializeProjectedSlice(*projector, result.responses[0].slices[0]),
-      static_cast<uint32_t>(numRows),
-      expected,
-      /*outputOffset=*/10);
+      expected);
 }
 
 TEST_P(NimbleIndexProjectorTest, projectedTabletNullBarrierFlag) {
@@ -1592,10 +1567,10 @@ TEST_P(NimbleIndexProjectorTest, projectedComplexNullFuzzer) {
 }
 
 // Round-trips a single-batch deserialize over a key range. The Deserializer
-// over-fetches (decodes the full stripe rather than slicing to the row
-// range), so output->size() is the stripe rowCount and we verify the
-// in-range subset has the correct values. Used by the four positional range
-// tests below (start / middle / end / full).
+// honors the per-batch row range at decode time (via skip+next), so the
+// decoded output contains exactly `upperKey_ - lowerKey_` rows with values
+// that match the source stripe's in-range subset. Used by the four
+// positional range tests below (start / middle / end / full).
 //
 // Defined as a macro (rather than a function) so it can access the protected
 // fixture members from inside the TEST_P body.
@@ -1630,9 +1605,7 @@ TEST_P(NimbleIndexProjectorTest, projectedComplexNullFuzzer) {
         {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});       \
     expectVectorRows(                                                          \
         deserializeProjectedSlice(*projector, result.responses[0].slices[0]),  \
-        static_cast<uint32_t>(numRows),                                        \
-        expected,                                                              \
-        static_cast<uint32_t>(expectedOffset));                                \
+        expected);                                                             \
   } while (0)
 
 TEST_P(NimbleIndexProjectorTest, deserializerRangeAtStart) {
@@ -1652,8 +1625,8 @@ TEST_P(NimbleIndexProjectorTest, deserializerRangeAtEnd) {
 
 TEST_P(NimbleIndexProjectorTest, deserializerRangeFullStripe) {
   // Range spans the entire stripe: [0, 100). Validates round-trip on a
-  // full-stripe row range (boundary case where the in-range subset equals
-  // the over-fetched stripe).
+  // full-stripe row range (boundary case where the decoded output equals
+  // the source stripe verbatim).
   RUN_DESERIALIZER_RANGE_TEST(0, 100);
 }
 
@@ -1702,17 +1675,15 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchWithRowRange) {
   VectorPtr output;
   deserializer.deserialize(multiBatch, output);
 
-  // Over-fetch: each batch decodes its full 100 stripe rows; concatenation
-  // gives 200 rows. The in-range subset (positions [10, 40) within each
-  // batch) carries values[10..39].
-  ASSERT_EQ(output->size(), 200u);
+  // Each batch's [10, 40) range is honored at decode time, so the output
+  // is 2 × 30 = 60 rows — values[10..39] repeated.
+  ASSERT_EQ(output->size(), 60u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
-  for (uint32_t i = 10; i < 40; ++i) {
-    EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>(i * 10))
-        << "batch=0 i=" << i;
-    EXPECT_EQ(valueVec->valueAt(100 + i), static_cast<int32_t>(i * 10))
-        << "batch=1 i=" << i;
+  for (uint32_t i = 0; i < 30; ++i) {
+    const int32_t expected = static_cast<int32_t>((10 + i) * 10);
+    EXPECT_EQ(valueVec->valueAt(i), expected) << "batch=0 i=" << i;
+    EXPECT_EQ(valueVec->valueAt(30 + i), expected) << "batch=1 i=" << i;
   }
 }
 
@@ -1774,30 +1745,29 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedRanges) {
   VectorPtr output;
   deserializer.deserialize(batches, output);
 
-  // Over-fetch: each batch decodes its full 100 stripe rows; concatenation
-  // gives 400 rows = 4 × 100. Verify each batch's in-range subset has the
-  // expected values at its position within the cumulative output.
-  ASSERT_EQ(output->size(), 400u);
+  // Each batch is decoded to its embedded row range at ingest, so the
+  // concatenated output is 20 + 20 + 20 + 100 = 160 rows.
+  ASSERT_EQ(output->size(), 160u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
-  // Batch 0: range [0, 20), batch starts at output offset 0.
+  // Batch 0: range [0, 20) → values[0..19] at output offset 0.
   for (uint32_t i = 0; i < 20; ++i) {
     EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>(i * 10))
         << "batch=0 i=" << i;
   }
-  // Batch 1: range [30, 50), batch starts at output offset 100.
-  for (uint32_t i = 30; i < 50; ++i) {
-    EXPECT_EQ(valueVec->valueAt(100 + i), static_cast<int32_t>(i * 10))
+  // Batch 1: range [30, 50) → values[30..49] at output offset 20.
+  for (uint32_t i = 0; i < 20; ++i) {
+    EXPECT_EQ(valueVec->valueAt(20 + i), static_cast<int32_t>((30 + i) * 10))
         << "batch=1 i=" << i;
   }
-  // Batch 2: range [80, 100), batch starts at output offset 200.
-  for (uint32_t i = 80; i < 100; ++i) {
-    EXPECT_EQ(valueVec->valueAt(200 + i), static_cast<int32_t>(i * 10))
+  // Batch 2: range [80, 100) → values[80..99] at output offset 40.
+  for (uint32_t i = 0; i < 20; ++i) {
+    EXPECT_EQ(valueVec->valueAt(40 + i), static_cast<int32_t>((80 + i) * 10))
         << "batch=2 i=" << i;
   }
-  // Batch 3: range [0, 100) (full), batch starts at output offset 300.
+  // Batch 3: range [0, 100) → all 100 values at output offset 60.
   for (uint32_t i = 0; i < 100; ++i) {
-    EXPECT_EQ(valueVec->valueAt(300 + i), static_cast<int32_t>(i * 10))
+    EXPECT_EQ(valueVec->valueAt(60 + i), static_cast<int32_t>(i * 10))
         << "batch=3 i=" << i;
   }
 }
@@ -1869,20 +1839,18 @@ TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchMixedVersions) {
   VectorPtr output;
   deserializer.deserialize(batches, output);
 
-  // Over-fetch: kTablet batch decodes its full 100 stripe rows;
-  // kLegacyCompact batch contributes 5 rows. Concatenation = 105 rows. The
-  // in-range subset of the kTablet batch (positions [10, 40) within the
-  // first 100) carries values[10..39]; the kLegacyCompact batch's 5 rows
-  // follow.
-  ASSERT_EQ(output->size(), 105u);
+  // kTablet batch is honored to its [10, 40) range = 30 rows; kLegacyCompact
+  // batch has no rowRange and contributes its full 5 rows. Concatenation =
+  // 35 rows: values[10..39] followed by kLegacyCompactValues[0..4].
+  ASSERT_EQ(output->size(), 35u);
   auto* rowVec = output->as<velox::RowVector>();
   auto* valueVec = rowVec->childAt(0)->as<velox::FlatVector<int32_t>>();
-  for (uint32_t i = 10; i < 40; ++i) {
-    EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>(i * 10))
+  for (uint32_t i = 0; i < 30; ++i) {
+    EXPECT_EQ(valueVec->valueAt(i), static_cast<int32_t>((10 + i) * 10))
         << "kTablet i=" << i;
   }
   for (uint32_t i = 0; i < 5; ++i) {
-    EXPECT_EQ(valueVec->valueAt(100 + i), kLegacyCompactValues[i])
+    EXPECT_EQ(valueVec->valueAt(30 + i), kLegacyCompactValues[i])
         << "kLegacyCompact i=" << i;
   }
 }
@@ -2082,9 +2050,7 @@ TEST_P(NimbleIndexProjectorTest, localReadModeStats) {
     auto expected = vectorMaker_->rowVector(
         {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});
     expectVectorRows(
-        deserializeProjectedBatches(*projector, serializedBatches),
-        static_cast<uint32_t>(numRows),
-        expected);
+        deserializeProjectedBatches(*projector, serializedBatches), expected);
 
     EXPECT_EQ(projector->stats().numReadStripes, numBatches);
     EXPECT_EQ(projector->stats().numReadRows, numRows);
@@ -2222,15 +2188,12 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
   ASSERT_NE(rowResult, nullptr);
   ASSERT_EQ(rowResult->childrenSize(), 1);
 
-  // FlatMap is deserialized as a MapVector. Extract keys and values at the
-  // target row to verify correctness. The Deserializer over-fetches (decodes
-  // the full stripe rather than slicing), so the requested row sits at
-  // position rowRange.startRow within the output.
+  // FlatMap is deserialized as a MapVector. The Deserializer honors the
+  // header's row range at decode time, so the single point-lookup row
+  // lands at output index 0.
   auto* mapResult = rowResult->childAt(0)->as<MapVector>();
   ASSERT_NE(mapResult, nullptr);
-  ASSERT_GE(mapResult->size(), rowRange.endRow);
-
-  const vector_size_t targetRow = rowRange.startRow;
+  ASSERT_EQ(mapResult->size(), rowRange.numRows());
 
   auto* mapKeyResults = mapResult->mapKeys()->as<FlatVector<StringView>>();
   auto* mapValues = mapResult->mapValues()->as<FlatVector<int64_t>>();
@@ -2238,8 +2201,8 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
   ASSERT_NE(mapValues, nullptr);
 
   // Collect key-value pairs at the target row.
-  const auto mapOffset = mapResult->offsetAt(targetRow);
-  const auto mapSize = mapResult->sizeAt(targetRow);
+  const auto mapOffset = mapResult->offsetAt(0);
+  const auto mapSize = mapResult->sizeAt(0);
 
   // row=5: key=50, features[k] = 5*100 + index_of(k).
   std::map<std::string, int64_t> kvPairs;
@@ -2257,9 +2220,9 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjection) {
 
 TEST_P(NimbleIndexProjectorTest, flatMapProjectionWithNarrowRowRange) {
   // Schema: key (int64, sorted), features (MAP<VARCHAR, BIGINT> as FlatMap).
-  // Range scan over keys [50, 100) — 5 rows starting at row index 5 (since
-  // keys are row*10). The Deserializer over-fetches and returns the full
-  // 200-row stripe; we verify the in-range subset at positions [5, 10).
+  // Range scan over keys [50, 100) — 5 rows starting at source row index 5
+  // (since keys are row*10). The Deserializer honors the header's row
+  // range at decode time, so the output is exactly 5 rows.
   auto rowType = ROW({"key", "features"}, {BIGINT(), MAP(VARCHAR(), BIGINT())});
 
   const int numRows = 200;
@@ -2317,33 +2280,34 @@ TEST_P(NimbleIndexProjectorTest, flatMapProjectionWithNarrowRowRange) {
           reinterpret_cast<const char*>(coalesced.data()), coalesced.length()),
       deserialized);
   ASSERT_NE(deserialized, nullptr);
-  // Over-fetch: full stripe is decoded.
-  ASSERT_EQ(deserialized->size(), 200u);
+  ASSERT_EQ(deserialized->size(), 5u);
 
   auto* rowResult = deserialized->as<RowVector>();
   ASSERT_NE(rowResult, nullptr);
   auto* mapResult = rowResult->childAt(0)->as<MapVector>();
   ASSERT_NE(mapResult, nullptr);
-  ASSERT_EQ(mapResult->size(), 200u);
+  ASSERT_EQ(mapResult->size(), 5u);
 
   auto* mapKeyResults = mapResult->mapKeys()->as<FlatVector<StringView>>();
   auto* mapValues = mapResult->mapValues()->as<FlatVector<int64_t>>();
   ASSERT_NE(mapKeyResults, nullptr);
   ASSERT_NE(mapValues, nullptr);
 
-  // Verify the in-range subset (rows 5..9): both projected FlatMap keys
-  // "a" (idx 0) and "c" (idx 2) are present with values row*100 + index.
-  for (vector_size_t row = 5; row < 10; ++row) {
-    const auto mapOffset = mapResult->offsetAt(row);
-    const auto mapSize = mapResult->sizeAt(row);
-    ASSERT_EQ(mapSize, 2) << "row=" << row;
+  // Verify each output row corresponds to source rows 5..9: both projected
+  // FlatMap keys "a" (idx 0) and "c" (idx 2) are present with values
+  // sourceRow*100 + index.
+  for (vector_size_t outRow = 0; outRow < 5; ++outRow) {
+    const int64_t sourceRow = 5 + outRow;
+    const auto mapOffset = mapResult->offsetAt(outRow);
+    const auto mapSize = mapResult->sizeAt(outRow);
+    ASSERT_EQ(mapSize, 2) << "outRow=" << outRow;
     std::map<std::string, int64_t> kv;
     for (vector_size_t k = 0; k < mapSize; ++k) {
       kv[std::string(mapKeyResults->valueAt(mapOffset + k))] =
           mapValues->valueAt(mapOffset + k);
     }
-    EXPECT_EQ(kv["a"], row * 100 + 0) << "row=" << row;
-    EXPECT_EQ(kv["c"], row * 100 + 2) << "row=" << row;
+    EXPECT_EQ(kv["a"], sourceRow * 100 + 0) << "outRow=" << outRow;
+    EXPECT_EQ(kv["c"], sourceRow * 100 + 2) << "outRow=" << outRow;
   }
 }
 
@@ -2661,19 +2625,16 @@ TEST_P(NimbleIndexProjectorTest, flatMapIntKeyProjection) {
 
   auto* mapResult = rowResult->childAt(0)->as<MapVector>();
   ASSERT_NE(mapResult, nullptr);
-  // Over-fetch: full stripe is decoded.
-  ASSERT_GE(mapResult->size(), rowRange.endRow);
-
-  // Target row sits at position rowRange.startRow within the output.
-  const vector_size_t targetRow = rowRange.startRow;
+  // Sliced output contains exactly the point-lookup row.
+  ASSERT_EQ(mapResult->size(), rowRange.numRows());
 
   auto* mapKeyResults = mapResult->mapKeys()->as<FlatVector<int32_t>>();
   auto* mapValues = mapResult->mapValues()->as<FlatVector<int64_t>>();
   ASSERT_NE(mapKeyResults, nullptr);
   ASSERT_NE(mapValues, nullptr);
 
-  const auto mapOffset = mapResult->offsetAt(targetRow);
-  const auto mapSize = mapResult->sizeAt(targetRow);
+  const auto mapOffset = mapResult->offsetAt(0);
+  const auto mapSize = mapResult->sizeAt(0);
 
   // row=5: key=50, features[k] = 5*100 + k.
   std::map<int32_t, int64_t> kvPairs;
@@ -2776,16 +2737,15 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeys) {
     auto* mapResult =
         deserialized->as<RowVector>()->childAt(0)->as<MapVector>();
     ASSERT_NE(mapResult, nullptr);
-    ASSERT_GE(mapResult->size(), rowRange.endRow);
+    ASSERT_EQ(mapResult->size(), rowRange.numRows());
 
-    const vector_size_t targetRow = rowRange.startRow;
     auto* keysVec = mapResult->mapKeys()->as<FlatVector<StringView>>();
     auto* valsVec = mapResult->mapValues()->as<FlatVector<int64_t>>();
     ASSERT_NE(keysVec, nullptr);
     ASSERT_NE(valsVec, nullptr);
 
-    const auto mapOffset = mapResult->offsetAt(targetRow);
-    const auto mapSize = mapResult->sizeAt(targetRow);
+    const auto mapOffset = mapResult->offsetAt(0);
+    const auto mapSize = mapResult->sizeAt(0);
     std::map<std::string, int64_t> kvPairs;
     for (vector_size_t i = 0; i < mapSize; ++i) {
       kvPairs[keysVec->valueAt(mapOffset + i).str()] =
@@ -2873,7 +2833,8 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeyDeserializesAsNullField) {
       output);
 
   ASSERT_NE(output, nullptr);
-  ASSERT_EQ(output->size(), numRows);
+  // Sliced output has 10 rows for the [10, 20) range.
+  ASSERT_EQ(output->size(), 10);
   auto* features = output->as<RowVector>()->childAt(0)->as<RowVector>();
   ASSERT_NE(features, nullptr);
   ASSERT_EQ(features->childrenSize(), 2);
@@ -2885,11 +2846,12 @@ TEST_P(NimbleIndexProjectorTest, flatMapMissingKeyDeserializesAsNullField) {
   ASSERT_NE(presentKey, nullptr);
   ASSERT_NE(missingKey, nullptr);
 
-  for (vector_size_t row = 10; row < 20; ++row) {
-    SCOPED_TRACE(fmt::format("row={}", row));
-    EXPECT_FALSE(presentKey->isNullAt(row));
-    EXPECT_EQ(presentKey->valueAt(row), row * 100);
-    EXPECT_TRUE(missingKey->isNullAt(row));
+  for (vector_size_t outRow = 0; outRow < 10; ++outRow) {
+    const int64_t sourceRow = 10 + outRow;
+    SCOPED_TRACE(fmt::format("outRow={} sourceRow={}", outRow, sourceRow));
+    EXPECT_FALSE(presentKey->isNullAt(outRow));
+    EXPECT_EQ(presentKey->valueAt(outRow), sourceRow * 100);
+    EXPECT_TRUE(missingKey->isNullAt(outRow));
   }
 }
 

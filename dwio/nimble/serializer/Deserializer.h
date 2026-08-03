@@ -24,6 +24,7 @@
 
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/velox/FieldReader.h"
+#include "dwio/nimble/velox/RowRange.h"
 #include "folly/Range.h"
 #include "folly/container/F14Map.h"
 #include "velox/type/Subfield.h"
@@ -76,10 +77,38 @@ class Deserializer {
   Deserializer(const Deserializer&) = delete;
   Deserializer& operator=(const Deserializer&) = delete;
 
+  /// Decodes a single serialized batch, appending the whole batch to
+  /// `output`. For kTablet batches with a per-batch rowRange in the
+  /// header, only rows in that range are decoded (via skip+next). All
+  /// other versions decode the full batch.
   void deserialize(std::string_view data, velox::VectorPtr& output) const;
 
+  /// Decodes a sequence of serialized batches and appends the concatenated
+  /// rows to `output`. Per-batch rowRange handling matches the single-batch
+  /// overload above.
   void deserialize(
       const std::vector<std::string_view>& data,
+      velox::VectorPtr& output) const;
+
+  /// Decodes each batch in `data`, appending only the rows in
+  /// `rowRanges[i]` for `data[i]`. The output is the concatenation of the
+  /// selected rows across batches, in order. Caller-supplied ranges take
+  /// precedence over any rowRange encoded in the batch header.
+  ///
+  /// Equivalent output to
+  ///   for each i: deserialize(data[i]).slice(rowRanges[i].startRow,
+  ///                                          rowRanges[i].numRows())
+  /// concatenated, but rows outside each range are never materialized —
+  /// they are skipped via the FieldReader's `skip()` primitive.
+  ///
+  /// Preconditions:
+  ///   * `data` is non-empty and `data.size() == rowRanges.size()`.
+  ///   * For each `i`: `rowRanges[i].startRow <= rowRanges[i].endRow` and
+  ///     `rowRanges[i].endRow <= data[i]`'s batch rowCount.
+  ///   * No batch carries the null-barrier flag.
+  void deserialize(
+      const std::vector<std::string_view>& data,
+      const std::vector<nimble::RowRange>& rowRanges,
       velox::VectorPtr& output) const;
 
  private:
@@ -113,6 +142,16 @@ class Deserializer {
 
   void deserialize(
       folly::Range<const std::string_view*> data,
+      velox::VectorPtr& output) const;
+
+  // Shared body of all public `deserialize` overloads. Loops over `data`,
+  // calls `appendBatch` per batch, then `decodeRun`. Pass an empty
+  // `rowRanges` to let each batch's rowRange be inferred from the header;
+  // pass a `data.size()`-sized `rowRanges` to override the inferred range
+  // per batch (`rowRanges[i]` for `data[i]`).
+  void deserializeImpl(
+      folly::Range<const std::string_view*> data,
+      folly::Range<const nimble::RowRange*> rowRanges,
       velox::VectorPtr& output) const;
 
   // Open run of non-barrier batches that can be decoded together.
@@ -163,10 +202,20 @@ class Deserializer {
       const std::vector<Subfield>& selectedSubfields,
       OutputProjection& outputProjection);
 
-  // Adds one serialized batch to the current decode run, decoding before and
-  // after batches that require a null barrier.
+  // Queues `batch`'s streams onto the pending decode run and records the
+  // batch's effective rowRange in `runRanges_` (run-local coordinates).
+  //
+  // `rowRange` overrides the range that would otherwise be inferred from
+  // the batch header (kTablet header rowRange, or full-batch for other
+  // versions). When set, requires
+  // `rowRange->startRow <= rowRange->endRow <= batch rowCount` and a
+  // non-null-barrier batch.
+  //
+  // If the batch requires a null barrier, `decodeRun` fires before and
+  // after queuing so the barrier batch decodes standalone.
   void appendBatch(
       std::string_view batch,
+      std::optional<nimble::RowRange> rowRange,
       DecodeRun& run,
       velox::VectorPtr& output) const;
 
@@ -191,8 +240,10 @@ class Deserializer {
       const velox::TypePtr& projectedType,
       const OutputProjection& projection) const;
 
-  // Decodes the pending non-barrier batch run and resets reader state for the
-  // next run.
+  // Decodes the batches queued since the last `decodeRun`. Reads the
+  // per-batch ranges from `runRanges_`, feeds a coalesced skip+next
+  // sequence to `reader_`, and appends each decoded vector to `output`.
+  // Leaves `run` empty, `runRanges_` empty, and the reader reset.
   void decodeRun(DecodeRun& run, velox::VectorPtr& output) const;
 
   // --- Const members (set at construction, never modified) ---
@@ -213,6 +264,11 @@ class Deserializer {
   std::unique_ptr<FieldReaderFactory> rootFactory_;
   std::unique_ptr<FieldReader> reader_;
   mutable std::unique_ptr<serde::StreamDataParser> parser_;
+  // Rows to decode from each queued batch, in run-local coordinates.
+  // `runRanges_[i]` is the range for the i'th batch appended so far in the
+  // current decode run. Fill via `appendBatch`, drain via `decodeRun`.
+  // Empty outside of an active `deserialize*` call.
+  mutable std::vector<nimble::RowRange> runRanges_;
 
   // --- Mutable members (modified during deserialization) ---
   mutable folly::F14FastMap<uint32_t, std::unique_ptr<Decoder>>

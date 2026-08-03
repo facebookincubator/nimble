@@ -117,6 +117,19 @@ class StreamData {
 
   void reset(std::string_view data, SerializationVersion version);
 
+  /// Advance the encoded stream cursor by `count` rows without materializing
+  /// output. Uses the encoding's native state-only skip primitive. Only valid
+  /// when hasEncoding() is true (i.e. non-legacy streams).
+  void skip(uint32_t count);
+
+  /// Replace the external string-buffers vector this StreamData points to.
+  /// Needed when the caller of a subsequent decode passes a different vector
+  /// than was in effect at construction (e.g. after a skip() that used a
+  /// scratch vector).
+  void setStringBuffers(std::vector<velox::BufferPtr>* stringBuffers) {
+    stringBuffers_ = stringBuffers;
+  }
+
   ScalarKind kind() const {
     return kind_;
   }
