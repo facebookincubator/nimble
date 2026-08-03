@@ -24,6 +24,10 @@ ConfiguredCompressionPolicy::ConfiguredCompressionPolicy(
       effectiveAcceptRatio_{getAcceptRatio(encodingType)} {}
 
 CompressionConfig ConfiguredCompressionPolicy::config() const {
+  if (compressionOptions_.compressionType == CompressionType::Uncompressed) {
+    return {.compressionType = CompressionType::Uncompressed};
+  }
+
   if (compressionOptions_.compressionType == CompressionType::Zstd) {
     CompressionConfig config{
         .compressionType = CompressionType::Zstd,

@@ -163,6 +163,20 @@ TEST(CompressionTests, NoCompressionPolicy) {
       /*compressedSize=*/1));
 }
 
+TEST(CompressionTests, ConfiguredCompressionPolicy) {
+  auto checkCompressionType = [](nimble::CompressionType type) {
+    nimble::ConfiguredCompressionPolicy policy{
+        nimble::CompressionOptions{.compressionType = type},
+        nimble::EncodingType::FixedBitWidth};
+    EXPECT_EQ(policy.config().compressionType, type);
+  };
+  checkCompressionType(nimble::CompressionType::Uncompressed);
+  checkCompressionType(nimble::CompressionType::Zstd);
+  checkCompressionType(nimble::CompressionType::Lz4);
+  checkCompressionType(nimble::CompressionType::OpenZL);
+  checkCompressionType(nimble::CompressionType::MetaInternal);
+}
+
 TEST(CompressionTests, ConfiguredCompressionPolicyUsesCompressionOptions) {
   nimble::CompressionOptions options{
       .compressionType = nimble::CompressionType::Zstd,
