@@ -81,6 +81,18 @@ void StreamData::reset(std::string_view data, SerializationVersion version) {
   init(data);
 }
 
+void StreamData::skip(uint32_t count) {
+  if (count == 0) {
+    return;
+  }
+  NIMBLE_CHECK_NOT_NULL(
+      encoding_, "StreamData::skip requires an encoded (non-legacy) stream");
+  NIMBLE_CHECK_LE(
+      count, remainingRows(), "StreamData::skip past end of segment");
+  encoding_->skip(count);
+  readRows_ += count;
+}
+
 // Copy legacy stream data to output buffer.
 // Data is already decompressed by init() -> decompress().
 uint32_t StreamData::copyTo(char* output, uint32_t bufferSize) {

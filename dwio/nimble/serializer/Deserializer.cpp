@@ -20,6 +20,7 @@
 #include "dwio/nimble/velox/SchemaReader.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/Likely.h"
+#include "folly/ScopeGuard.h"
 #include "folly/container/F14Set.h"
 #include "velox/buffer/Buffer.h"
 #include "velox/dwio/common/ColumnSelector.h"
@@ -148,18 +149,45 @@ class SegmentedStreamDecoder : public Decoder {
       return 0;
     }
 
+    uint32_t nonNullCount;
     if (scatterOutputBitmap != nullptr) {
-      return scatteredRead(
+      nonNullCount = scatteredRead(
           count, output, getOutputNulls, scatterOutputBitmap, stringBuffers);
+    } else if (isInMapStream()) {
+      nonNullCount = inMapRead(count, output, stringBuffers);
+    } else {
+      nonNullCount = denseRead(count, output, getOutputNulls, stringBuffers);
     }
-    if (isInMapStream()) {
-      return inMapRead(count, output, stringBuffers);
-    }
-    return denseRead(count, output, getOutputNulls, stringBuffers);
+    currentRow_ += count;
+    return nonNullCount;
   }
 
-  void skip(uint32_t /* count */) override {
-    NIMBLE_UNREACHABLE("unexpected call");
+  void skip(uint32_t count) override {
+    if (count == 0) {
+      return;
+    }
+
+    // For non-in-map streams, an empty `streamSegments_` is only valid
+    // for Row/FlatMap null streams that the writer omitted (all-non-null).
+    // Nothing decoded → nothing to advance; just bump the cursor.
+    if (FOLLY_UNLIKELY(!isInMapStream() && streamSegments_.empty())) {
+      NIMBLE_CHECK(
+          type_->isRow() || type_->isFlatMap(),
+          "Empty streamSegments_ only valid for Row/FlatMap null streams");
+      currentRow_ += count;
+      return;
+    }
+
+    // `skipStringBuffers_` is a persistent per-decoder buffer given to
+    // `ensureStreamData`. It must outlive the encoding created by skip,
+    // which may hold `string_view`s into it and be re-used by a
+    // subsequent `next()`.
+    if (isInMapStream()) {
+      skipInMap(count, skipStringBuffers_);
+    } else {
+      skipEncoded(count, skipStringBuffers_);
+    }
+    currentRow_ += count;
   }
 
   void reset() override {
@@ -169,9 +197,14 @@ class SegmentedStreamDecoder : public Decoder {
   void clear() {
     streamSegments_.clear();
     presentInMapSegments_.clear();
+    // Reset streamData_ (and hence its encoding_) BEFORE dropping
+    // skipStringBuffers_ — the encoding may hold string_views into buffers
+    // stored there, and those views must not outlive the buffers.
     streamData_.reset();
+    skipStringBuffers_.clear();
     streamSegmentIndex_ = 0;
     presentSegmentIndex_ = 0;
+    currentRow_ = 0;
   }
 
   const Encoding* encoding() const override {
@@ -182,13 +215,14 @@ class SegmentedStreamDecoder : public Decoder {
     return static_cast<SegmentedStreamDecoder*>(d);
   }
 
-  // Stores raw data without creating encoding objects. Encodings are created
-  // lazily when the segment is first read, ensuring only one encoding tree
-  // exists at a time. This avoids the memory locality and allocation overhead
-  // of creating hundreds of encoding trees simultaneously in batch decode.
-  // Appends a physical stream segment. Only FlatMap in-map streams use
-  // `startRow` to reconstruct gaps for batches that omitted the stream.
-  // Other streams concatenate by payload order.
+  // Queues a physical stream segment for one batch. `startRow` is the
+  // top-level row where the batch begins in the concatenated run; it's
+  // read back by FlatMap in-map reads to detect and fill gaps when
+  // earlier batches omitted the stream. Other streams just concatenate
+  // in payload order.
+  //
+  // The segment is stored as raw bytes. The encoding is constructed
+  // lazily by `ensureStreamData` the first time this segment is decoded.
   void addBatch(
       uint32_t startRow,
       std::string_view data,
@@ -199,12 +233,15 @@ class SegmentedStreamDecoder : public Decoder {
   }
 
   // Records a batch range where this FlatMap key is present in every row.
+  // Called for batches whose in-map stream was omitted on the wire
+  // (writer's all-true optimization). Merges into the previous segment
+  // when contiguous to keep `presentInMapSegments_` compact; `fillInMapGap`
+  // clamps segments that extend past the current read's gap.
   void addPresentInMapBatch(uint32_t startRow, uint32_t rowCount) {
     NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
     NIMBLE_CHECK_GT(
         rowCount, 0, "All-present in-map segment must be non-empty");
     const uint32_t endRow = startRow + rowCount;
-    // Merge with the previous segment if contiguous.
     if (!presentInMapSegments_.empty() &&
         presentInMapSegments_.back().endRow == startRow) {
       presentInMapSegments_.back().endRow = endRow;
@@ -213,8 +250,10 @@ class SegmentedStreamDecoder : public Decoder {
     }
   }
 
-  // Records an all-present FlatMap key range for a null-barrier batch, where
-  // the read request determines the effective end row.
+  // Records an all-present FlatMap key range for a null-barrier batch.
+  // The read's effective end row (not any per-batch rowCount) determines
+  // how many rows are present, so `endRow` stores the sentinel
+  // `kPresentInMapEndRow`; the read side clamps as needed.
   void addPresentInMapBatch() {
     NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
     NIMBLE_CHECK(
@@ -225,10 +264,10 @@ class SegmentedStreamDecoder : public Decoder {
   }
 
  private:
-  // Sentinel end row for all-present FlatMap in-map ranges whose actual row
-  // count comes from the current read request. Null-barrier batches use this
-  // because FlatMap child reads are scoped by the parent Row/FlatMap null
-  // stream, not the physical batch row count.
+  // Sentinel value stored in `InMapSegment::endRow` when the segment's
+  // extent isn't known until the read side (i.e. the parameter-less
+  // `addPresentInMapBatch()` used by null-barrier batches). The read side
+  // clamps the segment to the current gap when it encounters this value.
   static constexpr uint32_t kPresentInMapEndRow =
       std::numeric_limits<uint32_t>::max();
 
@@ -254,12 +293,29 @@ class SegmentedStreamDecoder : public Decoder {
     return isInMapStream_;
   }
 
-  // Lazily creates StreamData for the current physical segment. String buffers
-  // from encoding are pushed directly into the caller's stringBuffers vector,
-  // so no explicit release is needed.
+  // Returns the `StreamData` for the current segment, creating it lazily
+  // on first access. `stringBuffers` is where any string content decoded
+  // out of this segment will be pushed; caller retains ownership.
+  //
+  // On a cache hit (a prior `skip` already built the encoding using our
+  // scratch vector), transfer any buffers the skip path pushed into
+  // `skipStringBuffers_` into the caller's vector so the output takes
+  // shared ownership before the end-of-run `clear()` drops our scratch,
+  // then redirect the encoding's factory target for lazy string
+  // encodings whose future page allocations must land in the caller's
+  // vector, not ours.
   serde::StreamData& ensureStreamData(
       std::vector<velox::BufferPtr>& stringBuffers) {
     if (streamData_.has_value()) {
+      if (!skipStringBuffers_.empty() &&
+          &stringBuffers != &skipStringBuffers_) {
+        stringBuffers.insert(
+            stringBuffers.end(),
+            std::make_move_iterator(skipStringBuffers_.begin()),
+            std::make_move_iterator(skipStringBuffers_.end()));
+        skipStringBuffers_.clear();
+      }
+      streamData_->setStringBuffers(&stringBuffers);
       return *streamData_;
     }
 
@@ -284,10 +340,38 @@ class SegmentedStreamDecoder : public Decoder {
     ++streamSegmentIndex_;
   }
 
-  uint32_t fillInMapGap(uint32_t rowOffset, uint32_t rowCount, void* output) {
+  // Fills the in-map output for rows `[rowOffset, gapEndRow)` where
+  // `gapEndRow = min(rowOffset + rowCount, next stream segment's startRow)`.
+  // Defaults every row to `kInMapAbsent`, then overlays with `kInMapPresent`
+  // for every presence segment in `presentInMapSegments_` that overlaps.
+  // Returns the number of rows filled.
+  //
+  // Parameters:
+  //   * `rowOffset`   — absolute row in the concatenated batch-run row
+  //                     domain (matches `StreamSegment::startRow` and
+  //                     `InMapSegment::startRow`). Drives all range math.
+  //   * `rowCount`    — upper bound on rows to fill; the actual count is
+  //                     capped at the next stream segment's start.
+  //   * `outputOffset` — where in `output` to start writing, in element
+  //                      slots (multiplied by `typeStorageWidth_`).
+  //                      Independent of `rowOffset` because `skip()` moves
+  //                      the row cursor without moving the output cursor.
+  //   * `output`      — destination buffer.
+  //
+  // Presence-segment handling:
+  //   * A segment fully inside the gap is written and consumed
+  //     (`++presentSegmentIndex_`).
+  //   * A segment that extends past `gapEndRow` is partially written
+  //     (clamped to the gap) and its `startRow` is advanced to `gapEndRow`
+  //     so the next call resumes where this one stopped.
+  //   * A segment starting before `rowOffset` (a prior skip landed inside
+  //     it) is clamped on the low end via `max(segment.startRow, rowOffset)`.
+  uint32_t fillInMapGap(
+      uint32_t rowOffset,
+      uint32_t rowCount,
+      uint32_t outputOffset,
+      void* output) {
     NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
-    // rowOffset and rowCount are in the same concatenated batch-run row domain
-    // as StreamSegment::startRow.
     const auto requestEndRow = rowOffset + rowCount;
     const auto gapEndRow = streamSegmentIndex_ < streamSegments_.size()
         ? std::min(requestEndRow, streamSegments_[streamSegmentIndex_].startRow)
@@ -298,31 +382,30 @@ class SegmentedStreamDecoder : public Decoder {
         "FlatMap in-map gap fill requires a non-empty output range");
     const auto numGapRows = gapEndRow - rowOffset;
     auto* const outputBools =
-        static_cast<char*>(output) + rowOffset * typeStorageWidth_;
+        static_cast<char*>(output) + outputOffset * typeStorageWidth_;
     constexpr char kInMapAbsent = 0;
     constexpr char kInMapPresent = 1;
     std::memset(outputBools, kInMapAbsent, numGapRows * typeStorageWidth_);
     while (presentSegmentIndex_ < presentInMapSegments_.size()) {
-      const auto& segment = presentInMapSegments_[presentSegmentIndex_];
+      auto& segment = presentInMapSegments_[presentSegmentIndex_];
       if (segment.startRow >= gapEndRow) {
         break;
       }
-      NIMBLE_CHECK_GE(
-          segment.startRow,
-          rowOffset,
-          "Present in-map segment starts before absent row range");
+      // Clamp both ends. A segment can start before `rowOffset` if a
+      // prior skip landed inside it, and can end past `gapEndRow` when
+      // the current read only covers a prefix (or when the segment is
+      // the null-barrier sentinel `kPresentInMapEndRow`).
+      const auto presentStartRow = std::max(segment.startRow, rowOffset);
       const auto presentEndRow = std::min(segment.endRow, gapEndRow);
       std::memset(
-          outputBools + (segment.startRow - rowOffset) * typeStorageWidth_,
+          outputBools + (presentStartRow - rowOffset) * typeStorageWidth_,
           kInMapPresent,
-          (presentEndRow - segment.startRow) * typeStorageWidth_);
+          (presentEndRow - presentStartRow) * typeStorageWidth_);
       if (segment.endRow > gapEndRow) {
-        // Synthetic all-present ranges can span past the current read request;
-        // physical present ranges are expected to end within this gap.
-        NIMBLE_CHECK_EQ(
-            segment.endRow,
-            kPresentInMapEndRow,
-            "Only all-present in-map segment can extend beyond gap range");
+        // Not fully consumed — advance its start so the next call resumes
+        // where this one left off. `kPresentInMapEndRow` sentinel stays
+        // in `endRow`.
+        segment.startRow = gapEndRow;
         break;
       }
       ++presentSegmentIndex_;
@@ -367,6 +450,91 @@ class SegmentedStreamDecoder : public Decoder {
     const auto width = typeStorageWidth_;
     return streamData.decode(
         output, offset, count, width, getOutputNulls, scatterOutputBitmap);
+  }
+
+  // Skips up to `numRows` rows from the segment at `streamSegmentIndex_`.
+  // Advances `streamSegmentIndex_` past the segment when its remaining
+  // rows fit inside `numRows`; otherwise leaves the cursor mid-segment.
+  // Returns the number of rows actually skipped (never more than
+  // `numRows`, may be less if the segment has fewer remaining).
+  uint32_t skipSegment(
+      uint32_t numRows,
+      std::vector<velox::BufferPtr>& stringBuffers) {
+    NIMBLE_CHECK_LT(
+        streamSegmentIndex_,
+        streamSegments_.size(),
+        "SegmentedStreamDecoder::skip past end of decoder queue");
+    auto& streamData = ensureStreamData(stringBuffers);
+    NIMBLE_CHECK(
+        streamData.hasEncoding(),
+        "SegmentedStreamDecoder::skip requires encoded segments");
+    const auto remainingRows = streamData.remainingRows();
+    NIMBLE_CHECK_GT(remainingRows, 0, "Current segment has no rows");
+    const auto toSkip = std::min<uint32_t>(remainingRows, numRows);
+    streamData.skip(toSkip);
+    if (toSkip == remainingRows) {
+      advanceSegment();
+    }
+    return toSkip;
+  }
+
+  // Skips `numRows` rows for non-in-map columns (dense scalars, FlatMap
+  // value / scattered columns). Walks `streamSegments_` from the current
+  // cursor, consuming each segment fully until `numRows` are covered.
+  void skipEncoded(
+      uint32_t numRows,
+      std::vector<velox::BufferPtr>& stringBuffers) {
+    uint32_t skippedRows = 0;
+    while (skippedRows < numRows) {
+      skippedRows += skipSegment(numRows - skippedRows, stringBuffers);
+    }
+  }
+
+  // Skips `numRows` rows for FlatMap in-map streams. Alternates between
+  // presence-gap regions (advance `presentSegmentIndex_` via
+  // `advanceInMapPresentSegmentIndex`) and encoded segments (advance via
+  // `skipSegment`), mirroring the read-side control flow in
+  // `inMapRead` but writing nothing.
+  void skipInMap(
+      uint32_t numRows,
+      std::vector<velox::BufferPtr>& stringBuffers) {
+    const uint32_t targetRow = currentRow_ + numRows;
+    uint32_t skippedRows = 0;
+    while (skippedRows < numRows) {
+      const uint32_t currentRow = currentRow_ + skippedRows;
+      if (streamSegmentIndex_ >= streamSegments_.size()) {
+        // No more encoded segments — everything left is presence-gap.
+        advanceInMapPresentSegmentIndex(targetRow);
+        break;
+      }
+      const auto nextStreamStartRow =
+          streamSegments_[streamSegmentIndex_].startRow;
+      if (nextStreamStartRow > currentRow) {
+        // Presence gap up to the next encoded segment (or the skip
+        // target, whichever comes first).
+        const uint32_t gapEndRow = std::min(targetRow, nextStreamStartRow);
+        advanceInMapPresentSegmentIndex(gapEndRow);
+        skippedRows += gapEndRow - currentRow;
+        continue;
+      }
+      skippedRows += skipSegment(numRows - skippedRows, stringBuffers);
+    }
+  }
+
+  // Advances `presentSegmentIndex_` past every presence segment fully
+  // contained in `[..., targetRow]` (i.e. `segment.endRow <= targetRow`).
+  // A segment that extends past `targetRow` stays as the current segment;
+  // partial consumption is tracked implicitly (the read side will clamp
+  // it when needed).
+  void advanceInMapPresentSegmentIndex(uint32_t targetRow) {
+    NIMBLE_CHECK(isInMapStream(), "Expected FlatMap in-map stream");
+    while (presentSegmentIndex_ < presentInMapSegments_.size()) {
+      const auto& segment = presentInMapSegments_[presentSegmentIndex_];
+      if (segment.endRow > targetRow) {
+        break;
+      }
+      ++presentSegmentIndex_;
+    }
   }
 
   // Reads `count` non-in-map values into dense output row positions.
@@ -462,8 +630,10 @@ class SegmentedStreamDecoder : public Decoder {
     uint32_t rowsRead{0};
     uint32_t nonNullCount{0};
     while (rowsRead < count) {
+      const uint32_t currentRow = currentRow_ + rowsRead;
       if (streamSegmentIndex_ >= streamSegments_.size()) {
-        const auto rows = fillInMapGap(rowsRead, count - rowsRead, output);
+        const auto rows =
+            fillInMapGap(currentRow, count - rowsRead, rowsRead, output);
         rowsRead += rows;
         nonNullCount += rows;
         break;
@@ -471,11 +641,12 @@ class SegmentedStreamDecoder : public Decoder {
 
       const auto nextStreamStartRow =
           streamSegments_[streamSegmentIndex_].startRow;
-      if (nextStreamStartRow > rowsRead) {
-        const auto rows = fillInMapGap(rowsRead, count - rowsRead, output);
+      if (nextStreamStartRow > currentRow) {
+        const auto rows =
+            fillInMapGap(currentRow, count - rowsRead, rowsRead, output);
         NIMBLE_CHECK_EQ(
             rows,
-            std::min(count, nextStreamStartRow) - rowsRead,
+            std::min(count + currentRow_, nextStreamStartRow) - currentRow,
             "FlatMap in-map gap fill returned unexpected row count");
         rowsRead += rows;
         nonNullCount += rows;
@@ -629,6 +800,21 @@ class SegmentedStreamDecoder : public Decoder {
   // Lazily-created StreamData wrapper reused across physical segments for this
   // stream decoder.
   std::optional<serde::StreamData> streamData_;
+
+  // Row cursor in this decoder's row domain (matches
+  // `StreamSegment::startRow` for in-map streams; encoded-row domain
+  // otherwise). Bumped by every `next()` and `skip()`. Read by
+  // `fillInMapGap` and `skipInMap` for presence-position math. Reset to
+  // 0 in `clear()`.
+  uint32_t currentRow_{0};
+
+  // Backing storage for `ensureStreamData` when called from `skip*`.
+  // Some string encodings allocate their content buffers into this vector
+  // at construction time and keep `string_view`s into them; the vector
+  // must outlive the encoding that references it, so it lives with the
+  // decoder and is cleared inside `clear()` AFTER `streamData_` (and
+  // hence the encoding) is destroyed.
+  std::vector<velox::BufferPtr> skipStringBuffers_;
 };
 
 const StreamDescriptor& getMainDescriptor(const Type& type) {
@@ -700,6 +886,55 @@ bool checkColumnProjectionSubfield(
     nestedType = nestedType->asRow().childAt(childIndex.value()).get();
   }
   return false;
+}
+
+// One reader operation. Executed as `reader_->skip(numRows)` when
+// `skip == true`, or `reader_->next(numRows, ...)` when `skip == false`.
+struct DecodeOp {
+  bool skip;
+  uint32_t numRows;
+};
+
+// Turns per-batch rowRanges (in run-local coordinates) into the minimal
+// sequence of skip/read ops that visits each range exactly once.
+// Adjacent ranges with no gap fold into a single read op. Empty ranges
+// are dropped. Returns `[{read, 0}]` when the result would otherwise be
+// empty, so callers always emit at least one `reader_->next` and produce
+// a non-null output vector.
+std::vector<DecodeOp> buildDecodeOps(
+    const std::vector<nimble::RowRange>& ranges) {
+  std::vector<DecodeOp> ops;
+  // Worst case is skip+read per range (all disjoint, non-contiguous).
+  ops.reserve(2 * ranges.size());
+  uint32_t cursor{0};
+  for (const auto& range : ranges) {
+    // Empty range = "no rows from this batch". Common when the caller
+    // uses the rowRanges overload to skip whole batches, or when a
+    // batch's rowCount is 0. Nothing to emit; move on.
+    if (range.numRows() == 0) {
+      continue;
+    }
+    if (range.startRow > cursor) {
+      ops.push_back({/*skip=*/true, range.startRow - cursor});
+    }
+    // Fold into the preceding read op when this range is contiguous with
+    // it; otherwise start a fresh read (either `ops` is empty or the last
+    // op was the skip we just pushed).
+    if (!ops.empty() && !ops.back().skip) {
+      ops.back().numRows += range.numRows();
+    } else {
+      ops.push_back({/*skip=*/false, range.numRows()});
+    }
+    cursor = range.endRow;
+  }
+  // Every input range was empty (or `ranges` itself was). Emit one
+  // zero-length read so the caller still runs a `reader_->next` and
+  // produces a non-null empty output vector (see ProjectorFormatTest
+  // .emptyInput and equivalents).
+  if (ops.empty()) {
+    ops.push_back({/*skip=*/false, 0});
+  }
+  return ops;
 }
 
 } // namespace
@@ -1094,12 +1329,19 @@ void Deserializer::decodeRun(DecodeRun& run, velox::VectorPtr& output) const {
   if (FOLLY_UNLIKELY(run.batches == 0)) {
     return;
   }
-
-  velox::VectorPtr decoded;
-  reader_->next(run.rows, decoded, nullptr);
-  decoded = projectOutput(std::move(decoded));
+  const auto ops = buildDecodeOps(runRanges_);
+  for (const auto& op : ops) {
+    if (op.skip) {
+      reader_->skip(op.numRows);
+      continue;
+    }
+    velox::VectorPtr decoded;
+    reader_->next(op.numRows, decoded, nullptr);
+    decoded = projectOutput(std::move(decoded));
+    appendToOutput(std::move(decoded), output);
+  }
   run = {};
-  appendToOutput(std::move(decoded), output);
+  runRanges_.clear();
   reader_->reset();
 }
 
@@ -1157,6 +1399,7 @@ void Deserializer::appendStreamSegments(
 
 void Deserializer::appendBatch(
     std::string_view batch,
+    std::optional<nimble::RowRange> rowRange,
     DecodeRun& run,
     velox::VectorPtr& output) const {
   const auto rowCount = parser_->initialize(batch);
@@ -1165,7 +1408,28 @@ void Deserializer::appendBatch(
     decodeRun(run, output);
   }
 
+  // Base range from the batch: parser's rowRange (kTablet header) or
+  // full-batch default if the header didn't encode one.
+  nimble::RowRange range =
+      parser_->rowRange().value_or(nimble::RowRange{0, rowCount});
+  // Caller override wins if provided.
+  if (rowRange.has_value()) {
+    NIMBLE_USER_CHECK(
+        !requiresBarrier,
+        "override rowRange not supported for null-barrier batches");
+    NIMBLE_USER_CHECK_LE(
+        rowRange->startRow,
+        rowRange->endRow,
+        "override rowRange startRow must be <= endRow");
+    NIMBLE_USER_CHECK_LE(
+        rowRange->endRow,
+        rowCount,
+        "override rowRange endRow exceeds batch rowCount");
+    range = *rowRange;
+  }
+
   appendStreamSegments(rowCount, /*startRow=*/run.rows, requiresBarrier);
+  runRanges_.push_back({run.rows + range.startRow, run.rows + range.endRow});
   run.rows += rowCount;
   ++run.batches;
   if (FOLLY_UNLIKELY(requiresBarrier)) {
@@ -1177,12 +1441,47 @@ void Deserializer::appendBatch(
 void Deserializer::deserialize(
     folly::Range<const std::string_view*> data,
     velox::VectorPtr& output) const {
-  NIMBLE_CHECK(!data.empty(), "Expected at least one serialized batch");
+  deserializeImpl(data, {}, output);
+}
+
+void Deserializer::deserialize(
+    const std::vector<std::string_view>& data,
+    const std::vector<nimble::RowRange>& rowRanges,
+    velox::VectorPtr& output) const {
+  deserializeImpl(
+      folly::Range<const std::string_view*>(data.data(), data.size()),
+      folly::Range<const nimble::RowRange*>(rowRanges.data(), rowRanges.size()),
+      output);
+}
+
+void Deserializer::deserializeImpl(
+    folly::Range<const std::string_view*> data,
+    folly::Range<const nimble::RowRange*> rowRanges,
+    velox::VectorPtr& output) const {
+  NIMBLE_USER_CHECK(!data.empty(), "Expected at least one serialized batch");
+  if (!rowRanges.empty()) {
+    NIMBLE_USER_CHECK_EQ(
+        data.size(),
+        rowRanges.size(),
+        "data and rowRanges must have the same size");
+  }
+  // `runRanges_` must be empty across `deserialize*` calls — check on
+  // entry, clear on exit (including exceptions) via SCOPE_EXIT.
+  NIMBLE_CHECK(
+      runRanges_.empty(), "runRanges_ must be empty on deserialize entry");
+  SCOPE_EXIT {
+    runRanges_.clear();
+  };
 
   output = nullptr;
   DecodeRun run;
-  for (const auto batch : data) {
-    appendBatch(batch, run, output);
+  runRanges_.reserve(data.size());
+  for (size_t i = 0; i < data.size(); ++i) {
+    std::optional<nimble::RowRange> rowRange;
+    if (!rowRanges.empty()) {
+      rowRange = rowRanges[i];
+    }
+    appendBatch(data[i], rowRange, run, output);
   }
   decodeRun(run, output);
   parser_->reset();

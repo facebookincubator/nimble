@@ -38,6 +38,7 @@ target_link_libraries(
   velox_type
   velox_vector
   velox_vector_fuzzer
+  velox_vector_test_lib
   gtest
   gtest_main
   Folly::folly
