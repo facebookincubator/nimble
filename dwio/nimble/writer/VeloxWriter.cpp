@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 
 #include <algorithm>
 #include <memory>
@@ -36,9 +36,7 @@
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/FieldWriter.h"
-#include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/LayoutPlanner.h"
 #include "dwio/nimble/velox/MetadataGenerated.h"
 #include "dwio/nimble/velox/RawSizeUtils.h"
@@ -46,8 +44,10 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaTypes.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
-#include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
+#include "dwio/nimble/writer/StreamChunker.h"
 #include "folly/container/F14Map.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TestValue.h"

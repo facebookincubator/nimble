@@ -22,10 +22,10 @@
 #include "dwio/nimble/index/IndexConfig.h"
 #include "dwio/nimble/tablet/StripeGroup.h"
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
-#include "dwio/nimble/velox/BufferPolicy.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
-#include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/NimbleConfig.h"
+#include "dwio/nimble/writer/BufferPolicy.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
 

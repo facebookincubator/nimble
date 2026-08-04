@@ -19,10 +19,10 @@
 #include <gtest/gtest.h>
 #include <random>
 
-#include "dwio/nimble/velox/FlushPolicy.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/tests/VeloxWriterTestUtils.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/Random.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"

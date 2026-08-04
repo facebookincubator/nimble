@@ -38,7 +38,7 @@ The default codec is **MetaInternal** internally and **Zstd** in OSS builds (con
 Set fields on `VeloxWriterOptions::compressionOptions` before constructing a `VeloxWriter`:
 
 ```cpp
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 
 VeloxWriterOptions options;
 

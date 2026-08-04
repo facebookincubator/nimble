@@ -20,7 +20,7 @@
 #include <optional>
 #include <string_view>
 
-#include "dwio/nimble/velox/FlushPolicy.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
 
 namespace facebook::nimble {
 

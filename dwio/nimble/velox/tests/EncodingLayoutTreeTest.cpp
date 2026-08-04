@@ -15,7 +15,7 @@
  */
 #include <gtest/gtest.h>
 
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 
 using namespace facebook;
 

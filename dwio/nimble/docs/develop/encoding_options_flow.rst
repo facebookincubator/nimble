@@ -285,7 +285,7 @@ ClusterIndexWriter
 
 index columns sort orders key constraints encoding layout
 
-dwio/nimble/velox/VeloxWriter.cpp · VeloxWriterOptions.h · FieldWriter.h · TabletWriter.h
+dwio/nimble/writer/VeloxWriter.cpp · VeloxWriterOptions.h · FieldWriter.h · TabletWriter.h
 
 2d
 

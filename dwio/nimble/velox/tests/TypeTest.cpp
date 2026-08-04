@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 #include "velox/type/Type.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"

@@ -35,7 +35,7 @@
 #include "dwio/nimble/tablet/Constants.h"
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/TabletReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/Synchronized.h"
 #include "velox/common/config/Config.h"
 #include "velox/common/file/FileSystems.h"

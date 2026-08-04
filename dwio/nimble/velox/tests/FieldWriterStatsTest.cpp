@@ -16,8 +16,8 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/RawSizeUtils.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace facebook;

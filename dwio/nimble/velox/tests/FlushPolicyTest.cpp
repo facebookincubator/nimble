@@ -22,8 +22,8 @@
 #include <string_view>
 
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/velox/FlushPolicy.h"
-#include "dwio/nimble/velox/FlushPolicyFactory.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
+#include "dwio/nimble/writer/FlushPolicyFactory.h"
 
 namespace facebook::nimble {
 
