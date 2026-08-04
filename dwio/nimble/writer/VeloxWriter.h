@@ -20,6 +20,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/writer/BufferPolicy.h"
+#include "dwio/nimble/writer/NimbleFileMetadata.h"
 #include "dwio/nimble/writer/VeloxWriterOptions.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/RuntimeMetrics.h"
@@ -96,6 +97,15 @@ class VeloxWriter {
 
   /// Returns writer statistics.
   Stats stats() const;
+
+  /// Snapshots the per-column statistics produced at file close into an owned
+  /// FileMetadata. Returns nullptr when statistics collection is disabled, in
+  /// which case downstream stats aggregation yields an empty result.
+  std::unique_ptr<NimbleFileMetadata> buildFileMetadata() const;
+
+  /// Publishes the writer's timing breakdown to the Velox driver thread-local
+  /// runtime stats. Intended to be called once, at file close.
+  void reportRuntimeStats() const;
 
  private:
   struct DenseIndexWriter {
@@ -251,6 +261,10 @@ class VeloxWriter {
   // storage is omitted.
   const std::vector<velox::column_index_t> storedInputColumnIndices_;
   const std::shared_ptr<const velox::dwio::common::TypeWithId> schema_;
+  // Flat row type of the file, kept for the closed-file metadata: the consumer
+  // rebuilds a TypeWithId tree from it to line statistics up with pre-order
+  // node ids.
+  const velox::RowTypePtr rowType_;
   MemoryPoolHolder pool_;
   MemoryPoolHolder encodingMemoryPool_;
   const std::unique_ptr<detail::WriterContext> context_;
