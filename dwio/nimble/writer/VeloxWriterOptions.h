@@ -31,6 +31,7 @@
 
 #include <set>
 #include "velox/common/base/SpillConfig.h"
+#include "velox/common/io/IoStatistics.h"
 #include "velox/type/Type.h"
 
 namespace facebook::nimble {
@@ -328,6 +329,12 @@ struct VeloxWriterOptions {
       reclaimerFactory = []() { return nullptr; };
 
   const velox::common::SpillConfig* spillConfig{nullptr};
+
+  /// Sink-level IO counters that the writer accumulates written bytes and
+  /// write wall time into, as deltas, on every write, flush and close. Not
+  /// owned; must outlive the writer. Left null (the default) by callers that do
+  /// not participate in Velox operator-level IO accounting.
+  velox::io::IoStatistics* ioStatistics{nullptr};
 
   /// If provided, internal encoding operations will happen in parallel using
   /// the specified executor.

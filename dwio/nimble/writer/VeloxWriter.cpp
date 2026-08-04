@@ -1229,15 +1229,18 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     // inputs across writes and emits stripe-ready row ranges. Policies
     // that need a specific input shape (e.g. plain RowVector for column
     // inspection) validate internally.
+    bool flushed = false;
     if (bufferPolicy_ != nullptr) {
       bufferPolicy_->bufferInput(input);
-      return flushInputBuffers(/*finalize=*/false);
+      flushed = flushInputBuffers(/*finalize=*/false);
+    } else {
+      // Legacy FlushPolicy path: append the whole batch to the writer's stream
+      // buffers, then consult shouldFlush.
+      writeBatch(input);
+      flushed = evaluateFlushPolicy();
     }
-
-    // Legacy FlushPolicy path: append the whole batch to the writer's stream
-    // buffers, then consult shouldFlush.
-    writeBatch(input);
-    return evaluateFlushPolicy();
+    updateIoStatistics();
+    return flushed;
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
     context_->logger()->logException(LogOperation::Write, e.what());
@@ -1514,6 +1517,7 @@ void VeloxWriter::close() {
       tabletWriter_->close();
       file_->close();
       context_->setBytesWritten(file_->size());
+      updateIoStatistics();
 
       const auto stats = this->stats();
       // TODO: compute and populate input size.
@@ -1549,6 +1553,7 @@ void VeloxWriter::flush() {
 
   try {
     writeStripe();
+    updateIoStatistics();
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
     context_->logger()->logException(LogOperation::Flush, e.what());
@@ -1560,6 +1565,21 @@ void VeloxWriter::flush() {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+void VeloxWriter::updateIoStatistics() {
+  const auto stats = this->stats();
+  if (auto* ioStatistics = context_->options().ioStatistics;
+      ioStatistics != nullptr) {
+    NIMBLE_CHECK_GE(stats.writeWallTimeNs, reportedWriteWallTimeNs_);
+    NIMBLE_CHECK_GE(stats.writtenBytes, reportedBytesWritten_);
+    ioStatistics->incWriteIOTimeUs(
+        (stats.writeWallTimeNs - reportedWriteWallTimeNs_) / 1'000);
+    ioStatistics->incRawBytesWritten(
+        stats.writtenBytes - reportedBytesWritten_);
+  }
+  reportedWriteWallTimeNs_ = stats.writeWallTimeNs;
+  reportedBytesWritten_ = stats.writtenBytes;
 }
 
 void VeloxWriter::ensureEncodingBuffer() {
