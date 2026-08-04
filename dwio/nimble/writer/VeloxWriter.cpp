@@ -49,6 +49,9 @@
 #include "dwio/nimble/writer/FlushPolicy.h"
 #include "dwio/nimble/writer/StreamChunker.h"
 #include "folly/container/F14Map.h"
+#include "velox/common/base/Counters.h"
+#include "velox/common/base/StatsReporter.h"
+#include "velox/common/base/SuccinctPrinter.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/CpuWallTimer.h"
@@ -1112,9 +1115,21 @@ VeloxWriter::VeloxWriter(
       pool_{MemoryPoolHolder::create(
           pool,
           [&](auto& pool) {
+            // Velox rejects a child reclaimer whose parent has none, so only
+            // install one when the parent pool participates in arbitration.
+            // There, prefer the writer's own: it subsumes a plain
+            // exec::MemoryReclaimer and additionally frees memory by flushing a
+            // stripe. `this` is still under construction, but the reclaimer
+            // only dereferences it once arbitration runs.
+            auto reclaimer = options.reclaimerFactory();
+            if (pool.reclaimer() != nullptr) {
+              if (auto writerReclaimer = makeMemoryReclaimer()) {
+                reclaimer = std::move(writerReclaimer);
+              }
+            }
             return pool.addAggregateChild(
                 fmt::format("nimble_writer_{}", folly::Random::rand64()),
-                options.reclaimerFactory());
+                std::move(reclaimer));
           })},
       encodingMemoryPool_{MemoryPoolHolder::create(
           *pool_,
@@ -1219,11 +1234,14 @@ VeloxWriter::VeloxWriter(
         *rootWriter_->typeBuilder(),
         context_->options().encodingLayoutTree.value());
   }
+
+  setState(State::kRunning);
 }
 
 VeloxWriter::~VeloxWriter() {}
 
-bool VeloxWriter::write(const velox::VectorPtr& input) {
+void VeloxWriter::write(const velox::VectorPtr& input) {
+  checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
   }
@@ -1235,18 +1253,16 @@ bool VeloxWriter::write(const velox::VectorPtr& input) {
     // inputs across writes and emits stripe-ready row ranges. Policies
     // that need a specific input shape (e.g. plain RowVector for column
     // inspection) validate internally.
-    bool flushed = false;
     if (bufferPolicy_ != nullptr) {
       bufferPolicy_->bufferInput(input);
-      flushed = flushInputBuffers(/*finalize=*/false);
+      flushInputBuffers(/*finalize=*/false);
     } else {
       // Legacy FlushPolicy path: append the whole batch to the writer's stream
       // buffers, then consult shouldFlush.
       writeBatch(input);
-      flushed = evaluateFlushPolicy();
+      evaluateFlushPolicy();
     }
     updateIoStatistics();
-    return flushed;
   } catch (const std::exception& e) {
     lastException_ = std::current_exception();
     context_->logger()->logException(LogOperation::Write, e.what());
@@ -1496,63 +1512,81 @@ bool VeloxWriter::shouldChunk(FlushPolicy* policy) const {
           .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
 }
 
-void VeloxWriter::close() {
+std::unique_ptr<velox::dwio::common::FileMetadata> VeloxWriter::close() {
+  checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
   }
 
-  if (file_ != nullptr) {
-    try {
-      if (bufferPolicy_ != nullptr) {
-        // Finalize signals "no more input" so the policy emits any residual
-        // range as the tail stripe.
-        flushInputBuffers(/*finalize=*/true);
-      }
-      writeStripe();
-      rootWriter_->close();
-      if (context_->options().enableStatsCollection) {
-        context_->finalizeStatsCollectors();
-      }
-
-      writeMetadata();
-      if (context_->options().enableStatsCollection) {
-        writeColumnStats();
-      }
-      writeSchema();
-
-      tabletWriter_->close();
-      file_->close();
-      context_->setBytesWritten(file_->size());
-      updateIoStatistics();
-
-      const auto stats = this->stats();
-      // TODO: compute and populate input size.
-      FileCloseMetrics metrics{
-          .rowCount = context_->rowsInFile(),
-          .stripeCount = context_->getStripeIndex(),
-          .fileSize = context_->bytesWritten(),
-          .encodingCpuNs = stats.encodingCpuTimeNs,
-          .encodingWallNs = stats.encodingWallTimeNs};
-      context_->logger()->logFileClose(metrics);
-      file_ = nullptr;
-    } catch (const std::exception& e) {
-      lastException_ = std::current_exception();
-      context_->logger()->logException(LogOperation::Close, e.what());
-      file_ = nullptr;
-      throw;
-    } catch (...) {
-      lastException_ = std::current_exception();
-      context_->logger()->logException(
-          LogOperation::Close,
-          folly::to<std::string>(
-              folly::exceptionStr(std::current_exception())));
-      file_ = nullptr;
-      throw;
+  // After checkRunning() and the lastException_ guard above, file_ is always
+  // set: the constructor asserts it, and the paths below null it out only while
+  // transitioning to kClosed or storing lastException_, so a later call is
+  // rejected by one of those guards before reaching here.
+  NIMBLE_CHECK_NOT_NULL(file_);
+  try {
+    if (bufferPolicy_ != nullptr) {
+      // Finalize signals "no more input" so the policy emits any residual
+      // range as the tail stripe.
+      flushInputBuffers(/*finalize=*/true);
     }
+    writeStripe();
+    rootWriter_->close();
+    if (context_->options().enableStatsCollection) {
+      context_->finalizeStatsCollectors();
+    }
+
+    writeMetadata();
+    if (context_->options().enableStatsCollection) {
+      writeColumnStats();
+    }
+    writeSchema();
+
+    tabletWriter_->close();
+    file_->close();
+    context_->setBytesWritten(file_->size());
+    updateIoStatistics();
+
+    const auto stats = this->stats();
+    // TODO: compute and populate input size.
+    FileCloseMetrics metrics{
+        .rowCount = context_->rowsInFile(),
+        .stripeCount = context_->getStripeIndex(),
+        .fileSize = context_->bytesWritten(),
+        .encodingCpuNs = stats.encodingCpuTimeNs,
+        .encodingWallNs = stats.encodingWallTimeNs};
+    context_->logger()->logFileClose(metrics);
+    file_ = nullptr;
+
+    setState(State::kClosed);
+    reportRuntimeStats();
+    return buildFileMetadata();
+  } catch (const std::exception& e) {
+    lastException_ = std::current_exception();
+    context_->logger()->logException(LogOperation::Close, e.what());
+    file_ = nullptr;
+    throw;
+  } catch (...) {
+    lastException_ = std::current_exception();
+    context_->logger()->logException(
+        LogOperation::Close,
+        folly::to<std::string>(folly::exceptionStr(std::current_exception())));
+    file_ = nullptr;
+    throw;
   }
 }
 
+bool VeloxWriter::finish() {
+  checkRunning();
+  return true;
+}
+
+void VeloxWriter::abort() {
+  checkRunning();
+  setState(State::kAborted);
+}
+
 void VeloxWriter::flush() {
+  checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
   }
@@ -1571,6 +1605,66 @@ void VeloxWriter::flush() {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+bool VeloxWriter::reclaimableBytes(
+    const velox::memory::MemoryPool& pool,
+    uint64_t& reclaimableBytes) const {
+  reclaimableBytes = 0;
+  if (!canReclaim()) {
+    return false;
+  }
+  const auto reservedBytes = pool.reservedBytes();
+  if (reservedBytes <
+      context_->options().spillConfig->writerFlushThresholdSize) {
+    return false;
+  }
+  reclaimableBytes = reservedBytes;
+  return true;
+}
+
+uint64_t VeloxWriter::reclaimBytes(
+    velox::memory::MemoryPool* pool,
+    velox::memory::MemoryReclaimer::Stats& stats) {
+  VELOX_CHECK(canReclaim());
+
+  if (!isRunning()) {
+    LOG(WARNING) << "Can't reclaim from a not running nimble writer: "
+                 << pool->name() << ", state: " << state();
+    ++stats.numNonReclaimableAttempts;
+    return 0;
+  }
+
+  const auto flushThreshold =
+      context_->options().spillConfig->writerFlushThresholdSize;
+  return velox::memory::MemoryReclaimer::run(
+      [&]() {
+        int64_t reclaimedBytes{0};
+        {
+          velox::memory::ScopedReclaimedBytesRecorder recorder(
+              pool, &reclaimedBytes);
+          const auto reservedBytes = pool->reservedBytes();
+          if (reservedBytes < flushThreshold) {
+            RECORD_METRIC_VALUE(velox::kMetricMemoryNonReclaimableCount);
+            LOG(WARNING) << "Can't reclaim memory from nimble writer pool "
+                         << pool->name()
+                         << " which doesn't have sufficient memory to flush, "
+                            "writer memory usage: "
+                         << velox::succinctBytes(reservedBytes)
+                         << ", writer flush memory threshold: "
+                         << velox::succinctBytes(flushThreshold);
+            ++stats.numNonReclaimableAttempts;
+          } else {
+            flush();
+          }
+        }
+        return reclaimedBytes;
+      },
+      stats);
+}
+
+bool VeloxWriter::canReclaim() const {
+  return context_->options().spillConfig != nullptr;
 }
 
 namespace {

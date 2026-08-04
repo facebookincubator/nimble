@@ -23,6 +23,7 @@ add_library(
   StreamChunker.cpp
   VeloxWriter.cpp
   VeloxWriterDefaultMetadataOSS.cpp
+  VeloxWriterMemoryReclaimerOSS.cpp
 )
 target_link_libraries(
   nimble_velox_writer
