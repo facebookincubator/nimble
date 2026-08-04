@@ -1103,6 +1103,12 @@ VeloxWriter::VeloxWriter(
               ? storedInputColumnIndices(type, options)
               : std::vector<velox::column_index_t>{}},
       schema_{velox::dwio::common::TypeWithId::create(storedDataType_)},
+      // Tracks storedDataType_ rather than the input type so the metadata's
+      // pre-order node ids line up with the stats, which come from the field
+      // writers and so only cover the stored columns.
+      // TODO(T283224280): report statistics for omitted cluster index key
+      // columns too, instead of leaving them out of the file metadata.
+      rowType_{velox::asRowType(storedDataType_)},
       pool_{MemoryPoolHolder::create(
           pool,
           [&](auto& pool) {
@@ -1565,6 +1571,92 @@ void VeloxWriter::flush() {
         folly::to<std::string>(folly::exceptionStr(std::current_exception())));
     throw;
   }
+}
+
+namespace {
+
+// Copies the values needed for Iceberg manifest statistics out of a
+// (non-owning) NIMBLE statistics view into an owned snapshot. Unwraps
+// deduplicated statistics to reach the typed min/max of the base column.
+NimbleFileMetadata::ColumnStats toColumnStatsSnapshot(
+    const ColumnStatistics* stat) {
+  NimbleFileMetadata::ColumnStats snapshot;
+  if (stat == nullptr) {
+    return snapshot;
+  }
+
+  snapshot.valueCount = stat->getValueCount();
+  snapshot.nullCount = stat->getNullCount();
+  snapshot.physicalSize = stat->getPhysicalSize();
+
+  const ColumnStatistics* typed = stat;
+  if (const auto* deduplicated = stat->as<DeduplicatedColumnStatistics>()) {
+    typed = deduplicated->getBaseStatistics();
+  }
+
+  if (const auto* integral = typed->as<IntegralStatistics>()) {
+    snapshot.integralMin = integral->getMin();
+    snapshot.integralMax = integral->getMax();
+  } else if (const auto* floating = typed->as<FloatingPointStatistics>()) {
+    snapshot.floatingMin = floating->getMin();
+    snapshot.floatingMax = floating->getMax();
+  } else if (const auto* string = typed->as<StringStatistics>()) {
+    snapshot.stringMin = string->getMin();
+    snapshot.stringMax = string->getMax();
+  }
+  return snapshot;
+}
+
+} // namespace
+
+std::unique_ptr<NimbleFileMetadata> VeloxWriter::buildFileMetadata() const {
+  const auto& columnStats = stats().columnStats;
+  if (columnStats.empty()) {
+    return nullptr;
+  }
+
+  std::vector<NimbleFileMetadata::ColumnStats> snapshots;
+  snapshots.reserve(columnStats.size());
+  for (const auto* stat : columnStats) {
+    snapshots.push_back(toColumnStatsSnapshot(stat));
+  }
+
+  const int64_t numRows = columnStats.front() != nullptr
+      ? static_cast<int64_t>(
+            columnStats.front()->getValueCount() +
+            columnStats.front()->getNullCount())
+      : 0;
+  return std::make_unique<NimbleFileMetadata>(
+      rowType_, numRows, std::move(snapshots));
+}
+
+void VeloxWriter::reportRuntimeStats() const {
+  const auto stats = this->stats();
+  const auto reportTiming = [](std::string_view prefix,
+                               uint64_t cpuTimeNs,
+                               uint64_t wallTimeNs) {
+    velox::addThreadLocalRuntimeStat(
+        fmt::format("nimble.{}CpuNanos", prefix),
+        velox::RuntimeCounter(cpuTimeNs, velox::RuntimeCounter::Unit::kNanos));
+    velox::addThreadLocalRuntimeStat(
+        fmt::format("nimble.{}WallNanos", prefix),
+        velox::RuntimeCounter(wallTimeNs, velox::RuntimeCounter::Unit::kNanos));
+  };
+  reportTiming("encoding", stats.encodingCpuTimeNs, stats.encodingWallTimeNs);
+  reportTiming("write", stats.writeCpuTimeNs, stats.writeWallTimeNs);
+  velox::addThreadLocalRuntimeStat(
+      "nimble.ingestionCpuNanos",
+      velox::RuntimeCounter(
+          stats.ingestionCpuTimeNs, velox::RuntimeCounter::Unit::kNanos));
+  velox::addThreadLocalRuntimeStat(
+      "nimble.encodingSelectionCpuNanos",
+      velox::RuntimeCounter(
+          stats.encodingSelectionCpuTimeNs,
+          velox::RuntimeCounter::Unit::kNanos));
+
+  velox::setThreadLocalRuntimeStat("nimble.rowsPerStripe", stats.rowsPerStripe);
+  velox::setThreadLocalRuntimeStat(
+      "nimble.chunkSizeBytes", stats.chunkSizeBytes);
 }
 
 void VeloxWriter::updateIoStatistics() {
