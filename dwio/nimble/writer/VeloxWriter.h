@@ -206,6 +206,12 @@ class VeloxWriter {
       bool ensureFullChunks = false,
       bool lastChunk = false);
 
+  // Forwards the written-bytes and write-wall-time accrued since the previous
+  // call to `options.ioStatistics`. No-op when the caller supplied no counters,
+  // but the high-water marks are tracked either way so a caller that only reads
+  // them at close still sees consistent deltas.
+  void updateIoStatistics();
+
   void writeMetadata();
   void writeColumnStats();
   void writeSchema();
@@ -270,6 +276,11 @@ class VeloxWriter {
   std::vector<std::unique_ptr<EncodingBufferPool>> encodingBufferPools_;
   std::vector<Stream> encodedStreams_;
   std::exception_ptr lastException_;
+
+  // Totals already reported to `options.ioStatistics`; the next update forwards
+  // only what accrued beyond these.
+  uint64_t reportedBytesWritten_{0};
+  uint64_t reportedWriteWallTimeNs_{0};
 };
 
 } // namespace facebook::nimble
