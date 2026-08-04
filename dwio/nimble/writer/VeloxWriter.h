@@ -25,7 +25,9 @@
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/file/File.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/dwio/common/TypeWithId.h"
+#include "velox/dwio/common/Writer.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/DecodedVector.h"
 
@@ -40,8 +42,13 @@ class WriterContext;
 
 } // namespace detail
 
+// Drives the writer's reclaim path during memory arbitration. Defined once per
+// build flavour, since the internal one derives from
+// velox::exec::MemoryReclaimer and velox/exec is not part of the OSS build.
+class VeloxWriterMemoryReclaimer;
+
 /// Writer that takes velox vector as input and produces nimble file.
-class VeloxWriter {
+class VeloxWriter : public velox::dwio::common::Writer {
  public:
   VeloxWriter(
       const velox::TypePtr& type,
@@ -49,14 +56,24 @@ class VeloxWriter {
       velox::memory::MemoryPool& pool,
       VeloxWriterOptions options);
 
-  ~VeloxWriter();
+  ~VeloxWriter() override;
 
-  /// Return value of 'true' means this write ended with a flush.
-  bool write(const velox::VectorPtr& input);
+  void write(const velox::VectorPtr& input) override;
 
-  void close();
+  void flush() override;
 
-  void flush();
+  /// Nimble writes each stripe eagerly, so there is no deferred work to yield
+  /// on; the finish always completes in one call.
+  bool finish() override;
+
+  /// Flushes the trailing stripe, writes the footer and closes the file.
+  /// Returns a NimbleFileMetadata carrying an owned snapshot of the per-column
+  /// statistics, or nullptr when statistics collection is disabled.
+  std::unique_ptr<velox::dwio::common::FileMetadata> close() override;
+
+  /// Abandons the file without writing a footer, leaving the partially written
+  /// bytes for the caller (or the sink) to discard.
+  void abort() override;
 
   struct Stats {
     /// Total bytes written to the file.
@@ -98,20 +115,48 @@ class VeloxWriter {
   /// Returns writer statistics.
   Stats stats() const;
 
-  /// Snapshots the per-column statistics produced at file close into an owned
-  /// FileMetadata. Returns nullptr when statistics collection is disabled, in
-  /// which case downstream stats aggregation yields an empty result.
-  std::unique_ptr<NimbleFileMetadata> buildFileMetadata() const;
-
-  /// Publishes the writer's timing breakdown to the Velox driver thread-local
-  /// runtime stats. Intended to be called once, at file close.
-  void reportRuntimeStats() const;
-
  private:
+  // Reaches reclaimableBytes()/reclaimBytes() below, so that memory
+  // arbitration does not require widening the writer's public API.
+  friend class VeloxWriterMemoryReclaimer;
+
+  // Reports the bytes the writer could release by flushing its buffered
+  // stripe, or false when a flush would free too little to be worth the
+  // encode cost.
+  bool reclaimableBytes(
+      const velox::memory::MemoryPool& pool,
+      uint64_t& reclaimableBytes) const;
+
+  // Releases memory by flushing the buffered stripe. Returns the bytes freed,
+  // or 0 when the writer is no longer running or holds too little to flush.
+  uint64_t reclaimBytes(
+      velox::memory::MemoryPool* pool,
+      velox::memory::MemoryReclaimer::Stats& stats);
+
   struct DenseIndexWriter {
     std::string name;
     std::unique_ptr<index::IndexWriter> writer;
   };
+
+  // True when memory arbitration can reclaim from this writer, which requires
+  // the caller to have supplied a spill config.
+  bool canReclaim() const;
+
+  // Builds the reclaimer installed on the writer's aggregate pool. Defined
+  // once per build flavour: the internal build returns one derived from
+  // velox::exec::MemoryReclaimer so arbitration suspends the Velox Driver,
+  // while the OSS build returns nullptr because velox/exec is not part of
+  // VELOX_BUILD_MINIMAL_WITH_DWIO.
+  std::unique_ptr<velox::memory::MemoryReclaimer> makeMemoryReclaimer();
+
+  // Snapshots the per-column statistics produced at file close into an owned
+  // FileMetadata. Returns nullptr when statistics collection is disabled, in
+  // which case downstream stats aggregation yields an empty result.
+  std::unique_ptr<NimbleFileMetadata> buildFileMetadata() const;
+
+  // Publishes the writer's timing breakdown to the Velox driver thread-local
+  // runtime stats at file close.
+  void reportRuntimeStats() const;
 
   static std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
       const VeloxWriterOptions& options,
