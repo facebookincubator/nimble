@@ -25,7 +25,7 @@
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "folly/Executor.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"

@@ -398,7 +398,7 @@ Owns stats as member; populated during write/flush/close
 
 incremented during write(), flush(), close()
 
-dwio/nimble/velox/VeloxWriter.h:61 (Nimble)
+dwio/nimble/writer/VeloxWriter.h:61 (Nimble)
 
 Timing:
 

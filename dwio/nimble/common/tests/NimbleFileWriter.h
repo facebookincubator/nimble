@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::nimble::test {

@@ -20,8 +20,8 @@
 
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/TabletReaderCache.h"
-#include "dwio/nimble/velox/FlushPolicy.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/FlushPolicy.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 #include "velox/common/file/tests/TestUtils.h"

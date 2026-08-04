@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/velox/FlushPolicyFactory.h"
+#include "dwio/nimble/writer/FlushPolicyFactory.h"
 
 #include <cstdint>
 #include <memory>

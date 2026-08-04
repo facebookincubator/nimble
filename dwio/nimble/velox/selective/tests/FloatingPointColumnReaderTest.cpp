@@ -17,7 +17,7 @@
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/dwio/common/TypeUtils.h"

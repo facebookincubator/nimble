@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 

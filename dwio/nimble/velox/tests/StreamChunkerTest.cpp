@@ -20,8 +20,8 @@
 #include <utility>
 
 #include "dwio/nimble/velox/SchemaBuilder.h"
-#include "dwio/nimble/velox/StreamChunker.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "dwio/nimble/writer/StreamChunker.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"
