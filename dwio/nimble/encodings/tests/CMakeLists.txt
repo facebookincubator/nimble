@@ -56,6 +56,7 @@ add_executable(
   RLEEncodingViewTest.cpp
   RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
+  SharedDictionaryTypesTest.cpp
   SimdForBitpackEncodingViewTest.cpp
   SliceEncodingTest.cpp
   SparseBoolEncodingViewTest.cpp

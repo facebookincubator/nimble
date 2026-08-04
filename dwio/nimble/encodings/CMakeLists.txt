@@ -25,6 +25,7 @@ add_library(
   MainlyConstantEncoding.cpp
   PrefixEncoding.cpp
   RLEEncoding.cpp
+  SharedDictionaryTypes.cpp
   SparseBoolEncoding.cpp
   TrivialEncoding.cpp
   common/Encoding.cpp
