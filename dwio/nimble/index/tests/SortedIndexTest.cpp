@@ -30,7 +30,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"

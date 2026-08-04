@@ -17,7 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/BufferGrowthPolicy.h"
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 
 namespace facebook::nimble {
 

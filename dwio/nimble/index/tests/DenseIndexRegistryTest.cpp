@@ -27,7 +27,7 @@
 
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/io/Options.h"

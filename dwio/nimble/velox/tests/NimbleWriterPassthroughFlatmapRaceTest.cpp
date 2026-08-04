@@ -39,8 +39,8 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"

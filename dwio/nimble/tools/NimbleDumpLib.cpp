@@ -34,11 +34,11 @@
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "dwio/nimble/tools/NimbleDumpLib.h"
-#include "dwio/nimble/velox/EncodingLayoutTree.h"
 #include "dwio/nimble/velox/StatsGenerated.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/stats/ColumnStatistics.h"
 #include "dwio/nimble/velox/stats/VectorizedStatistics.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "folly/cli/NestedCommandLineApp.h"
 #include "velox/common/file/FileSystems.h"
 

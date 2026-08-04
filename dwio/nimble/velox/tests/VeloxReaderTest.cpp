@@ -29,7 +29,7 @@
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"

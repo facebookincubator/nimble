@@ -25,7 +25,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "folly/synchronization/Latch.h"
 #include "velox/common/file/File.h"

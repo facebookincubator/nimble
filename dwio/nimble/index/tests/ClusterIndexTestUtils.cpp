@@ -25,7 +25,7 @@
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/String.h"
 #include "folly/json/json.h"
 #include "velox/common/file/FileSystems.h"

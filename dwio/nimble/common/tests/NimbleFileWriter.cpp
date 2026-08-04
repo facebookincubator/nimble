@@ -15,8 +15,8 @@
  */
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
-#include "dwio/nimble/velox/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriterOptions.h"
 
 namespace facebook::nimble::test {
 

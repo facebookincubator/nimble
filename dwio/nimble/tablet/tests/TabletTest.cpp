@@ -45,7 +45,7 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
-#include "dwio/nimble/velox/VeloxWriter.h"
+#include "dwio/nimble/writer/VeloxWriter.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"

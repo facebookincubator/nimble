@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/velox/StreamChunker.h"
+#include "dwio/nimble/writer/StreamChunker.h"
 
 namespace facebook::nimble {
 template <typename T>

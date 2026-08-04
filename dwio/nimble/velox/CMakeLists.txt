@@ -172,36 +172,6 @@ target_link_libraries(
   velox_dwio_common
 )
 
-add_library(
-  nimble_velox_writer
-  BufferPolicy.h
-  EncodingLayoutTree.cpp
-  FlushPolicy.cpp
-  VeloxWriter.cpp
-  ChunkedStreamWriter.cpp
-  VeloxWriterDefaultMetadataOSS.cpp
-  StreamChunker.cpp
-)
-target_link_libraries(
-  nimble_velox_writer
-  nimble_column_stats
-  nimble_column_stats_utils
-  nimble_common
-  nimble_encodings
-  nimble_index
-  nimble_tablet_writer
-  nimble_velox_field_writer
-  nimble_velox_layout_planner
-  nimble_velox_metadata_fb
-  nimble_velox_schema_serialization
-  nimble_velox_stats_fb
-  raw_size_utils
-  velox_dwio_common
-  velox_key_encoder
-  absl::flat_hash_map
-  Folly::folly
-)
-
 add_subdirectory(index)
 add_subdirectory(selective)
 add_subdirectory(stats)

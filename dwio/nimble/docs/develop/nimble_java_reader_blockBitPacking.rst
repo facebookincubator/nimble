@@ -45,7 +45,7 @@ Implication:
      - xldb/alpha_jni/cpp/AlphaWriterJNI.cpp
    * - C++
      - VeloxWriter
-     - dwio/nimble/velox/VeloxWriter.h
+     - dwio/nimble/writer/VeloxWriter.h
 
 2 Read Path
 -----------
