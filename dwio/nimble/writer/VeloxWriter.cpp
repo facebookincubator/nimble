@@ -366,6 +366,34 @@ SchemaAttributes remapSchemaAttributes(
   return remappedAttributes;
 }
 
+std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>
+encodingLayouts(const EncodingLayoutTree& tree) {
+  std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>
+      layouts;
+  for (const auto identifier : tree.encodingLayoutIdentifiers()) {
+    layouts.emplace(identifier, *tree.encodingLayout(identifier));
+  }
+  return layouts;
+}
+
+EncodingLayoutTree remapEncodingLayoutTree(
+    const EncodingLayoutTree& tree,
+    const std::vector<velox::column_index_t>& storedInputColumnIndices) {
+  std::vector<EncodingLayoutTree> children;
+  children.reserve(storedInputColumnIndices.size());
+  for (const auto inputIndex : storedInputColumnIndices) {
+    if (inputIndex >= tree.childrenCount()) {
+      break;
+    }
+    children.emplace_back(tree.child(inputIndex));
+  }
+  return EncodingLayoutTree{
+      tree.schemaKind(),
+      encodingLayouts(tree),
+      tree.name(),
+      std::move(children)};
+}
+
 VeloxWriterOptions storedWriterOptions(
     const velox::TypePtr& inputType,
     const velox::TypePtr& storedType,
@@ -385,6 +413,11 @@ VeloxWriterOptions storedWriterOptions(
         storedType,
         storedInputColumnIndices,
         options.schemaAttributes);
+  }
+
+  if (options.encodingLayoutTree.has_value()) {
+    options.encodingLayoutTree.emplace(remapEncodingLayoutTree(
+        *options.encodingLayoutTree, storedInputColumnIndices));
   }
 
   if (!options.featureReordering.has_value()) {

@@ -1438,6 +1438,77 @@ TEST_F(
   }
 }
 
+TEST_F(VeloxWriterTest, encodingLayoutTreeWithOmittedClusterIndexKey) {
+  velox::test::VectorMaker vectorMaker{leafPool_.get()};
+  auto vector = vectorMaker.rowVector(
+      {"key", "flatmap"},
+      {
+          vectorMaker.flatVector<int64_t>({1}),
+          vectorMaker.mapVector<int32_t, int32_t>(
+              1,
+              [](auto) { return 1; },
+              [](auto, auto) { return 1; },
+              [](auto, auto) { return 10; },
+              [](auto) { return false; }),
+      });
+
+  auto makeOptions = [](nimble::EncodingLayoutTree encodingLayoutTree) {
+    nimble::VeloxWriterOptions options;
+    options.flatMapColumns = {{"flatmap", {}}};
+    options.clusterIndexConfig =
+        nimble::index::ClusterIndexConfigBuilder{}
+            .withKeyColumns({"key"})
+            .withSortOrders({nimble::SortOrder{.ascending = true}})
+            .withEnforceKeyOrder(true)
+            .build();
+    options.experimentalOmitClusterIndexKeyColumnStorage = true;
+    options.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
+    return options;
+  };
+
+  std::string file;
+  {
+    nimble::VeloxWriter writer(
+        vector->type(),
+        std::make_unique<velox::InMemoryWriteFile>(&file),
+        *rootPool_,
+        makeOptions(
+            nimble::EncodingLayoutTree{
+                nimble::Kind::Row,
+                {},
+                "",
+                {
+                    {nimble::Kind::Scalar, {}, "key"},
+                    {nimble::Kind::FlatMap, {}, "flatmap"},
+                }}));
+    writer.write(vector);
+    writer.close();
+  }
+
+  auto readFile = std::make_shared<velox::InMemoryReadFile>(file);
+  nimble::VeloxReader reader(readFile.get(), *leafPool_);
+  const auto& schema = reader.schema()->asRow();
+  ASSERT_EQ(schema.childrenCount(), 1);
+  EXPECT_EQ(schema.nameAt(0), "flatmap");
+
+  std::string invalidFile;
+  NIMBLE_ASSERT_THROW(
+      nimble::VeloxWriter(
+          vector->type(),
+          std::make_unique<velox::InMemoryWriteFile>(&invalidFile),
+          *rootPool_,
+          makeOptions(
+              nimble::EncodingLayoutTree{
+                  nimble::Kind::Row,
+                  {},
+                  "",
+                  {
+                      {nimble::Kind::Scalar, {}, "key"},
+                      {nimble::Kind::Scalar, {}, "flatmap"},
+                  }})),
+      "Incompatible encoding layout node. Expecting flatmap node.");
+}
+
 TEST_F(VeloxWriterTest, duplicateFlatmapKey) {
   velox::test::VectorMaker vectorMaker{leafPool_.get()};
   // Vector with constant but duplicate key set. Potentially omitting in map
