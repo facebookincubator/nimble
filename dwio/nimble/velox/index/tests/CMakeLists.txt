@@ -19,9 +19,9 @@ target_link_libraries(
   nimble_index_projector
   nimble_tablet_reader_cache
   nimble_deserializer
-  nimble_deserializer_impl
+  nimble_serialization_header
   nimble_serializer
-  nimble_serializer_impl
+  nimble_stream_data_writer
   nimble_velox_common
   nimble_velox_writer
   nimble_velox_selective

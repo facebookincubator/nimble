@@ -14,33 +14,18 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/serializer/DeserializerImpl.h"
+#include "dwio/nimble/serializer/StreamData.h"
 
 #include <lz4.h>
+#include <zstd.h>
 
-#include "dwio/nimble/common/ChunkHeader.h"
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
-#include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
-#include "dwio/nimble/serializer/SerializationHeader.h"
+#include "dwio/nimble/serializer/ZstdContext.h"
 
 namespace facebook::nimble::serde {
-
-namespace {
-ZSTD_DCtx* getThreadLocalDCtx() {
-  struct DCtxDeleter {
-    void operator()(ZSTD_DCtx* ctx) const {
-      ZSTD_freeDCtx(ctx);
-    }
-  };
-  static thread_local std::unique_ptr<ZSTD_DCtx, DCtxDeleter> ctx{
-      ZSTD_createDCtx()};
-  NIMBLE_CHECK(ctx != nullptr, "Failed to create ZSTD decompression context");
-  return ctx.get();
-}
-} // namespace
 
 StreamData::StreamData(
     ScalarKind kind,
@@ -165,7 +150,7 @@ void StreamData::decompress() {
       ensureDecompressionBuffer(decompressedSize);
       auto& buffer = decompressionBuf();
       const auto ret = ZSTD_decompressDCtx(
-          getThreadLocalDCtx(),
+          detail::getThreadLocalDCtx(),
           buffer->asMutable<char>(),
           decompressedSize,
           pos_,
@@ -379,174 +364,6 @@ StreamData::DecodeResult StreamData::decodeLegacy(
       .numOutputRows = rows,
       .nonNullOutputRows = rows,
       .segmentExhausted = pos_ == end_};
-}
-
-StreamDataParser::StreamDataParser(
-    velox::memory::MemoryPool* pool,
-    const DeserializerOptions& options)
-    : options_{options}, pool_{pool} {
-  NIMBLE_CHECK_NOT_NULL(pool_);
-}
-
-uint32_t StreamDataParser::initialize(std::string_view data) {
-  pos_ = data.data();
-  end_ = data.end();
-  auto header = readSerializationHeader(pos_, end_, options_.hasHeader);
-  version_ = header.version;
-  requiresNullBarrier_ = header.requiresNullBarrier;
-  rowRange_ = header.rowRange;
-  return header.rowCount;
-}
-
-std::string_view StreamDataParser::stripChunkHeaders(
-    std::string_view streamData) {
-  const auto* pos = streamData.data();
-  const auto* end = pos + streamData.size();
-
-  NIMBLE_CHECK_GE(
-      streamData.size(), kChunkHeaderSize, "Truncated chunk header in stream");
-
-  if (auto result = tryFastChunkHeaderStrip(pos, end)) {
-    NIMBLE_CHECK(
-        !result->empty(), "Chunked stream must have a non-empty payload");
-    return *result;
-  }
-  return slowChunkHeaderStrip(pos, end);
-}
-
-std::string_view StreamDataParser::slowChunkHeaderStrip(
-    const char* pos,
-    const char* end) {
-  // TODO: Consider using IOBuf chain to avoid concatenation for multi-chunk
-  // streams.
-  const auto payloadSize = strippedStreamSize(pos, end);
-  NIMBLE_CHECK_GT(
-      payloadSize, 0, "Chunked stream must have a non-empty payload");
-  auto buffer = velox::AlignedBuffer::allocateExact<char>(payloadSize, pool_);
-  auto* output = buffer->asMutable<char>();
-  auto* const outputEnd = output + payloadSize;
-  while (pos < end) {
-    NIMBLE_CHECK_GE(
-        static_cast<size_t>(end - pos),
-        kChunkHeaderSize,
-        "Truncated chunk header in stream");
-    const auto [chunkLength, compressionType] = readChunkHeader(pos);
-    NIMBLE_CHECK_LE(
-        chunkLength,
-        static_cast<uint32_t>(end - pos),
-        "Chunk data exceeds stream boundary");
-    appendChunkData(compressionType, pos, chunkLength, output);
-    pos += chunkLength;
-  }
-  NIMBLE_CHECK_EQ(output, outputEnd, "Stripped chunk size mismatch");
-  const auto* data = buffer->as<char>();
-  strippedStreamBuffers_.emplace_back(std::move(buffer));
-  return {data, payloadSize};
-}
-
-std::optional<std::string_view> StreamDataParser::tryFastChunkHeaderStrip(
-    const char* pos,
-    const char* end) {
-  const auto [chunkLength, compressionType] = readChunkHeader(pos);
-  NIMBLE_CHECK_LE(
-      chunkLength,
-      static_cast<uint32_t>(end - pos),
-      "Chunk data exceeds stream boundary");
-  // Single uncompressed chunk: return a view into the original data
-  // (zero-copy).
-  if (pos + chunkLength == end &&
-      compressionType == CompressionType::Uncompressed) {
-    return std::string_view{pos, chunkLength};
-  }
-  return std::nullopt;
-}
-
-size_t StreamDataParser::strippedStreamSize(const char* pos, const char* end) {
-  size_t size = 0;
-  while (pos < end) {
-    NIMBLE_CHECK_GE(
-        static_cast<size_t>(end - pos),
-        kChunkHeaderSize,
-        "Truncated chunk header in stream");
-    const auto [chunkLength, compressionType] = readChunkHeader(pos);
-    NIMBLE_CHECK_LE(
-        chunkLength,
-        static_cast<uint32_t>(end - pos),
-        "Chunk data exceeds stream boundary");
-    size += decodedChunkSize(compressionType, pos, chunkLength);
-    pos += chunkLength;
-  }
-  return size;
-}
-
-size_t StreamDataParser::decodedChunkSize(
-    CompressionType compression,
-    const char* data,
-    uint32_t length) {
-  switch (compression) {
-    case CompressionType::Uncompressed:
-      return length;
-    case CompressionType::Zstd: {
-      const auto decompressedSize = ZSTD_getFrameContentSize(data, length);
-      NIMBLE_CHECK(
-          decompressedSize != ZSTD_CONTENTSIZE_ERROR &&
-              decompressedSize != ZSTD_CONTENTSIZE_UNKNOWN,
-          "Error determining decompressed size");
-      return decompressedSize;
-    }
-    case CompressionType::Lz4: {
-      NIMBLE_CHECK_GE(
-          length, sizeof(uint32_t), "Truncated LZ4 chunk size header");
-      const auto* pos = data;
-      return encoding::readUint32(pos);
-    }
-    default:
-      NIMBLE_UNSUPPORTED("Unsupported chunk compression {}", compression);
-  }
-}
-
-void StreamDataParser::appendChunkData(
-    CompressionType compression,
-    const char* data,
-    uint32_t length,
-    char*& output) {
-  switch (compression) {
-    case CompressionType::Uncompressed: {
-      std::memcpy(output, data, length);
-      output += length;
-      break;
-    }
-    case CompressionType::Zstd: {
-      const auto decompressedSize = decodedChunkSize(compression, data, length);
-      const auto ret = ZSTD_decompressDCtx(
-          getThreadLocalDCtx(), output, decompressedSize, data, length);
-      NIMBLE_CHECK(!ZSTD_isError(ret), "Error decompressing chunk data");
-      NIMBLE_CHECK_EQ(
-          ret, decompressedSize, "ZSTD chunk decompressed size mismatch");
-      output += decompressedSize;
-      break;
-    }
-    case CompressionType::Lz4: {
-      const auto decompressedSize = decodedChunkSize(compression, data, length);
-      const auto* pos = data;
-      encoding::readUint32(pos);
-      const auto compressedSize =
-          static_cast<size_t>(length - sizeof(uint32_t));
-      const auto ret = LZ4_decompress_safe(
-          pos,
-          output,
-          static_cast<int>(compressedSize),
-          static_cast<int>(decompressedSize));
-      NIMBLE_CHECK_EQ(
-          ret,
-          static_cast<int>(decompressedSize),
-          "LZ4 chunk decompressed size mismatch");
-      output += decompressedSize;
-      break;
-    }
-    default:
-      NIMBLE_UNSUPPORTED("Unsupported chunk compression {}", compression);
-  }
 }
 
 } // namespace facebook::nimble::serde

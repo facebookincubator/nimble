@@ -45,17 +45,6 @@
 namespace facebook::nimble::serde {
 namespace detail {
 
-/// Returns a default encoding selection policy for the given data type.
-/// Uses a static factory to avoid recreating the read factors vector on every
-/// call.
-FOLLY_ALWAYS_INLINE std::unique_ptr<EncodingSelectionPolicyBase>
-createDefaultEncodingPolicy(DataType dataType) {
-  static const ManualEncodingSelectionPolicyFactory factory{
-      ManualEncodingSelectionPolicyFactory::defaultEncodingReadFactors(),
-      /*compressionOptions=*/std::nullopt};
-  return factory.createPolicy(dataType);
-}
-
 /// Get total size of a string field
 uint32_t getStringsTotalSize(std::string_view input);
 
@@ -139,12 +128,6 @@ inline std::string_view boolsAsStringView(std::span<const bool> values) {
   return {
       reinterpret_cast<const char*>(values.data()),
       values.size() * sizeof(bool)};
-}
-
-/// Reads the trailer size (u32) from the last 4 bytes of the buffer.
-inline uint32_t readTrailerSize(const char* end) {
-  const char* pos = end - sizeof(uint32_t);
-  return encoding::readUint32(pos);
 }
 
 /// Returns an upper-bound estimate of the trailer size for the two-array
@@ -367,121 +350,6 @@ void writeTrailer(
   encoding::writeUint32(trailerSize, sizePos);
 }
 
-/// Writes a single stream to the buffer.
-/// Writes [size][data...] where size is varint (useVarint=true) or u32
-/// (useVarint=false).
-///
-/// @tparam useVarint True for varint size prefix, false for u32
-/// @param streamData The stream data to write
-/// @param buffer Output buffer (std::string, velox::Buffer, etc.)
-template <bool useVarint, typename T>
-void writeStream(std::string_view streamData, T& buffer) {
-  const uint32_t dataSize = streamData.size();
-  uint32_t prefixSize;
-  if constexpr (useVarint) {
-    prefixSize = varint::varintSize(dataSize);
-  } else {
-    prefixSize = sizeof(uint32_t);
-  }
-  auto* pos = extend(buffer, prefixSize + dataSize);
-  if constexpr (useVarint) {
-    varint::writeVarint(dataSize, &pos);
-  } else {
-    encoding::writeUint32(dataSize, pos);
-  }
-  if (dataSize > 0) {
-    std::memcpy(pos, streamData.data(), dataSize);
-  }
-}
-
-/// Reads a single stream from the buffer.
-/// Reads [size][data...] where size is varint (useVarint=true) or u32
-/// (useVarint=false). Advances pos past the stream.
-///
-/// @tparam useVarint True for varint size prefix, false for u32
-/// @param pos Pointer to current position (updated after read)
-/// @return View of the stream data
-template <bool useVarint>
-std::string_view readStream(const char*& pos) {
-  uint32_t size;
-  if constexpr (useVarint) {
-    size = varint::readVarint32(&pos);
-  } else {
-    size = encoding::readUint32(pos);
-  }
-  std::string_view data(pos, size);
-  pos += size;
-  return data;
-}
-
-/// Skips a single stream in the buffer without reading its data.
-/// Advances pos past [size][data...].
-template <bool useVarint>
-void skipStream(const char*& pos) {
-  uint32_t size;
-  if constexpr (useVarint) {
-    size = varint::readVarint32(&pos);
-  } else {
-    size = encoding::readUint32(pos);
-  }
-  pos += size;
-}
-
-/// Reads the two-array sparse stream-sizes trailer from the end of a
-/// contiguous buffer. Fills `streamIds` (non-zero stream slot ids, sorted
-/// ascending) and `streamSizes` (their byte sizes), parallel arrays of
-/// identical length. Both vectors are reusable buffers owned by
-/// the caller (e.g. members on `StreamDataParser`) to keep the per-blob hot
-/// path alloc-free across invocations.
-void readTrailerStreamMetadata(
-    const char* end,
-    std::vector<uint32_t>& streamIds,
-    std::vector<uint32_t>& streamSizes);
-
-/// Value-returning convenience overload for cold-path consumers
-/// (tests, dump tools). Returns parallel (streamIds, streamSizes) arrays.
-std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
-readTrailerStreamMetadata(const char* end);
-
-/// IOBuf overload: reads the trailer from a (possibly chained) IOBuf.
-/// Tries the fast path first: if the tail segment contains the entire
-/// trailer, delegates to the contiguous overload. Falls back to
-/// cursor + pull() when the trailer spans a chain boundary.
-std::pair<std::vector<uint32_t>, std::vector<uint32_t>>
-readTrailerStreamMetadata(const folly::IOBuf& input);
-
-/// Reads the kTablet dedup trailer written by the three-section `writeTrailer`
-/// overload and reconstructs the same parallel `streamIds`,
-/// `streamOffsets`, and `streamSizes` arrays used by the kTablet decode path.
-/// `uniqueStreamSizesScratch` is a caller-owned reusable buffer: it receives
-/// the decoded unique-size table and is then transformed in place into the
-/// unique-offset (prefix-sum) table. Keeping it caller-owned keeps the per-blob
-/// hot path alloc-free.
-void readTrailerStreamMetadata(
-    const char* end,
-    std::vector<uint32_t>& streamIds,
-    std::vector<uint32_t>& streamOffsets,
-    std::vector<uint32_t>& streamSizes,
-    std::vector<uint32_t>& uniqueStreamSizesScratch);
-
-/// Parses all streams from a serialized buffer.
-/// Returns a vector of stream data indexed by their original offset.
-///
-/// For kLegacy: Returns streams in order with inline u32 sizes.
-/// For kLegacyCompact: Returns streams indexed by their offset from sizes
-/// header.
-///
-/// @param pos Pointer past the header (version + rowCount already read)
-/// @param end End of buffer
-/// @param version Serialization format version
-/// @param pool Memory pool for decoding nimble-encoded sizes.
-/// @return Vector of stream data (may have gaps for kLegacy format)
-std::vector<std::string_view> parseStreams(
-    const char* pos,
-    const char* end,
-    SerializationVersion version,
-    velox::memory::MemoryPool* pool);
-
 /// Encode scalar data using nimble encoding framework with serializer options.
 template <typename T, typename Buffer>
 std::string_view encodeTyped(
@@ -677,6 +545,13 @@ std::string_view encodeNullableScalar(
 }
 } // namespace detail
 
+// Writes the serialized stream-data payload that StreamData and
+// StreamDataParser read back.
+//
+// NOTE: `nimble::StreamData` below is the writer-side buffer from
+// dwio/nimble/velox/StreamData.h, NOT `serde::StreamData` from
+// dwio/nimble/serializer/StreamData.h. Keep every reference explicitly
+// qualified.
 template <typename T>
 class StreamDataWriter {
  public:
@@ -908,6 +783,7 @@ void StreamDataWriter<T>::close(uint32_t nodeCount) {
     outputBuffer_.data()[headerFlagsOffset_] =
         static_cast<char>(detail::makeFlagsByte(requiresNullBarrier_));
   }
+
   detail::writeTrailer(
       streamSizes_,
       options_.streamIndicesEncodingType,
