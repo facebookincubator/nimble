@@ -334,6 +334,78 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     return deserializeProjectedBatches(projector, batches);
   }
 
+  // Stripe rows the `makeWindowedSlice` key bounds select.
+  static constexpr uint32_t kWindowStart = 30;
+  static constexpr uint32_t kWindowEnd = 60;
+  static constexpr uint32_t kWindowRows = kWindowEnd - kWindowStart;
+
+  // A projected slice whose header window is [kWindowStart, kWindowEnd).
+  // Owns the projector and the projector result because the slice borrows
+  // from both.
+  struct WindowedSlice {
+    std::unique_ptr<NimbleIndexProjector> projector;
+    NimbleIndexProjector::Result result;
+    // The full stripe's `value` column, for building expectations.
+    std::vector<int32_t> values;
+
+    const folly::IOBuf& slice() const {
+      return result.responses[0].slices[0];
+    }
+  };
+
+  // Writes a 100-row stripe keyed on `key`, projects `value`, and returns
+  // the single slice the key bounds window to [kWindowStart, kWindowEnd).
+  WindowedSlice makeWindowedSlice() {
+    auto rowType = ROW({"key", "value"}, {BIGINT(), INTEGER()});
+    constexpr int kStripeRows = 100;
+    std::vector<int64_t> keys(kStripeRows);
+    std::vector<int32_t> values(kStripeRows);
+    for (int i = 0; i < kStripeRows; ++i) {
+      keys[i] = i;
+      values[i] = i * 10;
+    }
+    auto batch = vectorMaker_->rowVector(
+        {"key", "value"},
+        {vectorMaker_->flatVector<int64_t>(keys),
+         vectorMaker_->flatVector<int32_t>(values)});
+    writeData({batch}, {"key"});
+    std::vector<Subfield> subfields;
+    subfields.emplace_back("value");
+    auto projector = createProjector(subfields);
+    auto bounds = makeRangeLookup(rowType, {"key"}, kWindowStart, kWindowEnd);
+    NimbleIndexProjector::Request request;
+    request.keyBounds = {bounds};
+    auto result = projector->project(request, {});
+    return {std::move(projector), std::move(result), std::move(values)};
+  }
+
+  // Asserts the slice really carries the expected header window, so the
+  // composition tests cannot pass vacuously on an unwindowed slice.
+  void expectWindow(const WindowedSlice& windowed) {
+    ASSERT_EQ(windowed.result.responses[0].slices.size(), 1);
+    const auto window = readEmbeddedRowRange(windowed.slice());
+    ASSERT_EQ(window.startRow, kWindowStart);
+    ASSERT_EQ(window.endRow, kWindowEnd);
+  }
+
+  // Same, but narrows within the slice's header window using the per-batch
+  // rowRanges overload. `rowRanges` are relative to that window.
+  VectorPtr deserializeProjectedSlice(
+      const NimbleIndexProjector& projector,
+      const folly::IOBuf& slice,
+      const std::vector<RowRange>& rowRanges) {
+    auto coalesced = coalesceChunkSlice(slice);
+    std::vector<std::string_view> batches{std::string_view(
+        reinterpret_cast<const char*>(coalesced.data()), coalesced.length())};
+    DeserializerOptions deserOptions;
+    deserOptions.hasHeader = true;
+    Deserializer deserializer(
+        projector.projectedNimbleType(), leafPool_.get(), deserOptions);
+    VectorPtr output;
+    deserializer.deserialize(batches, rowRanges, output);
+    return output;
+  }
+
   // Compares decoded output rows with an expected vector. The Deserializer
   // honors the header's row range via skip+next at decode time, so output
   // contains exactly the requested rows starting at index 0.
@@ -1630,6 +1702,68 @@ TEST_P(NimbleIndexProjectorTest, deserializerRangeFullStripe) {
 }
 
 #undef RUN_DESERIALIZER_RANGE_TEST
+
+// A caller rowRange composes with the header window instead of replacing it:
+// it is relative to the window start, so it can only narrow.
+TEST_P(NimbleIndexProjectorTest, deserializerRowRangeNarrowsHeaderWindow) {
+  auto windowed = makeWindowedSlice();
+  ASSERT_NO_FATAL_FAILURE(expectWindow(windowed));
+
+  // [0, 10) is relative to the window, so it selects stripe rows [30, 40)
+  // (values 300..390). Replacing the window would have yielded [0, 10).
+  std::vector<int32_t> expectedValues(
+      windowed.values.begin() + kWindowStart,
+      windowed.values.begin() + kWindowStart + 10);
+  auto expected = vectorMaker_->rowVector(
+      {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});
+  expectVectorRows(
+      deserializeProjectedSlice(
+          *windowed.projector, windowed.slice(), {RowRange{0, 10}}),
+      expected);
+}
+
+// The full window is addressable; one row past it is not.
+TEST_P(NimbleIndexProjectorTest, deserializerRowRangeAcceptsWholeWindow) {
+  auto windowed = makeWindowedSlice();
+  ASSERT_NO_FATAL_FAILURE(expectWindow(windowed));
+
+  std::vector<int32_t> expectedValues(
+      windowed.values.begin() + kWindowStart,
+      windowed.values.begin() + kWindowEnd);
+  auto expected = vectorMaker_->rowVector(
+      {"value"}, {vectorMaker_->flatVector<int32_t>(expectedValues)});
+  expectVectorRows(
+      deserializeProjectedSlice(
+          *windowed.projector, windowed.slice(), {RowRange{0, kWindowRows}}),
+      expected);
+}
+
+// The window, not the stripe, bounds a caller rowRange. Every one of these
+// fits inside the 100-row stripe, so validating against the batch rowCount
+// (the pre-composition contract) would have accepted them all and silently
+// returned rows outside the window the slice was scoped to.
+TEST_P(NimbleIndexProjectorTest, deserializerRowRangeRejectsRangePastWindow) {
+  auto windowed = makeWindowedSlice();
+  ASSERT_NO_FATAL_FAILURE(expectWindow(windowed));
+
+  const std::vector<RowRange> pastWindow{
+      // One row too many, starting at the window start.
+      RowRange{0, kWindowRows + 1},
+      // Starts inside the window but runs past its end.
+      RowRange{kWindowRows - 5, kWindowRows + 5},
+      // Starts at the first row past the window.
+      RowRange{kWindowRows, kWindowRows + 1},
+      // Entirely beyond the window.
+      RowRange{kWindowRows + 10, kWindowRows + 20},
+  };
+  for (const auto& range : pastWindow) {
+    SCOPED_TRACE(range.toString());
+    NIMBLE_ASSERT_THROW(
+        deserializeProjectedSlice(
+            *windowed.projector, windowed.slice(), {range}),
+        "rowRange endRow exceeds the rows this batch exposes");
+  }
+}
 
 TEST_P(NimbleIndexProjectorTest, deserializerMultiBatchWithRowRange) {
   // Each input batch's embedded row range is applied per-segment by the
