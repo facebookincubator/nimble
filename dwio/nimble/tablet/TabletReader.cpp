@@ -94,6 +94,18 @@ TabletReader::Options TabletReader::configureOptions(
   tabletOptions.fileHandle = options.fileHandle();
   tabletOptions.cache = options.cache();
   tabletOptions.ioOptions = options;
+
+  // TODO(T272495998): Temporary shim. Remove once HiveDataSource plumbs a
+  // real `metadataIoStats` through `ReaderOptions` that the operator /
+  // connector exposes for observability. Until then, synthesize a default
+  // when the caller does not supply one, so that callers reaching a reader
+  // via Velox's HiveDataSource (which builds ReaderOptions without setting IO
+  // stats) continue to work rather than tripping the constructor's check.
+  // Only the sliced copy is touched, so the caller's options are unchanged.
+  if (tabletOptions.ioOptions->metadataIoStats() == nullptr) {
+    tabletOptions.ioOptions->setMetadataIoStats(
+        std::make_shared<velox::io::IoStatistics>());
+  }
   return tabletOptions;
 }
 

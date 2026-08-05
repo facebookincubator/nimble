@@ -5005,6 +5005,28 @@ TEST_P(TabletTest, readerOptionsSpeculativeMode) {
   EXPECT_FALSE(tablet->stats().footerCacheHit);
 }
 
+TEST_P(TabletTest, configureOptionsDefaultsMetadataIoStats) {
+  // The TabletReader constructor requires non-null metadata IO stats, but
+  // ReaderOptions built through Velox's connector path arrive without them.
+  // configureOptions must supply a default so every reader entry point works.
+  velox::dwio::common::ReaderOptions readerOptions(pool_.get());
+  ASSERT_EQ(readerOptions.metadataIoStats(), nullptr);
+
+  auto opts = nimble::TabletReader::configureOptions(readerOptions);
+  ASSERT_TRUE(opts.ioOptions.has_value());
+  EXPECT_NE(opts.ioOptions->metadataIoStats(), nullptr);
+
+  // The caller's options are untouched: only the sliced copy is defaulted.
+  EXPECT_EQ(readerOptions.metadataIoStats(), nullptr);
+
+  // A caller-supplied instance is preserved rather than replaced.
+  velox::dwio::common::ReaderOptions withStats(pool_.get());
+  withStats.setMetadataIoStats(metadataIoStats_);
+  auto optsWithStats = nimble::TabletReader::configureOptions(withStats);
+  ASSERT_TRUE(optsWithStats.ioOptions.has_value());
+  EXPECT_EQ(optsWithStats.ioOptions->metadataIoStats(), metadataIoStats_);
+}
+
 TEST_P(TabletTest, configureOptionsIndexFlags) {
   // Verify configureOptions wires loadClusterIndex/loadChunkStats from
   // ReaderOptions into TabletReader::Options, both as bools and as entries
