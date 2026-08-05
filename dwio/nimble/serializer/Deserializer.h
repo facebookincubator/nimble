@@ -92,19 +92,31 @@ class Deserializer {
 
   /// Decodes each batch in `data`, appending only the rows in
   /// `rowRanges[i]` for `data[i]`. The output is the concatenation of the
-  /// selected rows across batches, in order. Caller-supplied ranges take
-  /// precedence over any rowRange encoded in the batch header.
+  /// selected rows across batches, in order.
+  ///
+  /// `rowRanges[i]` is relative to the rows the batch already exposes, not
+  /// to the batch's physical row numbering. A kTablet batch whose header
+  /// carries a rowRange exposes only that window, so a caller range narrows
+  /// it further rather than replacing it: header `[500, 600)` combined with
+  /// caller `[0, 50)` selects physical rows `[500, 550)`. For every other
+  /// version the batch exposes all `rowCount` rows, so `rowRanges[i]` is
+  /// simply the physical range.
   ///
   /// Equivalent output to
   ///   for each i: deserialize(data[i]).slice(rowRanges[i].startRow,
   ///                                          rowRanges[i].numRows())
   /// concatenated, but rows outside each range are never materialized —
-  /// they are skipped via the FieldReader's `skip()` primitive.
+  /// they are skipped via the FieldReader's `skip()` primitive. Note this
+  /// equivalence holds under the relative interpretation: the single-batch
+  /// `deserialize` already applies the header window, so slicing its output
+  /// is the same as narrowing within that window.
   ///
   /// Preconditions:
   ///   * `data` is non-empty and `data.size() == rowRanges.size()`.
   ///   * For each `i`: `rowRanges[i].startRow <= rowRanges[i].endRow` and
-  ///     `rowRanges[i].endRow <= data[i]`'s batch rowCount.
+  ///     `rowRanges[i].endRow <= ` the number of rows `data[i]` exposes
+  ///     (the header rowRange's `numRows()` for kTablet, the batch rowCount
+  ///     otherwise).
   ///   * No batch carries the null-barrier flag.
   void deserialize(
       const std::vector<std::string_view>& data,
@@ -146,9 +158,9 @@ class Deserializer {
 
   // Shared body of all public `deserialize` overloads. Loops over `data`,
   // calls `appendBatch` per batch, then `decodeRun`. Pass an empty
-  // `rowRanges` to let each batch's rowRange be inferred from the header;
-  // pass a `data.size()`-sized `rowRanges` to override the inferred range
-  // per batch (`rowRanges[i]` for `data[i]`).
+  // `rowRanges` to decode whatever range each batch exposes (its header
+  // rowRange, or the whole batch); pass a `data.size()`-sized `rowRanges`
+  // to narrow within that range per batch (`rowRanges[i]` for `data[i]`).
   void deserializeImpl(
       folly::Range<const std::string_view*> data,
       folly::Range<const nimble::RowRange*> rowRanges,
@@ -205,10 +217,11 @@ class Deserializer {
   // Queues `batch`'s streams onto the pending decode run and records the
   // batch's effective rowRange in `runRanges_` (run-local coordinates).
   //
-  // `rowRange` overrides the range that would otherwise be inferred from
-  // the batch header (kTablet header rowRange, or full-batch for other
-  // versions). When set, requires
-  // `rowRange->startRow <= rowRange->endRow <= batch rowCount` and a
+  // `rowRange` narrows within the range the batch already exposes (the
+  // kTablet header rowRange, or the full batch for other versions) and is
+  // relative to that range's start, so it cannot widen the window or
+  // address rows outside it. When set, requires
+  // `rowRange->startRow <= rowRange->endRow <= exposed numRows()` and a
   // non-null-barrier batch.
   //
   // If the batch requires a null barrier, `decodeRun` fires before and
