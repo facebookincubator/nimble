@@ -634,8 +634,6 @@ void Deserializer::appendBatch(
   // batch windowed to [500, 600), caller [0, 50) selects [500, 550). For
   // every other version `range` starts at 0, so the two coincide.
   if (rowRange.has_value()) {
-    NIMBLE_USER_CHECK(
-        !requiresBarrier, "rowRange not supported for null-barrier batches");
     NIMBLE_USER_CHECK_LE(
         rowRange->startRow,
         rowRange->endRow,
