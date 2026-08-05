@@ -21,7 +21,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/serializer/SerializationHeader.h"
-#include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/StreamDataParser.h"
 #include "dwio/nimble/serializer/legacy/TrailerReader.h"
 
 namespace facebook::nimble::tools {

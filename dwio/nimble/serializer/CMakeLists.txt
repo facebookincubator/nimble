@@ -36,9 +36,9 @@ target_link_libraries(
   Folly::folly
 )
 
-add_library(nimble_serializer_impl SerializerImpl.cpp)
+add_library(nimble_stream_data_writer StreamDataWriter.cpp)
 target_link_libraries(
-  nimble_serializer_impl
+  nimble_stream_data_writer
   nimble_serialization_header
   nimble_serializer_options
   nimble_common
@@ -48,23 +48,46 @@ target_link_libraries(
   velox_memory
 )
 
-add_library(nimble_deserializer_impl DeserializerImpl.cpp)
+add_library(nimble_stream_data StreamData.cpp)
 target_link_libraries(
-  nimble_deserializer_impl
-  nimble_serialization_header
-  nimble_serializer_impl
+  nimble_stream_data
   nimble_serializer_options
   nimble_encodings
-  nimble_legacy
   nimble_velox_schema
   nimble_common
   velox_memory
 )
 
+add_library(nimble_stream_data_parser StreamDataParser.cpp)
+target_link_libraries(
+  nimble_stream_data_parser
+  nimble_serialization_header
+  nimble_serializer_options
+  nimble_encodings
+  nimble_legacy
+  nimble_velox_common
+  nimble_common
+  velox_memory
+  Folly::folly
+)
+
+add_library(nimble_batched_stream_decoder BatchedStreamDecoder.cpp)
+target_link_libraries(
+  nimble_batched_stream_decoder
+  nimble_stream_data
+  nimble_serializer_options
+  nimble_velox_common
+  nimble_velox_schema_reader
+  nimble_common
+  velox_memory
+  Folly::folly
+)
+
 add_library(nimble_deserializer Deserializer.cpp)
 target_link_libraries(
   nimble_deserializer
-  nimble_deserializer_impl
+  nimble_stream_data_parser
+  nimble_batched_stream_decoder
   nimble_serializer_options
   nimble_velox_common
   nimble_velox_field_reader
@@ -78,7 +101,7 @@ add_library(nimble_serializer Serializer.cpp)
 target_link_libraries(
   nimble_serializer
   nimble_serializer_options
-  nimble_serializer_impl
+  nimble_stream_data_writer
   nimble_common
   nimble_velox_field_writer
   velox_vector
@@ -90,7 +113,8 @@ target_link_libraries(
   nimble_projector
   nimble_serialization_header
   nimble_serializer_options
-  nimble_serializer_impl
+  nimble_stream_data_writer
+  nimble_stream_data_parser
   nimble_legacy
   nimble_velox_schema_reader
   nimble_common

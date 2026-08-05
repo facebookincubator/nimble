@@ -69,8 +69,8 @@ useVarint
 
 bbpBlockSize
 
-DeserializerImpl
-^^^^^^^^^^^^^^^^
+StreamData
+^^^^^^^^^^
 
 useVarintRowCount
 

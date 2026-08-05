@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/common/Vector.h"
 #include "dwio/nimble/serializer/Options.h"
-#include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/StreamDataWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "folly/container/F14Set.h"
 #include "velox/dwio/common/TypeWithId.h"

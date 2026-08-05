@@ -19,7 +19,7 @@
 #include <algorithm>
 
 #include "dwio/nimble/index/ClusterIndex.h"
-#include "dwio/nimble/serializer/SerializerImpl.h"
+#include "dwio/nimble/serializer/StreamDataWriter.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "folly/ScopeGuard.h"
 #include "velox/common/base/SuccinctPrinter.h"
