@@ -734,6 +734,35 @@ TEST_P(SelectiveNimbleReaderTest, currentStripe) {
   EXPECT_EQ(readers.rowReader->currentStripe(), 0u);
 }
 
+TEST_P(SelectiveNimbleReaderTest, readsWithoutMetadataIoStats) {
+  // Velox's connector path (HiveDataSource) builds ReaderOptions without
+  // metadata IO stats, while TabletReader requires them. Reading has to work
+  // anyway, so that this factory is usable on its own rather than only behind
+  // a wrapper that fills them in.
+  auto input = makeRowVector({
+      makeFlatVector<int64_t>(200, folly::identity),
+  });
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*input->type());
+
+  const auto file = test::createNimbleFile(*rootPool(), input);
+  dwio::common::ReaderOptions options(pool());
+  options.setScanSpec(scanSpec);
+  ASSERT_EQ(options.metadataIoStats(), nullptr);
+
+  auto reader = SelectiveNimbleReaderFactory().createReader(
+      std::make_unique<dwio::common::BufferedInput>(
+          std::make_shared<InMemoryReadFile>(file), *pool()),
+      options);
+  EXPECT_EQ(reader->numberOfRows(), input->size());
+
+  dwio::common::RowReaderOptions rowOptions;
+  rowOptions.setScanSpec(scanSpec);
+  rowOptions.setRequestedType(asRowType(input->type()));
+  auto rowReader = reader->createRowReader(rowOptions);
+  validate(*input, *rowReader, 101, [](auto /*i*/) { return true; });
+}
+
 TEST_P(SelectiveNimbleReaderTest, denseWithNulls) {
   const bool stringDecoderZeroCopy = this->stringDecoderZeroCopy();
   auto input = makeRowVector({
