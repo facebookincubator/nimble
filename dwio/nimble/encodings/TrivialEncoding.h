@@ -265,7 +265,7 @@ TrivialEncoding<T>::TrivialEncoding(
     uncompressed_ = Compression::uncompress(
         pool,
         compressionType,
-        TypeTraits<physicalType>::dataType,
+        TypeTraits<T>::dataType,
         {data.data() + valuesOffset, data.size() - valuesOffset},
         options.decompressCounter(),
         options.bufferPool);
@@ -313,7 +313,7 @@ std::string_view TrivialEncoding<T>::encode(
   CompressionEncoder<T> compressionEncoder{
       buffer.getMemoryPool(),
       *compressionPolicy,
-      TypeTraits<physicalType>::dataType,
+      TypeTraits<T>::dataType,
       {reinterpret_cast<const char*>(values.data()), uncompressedSize}};
 
   const uint32_t encodingSize =
@@ -352,7 +352,7 @@ std::string_view TrivialEncoding<T>::slice(
     uncompressed = Compression::uncompress(
         buffer.getMemoryPool(),
         compressionType,
-        TypeTraits<physicalType>::dataType,
+        TypeTraits<T>::dataType,
         {sourcePos, static_cast<size_t>(encoded.end() - sourcePos)},
         options.decompressCounter(),
         options.bufferPool);
