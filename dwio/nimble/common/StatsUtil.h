@@ -44,29 +44,13 @@ template <typename T>
 std::enable_if_t<kIntegralMinMaxType<T>, MinMax<std::remove_cv_t<T>>>
 findMinMax(std::span<T> values) {
   using Value = std::remove_cv_t<T>;
-  using Batch = xsimd::batch<Value>;
 
-  const auto* rawValues = values.data();
-  size_t index{0};
   Value minValue{values.front()};
   Value maxValue{values.front()};
 
-  if (values.size() >= Batch::size) {
-    auto minBatch = Batch::load_unaligned(rawValues);
-    auto maxBatch = minBatch;
-    index = Batch::size;
-    for (; index + Batch::size <= values.size(); index += Batch::size) {
-      const auto batch = Batch::load_unaligned(rawValues + index);
-      minBatch = xsimd::min(minBatch, batch);
-      maxBatch = xsimd::max(maxBatch, batch);
-    }
-    minValue = xsimd::reduce_min(minBatch);
-    maxValue = xsimd::reduce_max(maxBatch);
-  }
-
-  for (; index < values.size(); ++index) {
-    minValue = std::min(minValue, values[index]);
-    maxValue = std::max(maxValue, values[index]);
+  for (const Value value : values) {
+    minValue = std::min(minValue, value);
+    maxValue = std::max(maxValue, value);
   }
 
   return {
