@@ -21,11 +21,13 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/common/tests/NimbleCompare.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "fmt/core.h"
 
+#include <array>
 #include <limits>
 #include <random>
 #include <string_view>
@@ -73,12 +75,30 @@ nimble::EncodingLayout fixedBitWidthLayout() {
       nimble::CompressionType::Uncompressed};
 }
 
+nimble::EncodingLayout trivialLayout() {
+  return nimble::EncodingLayout{
+      nimble::EncodingType::Trivial, {}, nimble::CompressionType::Uncompressed};
+}
+
+nimble::EncodingLayout varintLayout() {
+  return nimble::EncodingLayout{
+      nimble::EncodingType::Varint, {}, nimble::CompressionType::Uncompressed};
+}
+
 nimble::EncodingLayout alpWithFixedBitWidthPayloadLayout() {
   return nimble::EncodingLayout{
       nimble::EncodingType::ALP,
       {},
       nimble::CompressionType::Uncompressed,
-      {fixedBitWidthLayout()}};
+      {fixedBitWidthLayout(), varintLayout(), trivialLayout()}};
+}
+
+nimble::EncodingLayout alpWithFixedBitWidthExceptionStreamsLayout() {
+  return nimble::EncodingLayout{
+      nimble::EncodingType::ALP,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {fixedBitWidthLayout(), fixedBitWidthLayout(), fixedBitWidthLayout()}};
 }
 
 nimble::EncodingLayout dictionaryWithAlpAlphabetLayout() {
@@ -110,6 +130,62 @@ TEST(ALPSizeEstimationTest, invalidSampleRejected) {
       nimble::ALPEncoding<float>::estimateSizeFromSample(
           /*rowCount=*/1, sample),
       "ALP sample size cannot exceed the input row count.");
+}
+
+template <typename D>
+void expectEstimateUsesPackedExceptionValues() {
+  using PhysicalType = typename nimble::TypeTraits<D>::physicalType;
+  constexpr uint32_t kRowCount{256};
+  const nimble::Encoding::Options options{.fixedBitWidthUseExactBits = true};
+
+  const PhysicalType exceptionValue =
+      nimble::detail::alp::toPhysical<D>(std::numeric_limits<D>::infinity());
+  std::vector<PhysicalType> values(kRowCount, exceptionValue);
+
+  const auto estimate = nimble::ALPEncoding<D>::estimateSizeFromSample(
+      kRowCount,
+      std::span<const PhysicalType>{values.data(), values.size()},
+      options);
+  ASSERT_TRUE(estimate.has_value());
+
+  std::vector<uint64_t> encodedValues(kRowCount, 0);
+  const auto encodedStats = nimble::Statistics<uint64_t>::create(
+      std::span<const uint64_t>{encodedValues.data(), encodedValues.size()});
+  const auto encodedValuesSize = std::min(
+      nimble::FixedBitWidthEncoding<uint64_t>::estimateSize(
+          kRowCount, encodedStats, options),
+      nimble::TrivialEncoding<uint64_t>::estimateSize(kRowCount));
+
+  std::vector<uint32_t> exceptionPositions;
+  exceptionPositions.reserve(kRowCount);
+  for (uint32_t i = 0; i < kRowCount; ++i) {
+    exceptionPositions.push_back(i);
+  }
+  const auto positionStats = nimble::Statistics<uint32_t>::create(
+      std::span<const uint32_t>{
+          exceptionPositions.data(), exceptionPositions.size()});
+  const auto exceptionPositionsSize = std::min(
+      nimble::TrivialEncoding<uint32_t>::estimateSize(kRowCount),
+      nimble::FixedBitWidthEncoding<uint32_t>::estimateSize(
+          kRowCount, positionStats, options));
+
+  const auto trivialExceptionValuesSize =
+      nimble::TrivialEncoding<PhysicalType>::estimateSize(kRowCount);
+  const uint64_t trivialExceptionValuesBound =
+      nimble::EncodingPrefix::serializedSize(
+          kRowCount, options.useVarintRowCount) +
+      3 + nimble::varint::varintSize(kRowCount) +
+      nimble::varint::varintSize(encodedValuesSize) +
+      nimble::varint::varintSize(exceptionPositionsSize) +
+      nimble::varint::varintSize(trivialExceptionValuesSize) +
+      encodedValuesSize + exceptionPositionsSize + trivialExceptionValuesSize;
+
+  EXPECT_LT(estimate.value(), trivialExceptionValuesBound);
+}
+
+TEST(ALPSizeEstimationTest, packsExceptionValuesWhenEstimating) {
+  expectEstimateUsesPackedExceptionValues<float>();
+  expectEstimateUsesPackedExceptionValues<double>();
 }
 
 TEST(ALPEncodingHeaderTest, compactControlWordRoundTrip) {
@@ -328,9 +404,18 @@ TYPED_TEST(ALPEncodingTest, headerMetadataUsesVarints) {
       nimble::varint::varintSize(encodedValuesSize));
   pos += encodedValuesSize;
 
-  const auto* exceptionPositionStart = pos;
-  EXPECT_EQ(nimble::encoding::readUint32(pos), 150);
-  EXPECT_EQ(pos - exceptionPositionStart, sizeof(uint32_t));
+  const auto exceptionPositionsSize = nimble::varint::readVarint32(&pos);
+  const auto exceptionPositions = std::string_view{pos, exceptionPositionsSize};
+  EXPECT_EQ(
+      nimble::EncodingPrefix::encodingType(exceptionPositions),
+      nimble::EncodingType::Varint);
+  pos += exceptionPositionsSize;
+
+  const auto exceptionValuesSize = nimble::varint::readVarint32(&pos);
+  const auto exceptionValues = std::string_view{pos, exceptionValuesSize};
+  EXPECT_EQ(
+      nimble::EncodingPrefix::encodingType(exceptionValues),
+      nimble::EncodingType::Trivial);
 
   std::vector<velox::BufferPtr> stringBuffers;
   auto encoding =
@@ -341,6 +426,34 @@ TYPED_TEST(ALPEncodingTest, headerMetadataUsesVarints) {
     SCOPED_TRACE(i);
     EXPECT_TRUE(nimble::NimbleCompare<D>::equals(result[i], values[i]));
   }
+}
+
+TYPED_TEST(ALPEncodingTest, traverseEncodingsVisitsExceptionStreams) {
+  using D = typename TypeParam::data_type;
+  using PhysicalType = typename nimble::TypeTraits<D>::physicalType;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = false, .fixedBitWidthUseExactBits = true};
+
+  nimble::Vector<D> values{this->pool_.get(), 200};
+  values.fill(D{1.25});
+  values[150] = std::numeric_limits<D>::infinity();
+  const auto serialized = encodeWithLayout<D>(
+      *this->buffer_, values, alpWithFixedBitWidthPayloadLayout(), options);
+
+  expectEncodingLayout(
+      serialized,
+      {
+          {nimble::EncodingType::ALP, nimble::TypeTraits<D>::dataType, ""},
+          {nimble::EncodingType::FixedBitWidth,
+           nimble::DataType::Uint64,
+           "EncodedValues"},
+          {nimble::EncodingType::Varint,
+           nimble::DataType::Uint32,
+           "ExceptionPositions"},
+          {nimble::EncodingType::Trivial,
+           nimble::TypeTraits<PhysicalType>::dataType,
+           "ExceptionValues"},
+      });
 }
 
 TYPED_TEST(ALPEncodingTest, slice) {
@@ -446,9 +559,22 @@ TYPED_TEST(ALPEncodingTest, sliceRebasesExceptions) {
   EXPECT_EQ(nimble::varint::readVarint32(&pos), 2);
   const auto encodedValuesSize = nimble::varint::readVarint32(&pos);
   pos += encodedValuesSize;
+
+  const auto exceptionPositionsSize = nimble::varint::readVarint32(&pos);
+  std::vector<velox::BufferPtr> positionStringBuffers;
+  auto exceptionPositionsEncoding = createEncoding(
+      this->pool_.get(),
+      {pos, exceptionPositionsSize},
+      options,
+      positionStringBuffers);
+  nimble::Vector<uint32_t> exceptionPositions{this->pool_.get(), 2};
+  exceptionPositionsEncoding->materialize(2, exceptionPositions.data());
   // Source exceptions at rows 17 and 31 become slice-local rows 1 and 15.
-  EXPECT_EQ(nimble::encoding::readUint32(pos), 1);
-  EXPECT_EQ(nimble::encoding::readUint32(pos), 15);
+  const std::vector<uint32_t> expectedPositions{1, 15};
+  EXPECT_EQ(
+      std::vector<uint32_t>(
+          exceptionPositions.begin(), exceptionPositions.end()),
+      expectedPositions);
 
   std::vector<velox::BufferPtr> stringBuffers;
   auto encoding =
@@ -460,6 +586,56 @@ TYPED_TEST(ALPEncodingTest, sliceRebasesExceptions) {
     EXPECT_TRUE(
         nimble::NimbleCompare<DataType>::equals(
             result[i], values[kOffset + i]));
+  }
+}
+
+TYPED_TEST(ALPEncodingTest, slicePreservesExceptionStreamLayouts) {
+  using DataType = typename TypeParam::data_type;
+  using PhysicalType = typename nimble::TypeTraits<DataType>::physicalType;
+  const nimble::Encoding::Options options{
+      .useVarintRowCount = false, .fixedBitWidthUseExactBits = true};
+
+  nimble::Vector<DataType> values{this->pool_.get(), 128};
+  values.fill(DataType{1.25});
+  values[17] = -std::numeric_limits<DataType>::infinity();
+  values[31] = std::numeric_limits<DataType>::quiet_NaN();
+
+  const auto serialized = encodeWithLayout<DataType>(
+      *this->buffer_,
+      values,
+      alpWithFixedBitWidthExceptionStreamsLayout(),
+      options);
+
+  nimble::Buffer sliceBuffer{*this->pool_};
+  const auto sliced = nimble::EncodingFactory::slice(
+      serialized, /*offset=*/16, /*length=*/32, sliceBuffer, options);
+
+  expectEncodingLayout(
+      sliced,
+      {
+          {nimble::EncodingType::ALP,
+           nimble::TypeTraits<DataType>::dataType,
+           ""},
+          {nimble::EncodingType::FixedBitWidth,
+           nimble::DataType::Uint64,
+           "EncodedValues"},
+          {nimble::EncodingType::FixedBitWidth,
+           nimble::DataType::Uint32,
+           "ExceptionPositions"},
+          {nimble::EncodingType::FixedBitWidth,
+           nimble::TypeTraits<PhysicalType>::dataType,
+           "ExceptionValues"},
+      });
+
+  std::vector<velox::BufferPtr> stringBuffers;
+  auto encoding =
+      createEncoding(this->pool_.get(), sliced, options, stringBuffers);
+  nimble::Vector<DataType> result{this->pool_.get(), 32};
+  encoding->materialize(32, result.data());
+  for (uint32_t i = 0; i < result.size(); ++i) {
+    SCOPED_TRACE(fmt::format("i={}", i));
+    EXPECT_TRUE(
+        nimble::NimbleCompare<DataType>::equals(result[i], values[16 + i]));
   }
 }
 

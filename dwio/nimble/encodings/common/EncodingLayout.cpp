@@ -208,9 +208,14 @@ EncodingLayout EncodingLayoutCapture::capture(
       }
       const uint32_t encodedValuesBytes = varint::readVarint32(&pos);
 
-      children.reserve(1);
-      children.emplace_back(
-          EncodingLayoutCapture::capture({pos, encodedValuesBytes}, options));
+      children.reserve(header.hasExceptions ? 3 : 1);
+      captureChild(children, pos, encodedValuesBytes, options);
+      if (header.hasExceptions) {
+        const auto positionsBytes = varint::readVarint32(&pos);
+        captureChild(children, pos, positionsBytes, options);
+        const auto valuesBytes = varint::readVarint32(&pos);
+        captureChild(children, pos, valuesBytes, options);
+      }
       break;
     }
     case EncodingType::PFOR: {

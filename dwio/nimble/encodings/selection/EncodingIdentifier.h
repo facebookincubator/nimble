@@ -60,6 +60,8 @@ struct EncodingIdentifiers {
 
   struct ALP {
     static constexpr NestedEncodingIdentifier EncodedValues = 0;
+    static constexpr NestedEncodingIdentifier ExceptionPositions = 1;
+    static constexpr NestedEncodingIdentifier ExceptionValues = 2;
   };
 
   struct FrequencyPartition {

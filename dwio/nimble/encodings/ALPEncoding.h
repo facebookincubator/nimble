@@ -50,8 +50,11 @@
 ///   1-5 bytes: exceptionCount (varint, present only when has exceptions)
 ///   1-5 bytes: encodedValuesSize (varint uint32, size of nested encoding)
 ///   N bytes: nested encoding of ZigZag-coded signed encoded values
-///   exceptionCount * 4 bytes: exception positions (uint32 each)
-///   exceptionCount * sizeof(physicalType) bytes: exception values
+///   If has exceptions:
+///     1-5 bytes: exceptionPositionsSize (varint uint32)
+///     N bytes: nested encoding of uint32 exception positions
+///     1-5 bytes: exceptionValuesSize (varint uint32)
+///     N bytes: nested encoding of original logical exception values
 
 namespace facebook::nimble {
 
@@ -137,13 +140,33 @@ class ALPEncoding final
         noStringBufferFactory);
     pos += encodedValuesSize;
 
-    exceptionPositions_ = pos;
-    pos += exceptionCount_ * sizeof(uint32_t);
-    exceptionValues_ = pos;
-
     encodedBuffer_.resize(this->rowCount());
     encodedValuesEncoding_->materialize(
         this->rowCount(), encodedBuffer_.data());
+
+    if (exceptionCount_ > 0) {
+      const uint32_t exceptionPositionsSize = varint::readVarint32(&pos);
+      auto exceptionPositionsEncoding = encodingFactory.create(
+          *this->pool_,
+          std::string_view(pos, exceptionPositionsSize),
+          noStringBufferFactory);
+      pos += exceptionPositionsSize;
+
+      const uint32_t exceptionValuesSize = varint::readVarint32(&pos);
+      auto exceptionValuesEncoding = encodingFactory.create(
+          *this->pool_,
+          std::string_view(pos, exceptionValuesSize),
+          noStringBufferFactory);
+      pos += exceptionValuesSize;
+
+      exceptionPositionsBuffer_.resize(exceptionCount_);
+      exceptionPositionsEncoding->materialize(
+          exceptionCount_, exceptionPositionsBuffer_.data());
+
+      exceptionValuesBuffer_.resize(exceptionCount_);
+      exceptionValuesEncoding->materialize(
+          exceptionCount_, exceptionValuesBuffer_.data());
+    }
   }
 
   void reset() final {
@@ -212,18 +235,19 @@ class ALPEncoding final
     const uint32_t rowCount = values.size();
     auto* pool = &buffer.getMemoryPool();
 
-    Vector<cppDataType> logicalValues(pool, rowCount);
+    ScopedVector<cppDataType> logicalValues{rowCount, pool, options.bufferPool};
     for (uint32_t i = 0; i < rowCount; ++i) {
       logicalValues[i] = detail::alp::toLogical<cppDataType>(values[i]);
     }
 
+    ScopedVector<uint64_t> encodedValues{rowCount, pool, options.bufferPool};
+    ScopedVector<uint32_t> exceptionPositions{
+        /*size=*/0, pool, options.bufferPool};
+    ScopedVector<physicalType> exceptionValues{
+        /*size=*/0, pool, options.bufferPool};
     const auto [exponent, factor] = findBestExponentFactor(
         std::span<const cppDataType>{
             logicalValues.data(), logicalValues.size()});
-
-    Vector<uint64_t> encodedValues(pool, rowCount);
-    Vector<uint32_t> exceptionPositions(pool);
-    Vector<physicalType> exceptionValues(pool);
 
     for (uint32_t i = 0; i < rowCount; ++i) {
       if (!canRepresentExactly(logicalValues[i], values[i], exponent, factor)) {
@@ -245,19 +269,36 @@ class ALPEncoding final
     std::string_view serializedEncoded =
         selection.template encodeNested<uint64_t>(
             EncodingIdentifiers::ALP::EncodedValues,
-            {encodedValues},
+            {encodedValues.data(), encodedValues.size()},
             scopedBuffer.get(),
             options);
 
-    const uint32_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
-    const uint32_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
+    std::string_view serializedExceptionPositions;
+    std::string_view serializedExceptionValues;
+    if (exceptionCount > 0) {
+      serializedExceptionPositions = selection.template encodeNested<uint32_t>(
+          EncodingIdentifiers::ALP::ExceptionPositions,
+          {exceptionPositions.data(), exceptionPositions.size()},
+          scopedBuffer.get(),
+          options);
+      serializedExceptionValues = selection.template encodeNested<physicalType>(
+          EncodingIdentifiers::ALP::ExceptionValues,
+          {exceptionValues.data(), exceptionValues.size()},
+          scopedBuffer.get(),
+          options);
+    }
+
     const uint32_t metadataSize = kHeaderSize +
         (exceptionCount > 0 ? varint::varintSize(exceptionCount) : 0) +
-        varint::varintSize(serializedEncoded.size());
+        varint::varintSize(serializedEncoded.size()) +
+        (exceptionCount > 0
+             ? varint::varintSize(serializedExceptionPositions.size()) +
+                 varint::varintSize(serializedExceptionValues.size())
+             : 0);
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(rowCount, options.useVarintRowCount) +
-        metadataSize + serializedEncoded.size() + exceptionPositionsSize +
-        exceptionValuesSize;
+        metadataSize + serializedEncoded.size() +
+        serializedExceptionPositions.size() + serializedExceptionValues.size();
 
     char* reserved = buffer.reserve(encodingSize);
     char* pos = reserved;
@@ -281,10 +322,10 @@ class ALPEncoding final
     encoding::writeBytes(serializedEncoded, pos);
 
     if (exceptionCount > 0) {
-      std::memcpy(pos, exceptionPositions.data(), exceptionPositionsSize);
-      pos += exceptionPositionsSize;
-      std::memcpy(pos, exceptionValues.data(), exceptionValuesSize);
-      pos += exceptionValuesSize;
+      varint::writeVarint(serializedExceptionPositions.size(), &pos);
+      encoding::writeBytes(serializedExceptionPositions, pos);
+      varint::writeVarint(serializedExceptionValues.size(), &pos);
+      encoding::writeBytes(serializedExceptionValues, pos);
     }
 
     NIMBLE_CHECK_EQ(encodingSize, pos - reserved, "Encoding size mismatch.");
@@ -312,10 +353,6 @@ class ALPEncoding final
     const std::string_view encodedValues{pos, encodedValuesSize};
     pos += encodedValuesSize;
 
-    const auto* exceptionPositions = reinterpret_cast<const uint32_t*>(pos);
-    pos += exceptionCount * sizeof(uint32_t);
-    const auto* exceptionValues = reinterpret_cast<const physicalType*>(pos);
-
     auto* pool = &buffer.getMemoryPool();
     ScopedEncodingBuffer scopedBuffer{pool, options.encodingBufferPool};
     const auto slicedEncodedValues = EncodingFactory::slice(
@@ -327,36 +364,29 @@ class ALPEncoding final
     const auto slicedEncodedValuesSize =
         static_cast<uint32_t>(slicedEncodedValues.size());
 
-    const auto* exceptionEnd = exceptionPositions + exceptionCount;
-    const auto* first =
-        std::lower_bound(exceptionPositions, exceptionEnd, offset);
-    const auto* last = std::lower_bound(first, exceptionEnd, offset + length);
-    const auto slicedExceptionCount = static_cast<uint32_t>(last - first);
-    ScopedVector<uint32_t> slicedExceptionPositions{
-        slicedExceptionCount, pool, options.bufferPool};
-    ScopedVector<physicalType> slicedExceptionValues{
-        slicedExceptionCount, pool, options.bufferPool};
-    uint32_t exceptionIndex{0};
-    for (const auto* it = first; it != last; ++it) {
-      slicedExceptionPositions[exceptionIndex] = *it - offset;
-      slicedExceptionValues[exceptionIndex] =
-          exceptionValues[it - exceptionPositions];
-      ++exceptionIndex;
-    }
-    NIMBLE_CHECK_EQ(exceptionIndex, slicedExceptionCount);
+    const auto slicedExceptionStreams = sliceExceptionStreams(
+        pos,
+        exceptionCount,
+        offset,
+        length,
+        buffer,
+        scopedBuffer.get(),
+        options);
 
-    const uint32_t exceptionPositionsSize =
-        slicedExceptionCount * sizeof(uint32_t);
-    const uint32_t exceptionValuesSize =
-        slicedExceptionCount * sizeof(physicalType);
     const uint32_t metadataSize = kHeaderSize +
-        (slicedExceptionCount > 0 ? varint::varintSize(slicedExceptionCount)
-                                  : 0) +
-        varint::varintSize(slicedEncodedValuesSize);
+        (slicedExceptionStreams.count > 0
+             ? varint::varintSize(slicedExceptionStreams.count)
+             : 0) +
+        varint::varintSize(slicedEncodedValuesSize) +
+        (slicedExceptionStreams.count > 0
+             ? varint::varintSize(slicedExceptionStreams.positions.size()) +
+                 varint::varintSize(slicedExceptionStreams.values.size())
+             : 0);
     const uint32_t encodingSize =
         Encoding::serializePrefixSize(length, options.useVarintRowCount) +
-        metadataSize + slicedEncodedValuesSize + exceptionPositionsSize +
-        exceptionValuesSize;
+        metadataSize + slicedEncodedValuesSize +
+        slicedExceptionStreams.positions.size() +
+        slicedExceptionStreams.values.size();
 
     char* reserved = buffer.reserve(encodingSize);
     char* writePos = reserved;
@@ -370,19 +400,18 @@ class ALPEncoding final
         detail::alp::Header{
             .exponent = header.exponent,
             .factor = header.factor,
-            .hasExceptions = slicedExceptionCount > 0},
+            .hasExceptions = slicedExceptionStreams.count > 0},
         writePos);
-    if (slicedExceptionCount > 0) {
-      varint::writeVarint(slicedExceptionCount, &writePos);
+    if (slicedExceptionStreams.count > 0) {
+      varint::writeVarint(slicedExceptionStreams.count, &writePos);
     }
     varint::writeVarint(slicedEncodedValuesSize, &writePos);
     encoding::writeBytes(slicedEncodedValues, writePos);
-    if (slicedExceptionCount > 0) {
-      std::memcpy(
-          writePos, slicedExceptionPositions.data(), exceptionPositionsSize);
-      writePos += exceptionPositionsSize;
-      std::memcpy(writePos, slicedExceptionValues.data(), exceptionValuesSize);
-      writePos += exceptionValuesSize;
+    if (slicedExceptionStreams.count > 0) {
+      varint::writeVarint(slicedExceptionStreams.positions.size(), &writePos);
+      encoding::writeBytes(slicedExceptionStreams.positions, writePos);
+      varint::writeVarint(slicedExceptionStreams.values.size(), &writePos);
+      encoding::writeBytes(slicedExceptionStreams.values, writePos);
     }
 
     NIMBLE_CHECK_EQ(
@@ -437,6 +466,10 @@ class ALPEncoding final
 
     std::vector<uint64_t> encodedValues;
     encodedValues.reserve(sampleSize);
+    std::vector<uint32_t> exceptionPositions;
+    exceptionPositions.reserve(sampleSize);
+    std::vector<physicalType> exceptionValues;
+    exceptionValues.reserve(sampleSize);
     uint64_t sampleExceptionCount{0};
     for (auto i = 0; i < sampleSize; ++i) {
       if (!canRepresentExactly(
@@ -445,6 +478,9 @@ class ALPEncoding final
               exponent,
               factor)) {
         encodedValues.push_back(0);
+        exceptionPositions.push_back(
+            sampledValueIndex(i, rowCount, sampleSize));
+        exceptionValues.push_back(sampledValues[static_cast<size_t>(i)]);
         ++sampleExceptionCount;
         continue;
       }
@@ -464,11 +500,31 @@ class ALPEncoding final
         TrivialEncoding<uint64_t>::estimateSize(rowCount));
     const uint64_t exceptionCount =
         (sampleExceptionCount * rowCount + sampleSize - 1) / sampleSize;
-    const uint64_t exceptionPositionsSize = exceptionCount * sizeof(uint32_t);
-    const uint64_t exceptionValuesSize = exceptionCount * sizeof(physicalType);
+    uint64_t exceptionPositionsSize{0};
+    uint64_t exceptionValuesSize{0};
+    if (exceptionCount > 0) {
+      const auto positionStats = Statistics<uint32_t>::create(
+          std::span<const uint32_t>{
+              exceptionPositions.data(), exceptionPositions.size()});
+      exceptionPositionsSize = std::min(
+          TrivialEncoding<uint32_t>::estimateSize(exceptionCount),
+          FixedBitWidthEncoding<uint32_t>::estimateSize(
+              exceptionCount, positionStats, options));
+
+      const auto valueStats = Statistics<physicalType>::create(
+          std::span<const physicalType>{
+              exceptionValues.data(), exceptionValues.size()});
+      exceptionValuesSize = std::min(
+          TrivialEncoding<physicalType>::estimateSize(exceptionCount),
+          FixedBitWidthEncoding<physicalType>::estimateSize(
+              exceptionCount, valueStats, options));
+    }
     const uint64_t metadataSize = kHeaderSize +
         (exceptionCount > 0 ? varint::varintSize(exceptionCount) : 0) +
-        varint::varintSize(nestedEncodedValuesSize);
+        varint::varintSize(nestedEncodedValuesSize) +
+        (exceptionCount > 0 ? varint::varintSize(exceptionPositionsSize) +
+                 varint::varintSize(exceptionValuesSize)
+                            : 0);
     return Encoding::serializePrefixSize(
                static_cast<uint32_t>(rowCount), options.useVarintRowCount) +
         metadataSize + nestedEncodedValuesSize + exceptionPositionsSize +
@@ -487,6 +543,101 @@ class ALPEncoding final
     return sampleIndex * rowCount / sampleSize;
   }
 
+ private:
+  struct SlicedExceptionStreams {
+    uint32_t count{0};
+    std::string_view positions;
+    std::string_view values;
+  };
+
+  static SlicedExceptionStreams sliceExceptionStreams(
+      const char*& pos,
+      uint32_t exceptionCount,
+      uint32_t offset,
+      uint32_t length,
+      Buffer& buffer,
+      Buffer& scopedBuffer,
+      const Encoding::Options& options) {
+    if (exceptionCount == 0) {
+      return {};
+    }
+
+    auto* pool = &buffer.getMemoryPool();
+    ScopedVector<uint32_t> exceptionPositions{
+        exceptionCount, pool, options.bufferPool};
+
+    const uint32_t exceptionPositionsSize = varint::readVarint32(&pos);
+    const std::string_view exceptionPositionsEncoded{
+        pos, exceptionPositionsSize};
+    auto exceptionPositionsEncoding = EncodingFactory(options).create(
+        buffer.getMemoryPool(),
+        exceptionPositionsEncoded,
+        [](uint32_t) -> void* { return nullptr; });
+    pos += exceptionPositionsSize;
+    exceptionPositionsEncoding->materialize(
+        exceptionCount, exceptionPositions.data());
+
+    const uint32_t exceptionValuesSize = varint::readVarint32(&pos);
+    const std::string_view exceptionValuesEncoded{pos, exceptionValuesSize};
+    pos += exceptionValuesSize;
+
+    const auto* exceptionPositionsBegin = exceptionPositions.data();
+    const auto* exceptionPositionsEnd =
+        exceptionPositionsBegin + exceptionCount;
+    const uint32_t firstExceptionIndex = static_cast<uint32_t>(
+        std::lower_bound(
+            exceptionPositionsBegin, exceptionPositionsEnd, offset) -
+        exceptionPositionsBegin);
+    const uint32_t lastExceptionIndex = static_cast<uint32_t>(
+        std::lower_bound(
+            exceptionPositionsBegin + firstExceptionIndex,
+            exceptionPositionsEnd,
+            offset + length) -
+        exceptionPositionsBegin);
+    const auto slicedExceptionCount = lastExceptionIndex - firstExceptionIndex;
+    if (slicedExceptionCount == 0) {
+      return {};
+    }
+
+    ScopedVector<uint32_t> slicedExceptionPositions{
+        slicedExceptionCount, pool, options.bufferPool};
+    uint32_t exceptionIndex{0};
+    for (uint32_t i = firstExceptionIndex; i < lastExceptionIndex; ++i) {
+      slicedExceptionPositions[exceptionIndex] = exceptionPositions[i] - offset;
+      ++exceptionIndex;
+    }
+    NIMBLE_CHECK_EQ(exceptionIndex, slicedExceptionCount);
+
+    auto slicedExceptionPositionsEncoded =
+        EncodingFactory::encodeWithCapturedLayout<uint32_t>(
+            exceptionPositionsEncoded,
+            {slicedExceptionPositions.data(), slicedExceptionCount},
+            scopedBuffer,
+            options,
+            "ALP exception positions layout");
+    NIMBLE_CHECK_LE(
+        slicedExceptionPositionsEncoded.size(),
+        std::numeric_limits<uint32_t>::max(),
+        "ALP sliced exception positions are too large.");
+
+    auto slicedExceptionValuesEncoded = EncodingFactory::slice(
+        exceptionValuesEncoded,
+        firstExceptionIndex,
+        slicedExceptionCount,
+        scopedBuffer,
+        options);
+    NIMBLE_CHECK_LE(
+        slicedExceptionValuesEncoded.size(),
+        std::numeric_limits<uint32_t>::max(),
+        "ALP sliced exception values are too large.");
+
+    return {
+        .count = slicedExceptionCount,
+        .positions = slicedExceptionPositionsEncoded,
+        .values = slicedExceptionValuesEncoded};
+  }
+
+ public:
   // Pre-computed powers of 10 for double precision.
   static constexpr std::array<double, 24> kPow10Double{
       1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
@@ -599,10 +750,11 @@ class ALPEncoding final
 
   void
   patchExceptions(uint32_t startRow, uint32_t rowCount, physicalType* output) {
-    const auto* exVals =
-        reinterpret_cast<const physicalType*>(exceptionValues_);
-    const auto* exBegin =
-        reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    if (exceptionCount_ == 0) {
+      return;
+    }
+    const auto* exVals = exceptionValuesBuffer_.data();
+    const auto* exBegin = exceptionPositionsBuffer_.data();
     const auto* exEnd = exBegin + exceptionCount_;
     const auto* first = std::lower_bound(exBegin, exEnd, startRow);
     const auto* last = std::lower_bound(first, exEnd, startRow + rowCount);
@@ -613,10 +765,11 @@ class ALPEncoding final
   }
 
   const physicalType* findException(uint32_t row) const {
-    const auto* exVals =
-        reinterpret_cast<const physicalType*>(exceptionValues_);
-    const auto* exBegin =
-        reinterpret_cast<const uint32_t*>(exceptionPositions_);
+    if (exceptionCount_ == 0) {
+      return nullptr;
+    }
+    const auto* exVals = exceptionValuesBuffer_.data();
+    const auto* exBegin = exceptionPositionsBuffer_.data();
     const auto* exEnd = exBegin + exceptionCount_;
     const auto* it = std::lower_bound(exBegin, exEnd, row);
     if (it == exEnd || *it != row) {
@@ -629,9 +782,9 @@ class ALPEncoding final
   uint8_t factor_;
   uint32_t exceptionCount_;
   std::unique_ptr<Encoding> encodedValuesEncoding_;
-  const char* exceptionPositions_;
-  const char* exceptionValues_;
   std::vector<uint64_t> encodedBuffer_;
+  std::vector<uint32_t> exceptionPositionsBuffer_;
+  std::vector<physicalType> exceptionValuesBuffer_;
   uint32_t pos_;
 };
 
