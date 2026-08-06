@@ -1703,6 +1703,63 @@ TEST_P(NimbleIndexProjectorTest, deserializerRangeFullStripe) {
 
 #undef RUN_DESERIALIZER_RANGE_TEST
 
+// Barrier + windowed kTablet + caller rowRange together. The projector marks a
+// slice `requiresNullBarrier` whenever a Row/FlatMap null stream is physically
+// present, so this combination is production-shaped rather than synthetic.
+TEST_P(NimbleIndexProjectorTest, deserializerRowRangeOnBarrierWindowedSlice) {
+  auto nestedType = ROW({"b"}, {INTEGER()});
+  auto rowType = ROW({"key", "s"}, {BIGINT(), nestedType});
+  constexpr int kStripeRows = 100;
+  std::vector<int64_t> keys(kStripeRows);
+  std::vector<int32_t> bs(kStripeRows);
+  for (int i = 0; i < kStripeRows; ++i) {
+    keys[i] = i;
+    bs[i] = i * 10;
+  }
+  auto nested = std::make_shared<RowVector>(
+      leafPool_.get(),
+      nestedType,
+      nullptr,
+      kStripeRows,
+      std::vector<VectorPtr>{vectorMaker_->flatVector<int32_t>(bs)});
+  // Real nulls inside the projected window make the slice a barrier.
+  for (int row : {32, 41, 55}) {
+    nested->setNull(row, true);
+  }
+  auto batch = std::make_shared<RowVector>(
+      leafPool_.get(),
+      rowType,
+      nullptr,
+      kStripeRows,
+      std::vector<VectorPtr>{vectorMaker_->flatVector<int64_t>(keys), nested});
+  writeData({batch}, {"key"});
+
+  std::vector<Subfield> subfields;
+  subfields.emplace_back("s");
+  auto projector = createProjector(subfields);
+  auto bounds = makeRangeLookup(rowType, {"key"}, kWindowStart, kWindowEnd);
+  NimbleIndexProjector::Request request;
+  request.keyBounds = {bounds};
+  auto result = projector->project(request, {});
+  ASSERT_EQ(result.responses[0].slices.size(), 1);
+  const auto& slice = result.responses[0].slices[0];
+  const auto header = readEmbeddedTabletChunkHeader(slice);
+  ASSERT_EQ(header.rowRange.startRow, kWindowStart);
+  ASSERT_EQ(header.rowRange.endRow, kWindowEnd);
+  // Without this the test would silently cover only the ordinary path.
+  ASSERT_TRUE(header.requiresNullBarrier);
+
+  // Caller [0, 10) narrows the [30, 60) window to stripe rows [30, 40), which
+  // spans the null at row 32. Compare against the unranged decode sliced the
+  // same way, so nulls and values are both checked.
+  auto full = deserializeProjectedSlice(*projector, slice);
+  ASSERT_EQ(full->size(), kWindowRows);
+  auto expected = full->slice(0, 10);
+  expectVectorRows(
+      deserializeProjectedSlice(*projector, slice, {RowRange{0, 10}}),
+      expected);
+}
+
 // A caller rowRange composes with the header window instead of replacing it:
 // it is relative to the window start, so it can only narrow.
 TEST_P(NimbleIndexProjectorTest, deserializerRowRangeNarrowsHeaderWindow) {

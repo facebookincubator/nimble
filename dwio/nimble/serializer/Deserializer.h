@@ -117,7 +117,6 @@ class Deserializer {
   ///     `rowRanges[i].endRow <= ` the number of rows `data[i]` exposes
   ///     (the header rowRange's `numRows()` for kTablet, the batch rowCount
   ///     otherwise).
-  ///   * No batch carries the null-barrier flag.
   void deserialize(
       const std::vector<std::string_view>& data,
       const std::vector<nimble::RowRange>& rowRanges,
@@ -221,11 +220,12 @@ class Deserializer {
   // kTablet header rowRange, or the full batch for other versions) and is
   // relative to that range's start, so it cannot widen the window or
   // address rows outside it. When set, requires
-  // `rowRange->startRow <= rowRange->endRow <= exposed numRows()` and a
-  // non-null-barrier batch.
+  // `rowRange->startRow <= rowRange->endRow <= exposed numRows()`.
   //
   // If the batch requires a null barrier, `decodeRun` fires before and
-  // after queuing so the barrier batch decodes standalone.
+  // after queuing so the barrier batch decodes standalone. A rowRange
+  // applies there too: a barrier batch is a one-batch run, which is exactly
+  // the unit the range narrows.
   void appendBatch(
       std::string_view batch,
       std::optional<nimble::RowRange> rowRange,

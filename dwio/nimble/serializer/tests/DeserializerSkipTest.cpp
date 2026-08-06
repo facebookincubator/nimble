@@ -95,6 +95,124 @@ class DeserializerSkipTest : public ::testing::Test {
     return {std::move(serialized), std::move(schema)};
   }
 
+  // ROW(a INTEGER, s ROW(b INTEGER)). Rows listed in `nestedNullRows` get a
+  // null `s`, so s's Row null stream is written with real nulls and the
+  // batch's null-barrier flag is set. A nullable *scalar* column would not
+  // do it: the flag only tracks structural (Row/FlatMap) null streams.
+  static velox::TypePtr barrierType() {
+    return velox::ROW(
+        {{"a", velox::INTEGER()},
+         {"s", velox::ROW({{"b", velox::INTEGER()}})}});
+  }
+
+  velox::VectorPtr makeBarrierBatch(
+      int32_t base,
+      velox::vector_size_t rows,
+      const std::vector<velox::vector_size_t>& nestedNullRows) {
+    auto type = barrierType();
+    auto a = velox::BaseVector::create(velox::INTEGER(), rows, pool_.get());
+    auto b = velox::BaseVector::create(velox::INTEGER(), rows, pool_.get());
+    for (velox::vector_size_t i = 0; i < rows; ++i) {
+      a->asFlatVector<int32_t>()->set(i, base + i);
+      b->asFlatVector<int32_t>()->set(i, (base + i) * 10);
+    }
+    auto nested = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type->childAt(1),
+        nullptr,
+        rows,
+        std::vector<velox::VectorPtr>{b});
+    for (auto row : nestedNullRows) {
+      nested->setNull(row, true);
+    }
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        rows,
+        std::vector<velox::VectorPtr>{a, nested});
+  }
+
+  // ROW(a INTEGER, s ROW(b INTEGER), m MAP(VARCHAR, DOUBLE)) with `m` written
+  // as a FlatMap. Nulls on `s` supply the barrier flag, independently of the
+  // FlatMap, so `m` can still have an all-present key. That combination is
+  // what reaches the barrier-only in-map path: an all-present key has its
+  // in-map stream omitted, and on a barrier batch `appendStreamSegments`
+  // records it with the no-arg `addPresentInMapBatch()` sentinel.
+  static velox::TypePtr flatMapBarrierType() {
+    return velox::ROW(
+        {{"a", velox::INTEGER()},
+         {"s", velox::ROW({{"b", velox::INTEGER()}})},
+         {"m", velox::MAP(velox::VARCHAR(), velox::DOUBLE())}});
+  }
+
+  velox::VectorPtr makeFlatMapBarrierBatch(
+      const std::vector<std::vector<std::string>>& keysByRow,
+      const std::vector<velox::vector_size_t>& nestedNullRows) {
+    auto type = flatMapBarrierType();
+    const auto rows = static_cast<velox::vector_size_t>(keysByRow.size());
+    velox::vector_size_t totalEntries = 0;
+    for (const auto& keys : keysByRow) {
+      totalEntries += static_cast<velox::vector_size_t>(keys.size());
+    }
+
+    auto a = velox::BaseVector::create(velox::INTEGER(), rows, pool_.get());
+    auto b = velox::BaseVector::create(velox::INTEGER(), rows, pool_.get());
+    for (velox::vector_size_t i = 0; i < rows; ++i) {
+      a->asFlatVector<int32_t>()->set(i, i);
+      b->asFlatVector<int32_t>()->set(i, i * 10);
+    }
+    auto nested = std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type->childAt(1),
+        nullptr,
+        rows,
+        std::vector<velox::VectorPtr>{b});
+    for (auto row : nestedNullRows) {
+      nested->setNull(row, true);
+    }
+
+    auto mapKeys =
+        velox::BaseVector::create(velox::VARCHAR(), totalEntries, pool_.get());
+    auto mapValues =
+        velox::BaseVector::create(velox::DOUBLE(), totalEntries, pool_.get());
+    velox::vector_size_t idx = 0;
+    for (velox::vector_size_t row = 0; row < rows; ++row) {
+      for (const auto& key : keysByRow[row]) {
+        mapKeys->asFlatVector<velox::StringView>()->set(
+            idx, velox::StringView(key));
+        mapValues->asFlatVector<double>()->set(idx, row * 10.0 + idx);
+        ++idx;
+      }
+    }
+    auto mapVector = std::make_shared<velox::MapVector>(
+        pool_.get(),
+        type->childAt(2),
+        nullptr,
+        rows,
+        velox::allocateOffsets(rows, pool_.get()),
+        velox::allocateSizes(rows, pool_.get()),
+        mapKeys,
+        mapValues);
+    auto* rawOffsets =
+        mapVector->mutableOffsets(rows)->asMutable<velox::vector_size_t>();
+    auto* rawSizes =
+        mapVector->mutableSizes(rows)->asMutable<velox::vector_size_t>();
+    velox::vector_size_t offset = 0;
+    for (velox::vector_size_t i = 0; i < rows; ++i) {
+      rawOffsets[i] = offset;
+      rawSizes[i] = static_cast<velox::vector_size_t>(keysByRow[i].size());
+      offset += rawSizes[i];
+    }
+
+    return std::make_shared<velox::RowVector>(
+        pool_.get(),
+        type,
+        nullptr,
+        rows,
+        std::vector<velox::VectorPtr>{a, nested, mapVector});
+  }
+
   // Round-trip check: `deserialize(data, rowRanges)` for rowRanges derived
   // from a run-level [skipRows, skipRows+decodeRows) window must equal
   // `deserialize(data)` sliced by the same window.
@@ -731,6 +849,120 @@ TEST_F(DeserializerSkipTest, mapIntIntSingleBatch) {
 
 // Bad per-batch rowRange: startRow > endRow. Would underflow the uint32
 // numRows() computation and confuse `planReaderOps` if not rejected.
+// Guards every barrier test below by confirming `makeBarrierBatch` produces
+// what it claims: nulls in the nested Row set the header's barrier flag, and
+// the same schema without nulls leaves it clear. If this helper ever stopped
+// producing barrier batches, those tests would silently run on ordinary
+// batches and still pass.
+TEST_F(DeserializerSkipTest, barrierFlagSetOnlyWhenNestedRowHasNulls) {
+  auto readBarrierFlag = [&](const std::string& blob) {
+    DeserializerOptions dsOpts{.hasHeader = true};
+    serde::StreamDataParser parser{pool_.get(), dsOpts};
+    parser.initialize(blob);
+    return parser.requiresNullBarrier();
+  };
+
+  auto [withNulls, schema1] =
+      serialize(barrierType(), {makeBarrierBatch(0, 10, {3, 7})});
+  EXPECT_TRUE(readBarrierFlag(withNulls[0]));
+
+  auto [noNulls, schema2] =
+      serialize(barrierType(), {makeBarrierBatch(0, 10, {})});
+  EXPECT_FALSE(readBarrierFlag(noNulls[0]));
+}
+
+// A null-barrier batch decodes standalone, which is exactly the unit a
+// rowRange applies to. Uses the file's equivalence property:
+// deserialize(data, ranges) == deserialize(data) sliced by the same window.
+TEST_F(DeserializerSkipTest, barrierSingleBatchWithRowRange) {
+  auto [serialized, schema] =
+      serialize(barrierType(), {makeBarrierBatch(0, 10, {3, 7})});
+  checkSkip(schema, serialized, /*skipRows=*/2, /*decodeRows=*/5);
+}
+
+// A barrier batch sandwiched between ordinary ones: the run is flushed before
+// and after it, so the ranges must still line up across all three.
+TEST_F(DeserializerSkipTest, barrierBatchAmongNonBarrierBatches) {
+  auto [serialized, schema] = serialize(
+      barrierType(),
+      {makeBarrierBatch(0, 5, {}),
+       makeBarrierBatch(5, 5, {1, 3}),
+       makeBarrierBatch(10, 5, {})});
+  checkSkip(schema, serialized, /*skipRows=*/3, /*decodeRows=*/9);
+}
+
+// Every batch flagged: each becomes its own run.
+TEST_F(DeserializerSkipTest, barrierEveryBatch) {
+  auto [serialized, schema] = serialize(
+      barrierType(),
+      {makeBarrierBatch(0, 5, {2}),
+       makeBarrierBatch(5, 5, {1}),
+       makeBarrierBatch(10, 5, {4})});
+  checkSkip(schema, serialized, /*skipRows=*/4, /*decodeRows=*/7);
+}
+
+// Range boundaries against a barrier batch: whole batch, empty, and a window
+// that ends exactly on the batch boundary.
+TEST_F(DeserializerSkipTest, barrierBatchRangeBoundaries) {
+  auto [serialized, schema] = serialize(
+      barrierType(),
+      {makeBarrierBatch(0, 6, {0, 5}), makeBarrierBatch(6, 6, {2})});
+  checkSkip(schema, serialized, /*skipRows=*/0, /*decodeRows=*/12);
+  checkSkip(schema, serialized, /*skipRows=*/0, /*decodeRows=*/6);
+  checkSkip(schema, serialized, /*skipRows=*/6, /*decodeRows=*/6);
+  checkSkip(schema, serialized, /*skipRows=*/5, /*decodeRows=*/2);
+  checkSkip(schema, serialized, /*skipRows=*/3, /*decodeRows=*/0);
+}
+
+// The barrier-only in-map path. Key "a" is in every row, so its in-map stream
+// is omitted and the reader reconstructs it; on a barrier batch that goes
+// through the `addPresentInMapBatch()` sentinel (endRow = kPresentInMapEndRow),
+// which was written assuming the whole batch is read. A rowRange makes the
+// reader skip instead, exercising the sentinel's clamping in skipInMap and
+// fillInMapGap. Key "b" is on even rows only, so its in-map stream is really
+// written and both in-map shapes are covered in one batch.
+TEST_F(DeserializerSkipTest, barrierFlatMapInMapWithRowRange) {
+  std::vector<std::vector<std::string>> keysByRow;
+  for (int i = 0; i < 8; ++i) {
+    std::vector<std::string> keys{"a"};
+    if (i % 2 == 0) {
+      keys.emplace_back("b");
+    }
+    keysByRow.push_back(std::move(keys));
+  }
+  auto [serialized, schema] = serialize(
+      flatMapBarrierType(),
+      {makeFlatMapBarrierBatch(keysByRow, /*nestedNullRows=*/{2, 5})},
+      /*flatMapColumns=*/{{"m", {}}});
+
+  checkSkip(schema, serialized, /*skipRows=*/0, /*decodeRows=*/8);
+  checkSkip(schema, serialized, /*skipRows=*/1, /*decodeRows=*/5);
+  checkSkip(schema, serialized, /*skipRows=*/3, /*decodeRows=*/2);
+  checkSkip(schema, serialized, /*skipRows=*/5, /*decodeRows=*/3);
+}
+
+// Same shape across several barrier batches, so the sentinel is re-created per
+// batch and the reader is reset between runs.
+TEST_F(DeserializerSkipTest, barrierFlatMapInMapMultipleBatches) {
+  auto makeBatch = [&](int rows) {
+    std::vector<std::vector<std::string>> keysByRow;
+    for (int i = 0; i < rows; ++i) {
+      std::vector<std::string> keys{"a"};
+      if (i % 3 == 0) {
+        keys.emplace_back("b");
+      }
+      keysByRow.push_back(std::move(keys));
+    }
+    return makeFlatMapBarrierBatch(keysByRow, /*nestedNullRows=*/{1});
+  };
+  auto [serialized, schema] = serialize(
+      flatMapBarrierType(),
+      {makeBatch(6), makeBatch(6), makeBatch(6)},
+      /*flatMapColumns=*/{{"m", {}}});
+
+  checkSkip(schema, serialized, /*skipRows=*/2, /*decodeRows=*/11);
+}
+
 TEST_F(DeserializerSkipTest, rejectRowRangeStartRowAfterEndRow) {
   auto type = velox::ROW({{"a", velox::INTEGER()}});
   auto batch = vm_->rowVector(
