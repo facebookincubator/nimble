@@ -82,6 +82,34 @@ class Config : public velox::config::ConfigBase {
   // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
   static Entry<std::string> FLUSH_POLICY_CONFIG;
 
+  /// Selects and tunes the writer buffer policy via a comma-separated
+  /// "key:value" spec whose "type" key chooses the policy (mirrors
+  /// nimble.flush_policy_config). An absent key or type installs no buffer
+  /// policy, leaving the writer on the flush-policy path.
+  ///
+  /// Currently supported:
+  ///   type:user_sequence[,user_id_column:<name>|,user_id_column_index:<n>]
+  ///                     [,max_rows_per_stripe:<n>]
+  ///       Cuts a stripe at every change of an int64 grouping column, with an
+  ///       optional hard row cap 'max_rows_per_stripe' (default 0, meaning
+  ///       uncapped). Each emitted stripe therefore holds rows for exactly one
+  ///       key, which is what the cluster-index read path expects. See
+  ///       UserSequenceBufferPolicy.h.
+  ///
+  ///       Address the grouping column by 'user_id_column' (a name, matching
+  ///       how nimble.index.columns is spelled) or by 'user_id_column_index'
+  ///       (a zero-based position, default 0). Supplying both is an error.
+  ///       Prefer the name: this column must be the same one the cluster index
+  ///       is keyed on, and a position silently follows a reordered projection
+  ///       onto a different column.
+  ///
+  /// NOTE: buffer and flush policies are mutually exclusive. When a buffer
+  /// policy is installed VeloxWriter routes every write() through it and never
+  /// consults shouldFlush or shouldChunk, so chunking thresholds have no
+  /// effect. See BufferPolicy.h.
+  // @lint-ignore CLANGTIDY facebook-hte-NonPodStaticDeclaration
+  static Entry<std::string> BUFFER_POLICY_CONFIG;
+
   /// Configures encoding selection. A comma-separated "type:<t>,key:value,..."
   /// config whose leading "type" selects the policy (mirrors
   /// nimble.flush_policy_config). Currently supported:
