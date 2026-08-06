@@ -126,9 +126,12 @@ ManualEncodingSelectionPolicyFactory::create(
 
 ManualEncodingSelectionPolicyFactory::ManualEncodingSelectionPolicyFactory(
     std::vector<std::pair<EncodingType, float>> encodingReadFactors,
-    std::optional<CompressionOptions> compressionOptions)
+    std::optional<CompressionOptions> compressionOptions,
+    std::optional<std::vector<std::pair<EncodingType, float>>>
+        nestedEncodingReadFactors)
     : encodingReadFactors_{std::move(encodingReadFactors)},
-      compressionOptions_{std::move(compressionOptions)} {}
+      compressionOptions_{std::move(compressionOptions)},
+      nestedEncodingReadFactors_{std::move(nestedEncodingReadFactors)} {}
 
 std::unique_ptr<EncodingSelectionPolicyBase>
 ManualEncodingSelectionPolicyFactory::createPolicy(DataType dataType) const {
@@ -137,7 +140,8 @@ ManualEncodingSelectionPolicyFactory::createPolicy(DataType dataType) const {
       ManualEncodingSelectionPolicy,
       encodingReadFactors_,
       compressionOptions_,
-      std::nullopt);
+      std::nullopt,
+      nestedEncodingReadFactors_);
 }
 
 /* static */ std::vector<EncodingType>
