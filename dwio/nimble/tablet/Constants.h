@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <string_view>
+
 namespace facebook::nimble {
 
 constexpr uint16_t kMagicNumber = 0xA1FA;
@@ -37,5 +39,7 @@ constexpr std::string_view kVectorizedStatsSection =
 constexpr std::string_view kIndexSection = "columnar.indexes";
 constexpr std::string_view kChunkStatsSection = "columnar.chunk.stats";
 constexpr std::string_view kFeaturesSection = "columnar.features";
+constexpr std::string_view kSharedDictionarySection =
+    "columnar.shared_dictionaries";
 
 } // namespace facebook::nimble

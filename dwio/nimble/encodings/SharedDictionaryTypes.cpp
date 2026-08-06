@@ -16,6 +16,9 @@
 
 #include "dwio/nimble/encodings/SharedDictionaryTypes.h"
 
+#include <algorithm>
+
+#include "dwio/nimble/common/Varint.h"
 #include "velox/common/EnumDefine.h"
 
 namespace facebook::nimble {
@@ -30,30 +33,49 @@ const auto& sharedDictionaryScopeNames() {
       };
   return kNames;
 }
+
+size_t checkedSharedDictionaryOffset(std::string_view data, const char* pos) {
+  NIMBLE_CHECK(
+      pos >= data.data() && pos <= data.data() + data.size(),
+      "Shared dictionary cursor is outside the encoding.");
+  return static_cast<size_t>(pos - data.data());
+}
 } // namespace
 
 VELOX_DEFINE_ENUM_NAME(SharedDictionaryScope, sharedDictionaryScopeNames)
 
+SharedDictionaryScope readSharedDictionaryScope(
+    std::string_view data,
+    const char*& pos) {
+  const auto offset = checkedSharedDictionaryOffset(data, pos);
+  NIMBLE_CHECK_LT(
+      offset, data.size(), "Shared dictionary encoding is missing its scope.");
+  return toSharedDictionaryScope(static_cast<uint8_t>(*pos++));
+}
+
+uint32_t readSharedDictionaryId(std::string_view data, const char*& pos) {
+  const auto offset = checkedSharedDictionaryOffset(data, pos);
+  NIMBLE_CHECK_LT(
+      offset, data.size(), "Truncated shared dictionary ID varint.");
+
+  const auto remaining = data.size() - offset;
+  const auto bytesToCheck = std::min<size_t>(
+      remaining, varint::maxVarintSizeForBitWidth(/*bitWidth=*/32));
+  for (size_t i = 0; i < bytesToCheck; ++i) {
+    if ((static_cast<uint8_t>(pos[i]) & 0x80) == 0) {
+      return varint::readVarint32(&pos);
+    }
+  }
+
+  NIMBLE_CHECK_GE(
+      remaining,
+      varint::maxVarintSizeForBitWidth(/*bitWidth=*/32),
+      "Truncated shared dictionary ID varint.");
+  NIMBLE_UNSUPPORTED("Shared dictionary ID varint is too long.");
+}
+
 SharedDictionaryAlphabet::SharedDictionaryAlphabet(DataType dataType)
     : dataType_{dataType} {}
-
-SharedDictionaryAlphabet::DecodedChunk SharedDictionaryAlphabet::decodedChunk(
-    uint32_t begin,
-    uint32_t count,
-    const void* entries,
-    std::shared_ptr<const void> owner) {
-  return DecodedChunk{
-      .begin = begin,
-      .count = count,
-      .entries = entries,
-      .owner = std::move(owner)};
-}
-
-SharedDictionaryAlphabet::EncodedChunk SharedDictionaryAlphabet::encodedChunk(
-    uint32_t begin,
-    std::shared_ptr<const EncodingView> view) {
-  return EncodedChunk{.begin = begin, .view = std::move(view)};
-}
 
 DataType SharedDictionaryAlphabet::dataType() const {
   return dataType_;
@@ -63,67 +85,12 @@ uint32_t SharedDictionaryAlphabet::entryCount() const {
   return entryCount_;
 }
 
-uint32_t SharedDictionaryAlphabet::validateDecodedChunks(
-    const std::vector<DecodedChunk>& chunks) {
-  uint32_t nextBegin{0};
-  for (const auto& chunk : chunks) {
-    NIMBLE_CHECK_EQ(
-        chunk.begin,
-        nextBegin,
-        "Shared dictionary alphabet chunks must be contiguous.");
-    NIMBLE_CHECK_NOT_NULL(chunk.entries);
-    NIMBLE_CHECK_NOT_NULL(chunk.owner);
-    NIMBLE_CHECK_LE(
-        chunk.count,
-        kMaxSharedDictionaryEntryCount - nextBegin,
-        "Shared dictionary alphabet chunk count overflows.");
-    nextBegin += chunk.count;
-  }
-  return nextBegin;
-}
-
-uint32_t SharedDictionaryAlphabet::validateEncodedChunks(
-    DataType dataType,
-    const std::vector<EncodedChunk>& chunks) {
-  uint32_t nextBegin{0};
-  for (const auto& chunk : chunks) {
-    NIMBLE_CHECK_EQ(
-        chunk.begin,
-        nextBegin,
-        "Shared dictionary alphabet chunks must be contiguous.");
-    NIMBLE_CHECK_NOT_NULL(chunk.view);
-    NIMBLE_CHECK_EQ(
-        chunk.view->dataType(),
-        dataType,
-        "Shared dictionary encoded chunk has unexpected type.");
-    const auto rowCount = chunk.view->rowCount();
-    NIMBLE_CHECK_LE(
-        rowCount,
-        kMaxSharedDictionaryEntryCount - nextBegin,
-        "Shared dictionary alphabet chunk count overflows.");
-    nextBegin += rowCount;
-  }
-  return nextBegin;
+std::optional<EncodingType> SharedDictionaryAlphabet::encodingType() const {
+  return encodingTypeImpl();
 }
 
 void SharedDictionaryAlphabet::setEntryCount(uint32_t entryCount) {
   entryCount_ = entryCount;
-}
-
-std::shared_ptr<const SharedDictionaryAlphabet>
-SharedDictionaryAlphabet::createDecoded(
-    DataType dataType,
-    std::vector<DecodedChunk> chunks) {
-  return std::make_shared<DecodedSharedDictionaryAlphabet>(
-      dataType, std::move(chunks));
-}
-
-std::shared_ptr<const SharedDictionaryAlphabet>
-SharedDictionaryAlphabet::createEncoded(
-    DataType dataType,
-    std::vector<EncodedChunk> chunks) {
-  return std::make_shared<EncodedSharedDictionaryAlphabet>(
-      dataType, std::move(chunks));
 }
 
 } // namespace facebook::nimble

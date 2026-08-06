@@ -156,6 +156,10 @@ enum class EncodingType {
   // EXPERIMENTAL: Not production-ready. Do not enable for production tables
   // without consulting the Nimble team (oncall: dwios).
   DeltaBlock = 21,
+  // Stores indices into an integer alphabet owned by a stripe, file, or
+  // external provider. The alphabet is resolved independently from the
+  // encoded index stream.
+  SharedDictionary = 22,
 };
 std::string toString(EncodingType encodingType);
 /// Returns the encoding type for 'name'. Throws if 'name' is unknown.

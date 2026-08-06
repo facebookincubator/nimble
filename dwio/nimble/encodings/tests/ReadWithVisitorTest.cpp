@@ -36,6 +36,7 @@
 #include "dwio/nimble/encodings/legacy/EncodingUtils.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/encodings/tests/EncodingLayoutTestHelper.h"
+#include "dwio/nimble/encodings/tests/SharedDictionaryEncodingTestUtils.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
 #include "dwio/nimble/velox/selective/ByteColumnReader.h"
 #include "dwio/nimble/velox/selective/ColumnReader.h"
@@ -205,6 +206,42 @@ std::unique_ptr<SubIntSplitEncoding<T>> makeSubIntSplitEncoding(
   return std::make_unique<SubIntSplitEncoding<T>>(
       memPool, encoded, [](uint32_t) { return nullptr; });
 }
+
+class Int32SharedDictionaryResolver final : public SharedDictionaryResolver {
+ public:
+  Int32SharedDictionaryResolver(
+      uint32_t dictionaryId,
+      std::vector<int32_t> values)
+      : dictionaryId_{dictionaryId},
+        alphabet_{makeAlphabet(std::move(values))} {}
+
+  std::shared_ptr<const SharedDictionaryAlphabet> resolve(
+      SharedDictionaryScope scope,
+      uint32_t dictionaryId,
+      DataType dataType) const final {
+    if (scope != SharedDictionaryScope::Stripe ||
+        dictionaryId != dictionaryId_ || dataType != DataType::Int32) {
+      return nullptr;
+    }
+    return alphabet_;
+  }
+
+ private:
+  static std::shared_ptr<const SharedDictionaryAlphabet> makeAlphabet(
+      std::vector<int32_t> values) {
+    auto owner = std::make_shared<std::vector<int32_t>>(std::move(values));
+    return test::createTestSharedDictionaryAlphabet(
+        DataType::Int32,
+        {test::TestSharedDictionaryAlphabet::Chunk{
+            .begin = 0,
+            .count = static_cast<uint32_t>(owner->size()),
+            .entries = owner->data(),
+            .owner = owner}});
+  }
+
+  const uint32_t dictionaryId_;
+  const std::shared_ptr<const SharedDictionaryAlphabet> alphabet_;
+};
 
 EncodingLayout makeAlpEncodingLayout(EncodingType encodedValuesEncodingType) {
   const auto encodedValuesLayout = [&] {
@@ -1997,6 +2034,64 @@ TEST_P(ReadWithVisitorTest, encodingLevelDictionaryAlwaysTrueDense) {
   for (int i = 0; i < kRows; ++i) {
     EXPECT_EQ(values[i], (i % 5) * 10) << "row " << i;
   }
+}
+
+TEST_P(ReadWithVisitorTest, encodingLevelSharedDictionaryAlwaysTrueDense) {
+  if (!useNonLegacy()) {
+    GTEST_SKIP() << "SharedDictionaryEncoding requires non-legacy encoding";
+  }
+
+  const std::vector<int32_t> alphabet{10, 20, 30, 40};
+  const std::vector<uint32_t> indices{2, 0, 3, 1, 2};
+  const std::vector<int32_t> expected{30, 10, 40, 20, 30};
+  const auto kRows = static_cast<int>(indices.size());
+
+  auto input = makeRowVector({makeFlatVector<int32_t>(
+      kRows, [&](auto row) { return expected[row]; })});
+  auto rowType = asRowType(input->type());
+  auto ctx = makeFileContext(input);
+  auto scanSpec = std::make_shared<common::ScanSpec>("root");
+  scanSpec->addAllChildFields(*rowType);
+  scanSpec->childByName("c0")->setFilter(
+      std::make_unique<common::AlwaysTrue>());
+  auto root = buildReader(*ctx, rowType, *scanSpec);
+
+  auto* structReader =
+      dynamic_cast<dwio::common::SelectiveStructColumnReaderBase*>(root.get());
+  auto* reader = static_cast<IntegerColumnReaderTestAccessor*>(
+      dynamic_cast<IntegerColumnReader*>(structReader->children()[0]));
+  ASSERT_NE(reader, nullptr);
+
+  std::vector<vector_size_t> rowVec(kRows);
+  std::iota(rowVec.begin(), rowVec.end(), 0);
+  RowSet rows(rowVec.data(), rowVec.size());
+
+  reader->doPrepareRead<int32_t>(0, rows, nullptr);
+
+  Buffer buffer(*pool());
+  const auto encoded = test::encodeSharedDictionary(buffer, indices);
+  Encoding::Options options;
+  options.sharedDictionaryResolver =
+      std::make_shared<Int32SharedDictionaryResolver>(
+          /*dictionaryId=*/7, alphabet);
+  SharedDictionaryEncoding<int32_t> encoding{
+      *pool(), encoded, [](uint32_t) { return nullptr; }, options};
+
+  common::AlwaysTrue filter;
+  dwio::common::ExtractToReader extractValues(reader);
+  constexpr bool kIsDense = true;
+  DecoderVisitor<
+      int32_t,
+      common::AlwaysTrue,
+      dwio::common::ExtractToReader,
+      kIsDense>
+      visitor(filter, reader, rows, extractValues);
+  auto params = makeReadWithVisitorParams(visitor, rows, pool());
+
+  callReadWithVisitor(encoding, visitor, params);
+
+  EXPECT_EQ(reader->numValues(), kRows);
+  EXPECT_EQ(getValues<int32_t>(reader), expected);
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/SharedDictionaryTypes.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
 
@@ -53,6 +54,7 @@ void extractCompressionType(
     }
     case EncodingType::RLE:
     case EncodingType::Dictionary:
+    case EncodingType::SharedDictionary:
     case EncodingType::Sentinel:
     case EncodingType::Nullable:
     case EncodingType::SparseBool:
@@ -323,6 +325,24 @@ void traverseEncodings(
           {pos, stream.size() - (pos - stream.data())},
           level + 1,
           1,
+          "Indices",
+          useVarintRowCount,
+          visitor);
+      break;
+    }
+    case EncodingType::SharedDictionary: {
+      const char* pos = stream.data() + prefixSize(stream, useVarintRowCount);
+      readSharedDictionaryScope(stream, pos);
+      readSharedDictionaryId(stream, pos);
+      const auto indicesOffset = static_cast<size_t>(pos - stream.data());
+      NIMBLE_CHECK_LT(
+          indicesOffset,
+          stream.size(),
+          "Shared dictionary encoding is missing its indices.");
+      traverseEncodings(
+          {pos, stream.size() - indicesOffset},
+          level + 1,
+          0,
           "Indices",
           useVarintRowCount,
           visitor);

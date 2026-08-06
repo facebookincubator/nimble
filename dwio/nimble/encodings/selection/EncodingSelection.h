@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -23,6 +24,7 @@
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/compression/CompressionPolicy.h"
+#include "dwio/nimble/encodings/SharedDictionaryTypes.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/selection/EncodingIdentifier.h"
@@ -75,6 +77,9 @@ struct EncodingSelectionResult {
   /// Encoding-specific configuration passed from the selection policy.
   /// Currently this config is manually set, not dynamically determined.
   EncodingLayout::Config encodingConfig;
+  /// SharedDictionary-specific encoding data supplied by the writer-side
+  /// selection policy.
+  std::optional<SharedDictionaryEncodingInput> sharedDictionaryInput;
   std::function<std::unique_ptr<CompressionPolicy>()> compressionPolicyFactory =
       []() { return std::make_unique<NoCompressionPolicy>(); };
 };
@@ -104,6 +109,12 @@ class EncodingSelection {
   std::unique_ptr<CompressionPolicy> compressionPolicy() const noexcept {
     auto policy = selectionResult_.compressionPolicyFactory();
     return policy;
+  }
+
+  /// Returns SharedDictionary-specific input supplied by the selection policy.
+  std::optional<SharedDictionaryEncodingInput> sharedDictionaryInput()
+      const noexcept {
+    return selectionResult_.sharedDictionaryInput;
   }
 
   template <typename NestedT>

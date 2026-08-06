@@ -28,6 +28,7 @@
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/common/DecoderUtil.h"
 
+#include <memory>
 #include <string_view>
 #include <type_traits>
 
@@ -73,6 +74,7 @@ struct DecodingStats;
 namespace facebook::nimble {
 
 class EncodingBufferPool;
+class SharedDictionaryResolver;
 
 template <typename T, typename Filter, typename ExtractValues, bool kIsDense>
 using DecoderVisitor =
@@ -157,6 +159,10 @@ class Encoding {
 
     /// Per-column decoding statistics for timing decompression.
     velox::dwio::common::DecodingStats* decodingStats = nullptr;
+
+    /// Resolves alphabets referenced by SharedDictionary encodings. The
+    /// resolver is bound to the current file and stripe decode context.
+    std::shared_ptr<const SharedDictionaryResolver> sharedDictionaryResolver;
 
     velox::io::IoCounter* decompressCounter() const {
       return decodingStats != nullptr ? &decodingStats->decompressCPUTimeNanos

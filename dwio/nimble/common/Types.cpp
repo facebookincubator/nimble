@@ -46,6 +46,7 @@ constexpr auto kEncodingTypes =
         {EncodingType::Fsst, "Fsst"},
         {EncodingType::Huffman, "Huffman"},
         {EncodingType::DeltaBlock, "DeltaBlock"},
+        {EncodingType::SharedDictionary, "SharedDictionary"},
     });
 
 constexpr auto kCompressionTypes =
