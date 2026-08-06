@@ -625,24 +625,27 @@ void Deserializer::appendBatch(
     decodeRun(run, output);
   }
 
-  // Base range from the batch: parser's rowRange (kTablet header) or
-  // full-batch default if the header didn't encode one.
+  // Rows this batch exposes: the parser's rowRange (kTablet header) or the
+  // whole batch if the header didn't encode one.
   nimble::RowRange range =
       parser_->rowRange().value_or(nimble::RowRange{0, rowCount});
-  // Caller override wins if provided.
+  // A caller range narrows within what the batch exposes rather than
+  // replacing it, so it is relative to `range.startRow`. For a kTablet
+  // batch windowed to [500, 600), caller [0, 50) selects [500, 550). For
+  // every other version `range` starts at 0, so the two coincide.
   if (rowRange.has_value()) {
     NIMBLE_USER_CHECK(
-        !requiresBarrier,
-        "override rowRange not supported for null-barrier batches");
+        !requiresBarrier, "rowRange not supported for null-barrier batches");
     NIMBLE_USER_CHECK_LE(
         rowRange->startRow,
         rowRange->endRow,
-        "override rowRange startRow must be <= endRow");
+        "rowRange startRow must be <= endRow");
     NIMBLE_USER_CHECK_LE(
         rowRange->endRow,
-        rowCount,
-        "override rowRange endRow exceeds batch rowCount");
-    range = *rowRange;
+        range.numRows(),
+        "rowRange endRow exceeds the rows this batch exposes");
+    range = nimble::RowRange{
+        range.startRow + rowRange->startRow, range.startRow + rowRange->endRow};
   }
 
   appendStreamSegments(rowCount, /*startRow=*/run.rows, requiresBarrier);
