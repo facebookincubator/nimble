@@ -285,6 +285,76 @@ TYPED_TEST_CASE(EncodingSelectionNumericTests, NumericTypes);
 template <typename C>
 class EncodingSelectionNumericTests : public ::testing::Test {};
 
+TEST(ManualEncodingSelectionPolicyFactoryTest, nestedReadFactorsInheritRoot) {
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      {{nimble::EncodingType::Trivial, 1.0},
+       {nimble::EncodingType::FixedBitWidth, 1.0}},
+      /*compressionOptions=*/std::nullopt};
+
+  auto rootBase = factory.createPolicy(nimble::DataType::Uint32);
+  auto* root = dynamic_cast<nimble::ManualEncodingSelectionPolicy<uint32_t>*>(
+      rootBase.get());
+  ASSERT_NE(root, nullptr);
+  EXPECT_EQ(
+      root->candidateEncodingReadFactors(),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::Trivial, 1.0},
+          {nimble::EncodingType::FixedBitWidth, 1.0}}));
+
+  auto nestedBase = rootBase->create<uint32_t>(
+      nimble::EncodingType::Trivial,
+      nimble::EncodingIdentifiers::Dictionary::Indices);
+  auto* nested = dynamic_cast<nimble::ManualEncodingSelectionPolicy<uint32_t>*>(
+      nestedBase.get());
+  ASSERT_NE(nested, nullptr);
+  EXPECT_EQ(
+      nested->candidateEncodingReadFactors(),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::FixedBitWidth, 1.0}}));
+}
+
+TEST(ManualEncodingSelectionPolicyFactoryTest, nestedReadFactorsOverrideRoot) {
+  nimble::ManualEncodingSelectionPolicyFactory factory{
+      {{nimble::EncodingType::Trivial, 1.0}},
+      /*compressionOptions=*/std::nullopt,
+      std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::FixedBitWidth, 1.0},
+          {nimble::EncodingType::Varint, 1.0}}};
+
+  auto rootBase = factory.createPolicy(nimble::DataType::Uint32);
+  auto* root = dynamic_cast<nimble::ManualEncodingSelectionPolicy<uint32_t>*>(
+      rootBase.get());
+  ASSERT_NE(root, nullptr);
+  EXPECT_EQ(
+      root->candidateEncodingReadFactors(),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::Trivial, 1.0}}));
+
+  auto nestedBase = rootBase->create<uint32_t>(
+      nimble::EncodingType::Trivial,
+      nimble::EncodingIdentifiers::Dictionary::Indices);
+  auto* nested = dynamic_cast<nimble::ManualEncodingSelectionPolicy<uint32_t>*>(
+      nestedBase.get());
+  ASSERT_NE(nested, nullptr);
+  EXPECT_EQ(
+      nested->candidateEncodingReadFactors(),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::FixedBitWidth, 1.0},
+          {nimble::EncodingType::Varint, 1.0}}));
+
+  auto deeperNestedBase = nestedBase->create<uint32_t>(
+      nimble::EncodingType::FixedBitWidth,
+      nimble::EncodingIdentifiers::Dictionary::Indices);
+  auto* deeperNested =
+      dynamic_cast<nimble::ManualEncodingSelectionPolicy<uint32_t>*>(
+          deeperNestedBase.get());
+  ASSERT_NE(deeperNested, nullptr);
+  EXPECT_EQ(
+      deeperNested->candidateEncodingReadFactors(),
+      (std::vector<std::pair<nimble::EncodingType, float>>{
+          {nimble::EncodingType::Varint, 1.0}}));
+}
+
 TYPED_TEST(EncodingSelectionNumericTests, selectConst) {
   using T = TypeParam;
 

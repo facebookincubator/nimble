@@ -109,10 +109,14 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   ManualEncodingSelectionPolicy(
       std::vector<std::pair<EncodingType, float>> encodingReadFactors,
       std::optional<CompressionOptions> compressionOptions,
-      std::optional<NestedEncodingIdentifier> identifier)
+      std::optional<NestedEncodingIdentifier> identifier,
+      std::optional<std::vector<std::pair<EncodingType, float>>>
+          nestedEncodingReadFactors = std::nullopt)
       : candidateEncodingReadFactors_{std::move(encodingReadFactors)},
         compressionOptions_{std::move(compressionOptions)},
-        identifier_{identifier} {}
+        identifier_{identifier},
+        nestedEncodingReadFactorsOverride_{
+            std::move(nestedEncodingReadFactors)} {}
 
   EncodingSelectionResult select(
       std::span<const physicalType> values,
@@ -240,8 +244,12 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     // should we allow trivial string lengths to be encoded using trivial
     // encoding?)
     std::vector<std::pair<EncodingType, float>> nestedEncodingReadFactors;
-    nestedEncodingReadFactors.reserve(candidateEncodingReadFactors_.size());
-    for (const auto& entry : candidateEncodingReadFactors_) {
+    const auto& sourceEncodingReadFactors =
+        nestedEncodingReadFactorsOverride_.has_value()
+        ? nestedEncodingReadFactorsOverride_.value()
+        : candidateEncodingReadFactors_;
+    nestedEncodingReadFactors.reserve(sourceEncodingReadFactors.size());
+    for (const auto& entry : sourceEncodingReadFactors) {
       if (entry.first != parentEncodingType) {
         nestedEncodingReadFactors.emplace_back(entry);
       }
@@ -251,7 +259,8 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
         ManualEncodingSelectionPolicy,
         std::move(nestedEncodingReadFactors),
         compressionOptions_,
-        nestedEncodingIdentifier);
+        nestedEncodingIdentifier,
+        std::nullopt);
   }
 
  private:
@@ -268,6 +277,10 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
   // policies created from it.
   const std::optional<CompressionOptions> compressionOptions_;
   const std::optional<NestedEncodingIdentifier> identifier_;
+  // An override for the next nested policy. Deeper policies inherit their
+  // parent's already-filtered candidates.
+  const std::optional<std::vector<std::pair<EncodingType, float>>>
+      nestedEncodingReadFactorsOverride_;
 };
 
 class ManualEncodingSelectionPolicyFactory {
@@ -298,7 +311,9 @@ class ManualEncodingSelectionPolicyFactory {
       std::vector<std::pair<EncodingType, float>> encodingReadFactors =
           defaultEncodingReadFactors(),
       std::optional<CompressionOptions> compressionOptions =
-          CompressionOptions{});
+          CompressionOptions{},
+      std::optional<std::vector<std::pair<EncodingType, float>>>
+          nestedEncodingReadFactors = std::nullopt);
 
   std::unique_ptr<EncodingSelectionPolicyBase> createPolicy(
       DataType dataType) const;
@@ -310,6 +325,8 @@ class ManualEncodingSelectionPolicyFactory {
  private:
   const std::vector<std::pair<EncodingType, float>> encodingReadFactors_;
   const std::optional<CompressionOptions> compressionOptions_;
+  const std::optional<std::vector<std::pair<EncodingType, float>>>
+      nestedEncodingReadFactors_;
 };
 
 /// Learned encoding selection implementation.
