@@ -143,8 +143,9 @@ void traverseEncodings(
     case EncodingType::ALP: {
       const char* pos = stream.data() + dataOffset;
       const auto header = detail::alp::readHeader(pos);
+      uint32_t exceptionCount = 0;
       if (header.hasExceptions) {
-        varint::readVarint32(&pos); // exceptionCount
+        exceptionCount = varint::readVarint32(&pos);
       }
       const uint32_t encodedValuesSize = varint::readVarint32(&pos);
       traverseEncodings(
@@ -154,6 +155,26 @@ void traverseEncodings(
           "EncodedValues",
           useVarintRowCount,
           visitor);
+      pos += encodedValuesSize;
+      if (exceptionCount > 0) {
+        const uint32_t exceptionPositionsSize = varint::readVarint32(&pos);
+        traverseEncodings(
+            {pos, exceptionPositionsSize},
+            level + 1,
+            1,
+            "ExceptionPositions",
+            useVarintRowCount,
+            visitor);
+        pos += exceptionPositionsSize;
+        const uint32_t exceptionValuesSize = varint::readVarint32(&pos);
+        traverseEncodings(
+            {pos, exceptionValuesSize},
+            level + 1,
+            2,
+            "ExceptionValues",
+            useVarintRowCount,
+            visitor);
+      }
       break;
     }
     case EncodingType::BlockBitPacking: {

@@ -16,8 +16,10 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 
 #include "dwio/nimble/encodings/ALPEncoding.h"
+#include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/views/EncodingViewFactory.h"
 #include "velox/common/encode/Coding.h"
@@ -51,15 +53,33 @@ class ALPEncodingView final : public TypedEncodingView<T> {
     NIMBLE_CHECK_NOT_NULL(encodedValues_);
     pos += encodedValuesSize;
 
-    exceptionPositions_ = reinterpret_cast<const uint32_t*>(pos);
-    pos += exceptionCount_ * sizeof(uint32_t);
-    exceptionValues_ = reinterpret_cast<const physicalType*>(pos);
+    if (exceptionCount_ == 0) {
+      return;
+    }
+
+    auto noStringBufferFactory = [](uint32_t) -> void* { return nullptr; };
+    const EncodingFactory encodingFactory{options};
+
+    const auto exceptionPositionsSize = varint::readVarint32(&pos);
+    auto exceptionPositionsEncoding = encodingFactory.create(
+        *this->pool_, {pos, exceptionPositionsSize}, noStringBufferFactory);
+    pos += exceptionPositionsSize;
+
+    const auto exceptionValuesSize = varint::readVarint32(&pos);
+    exceptionValues_ = detail::createTypedEncodingView<physicalType>(
+        {pos, exceptionValuesSize}, this->pool_, options);
+    NIMBLE_CHECK_NOT_NULL(exceptionValues_);
+
+    exceptionPositionsBuffer_.emplace(
+        exceptionCount_, this->pool_, options.bufferPool);
+    exceptionPositionsEncoding->materialize(
+        exceptionCount_, exceptionPositionsBuffer_->data());
   }
 
  private:
   T readTypedAt(uint32_t index) const final {
     NIMBLE_CHECK_LT(index, this->rowCount_);
-    if (const auto* exception = findException(index)) {
+    if (const auto exception = findException(index)) {
       return detail::castFromPhysicalType<T>(*exception);
     }
 
@@ -70,13 +90,25 @@ class ALPEncodingView final : public TypedEncodingView<T> {
   void readPhysical(uint32_t offset, uint32_t length, physicalType* output)
       const final {
     this->checkReadRange(offset, length);
+    if (exceptionCount_ == 0) {
+      for (uint32_t i = 0; i < length; ++i) {
+        output[i] = detail::alp::toPhysical<T>(decodeValue(
+            velox::ZigZag::decode(encodedValues_->readAt(offset + i))));
+      }
+      return;
+    }
+
+    const auto* exceptionPositionsBegin = exceptionPositionsBuffer_->data();
+    const auto* exceptionPositionsEnd =
+        exceptionPositionsBegin + exceptionCount_;
     const auto* exceptionPosition = std::lower_bound(
-        exceptionPositions_, exceptionPositions_ + exceptionCount_, offset);
+        exceptionPositionsBegin, exceptionPositionsEnd, offset);
     for (uint32_t i = 0; i < length; ++i) {
       const auto row = offset + i;
-      if (exceptionPosition != exceptionPositions_ + exceptionCount_ &&
+      if (exceptionPosition != exceptionPositionsEnd &&
           *exceptionPosition == row) {
-        output[i] = exceptionValues_[exceptionPosition - exceptionPositions_];
+        const auto exceptionIndex = exceptionPosition - exceptionPositionsBegin;
+        output[i] = exceptionValues_->readAt(exceptionIndex);
         ++exceptionPosition;
       } else {
         output[i] = detail::alp::toPhysical<T>(
@@ -85,14 +117,18 @@ class ALPEncodingView final : public TypedEncodingView<T> {
     }
   }
 
-  const physicalType* findException(uint32_t index) const {
-    const auto* begin = exceptionPositions_;
+  std::optional<physicalType> findException(uint32_t index) const {
+    if (exceptionCount_ == 0) {
+      return std::nullopt;
+    }
+
+    const auto* begin = exceptionPositionsBuffer_->data();
     const auto* end = begin + exceptionCount_;
     const auto* it = std::lower_bound(begin, end, index);
     if (it == end || *it != index) {
-      return nullptr;
+      return std::nullopt;
     }
-    return exceptionValues_ + (it - begin);
+    return exceptionValues_->readAt(it - begin);
   }
 
   T decodeValue(int64_t encoded) const {
@@ -105,8 +141,8 @@ class ALPEncodingView final : public TypedEncodingView<T> {
   uint8_t factor_{0};
   uint32_t exceptionCount_{0};
   std::unique_ptr<TypedEncodingView<uint64_t>> encodedValues_;
-  const uint32_t* exceptionPositions_{nullptr};
-  const physicalType* exceptionValues_{nullptr};
+  std::unique_ptr<TypedEncodingView<physicalType>> exceptionValues_;
+  std::optional<ScopedVector<uint32_t>> exceptionPositionsBuffer_;
 };
 
 } // namespace facebook::nimble
