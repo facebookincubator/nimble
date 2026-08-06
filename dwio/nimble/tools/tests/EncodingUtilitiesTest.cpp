@@ -24,6 +24,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
+#include "dwio/nimble/encodings/tests/SharedDictionaryEncodingTestUtils.h"
 #include "dwio/nimble/encodings/tests/TestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "velox/common/memory/Memory.h"
@@ -470,6 +471,51 @@ TEST_F(EncodingUtilitiesTest, GetEncodingLabelBlockBitPacking) {
   EXPECT_NE(label.find("Baselines:Trivial"), std::string::npos);
   EXPECT_NE(label.find("BitWidths:Trivial"), std::string::npos);
   EXPECT_NE(label.find("DataOffsets:Trivial"), std::string::npos);
+}
+
+TEST_F(EncodingUtilitiesTest, traverseEncodingsSharedDictionary) {
+  nimble::Buffer buffer(*pool_);
+  const std::vector<uint32_t> indices{0, 1, 0, 2, 1, 2};
+  const auto encoded =
+      facebook::nimble::test::encodeSharedDictionary(buffer, indices);
+
+  struct TraversedEncoding {
+    EncodingType encodingType;
+    DataType dataType;
+    uint32_t level;
+    uint32_t index;
+    std::string nestedEncodingName;
+  };
+  std::vector<TraversedEncoding> traversed;
+  traverseEncodings(
+      encoded,
+      [&](EncodingType encodingType,
+          DataType dataType,
+          uint32_t level,
+          uint32_t index,
+          std::string nestedEncodingName,
+          std::unordered_map<EncodingPropertyType, EncodingProperty>
+          /* properties */) {
+        traversed.push_back(
+            TraversedEncoding{
+                .encodingType = encodingType,
+                .dataType = dataType,
+                .level = level,
+                .index = index,
+                .nestedEncodingName = std::move(nestedEncodingName)});
+        return true;
+      });
+
+  ASSERT_EQ(traversed.size(), 2);
+  EXPECT_EQ(traversed[0].encodingType, EncodingType::SharedDictionary);
+  EXPECT_EQ(traversed[0].dataType, DataType::Int32);
+  EXPECT_EQ(traversed[0].level, 0);
+  EXPECT_TRUE(traversed[0].nestedEncodingName.empty());
+  EXPECT_EQ(traversed[1].encodingType, EncodingType::FixedBitWidth);
+  EXPECT_EQ(traversed[1].dataType, DataType::Uint32);
+  EXPECT_EQ(traversed[1].level, 1);
+  EXPECT_EQ(traversed[1].index, 0);
+  EXPECT_EQ(traversed[1].nestedEncodingName, "Indices");
 }
 
 } // namespace facebook::nimble::tools::test

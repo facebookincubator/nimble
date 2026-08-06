@@ -21,13 +21,18 @@
 #ifdef NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS
 #include "dwio/nimble/encodings/SubIntSplitConfig.h"
 #endif
+#include "dwio/nimble/encodings/SharedDictionaryEncoding.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
+#include "dwio/nimble/encodings/tests/SharedDictionaryEncodingTestUtils.h"
 #include "dwio/nimble/tools/EncodingUtilities.h"
 #include "velox/common/memory/Memory.h"
 
+#include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 using namespace facebook;
 
@@ -150,7 +155,7 @@ class ForceSubIntSplitPolicy final : public nimble::EncodingSelectionPolicy<T> {
 
 } // namespace
 
-TEST(EncodingLayoutTests, Trivial) {
+TEST(EncodingLayoutTests, trivial) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,
@@ -172,7 +177,7 @@ TEST(EncodingLayoutTests, Trivial) {
   }
 }
 
-TEST(EncodingLayoutTests, TrivialString) {
+TEST(EncodingLayoutTests, trivialString) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,
@@ -190,7 +195,7 @@ TEST(EncodingLayoutTests, TrivialString) {
   }
 }
 
-TEST(EncodingLayoutTests, FixedBitWidth) {
+TEST(EncodingLayoutTests, fixedBitWidth) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::FixedBitWidth,
@@ -230,7 +235,7 @@ TEST(EncodingLayoutTests, FixedBitWidth) {
   }
 }
 
-TEST(EncodingLayoutTests, Varint) {
+TEST(EncodingLayoutTests, varint) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Varint,
       {},
@@ -241,7 +246,7 @@ TEST(EncodingLayoutTests, Varint) {
   testCapture<uint32_t>(expected, {1, 2, 3});
 }
 
-TEST(EncodingLayoutTests, Constant) {
+TEST(EncodingLayoutTests, constant) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Constant,
       {},
@@ -252,7 +257,7 @@ TEST(EncodingLayoutTests, Constant) {
   testCapture<uint32_t>(expected, {1, 1, 1});
 }
 
-TEST(EncodingLayoutTests, Pfor) {
+TEST(EncodingLayoutTests, pfor) {
   // PFOR nests two exception sub-streams (positions, residual values). Capture
   // records each present sub-stream recursively, like the compound encodings,
   // so a captured layout reproduces the full PFOR tree.
@@ -283,7 +288,7 @@ TEST(EncodingLayoutTests, Pfor) {
   EXPECT_TRUE(captured.child(1).has_value());
 }
 
-TEST(EncodingLayoutTests, for) {
+TEST(EncodingLayoutTests, forEncoding) {
   // FOR nests three frame metadata sub-streams: bit widths, references, and
   // bit offsets. Capture records each present sub-stream recursively so a
   // captured layout reproduces the full FOR tree.
@@ -347,7 +352,7 @@ TEST(EncodingLayoutTests, fsst) {
       nimble::EncodingType::Trivial);
 }
 
-TEST(EncodingLayoutTests, BlockBitPacking) {
+TEST(EncodingLayoutTests, blockBitPacking) {
   // BlockBitPacking nests three per-block metadata sub-streams (baselines, bit
   // widths, data offsets). Capture records each present sub-stream recursively,
   // like the compound encodings, so a captured layout reproduces the full tree.
@@ -378,7 +383,7 @@ TEST(EncodingLayoutTests, BlockBitPacking) {
   EXPECT_TRUE(captured.child(2).has_value());
 }
 
-TEST(EncodingLayoutTests, SparseBool) {
+TEST(EncodingLayoutTests, sparseBool) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::SparseBool,
       {},
@@ -406,7 +411,7 @@ TEST(EncodingLayoutTests, SparseBool) {
       captureTest, std::array<bool, 5>{false, false, false, true, false});
 }
 
-TEST(EncodingLayoutTests, MainlyConst) {
+TEST(EncodingLayoutTests, mainlyConst) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::MainlyConstant,
       {},
@@ -441,7 +446,7 @@ TEST(EncodingLayoutTests, MainlyConst) {
   testCapture<uint32_t>(captureTest, {1, 1, 1, 1, 5, 1});
 }
 
-TEST(EncodingLayoutTests, Dictionary) {
+TEST(EncodingLayoutTests, dictionary) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Dictionary,
       {},
@@ -461,7 +466,70 @@ TEST(EncodingLayoutTests, Dictionary) {
   testCapture<uint32_t>(expected, {1, 1, 1, 1, 5, 1});
 }
 
-TEST(EncodingLayoutTests, ReplayDictionaryRejectsEmpty) {
+TEST(EncodingLayoutTests, sharedDictionary) {
+  nimble::EncodingLayout expected{
+      nimble::EncodingType::SharedDictionary,
+      {},
+      nimble::CompressionType::Uncompressed,
+      {
+          nimble::EncodingLayout{
+              nimble::EncodingType::FixedBitWidth,
+              {},
+              nimble::CompressionType::Uncompressed},
+      }};
+
+  testSerialization(expected);
+
+  auto defaultPool = velox::memory::deprecatedAddDefaultLeafMemoryPool();
+  nimble::Buffer buffer{*defaultPool};
+  const std::vector<uint32_t> indices{0, 1, 0, 2, 1, 2};
+  const auto encoded = nimble::test::encodeSharedDictionary(buffer, indices);
+
+  verifyEncodingLayout(
+      expected,
+      nimble::EncodingLayoutCapture::capture(
+          encoded, nimble::Encoding::Options{}));
+
+  struct TraversedEncoding {
+    nimble::EncodingType encodingType;
+    nimble::DataType dataType;
+    uint32_t level;
+    uint32_t index;
+    std::string nestedEncodingName;
+  };
+  std::vector<TraversedEncoding> traversed;
+  nimble::tools::traverseEncodings(
+      encoded,
+      [&](nimble::EncodingType encodingType,
+          nimble::DataType dataType,
+          uint32_t level,
+          uint32_t index,
+          std::string nestedEncodingName,
+          std::unordered_map<
+              nimble::tools::EncodingPropertyType,
+              nimble::tools::EncodingProperty> /* properties */) {
+        traversed.push_back(
+            TraversedEncoding{
+                .encodingType = encodingType,
+                .dataType = dataType,
+                .level = level,
+                .index = index,
+                .nestedEncodingName = std::move(nestedEncodingName)});
+        return true;
+      });
+  ASSERT_EQ(traversed.size(), 2);
+  EXPECT_EQ(traversed[0].encodingType, nimble::EncodingType::SharedDictionary);
+  EXPECT_EQ(traversed[0].dataType, nimble::DataType::Int32);
+  EXPECT_EQ(traversed[0].level, 0);
+  EXPECT_TRUE(traversed[0].nestedEncodingName.empty());
+  EXPECT_EQ(traversed[1].encodingType, nimble::EncodingType::FixedBitWidth);
+  EXPECT_EQ(traversed[1].dataType, nimble::DataType::Uint32);
+  EXPECT_EQ(traversed[1].level, 1);
+  EXPECT_EQ(traversed[1].index, 0);
+  EXPECT_EQ(traversed[1].nestedEncodingName, "Indices");
+}
+
+TEST(EncodingLayoutTests, replayDictionaryRejectsEmpty) {
   // A replayed Dictionary layout applied to an EMPTY value stream cannot build
   // a dictionary. It must reject the stream with an incompatible-encoding error
   // -- like the other data-requiring encodings in EncodingFactory -- so the
@@ -491,7 +559,7 @@ TEST(EncodingLayoutTests, ReplayDictionaryRejectsEmpty) {
 
 TEST(
     EncodingLayoutTests,
-    ReplayMainlyConstantDictionaryRejectsEmptyOtherValues) {
+    replayMainlyConstantDictionaryRejectsEmptyOtherValues) {
   // Replay a MainlyConstant whose OtherValues stream is a nested Dictionary.
   // When every value equals the common value, OtherValues is empty, so the
   // nested Dictionary replay has nothing to encode -- the data shape that made
@@ -530,7 +598,7 @@ TEST(
       "Dictionary encoding cannot be used with 0 rows.");
 }
 
-TEST(EncodingLayoutTests, Rle) {
+TEST(EncodingLayoutTests, rle) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::RLE,
       {},
@@ -550,7 +618,7 @@ TEST(EncodingLayoutTests, Rle) {
   testCapture<uint32_t>(expected, {1, 1, 1, 1, 5, 1});
 }
 
-TEST(EncodingLayoutTests, RleBool) {
+TEST(EncodingLayoutTests, rleBool) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::RLE,
       {},
@@ -566,7 +634,7 @@ TEST(EncodingLayoutTests, RleBool) {
   testCapture<bool>(expected, std::array<bool, 4>{false, false, true, true});
 }
 
-TEST(EncodingLayoutTests, Nullable) {
+TEST(EncodingLayoutTests, nullable) {
   nimble::EncodingLayout expected{
       nimble::EncodingType::Nullable,
       {},
@@ -627,7 +695,7 @@ TEST(EncodingLayoutTests, Nullable) {
 
 // Verify that an EncodingLayout tree with a SubIntSplit root and two named
 // child sections can be serialized and deserialized correctly.
-TEST(EncodingLayoutTests, SubIntSplitSerialization) {
+TEST(EncodingLayoutTests, subIntSplitSerialization) {
   nimble::EncodingLayout layout{
       nimble::EncodingType::SubIntSplit,
       {},
@@ -682,7 +750,7 @@ TEST(EncodingLayoutTests, SubIntSplitSerialization) {
 
 // Verify that EncodingLayoutCapture correctly reads the SubIntSplit binary
 // format and that the captured tree round-trips through serialize/deserialize.
-TEST(EncodingLayoutTests, SubIntSplitCapture) {
+TEST(EncodingLayoutTests, subIntSplitCapture) {
   nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
@@ -725,7 +793,10 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
 
   // The encoded stream must round-trip through the encoding factory.
   auto decoded = nimble::EncodingFactory().create(
-      *defaultPool, encoding, [](uint32_t) { return nullptr; });
+      *defaultPool,
+      encoding,
+      [](uint32_t) { return nullptr; },
+      nimble::Encoding::Options{});
   nimble::Vector<int64_t> decodedValues{defaultPool.get()};
   decodedValues.resize(data.size());
   decoded->materialize(data.size(), decodedValues.data());
@@ -781,7 +852,7 @@ TEST(EncodingLayoutTests, SubIntSplitCapture) {
   }
 }
 
-TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
+TEST(EncodingLayoutTests, subIntSplitPreserveBoundariesReplay) {
   nimble::EncodingSelectionPolicyCreator encodingSelectionPolicyCreator =
       [encodingFactory = nimble::ManualEncodingSelectionPolicyFactory{}](
           nimble::DataType dataType)
@@ -829,7 +900,7 @@ TEST(EncodingLayoutTests, SubIntSplitPreserveBoundariesReplay) {
 }
 #endif
 
-TEST(EncodingLayoutTests, SizeTooSmall) {
+TEST(EncodingLayoutTests, sizeTooSmall) {
   {
     nimble::EncodingLayout expected{
         nimble::EncodingType::Trivial,

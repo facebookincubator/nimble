@@ -33,6 +33,7 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SharedDictionaryEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -76,6 +77,9 @@ std::unique_ptr<Encoding> EncodingFactory::create(
     }
     case EncodingType::Dictionary: {
       RETURN_ENCODING_BY_NON_BOOL_TYPE(DictionaryEncoding, dataType);
+    }
+    case EncodingType::SharedDictionary: {
+      RETURN_ENCODING_BY_INTEGER_TYPE(SharedDictionaryEncoding, dataType);
     }
     case EncodingType::FixedBitWidth: {
       RETURN_ENCODING_BY_NUMERIC_TYPE(FixedBitWidthEncoding, dataType);
@@ -274,6 +278,15 @@ std::string_view EncodingFactory::encode(
       }
       return DictionaryEncoding<T>::encode(
           selection, castedValues, buffer, options);
+    }
+    case EncodingType::SharedDictionary: {
+      if constexpr (isIntegralType<T>() && !std::is_same_v<T, bool>) {
+        return SharedDictionaryEncoding<T>::encode(
+            selection, castedValues, buffer, options);
+      }
+      NIMBLE_INCOMPATIBLE_ENCODING(
+          "SharedDictionary encoding only supports non-bool integer data types, got {}.",
+          TypeTraits<T>::dataType);
     }
     case EncodingType::FixedBitWidth: {
       if constexpr (isNumericType<physicalType>()) {

@@ -13,6 +13,7 @@
 # limitations under the License.
 add_library(
   nimble_encodings_tests_utils
+  SharedDictionaryEncodingTestUtils.cpp
   TestUtils.cpp
   ../selection/tests/RandomEncodingSelectionPolicy.cpp
 )
@@ -56,6 +57,8 @@ add_executable(
   RLEEncodingViewTest.cpp
   RLEEncodingTest.cpp
   SentinelEncodingTest.cpp
+  SharedDictionaryBuilderTest.cpp
+  SharedDictionaryEncodingTest.cpp
   SharedDictionaryTypesTest.cpp
   SimdForBitpackEncodingViewTest.cpp
   SliceEncodingTest.cpp

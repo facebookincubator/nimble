@@ -29,6 +29,7 @@
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SharedDictionaryEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -104,6 +105,13 @@ auto encodingTypeDispatchNonString(Encoding& encoding, F&& f) {
       return f(static_cast<RLEEncoding<T>&>(encoding));
     case EncodingType::Dictionary:
       return f(static_cast<DictionaryEncoding<T>&>(encoding));
+    case EncodingType::SharedDictionary:
+      if constexpr (isIntegralType<T>() && !std::is_same_v<T, bool>) {
+        return f(static_cast<SharedDictionaryEncoding<T>&>(encoding));
+      }
+      NIMBLE_UNREACHABLE(
+          "Shared dictionary only supports integer types, got {}.",
+          encoding.dataType());
     case EncodingType::FixedBitWidth:
       return f(static_cast<FixedBitWidthEncoding<T>&>(encoding));
     case EncodingType::Nullable:

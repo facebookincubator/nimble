@@ -48,6 +48,10 @@ struct EncodingIdentifiers {
     static constexpr NestedEncodingIdentifier Indices = 0;
   };
 
+  struct SharedDictionary {
+    static constexpr NestedEncodingIdentifier Indices = 0;
+  };
+
   struct Trivial {
     static constexpr NestedEncodingIdentifier Lengths = 0;
   };

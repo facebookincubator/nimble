@@ -21,6 +21,7 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/encodings/ALPEncoding.h"
 #include "dwio/nimble/encodings/FsstEncoding.h"
+#include "dwio/nimble/encodings/SharedDictionaryTypes.h"
 #include "dwio/nimble/encodings/common/EncodingPrefix.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/common/EncodingUtils.h"
@@ -319,6 +320,21 @@ EncodingLayout EncodingLayoutCapture::capture(
       children.emplace_back(
           EncodingLayoutCapture::capture(
               {pos, encoding.size() - (pos - encoding.data())}, options));
+      break;
+    }
+    case EncodingType::SharedDictionary: {
+      children.reserve(1);
+      const char* pos = encoding.data() + prefixSize;
+      readSharedDictionaryScope(encoding, pos);
+      readSharedDictionaryId(encoding, pos);
+      const auto indicesOffset = static_cast<size_t>(pos - encoding.data());
+      NIMBLE_CHECK_LT(
+          indicesOffset,
+          encoding.size(),
+          "Shared dictionary encoding is missing its indices.");
+      children.emplace_back(
+          EncodingLayoutCapture::capture(
+              {pos, encoding.size() - indicesOffset}, options));
       break;
     }
     case EncodingType::RLE: {

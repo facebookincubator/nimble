@@ -33,6 +33,7 @@
 #include "dwio/nimble/encodings/NullableEncoding.h"
 #include "dwio/nimble/encodings/PFOREncoding.h"
 #include "dwio/nimble/encodings/RLEEncoding.h"
+#include "dwio/nimble/encodings/SharedDictionaryEncoding.h"
 #include "dwio/nimble/encodings/SimdForBitpackEncoding.h"
 #include "dwio/nimble/encodings/SparseBoolEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -188,6 +189,20 @@ std::string_view sliceDictionary(
       DictionaryEncoding<T>::slice(encoded, offset, length, buffer, options));
 }
 
+std::string_view sliceSharedDictionary(
+    std::string_view encoded,
+    DataType dataType,
+    uint32_t offset,
+    uint32_t length,
+    Buffer& buffer,
+    const Encoding::Options& options) {
+  NIMBLE_RETURN_BY_INTEGER_DATA_TYPE(
+      dataType,
+      T,
+      SharedDictionaryEncoding<T>::slice(
+          encoded, offset, length, buffer, options));
+}
+
 std::string_view sliceFixedBitWidth(
     std::string_view encoded,
     DataType dataType,
@@ -300,7 +315,8 @@ std::string_view EncodingSliceFactory::slice(
   NIMBLE_CHECK_LE(offset, rowCount);
   NIMBLE_CHECK_LE(length, rowCount - offset);
   NIMBLE_CHECK_GT(length, 0, "Cannot slice zero rows.");
-  if (offset == 0 && length == rowCount) {
+  if (offset == 0 && length == rowCount &&
+      encodingType != EncodingType::SharedDictionary) {
     return encoded;
   }
 
@@ -314,6 +330,9 @@ std::string_view EncodingSliceFactory::slice(
       return sliceRLE(encoded, dataType, offset, length, buffer, options);
     case EncodingType::Dictionary:
       return sliceDictionary(
+          encoded, dataType, offset, length, buffer, options);
+    case EncodingType::SharedDictionary:
+      return sliceSharedDictionary(
           encoded, dataType, offset, length, buffer, options);
     case EncodingType::FixedBitWidth:
       return sliceFixedBitWidth(

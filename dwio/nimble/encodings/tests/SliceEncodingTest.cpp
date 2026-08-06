@@ -17,7 +17,9 @@
 #include "dwio/nimble/encodings/EncodingSliceFactory.h"
 
 #include <algorithm>
+#include <memory>
 #include <random>
+#include <span>
 #include <string_view>
 #include <type_traits>
 #include <vector>
