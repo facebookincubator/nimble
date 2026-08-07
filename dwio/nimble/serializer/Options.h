@@ -226,6 +226,11 @@ struct SerializerOptions {
   /// tree.
   std::optional<EncodingLayoutTree> encodingLayoutTree{};
 
+  /// Cache the selected encoding layout in the Serializer and reuse it for
+  /// subsequent calls. The cached layout, if present, is available via
+  /// Serializer::getCachedEncodingLayout().
+  bool cacheEncodingLayout{false};
+
   /// Compression options used with encodingLayoutTree.
   /// When encodingLayoutTree is specified, these options are passed to
   /// ReplayedEncodingSelectionPolicy to control compression during encoding

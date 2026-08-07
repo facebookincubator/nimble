@@ -31,12 +31,14 @@
 #include "dwio/nimble/common/Varint.h"
 #include "dwio/nimble/common/Zigzag.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
 #include "dwio/nimble/encodings/common/EncodingPrimitives.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/serializer/SerializationHeader.h"
 #include "dwio/nimble/velox/RowRange.h"
 #include "dwio/nimble/velox/StreamData.h"
+#include "dwio/nimble/writer/EncodingLayoutStreamContext.h"
 #include "folly/io/Cursor.h"
 #include "folly/io/IOBuf.h"
 #include "velox/common/Casts.h"
@@ -560,16 +562,11 @@ class StreamDataWriter {
   /// flags).
   ///
   /// @param pool Memory pool for encoding buffer allocation.
-  /// @param streamEncodingLayouts Optional encoding layouts for replaying
-  ///        captured encodings. When provided, looks up EncodingLayout by
-  ///        stream offset and uses ReplayedEncodingSelectionPolicy.
   StreamDataWriter(
       const SerializerOptions& options,
       T& buffer,
       uint32_t rowCount,
-      velox::memory::MemoryPool* pool,
-      const std::unordered_map<uint32_t, const EncodingLayout*>*
-          streamEncodingLayouts);
+      velox::memory::MemoryPool* pool);
 
   /// Write data for a single stream.
   void writeData(const nimble::StreamData& streamData);
@@ -580,8 +577,7 @@ class StreamDataWriter {
 
  private:
   void encodeStream(
-      ScalarKind scalarKind,
-      uint32_t streamOffset,
+      const StreamDescriptorBuilder& descriptor,
       std::string_view data,
       std::span<const bool> nonNulls = {});
 
@@ -591,10 +587,6 @@ class StreamDataWriter {
   velox::memory::MemoryPool* const pool_;
   // Scratch buffer holding one encoded stream before it is copied to output.
   const std::unique_ptr<nimble::Buffer> streamEncodingBuffer_;
-  // Optional map from stream offset to encoding layout for replaying captured
-  // encodings. Only set when options_.encodingLayoutTree is specified.
-  const std::unordered_map<uint32_t, const EncodingLayout*>* const
-      streamEncodingLayouts_;
 
   // --- Mutable members ---
   // Final serialized output. Encoded stream bytes and stream metadata are
@@ -616,19 +608,13 @@ StreamDataWriter<T>::StreamDataWriter(
     const SerializerOptions& options,
     T& buffer,
     uint32_t rowCount,
-    velox::memory::MemoryPool* pool,
-    const std::unordered_map<uint32_t, const EncodingLayout*>*
-        streamEncodingLayouts)
+    velox::memory::MemoryPool* pool)
     : options_{options},
       pool_{pool},
       streamEncodingBuffer_{
           options.enableEncoding() ? std::make_unique<nimble::Buffer>(*pool)
                                    : nullptr},
-      streamEncodingLayouts_{streamEncodingLayouts},
       outputBuffer_{buffer} {
-  NIMBLE_CHECK(
-      streamEncodingLayouts_ == nullptr || options_.enableEncoding(),
-      "streamEncodingLayouts can only be set when encoding is enabled");
   NIMBLE_CHECK_NOT_NULL(pool, "Memory pool cannot be null");
 
   std::optional<SerializationVersion> version;
@@ -655,8 +641,8 @@ StreamDataWriter<T>::StreamDataWriter(
 
 template <typename T>
 void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
-  const auto scalarKind = streamData.descriptor().scalarKind();
-  const auto streamOffset = streamData.descriptor().offset();
+  const auto& descriptor = streamData.descriptor();
+  const auto streamOffset = descriptor.offset();
   const auto nonNulls = streamData.nonNulls();
   const auto data = streamData.data();
 
@@ -679,7 +665,7 @@ void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
     NIMBLE_CHECK_LE(lastStream_ + 1, streamOffset, "unexpected stream offset");
     detail::writeMissingStreams(outputBuffer_, lastStream_, streamOffset);
     lastStream_ = streamOffset;
-    encodeStream(scalarKind, streamOffset, data);
+    encodeStream(descriptor, data);
     return;
   }
 
@@ -689,7 +675,7 @@ void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
         data.empty(), "null streams should not carry a separate data payload");
     const auto streamPayload = detail::boolsAsStringView(nonNulls);
     NIMBLE_CHECK(!streamPayload.empty(), "Expected null stream payload");
-    encodeStream(scalarKind, streamOffset, streamPayload);
+    encodeStream(descriptor, streamPayload);
     return;
   }
 
@@ -698,15 +684,17 @@ void StreamDataWriter<T>::writeData(const nimble::StreamData& streamData) {
   NIMBLE_CHECK(
       !data.empty() || streamData.hasNullValues(),
       "Expected content stream payload");
-  encodeStream(scalarKind, streamOffset, data, nonNulls);
+  encodeStream(descriptor, data, nonNulls);
 }
 
 template <typename T>
 void StreamDataWriter<T>::encodeStream(
-    ScalarKind scalarKind,
-    uint32_t streamOffset,
+    const StreamDescriptorBuilder& descriptor,
     std::string_view data,
     std::span<const bool> nonNulls) {
+  const auto scalarKind = descriptor.scalarKind();
+  const auto streamOffset = descriptor.offset();
+
   if (!options_.enableEncoding()) {
     if (scalarKind == ScalarKind::String || scalarKind == ScalarKind::Binary) {
       // Legacy string encoding: [total_size:u32][len_0:u32][data_0]...
@@ -728,13 +716,9 @@ void StreamDataWriter<T>::encodeStream(
     return;
   }
 
-  const EncodingLayout* encodingLayout = nullptr;
-  if (streamEncodingLayouts_ != nullptr) {
-    auto it = streamEncodingLayouts_->find(streamOffset);
-    if (it != streamEncodingLayouts_->end()) {
-      encodingLayout = it->second;
-    }
-  }
+  const auto* ctx = descriptor.context<EncodingLayoutStreamContext>();
+  const EncodingLayout* encodingLayout =
+      (ctx != nullptr) ? ctx->encoding() : nullptr;
 
   std::string_view encoded;
   if (!facebook::nimble::StreamData::hasNullValues(nonNulls)) {
@@ -755,6 +739,12 @@ void StreamDataWriter<T>::encodeStream(
         *streamEncodingBuffer_,
         encodingLayout,
         options_.encodingOptions);
+  }
+
+  if (options_.cacheEncodingLayout && encodingLayout == nullptr) {
+    encodingLayoutContext(descriptor)
+        .setEncoding(
+            EncodingLayoutCapture::capture(encoded, options_.encodingOptions));
   }
 
   // Track size for trailer.
