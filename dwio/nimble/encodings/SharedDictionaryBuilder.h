@@ -276,7 +276,8 @@ class FixedSharedDictionaryBuilder final : public SharedDictionaryBuilder<T> {
 
   void resetImpl() final {
     NIMBLE_UNSUPPORTED(
-        "{} shared dictionary builder does not support reset().", this->kind());
+        "{} shared dictionary builder does not support reset().",
+        SharedDictionaryBuilder<T>::kindString(this->kind()));
   }
 
  private:
@@ -325,7 +326,7 @@ class ExternalSharedDictionaryBuilder final
   std::span<const T> alphabet() const final {
     NIMBLE_UNSUPPORTED(
         "{} shared dictionary builder does not expose an alphabet.",
-        this->kind());
+        SharedDictionaryBuilder<T>::kindString(this->kind()));
   }
 
  protected:
@@ -345,7 +346,8 @@ class ExternalSharedDictionaryBuilder final
 
   void resetImpl() final {
     NIMBLE_UNSUPPORTED(
-        "{} shared dictionary builder does not support reset().", this->kind());
+        "{} shared dictionary builder does not support reset().",
+        SharedDictionaryBuilder<T>::kindString(this->kind()));
   }
 
  private:
