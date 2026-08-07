@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nimble for Interactive</title>
+</head>
+<body style="margin:0; padding:0; background:#f5f5f5;">
+
+<div style="background:#fff; padding:40px 56px 20px; text-align:center;">
+  <h1 style="font-family:'Segoe UI',system-ui,sans-serif; font-size:38px; font-weight:700; color:#2a2a2a; margin:0 0 6px 0;">Nimble for Interactive</h1>
+  <div style="font-size:18px; color:#888; font-family:'Segoe UI',system-ui,sans-serif;">Background &bull; Architecture &bull; Filter Pushdown</div>
+</div>
+
+<!-- PART 1: Row vs Columnar -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; background: #f5f5f5; color: #333; }
+
+  .slide {
+    width: 1280px;
+    min-height: 720px;
+    height: auto;
+    margin: 0 auto 40px;
+    padding: 44px 56px;
+    background: #fff;
+    position: relative;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  }
+
+  h1 {
+    font-size: 36px;
+    font-weight: 700;
+    color: #2a2a2a;
+    margin-bottom: 20px;
+  }
+
+  .schema {
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 16px;
+    color: #888;
+    margin-bottom: 18px;
+  }
+
+  .content {
+    display: flex;
+    gap: 48px;
+    align-items: flex-start;
+  }
+
+  .left { flex-shrink: 0; }
+
+  /* ---- Table ---- */
+  table.tbl {
+    border-collapse: collapse;
+    font-size: 16px;
+    background: #fff;
+  }
+
+  table.tbl tr:last-child td.c-red   { border-bottom: 3px solid #c0392b; }
+  table.tbl tr:last-child td.c-blue  { border-bottom: 3px solid #2980b9; }
+  table.tbl tr:last-child td.c-green { border-bottom: 3px solid #27ae60; }
+
+  table.tbl th {
+    padding: 10px 24px;
+    text-align: left;
+    font-weight: 600;
+    color: #555;
+    border-bottom: 2px solid #ddd;
+  }
+
+  table.tbl td {
+    padding: 10px 24px;
+    border-bottom: 1px solid #eee;
+    color: #444;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 15px;
+  }
+
+  /* Column border colors */
+  .c-red    { border: 3px solid #c0392b; background: rgba(192,57,43,0.04); }
+  .c-green  { border: 3px solid #27ae60; background: rgba(39,174,96,0.04); }
+  .c-blue   { border: 3px solid #2980b9; background: rgba(41,128,185,0.04); }
+
+  /* ---- Disk Area ---- */
+  .disk {
+    flex: 1;
+    background: #f0ece4;
+    border-radius: 12px;
+    padding: 28px 32px;
+    min-height: 400px;
+  }
+
+  /* Value block */
+  .b {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 34px;
+    border: 2.5px solid;
+    border-radius: 4px;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 8px;
+    vertical-align: middle;
+  }
+
+  .b-red   { border-color: #c0392b; color: #c0392b; background: #f9e4e1; }
+  .b-green { border-color: #27ae60; color: #27ae60; background: #e1f5ea; }
+  .b-blue  { border-color: #2980b9; color: #2980b9; background: #ddeef8; }
+
+  /* Row group on disk (for row store) */
+  .row-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 2px solid #333;
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin: 0 8px 10px 0;
+    vertical-align: top;
+    background: rgba(0,0,0,0.02);
+  }
+
+  /* Column group on disk (for columnar) */
+  .col-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 10px;
+    padding: 6px 8px;
+    border-radius: 6px;
+  }
+
+  .col-group-red   { background: rgba(192,57,43,0.08); border: 2px solid rgba(192,57,43,0.2); display: inline-flex; }
+  .col-group-blue  { background: rgba(41,128,185,0.08); border: 2px solid rgba(41,128,185,0.2); display: inline-flex; }
+  .col-group-green { background: rgba(39,174,96,0.08); border: 2px solid rgba(39,174,96,0.2); display: inline-flex; }
+
+  /* Queries */
+  .queries {
+    margin-top: 32px;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 15px;
+    color: #777;
+    line-height: 2;
+  }
+
+  .queries strong { color: #333; }
+
+  /* Section blocks (matching reference style) */
+  .sec {
+    border-radius: 6px;
+    padding: 10px 16px;
+  }
+
+  .sec-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #6a4a20;
+  }
+
+  .sec-detail {
+    font-size: 12px;
+    color: #8a7050;
+    margin-top: 2px;
+    font-family: 'Fira Code', 'Consolas', monospace;
+  }
+
+  /* Dim */
+  .dim { opacity: 0.2; }
+
+  /* Stripe box for slide 4 */
+  .stripe-box {
+    border: 3px solid;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    position: relative;
+    background: rgba(255,255,255,0.5);
+  }
+
+  .stripe-box-orange { border-color: #c8894a; }
+  .stripe-box-blue   { border-color: #5b8db8; }
+
+  .stripe-box-label {
+    position: absolute;
+    top: 8px;
+    right: 14px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .stripe-box-orange .stripe-box-label { color: #c8894a; }
+  .stripe-box-blue   .stripe-box-label { color: #5b8db8; }
+
+  /* Stripe highlight on table rows */
+  .s-orange td { border-top: 3px solid #c8894a; border-bottom: 3px solid #c8894a; }
+  .s-orange td:first-child { border-left: 3px solid #c8894a; }
+  .s-orange td:last-child  { border-right: 3px solid #c8894a; }
+  .s-orange + .s-orange td { border-top: none; }
+
+  .s-blue td { border-top: 3px solid #5b8db8; border-bottom: 3px solid #5b8db8; }
+  .s-blue td:first-child { border-left: 3px solid #5b8db8; }
+  .s-blue td:last-child  { border-right: 3px solid #5b8db8; }
+  .s-blue + .s-blue td { border-top: none; }
+  .s-blue:last-child td { border-bottom: 3px solid #5b8db8; }
+</style>
+
+
+<!-- ======================== SLIDE 1: Row Store vs Columnar Store ======================== -->
+<div class="slide">
+  <h1 style="text-align:center;">Row Store vs Columnar Store</h1>
+  <div class="schema" style="text-align:center;">users (id INT, name STRING, age INT)</div>
+
+  <div class="content" style="gap:36px;">
+    <!-- Row Store Side -->
+    <div style="flex:1;">
+      <div style="text-align:center; font-size:22px; font-weight:700; color:#c8894a; margin-bottom:4px;">Row Store</div>
+      <div style="text-align:center; font-size:12px; color:#999; margin-bottom:12px;">CSV, JSON, TEXT</div>
+
+      <div class="disk" style="min-height:auto; padding:20px 24px;">
+        <div class="row-group">
+          <div class="b b-red">1</div>
+          <div class="b b-blue">alice</div>
+          <div class="b b-green">25</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red">2</div>
+          <div class="b b-blue">bob</div>
+          <div class="b b-green">30</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red">3</div>
+          <div class="b b-blue">charlie</div>
+          <div class="b b-green">28</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red">4</div>
+          <div class="b b-blue">dave</div>
+          <div class="b b-green">35</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Table in center -->
+    <div style="flex-shrink:0; align-self:center;">
+      <table class="tbl">
+        <tr>
+          <th class="c-red">id</th>
+          <th class="c-blue">name</th>
+          <th class="c-green">age</th>
+        </tr>
+        <tr>
+          <td class="c-red">1</td>
+          <td class="c-blue">"alice"</td>
+          <td class="c-green">25</td>
+        </tr>
+        <tr>
+          <td class="c-red">2</td>
+          <td class="c-blue">"bob"</td>
+          <td class="c-green">30</td>
+        </tr>
+        <tr>
+          <td class="c-red">3</td>
+          <td class="c-blue">"charlie"</td>
+          <td class="c-green">28</td>
+        </tr>
+        <tr>
+          <td class="c-red">4</td>
+          <td class="c-blue">"dave"</td>
+          <td class="c-green">35</td>
+        </tr>
+        <tr>
+          <td class="c-red" style="text-align:center; color:#c0392b;">...</td>
+          <td class="c-blue" style="text-align:center; color:#2980b9;">...</td>
+          <td class="c-green" style="text-align:center; color:#27ae60;">...</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- Columnar Store Side -->
+    <div style="flex:1;">
+      <div style="text-align:center; font-size:22px; font-weight:700; color:#2980b9; margin-bottom:4px;">Columnar Store</div>
+      <div style="text-align:center; font-size:12px; color:#999; margin-bottom:12px;">DWRF(ORC), Parquet, Nimble</div>
+
+      <div class="disk" style="min-height:auto; padding:20px 24px;">
+        <div class="col-group col-group-red">
+          <div class="b b-red">1</div>
+          <div class="b b-red">2</div>
+          <div class="b b-red">3</div>
+          <div class="b b-red">4</div>
+        </div>
+
+        <div class="col-group col-group-blue">
+          <div class="b b-blue">alice</div>
+          <div class="b b-blue">bob</div>
+          <div class="b b-blue">charlie</div>
+          <div class="b b-blue">dave</div>
+        </div>
+
+        <div class="col-group col-group-green">
+          <div class="b b-green">25</div>
+          <div class="b b-green">30</div>
+          <div class="b b-green">28</div>
+          <div class="b b-green">35</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================== SLIDE 2: Why Columnar Store ======================== -->
+<div class="slide">
+  <h1>Why Columnar Store?</h1>
+  <div class="schema"><strong>SELECT</strong> age <strong>FROM</strong> users &nbsp;&mdash;&nbsp; which blocks get read from disk?</div>
+
+  <div class="content" style="gap:36px;">
+    <!-- Row Store Side -->
+    <div style="flex:1;">
+      <div style="text-align:center; font-size:22px; font-weight:700; color:#c8894a; margin-bottom:4px;">Row Store</div>
+      <div style="text-align:center; font-size:12px; color:#999; margin-bottom:12px;">CSV, JSON, TEXT</div>
+
+      <div class="disk" style="min-height:auto; padding:20px 24px;">
+        <div class="row-group">
+          <div class="b b-red dim">1</div>
+          <div class="b b-blue dim">alice</div>
+          <div class="b b-green">25</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red dim">2</div>
+          <div class="b b-blue dim">bob</div>
+          <div class="b b-green">30</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red dim">3</div>
+          <div class="b b-blue dim">charlie</div>
+          <div class="b b-green">28</div>
+        </div>
+
+        <div class="row-group">
+          <div class="b b-red dim">4</div>
+          <div class="b b-blue dim">dave</div>
+          <div class="b b-green">35</div>
+        </div>
+
+        <div style="margin-top:16px; font-size:13px; color:#888; line-height:1.6;">
+          Must scan <strong style="color:#333;">every row</strong> to extract age.<br>
+          Reads all columns even though only age is needed.
+        </div>
+      </div>
+    </div>
+
+    <!-- Columnar Side -->
+    <div style="flex:1;">
+      <div style="text-align:center; font-size:22px; font-weight:700; color:#2980b9; margin-bottom:4px;">Columnar Store</div>
+      <div style="text-align:center; font-size:12px; color:#999; margin-bottom:12px;">DWRF(ORC), Parquet, Nimble</div>
+
+      <div class="disk" style="min-height:auto; padding:20px 24px;">
+        <div class="col-group col-group-red dim">
+          <div class="b b-red">1</div>
+          <div class="b b-red">2</div>
+          <div class="b b-red">3</div>
+          <div class="b b-red">4</div>
+        </div>
+
+        <div class="col-group col-group-blue dim">
+          <div class="b b-blue">alice</div>
+          <div class="b b-blue">bob</div>
+          <div class="b b-blue">charlie</div>
+          <div class="b b-blue">dave</div>
+        </div>
+
+        <div class="col-group col-group-green">
+          <div class="b b-green">25</div>
+          <div class="b b-green">30</div>
+          <div class="b b-green">28</div>
+          <div class="b b-green">35</div>
+        </div>
+
+        <div style="margin-top:16px; font-size:13px; color:#888; line-height:1.6;">
+          Reads <strong style="color:#333;">only the age column</strong>.<br>
+          Id and name never touched.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key advantages -->
+  <ul style="margin-top:20px; font-size:14px; color:#555; padding-left:20px; line-height:2;">
+    <li><strong style="color:#333;">Column Pruning</strong> — read only needed columns, skip the rest</li>
+    <li><strong style="color:#333;">Better Compression</strong> — same-type values compress more efficiently</li>
+    <li><strong style="color:#333;">Less I/O</strong> — dramatically less data read from disk</li>
+  </ul>
+</div>
+
+<!-- ======================== SLIDE 4: Columnar with Stripes ======================== -->
+<div class="slide">
+  <h1>Columnar Store — Scaling with Stripes</h1>
+  <div class="schema">users (id INT, name STRING, age INT)</div>
+
+  <div class="content">
+    <div class="left">
+      <table class="tbl">
+        <tr>
+          <th>id</th>
+          <th>name</th>
+          <th>age</th>
+        </tr>
+        <tr class="s-orange">
+          <td>1</td>
+          <td>"alice"</td>
+          <td>25</td>
+        </tr>
+        <tr class="s-orange">
+          <td style="text-align:center; color:#c8894a;">...</td>
+          <td style="text-align:center; color:#c8894a;">...</td>
+          <td style="text-align:center; color:#c8894a;">...</td>
+        </tr>
+        <tr class="s-orange">
+          <td>10000</td>
+          <td>"kate"</td>
+          <td>31</td>
+        </tr>
+        <tr class="s-blue">
+          <td>10001</td>
+          <td>"leo"</td>
+          <td>28</td>
+        </tr>
+        <tr class="s-blue">
+          <td style="text-align:center; color:#5b8db8;">...</td>
+          <td style="text-align:center; color:#5b8db8;">...</td>
+          <td style="text-align:center; color:#5b8db8;">...</td>
+        </tr>
+        <tr class="s-blue">
+          <td>20000</td>
+          <td>"zoe"</td>
+          <td>44</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="disk">
+      <!-- Stripe 1 -->
+      <div class="stripe-box stripe-box-orange" style="min-height:90px;">
+        <div class="stripe-box-label">Stripe 1 <span style="font-weight:400; font-size:12px;">(rows 1–10,000)</span></div>
+        <div style="font-size:13px; color:#888; margin-top:4px;">Worker A</div>
+      </div>
+
+      <!-- Stripe 2 -->
+      <div class="stripe-box stripe-box-blue" style="min-height:90px;">
+        <div class="stripe-box-label">Stripe 2 <span style="font-weight:400; font-size:12px;">(rows 10,001–20,000)</span></div>
+        <div style="font-size:13px; color:#888; margin-top:4px;">Worker B</div>
+      </div>
+
+      <div style="margin-top:16px; font-size:13px; color:#777; line-height:1.6;">
+        Why not store each column as one giant block?
+      </div>
+      <ul style="margin-top:8px; font-size:14px; color:#555; padding-left:20px; line-height:2;">
+        <li><strong style="color:#333;">Parallelism</strong> — each stripe is a self-contained unit, assigned to a different worker</li>
+        <li><strong style="color:#333;">Reliability</strong> — process one stripe at a time (~256 MB), never load entire file</li>
+        <li><strong style="color:#333;">I/O efficiency</strong> — per-stripe min/max stats enable predicate pushdown, skip irrelevant stripes entirely</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+
+
+<!-- PART 2: DWRF vs Nimble Architecture -->
+<style>
+  .diagram-container { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 20px 0; }
+  .diagram-box { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; padding: 8px; }
+  .diagram-label { text-align: center; color: #57606a; font-size: 14px; margin-top: 8px; }
+  .note { background: #f6f8fa; border-left: 3px solid #0969da; padding: 10px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; color: #57606a; font-size: 18px; }
+  .note strong { color: #24292f; }
+  svg text { font-family: 'SF Mono', 'Fira Code', monospace; }
+  .slide h2 { color: #24292f; font-size: 26px; margin-top: 30px; border-bottom: 1px solid #d0d7de; padding-bottom: 6px; }
+  .slide .subtitle { text-align: center; color: hsl(212, 10%, 38%); margin-bottom: 20px; font-size: 18px; }
+</style>
+
+
+<div class="slide">
+<h1>DWRF (ORC) vs Nimble</h1>
+<p class="subtitle">File Layout &bull; Metadata Path &bull; Encoding Path</p>
+
+<!-- ============================================================ -->
+<!-- SECTION 0: WHY A NEW FORMAT                                    -->
+<!-- ============================================================ -->
+<h2>Why Nimble?</h2>
+
+<p style="color:#57606a; font-size:18px; margin:4px 0 8px 0; line-height:1.7;">
+  Why invent a new format when we already have DWRF? After a decade of evolution in hardware, query engines, and data scale, DWRF's core assumptions have become limiting.<br/>
+  Nimble is a ground-up redesign that advances three areas:
+</p>
+<ul style="color:#57606a; font-size:18px; margin:0 0 16px 0; line-height:2; padding-left:24px;">
+  <li><strong>Advanced file layout</strong></li>
+  <li><strong>Metadata efficiency</strong></li>
+  <li><strong>Encoding flexibility</strong></li>
+</ul>
+
+</div>
+
+<div class="slide">
+<!-- ============================================================ -->
+<!-- SECTION 1: FILE LAYOUT                                        -->
+<!-- ============================================================ -->
+<h2>1. Advanced File Layout</h2>
+
+<p style="color:#57606a; font-size:18px; margin:4px 0 16px 0; line-height:1.8;">
+  <strong>Richer metadata</strong> — Better data pruning
+</p>
+<ul style="color:#57606a; font-size:18px; margin:0 0 8px 0; line-height:1.8; padding-left:40px;">
+  <li>StripeGroup — targeted column reads</li>
+  <li>ChunkIndex — sub-stripe predicate pushdown</li>
+  <li>ClusterIndex — sort-key pruning</li>
+</ul>
+<p style="color:#57606a; font-size:18px; margin:0 0 16px 0; line-height:1.8;">
+  <strong>Extensible structure</strong> — Optional section design allows for future flexibility and extensibility to enrich the metadata.
+</p>
+
+<div class="diagram-container">
+
+<!-- DWRF -->
+<div class="diagram-box">
+<svg width="420" height="626" viewBox="0 0 420 626">
+  <text x="210" y="28" text-anchor="middle" fill="#7a4510" font-size="20" font-weight="bold">DWRF (ORC)</text>
+
+  <!-- Outer container -->
+  <rect x="20" y="44" width="380" height="572" rx="6" fill="none" stroke="#d4a574" stroke-width="1.5"/>
+
+  <!-- Header -->
+  <rect x="20" y="44" width="380" height="40" rx="6" fill="#fef0dc"/>
+  <text x="210" y="68" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Header (3 bytes: "ORC")</text>
+
+  <!-- Stripe 0 — Index Streams -->
+  <rect x="20" y="88" width="380" height="48" fill="#fef0dc"/>
+  <text x="210" y="108" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe 0 — Index Streams</text>
+  <text x="210" y="126" text-anchor="middle" fill="#7a5a2e" font-size="10">ROW_INDEX per col (per-stride positions + stats)</text>
+
+  <!-- Stripe 0 — Data Streams -->
+  <rect x="20" y="140" width="380" height="48" fill="#e8c88e"/>
+  <text x="210" y="160" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe 0 — Data Streams</text>
+  <text x="210" y="178" text-anchor="middle" fill="#7a5a2e" font-size="10">PRESENT, DATA, LENGTH, DICTIONARY_DATA, IN_MAP…</text>
+
+  <!-- Stripe 0 — Stripe Footer -->
+  <rect x="20" y="192" width="380" height="48" fill="#fef0dc"/>
+  <text x="210" y="212" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe 0 — Stripe Footer</text>
+  <text x="210" y="230" text-anchor="middle" fill="#7a5a2e" font-size="10">Protobuf: stream catalog, encodings per col</text>
+
+  <!-- Dots -->
+  <rect x="20" y="244" width="380" height="32" fill="#fef0dc"/>
+  <text x="210" y="266" text-anchor="middle" fill="#9a8060" font-size="16">. . .</text>
+
+  <!-- Stripe N — Index Streams -->
+  <rect x="20" y="280" width="380" height="34" fill="#fef0dc"/>
+  <text x="210" y="302" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe N — Index Streams</text>
+
+  <!-- Stripe N — Data Streams -->
+  <rect x="20" y="318" width="380" height="34" fill="#e8c88e"/>
+  <text x="210" y="340" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe N — Data Streams</text>
+
+  <!-- Stripe N — Stripe Footer -->
+  <rect x="20" y="356" width="380" height="34" fill="#fef0dc"/>
+  <text x="210" y="378" text-anchor="middle" fill="#5c3d1e" font-size="13" font-weight="bold">Stripe N — Stripe Footer</text>
+
+  <!-- Stripe Metadata Cache (optional) -->
+  <rect x="20" y="398" width="380" height="40" fill="#fef0dc" stroke="#d4a574" stroke-width="0.5" stroke-dasharray="4"/>
+  <text x="210" y="418" text-anchor="middle" fill="#5c3d1e" font-size="12" font-weight="bold">Stripe Metadata Cache (optional)</text>
+  <text x="210" y="432" text-anchor="middle" fill="#7a5a2e" font-size="9">Pre-cached index/footer for faster stripe access</text>
+
+  <!-- File Footer -->
+  <rect x="20" y="446" width="380" height="70" fill="#fef0dc"/>
+  <text x="210" y="470" text-anchor="middle" fill="#5c3d1e" font-size="14" font-weight="bold">File Footer</text>
+  <text x="210" y="488" text-anchor="middle" fill="#5c3d1e" font-size="10">Schema (types[]), statistics[], stripes[]</text>
+  <text x="210" y="504" text-anchor="middle" fill="#7a5a2e" font-size="10">numberOfRows, rowIndexStride, encryption</text>
+
+  <!-- PostScript -->
+  <rect x="20" y="520" width="380" height="48" fill="#fef0dc"/>
+  <text x="210" y="542" text-anchor="middle" fill="#5c3d1e" font-size="14" font-weight="bold">PostScript</text>
+  <text x="210" y="558" text-anchor="middle" fill="#7a5a2e" font-size="10">footerLength, compression, cacheMode/Size</text>
+
+  <!-- PS Length -->
+  <rect x="20" y="572" width="380" height="30" fill="#fef0dc"/>
+  <text x="210" y="592" text-anchor="middle" fill="#5c3d1e" font-size="12" font-weight="bold">PostScript Length (1 byte)</text>
+
+</svg>
+</div>
+
+<!-- Nimble -->
+
+<div class="diagram-box">
+<svg width="420" height="626" viewBox="0 0 420 626">
+  <text x="210" y="28" text-anchor="middle" fill="#0550ae" font-size="20" font-weight="bold">Nimble</text>
+
+  <!-- Outer container -->
+  <rect x="20" y="44" width="380" height="572" rx="6" fill="none" stroke="#8badd4" stroke-width="1.5"/>
+
+  <!-- === STRIPE GROUP 0 === -->
+  <!-- Stripe 0 — Data Streams -->
+  <rect x="20" y="44" width="380" height="42" rx="6" fill="#96bde2"/>
+  <text x="210" y="62" text-anchor="middle" fill="#1a3a6b" font-size="13" font-weight="bold">Stripe 0 — Data Streams</text>
+  <text x="210" y="78" text-anchor="middle" fill="#2a4a6b" font-size="10">Independently encoded per stream (12 encodings)</text>
+
+  <!-- Dots -->
+  <rect x="20" y="90" width="380" height="28" fill="#dce8f6"/>
+  <text x="210" y="110" text-anchor="middle" fill="#6b8dad" font-size="14">. . .</text>
+
+  <!-- StripeGroup 0 Metadata -->
+  <rect x="20" y="122" width="380" height="42" fill="#dce8f6"/>
+  <text x="210" y="140" text-anchor="middle" fill="#1a3a6b" font-size="12" font-weight="bold">StripeGroup 0 Metadata</text>
+  <text x="210" y="156" text-anchor="middle" fill="#4a6d9a" font-size="9">stream_offsets[], stream_sizes[] per (stripe × stream)</text>
+
+  <!-- StripeChunkIndex 0 -->
+  <rect x="20" y="168" width="380" height="34" fill="#dce8f6"/>
+  <text x="210" y="190" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">StripeChunkIndex 0</text>
+
+  <!-- === STRIPE GROUP 1 === -->
+  <!-- More stripes -->
+  <rect x="20" y="210" width="380" height="42" fill="#96bde2"/>
+  <text x="210" y="236" text-anchor="middle" fill="#1a3a6b" font-size="13" font-weight="bold">Stripe N</text>
+
+  <!-- StripeGroup 1 Metadata -->
+  <rect x="20" y="256" width="380" height="34" fill="#dce8f6"/>
+  <text x="210" y="278" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">StripeGroup 1 Metadata</text>
+
+  <!-- StripeChunkIndex 1 -->
+  <rect x="20" y="294" width="380" height="34" fill="#dce8f6"/>
+  <text x="210" y="316" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">StripeChunkIndex 1</text>
+
+  <!-- === GLOBAL METADATA === -->
+  <rect x="20" y="336" width="380" height="4" fill="#8badd4" opacity="0.5"/>
+
+  <!-- ChunkIndex Root -->
+  <rect x="20" y="344" width="380" height="38" fill="#dce8f6"/>
+  <text x="210" y="364" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">ChunkIndex Root</text>
+  <text x="210" y="378" text-anchor="middle" fill="#4a6d9a" font-size="9">Pointers to StripeChunkIndex 0, 1…</text>
+
+  <!-- ClusterIndex Root -->
+  <rect x="20" y="386" width="380" height="38" fill="#dce8f6"/>
+  <text x="210" y="406" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">ClusterIndex Root</text>
+  <text x="210" y="420" text-anchor="middle" fill="#4a6d9a" font-size="9">Stripe keys, sort orders, index pointers</text>
+
+  <!-- Stripes Metadata -->
+  <rect x="20" y="428" width="380" height="42" fill="#dce8f6"/>
+  <text x="210" y="446" text-anchor="middle" fill="#1a3a6b" font-size="12" font-weight="bold">Stripes Metadata</text>
+  <text x="210" y="462" text-anchor="middle" fill="#4a6d9a" font-size="9">row_counts[], offsets[], sizes[], group_indices[]</text>
+
+  <!-- Optional Sections -->
+  <rect x="20" y="474" width="380" height="38" fill="#dce8f6"/>
+  <text x="210" y="490" text-anchor="middle" fill="#1a3a6b" font-size="11" font-weight="bold">Optional Sections</text>
+  <text x="210" y="504" text-anchor="middle" fill="#4a6d9a" font-size="9">Schema, metadata, stats (loaded on demand)</text>
+
+  <!-- File Footer -->
+  <rect x="20" y="516" width="380" height="44" fill="#dce8f6"/>
+  <text x="210" y="536" text-anchor="middle" fill="#1a3a6b" font-size="14" font-weight="bold">File Footer</text>
+  <text x="210" y="552" text-anchor="middle" fill="#4a6d9a" font-size="10">Pointers to stripes, stripe_groups[], optional_sections</text>
+
+  <!-- PostScript -->
+  <rect x="20" y="564" width="380" height="44" fill="#dce8f6"/>
+  <text x="210" y="584" text-anchor="middle" fill="#1a3a6b" font-size="14" font-weight="bold">PostScript (20 bytes)</text>
+  <text x="210" y="600" text-anchor="middle" fill="#4a6d9a" font-size="10">Footer size, checksum, version, magic 0xA1FA</text>
+
+</svg>
+</div>
+
+</div>
+
+
+</div>
+
+<div class="slide">
+<!-- ============================================================ -->
+<!-- SECTION 2: METADATA PATH — FILE LAYOUT WITH READ OVERLAY      -->
+<!-- ============================================================ -->
+<h2>2. Metadata Path Efficiency</h2>
+
+<p style="color:#57606a; font-size:18px; margin:4px 0 16px 0; line-height:1.8;">
+  <strong style="color:#7a4510;">DWRF (Protobuf):</strong> O(N) — must deserialize the entire blob to access any field.<br/>
+  <strong style="color:#1a4b8c;">Nimble (FlatBuffers):</strong> O(1) — the buffer <em>is</em> the data structure; zero-copy, selective deserialization and random access.
+</p>
+
+<div class="diagram-container">
+
+<!-- DWRF -->
+<div class="diagram-box">
+<svg width="420" height="466" viewBox="0 0 420 466">
+  <text x="210" y="24" text-anchor="middle" fill="#7a4510" font-size="18" font-weight="bold">DWRF — What Gets Read</text>
+
+  <!-- Grey: Stripe 0…41 -->
+  <rect x="20" y="40" width="380" height="32" rx="4" fill="none" stroke="#d4a574" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="61" text-anchor="middle" fill="#8b7355" font-size="12">Stripe 0 … 41 (not read)</text>
+
+  <!-- Stripe 42 — Data Streams -->
+  <rect x="20" y="78" width="380" height="48" rx="4" fill="none" stroke="#c4842d" stroke-width="1.5"/>
+  <text x="34" y="96" fill="#7a4510" font-size="12" font-weight="bold">Stripe 42 — Data Streams</text>
+  <rect x="34" y="104" width="352" height="14" rx="2" fill="#c4842d" opacity="0.25" stroke="#c4842d" stroke-width="0.5"/>
+  <rect x="146" y="104" width="112" height="14" fill="#8b5a1b" rx="2"/>
+  <text x="202" y="115" text-anchor="middle" fill="#fff" font-size="9">col 500</text>
+
+  <!-- Stripe 42 — Stripe Footer -->
+  <rect x="20" y="130" width="380" height="48" rx="4" fill="none" stroke="#c4842d" stroke-width="1.5"/>
+  <text x="34" y="148" fill="#7a4510" font-size="12" font-weight="bold">Stripe 42 — Stripe Footer</text>
+  <rect x="34" y="156" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="167" text-anchor="middle" fill="#fff" font-size="9">PARSE ALL (stream catalog, encodings)</text>
+
+  <!-- Grey: Stripe 43…N -->
+  <rect x="20" y="184" width="380" height="32" rx="4" fill="none" stroke="#d4a574" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="205" text-anchor="middle" fill="#8b7355" font-size="12">Stripe 43 … N (not read)</text>
+
+  <!-- File Footer -->
+  <rect x="20" y="222" width="380" height="116" rx="4" fill="none" stroke="#c4842d" stroke-width="1.5"/>
+  <text x="34" y="242" fill="#7a4510" font-size="12" font-weight="bold">File Footer — PARSE ALL</text>
+  <rect x="34" y="250" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="261" text-anchor="middle" fill="#fff" font-size="9">Schema × 1K cols</text>
+  <rect x="34" y="268" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="279" text-anchor="middle" fill="#fff" font-size="9">StripeLocations × 100 (offset, size, rowCount)</text>
+  <rect x="34" y="286" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="297" text-anchor="middle" fill="#fff" font-size="9">ColStats × 1K</text>
+  <rect x="34" y="304" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="315" text-anchor="middle" fill="#fff" font-size="9">Encryption</text>
+
+  <!-- PostScript -->
+  <rect x="20" y="344" width="380" height="48" rx="4" fill="none" stroke="#c4842d" stroke-width="1.5"/>
+  <text x="34" y="362" fill="#7a4510" font-size="12" font-weight="bold">PostScript</text>
+  <rect x="34" y="370" width="352" height="14" rx="2" fill="#d4952f"/>
+  <text x="210" y="381" text-anchor="middle" fill="#fff" font-size="9">PARSE ALL</text>
+
+  <!-- PS Length -->
+  <rect x="20" y="396" width="380" height="32" rx="4" fill="none" stroke="#c4842d" stroke-width="1"/>
+  <text x="34" y="417" fill="#7a4510" font-size="12" font-weight="bold">PS Length (1B)</text>
+
+</svg>
+<div class="diagram-label">Must parse entire Footer + entire Stripe Footer to read 1 column</div>
+</div>
+
+<!-- Nimble -->
+<div class="diagram-box">
+<svg width="420" height="466" viewBox="0 0 420 466">
+  <text x="210" y="24" text-anchor="middle" fill="#1a4b8c" font-size="18" font-weight="bold">Nimble — What Gets Read</text>
+
+  <!-- Grey: Stripe 0…41 -->
+  <rect x="20" y="40" width="380" height="32" rx="4" fill="none" stroke="#8badd4" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="61" text-anchor="middle" fill="#6b8dad" font-size="12">Stripe 0 … 41 (not read)</text>
+
+  <!-- Stripe 42 — Data Streams -->
+  <rect x="20" y="78" width="380" height="48" rx="4" fill="none" stroke="#4a86c8" stroke-width="1.5"/>
+  <text x="34" y="96" fill="#1a4b8c" font-size="12" font-weight="bold">Stripe 42 — Data Streams</text>
+  <rect x="34" y="104" width="352" height="14" rx="2" fill="#4a86c8" opacity="0.25" stroke="#4a86c8" stroke-width="0.5"/>
+  <rect x="146" y="104" width="112" height="14" fill="#0d3b6e" rx="2"/>
+  <text x="202" y="115" text-anchor="middle" fill="#fff" font-size="9">col 500</text>
+
+  <!-- StripeGroup Metadata -->
+  <rect x="20" y="130" width="380" height="48" rx="4" fill="none" stroke="#4a86c8" stroke-width="1.5"/>
+  <text x="34" y="148" fill="#1a4b8c" font-size="12" font-weight="bold">StripeGroup Metadata</text>
+  <rect x="34" y="156" width="352" height="14" rx="2" fill="#4a86c8" opacity="0.25" stroke="#4a86c8" stroke-width="0.5"/>
+  <rect x="195" y="156" width="14" height="14" fill="#3a7bc8" rx="1"/>
+  <text x="213" y="167" fill="#1a4b8c" font-size="9" font-weight="bold">← O(1): arr[42×1K+500]</text>
+
+  <!-- Grey: Stripe 43…N -->
+  <rect x="20" y="184" width="380" height="32" rx="4" fill="none" stroke="#8badd4" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="205" text-anchor="middle" fill="#6b8dad" font-size="12">Stripe 43 … N (not read)</text>
+
+  <!-- Grey: ChunkIndex, ClusterIndex -->
+  <rect x="20" y="222" width="380" height="32" rx="4" fill="none" stroke="#8badd4" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="243" text-anchor="middle" fill="#6b8dad" font-size="12">ChunkIndex, ClusterIndex (not read)</text>
+
+  <!-- Stripes Metadata -->
+  <rect x="20" y="260" width="380" height="48" rx="4" fill="none" stroke="#4a86c8" stroke-width="1.5"/>
+  <text x="34" y="278" fill="#1a4b8c" font-size="12" font-weight="bold">Stripes Metadata</text>
+  <rect x="34" y="286" width="168" height="14" rx="2" fill="#4a86c8" opacity="0.25" stroke="#4a86c8" stroke-width="0.5"/>
+  <rect x="105" y="286" width="14" height="14" fill="#3a7bc8" rx="1"/>
+  <text x="123" y="297" fill="#1a4b8c" font-size="9" font-weight="bold">group_idx[42]</text>
+  <rect x="212" y="286" width="174" height="14" rx="2" fill="#4a86c8" opacity="0.25" stroke="#4a86c8" stroke-width="0.5"/>
+  <rect x="290" y="286" width="14" height="14" fill="#3a7bc8" rx="1"/>
+  <text x="308" y="297" fill="#1a4b8c" font-size="9" font-weight="bold">offset[42]</text>
+
+  <!-- Grey: Optional sections -->
+  <rect x="20" y="314" width="380" height="32" rx="4" fill="none" stroke="#8badd4" stroke-width="0.8" opacity="0.4"/>
+  <text x="210" y="335" text-anchor="middle" fill="#6b8dad" font-size="12">Optional sections (not read)</text>
+
+  <!-- File Footer -->
+  <rect x="20" y="352" width="380" height="48" rx="4" fill="none" stroke="#4a86c8" stroke-width="1.5"/>
+  <text x="34" y="370" fill="#1a4b8c" font-size="12" font-weight="bold">File Footer</text>
+  <rect x="34" y="378" width="352" height="14" rx="2" fill="#4a86c8" opacity="0.25" stroke="#4a86c8" stroke-width="0.5"/>
+  <rect x="120" y="378" width="14" height="14" fill="#3a7bc8" rx="1"/>
+  <text x="138" y="389" fill="#1a4b8c" font-size="9" font-weight="bold">stripes ptr</text>
+  <rect x="240" y="378" width="14" height="14" fill="#3a7bc8" rx="1"/>
+  <text x="258" y="389" fill="#1a4b8c" font-size="9" font-weight="bold">stripe_grps[]</text>
+
+  <!-- PostScript -->
+  <rect x="20" y="406" width="380" height="48" rx="4" fill="none" stroke="#4a86c8" stroke-width="1.5"/>
+  <text x="34" y="424" fill="#1a4b8c" font-size="12" font-weight="bold">Postscript (20B)</text>
+  <rect x="34" y="432" width="352" height="14" rx="2" fill="#3a7bc8"/>
+  <text x="210" y="443" text-anchor="middle" fill="#fff" font-size="9">read all</text>
+
+
+</svg>
+<div class="diagram-label">O(1) access — only read what you need</div>
+</div>
+
+</div>
+
+<div class="note">
+  Example: "Read col 500 from stripe 42" (1K-col table).<br/>
+  - <strong>DWRF:</strong> ~500 KB of metadata fully deserialized (File Footer + Stripe Footer) to find target data stripe.<br/>
+  - <strong>Nimble:</strong> ~10 KB of metadata loaded, ~100 bytes actually deserialized via FlatBuffer random access.
+</div>
+
+</div>
+
+<div class="slide">
+<!-- ============================================================ -->
+<!-- SECTION 3: DATA PATH EFFICIENCY (ENCODING)                    -->
+<!-- ============================================================ -->
+<h2>3. Data Path Efficiency (Encoding)</h2>
+
+<p style="color:#57606a; font-size:18px; margin:4px 0 16px 0; line-height:1.8;">
+  Nimble's encoding system improves on DWRF across three layers — more algorithms, smarter selection, and finer granularity — resulting in smaller files on disk and less CPU spent on encoding/decoding.
+</p>
+
+<!-- Comparison table using HTML table for clean layout -->
+<table style="width:100%; border-collapse:collapse; font-family:'Segoe UI',system-ui,sans-serif; font-size:18px; margin:20px 0;">
+  <thead>
+    <tr style="border-bottom:2px solid #d0d7de;">
+      <th style="text-align:left; padding:10px 16px; width:22%; color:#57606a;">Layer</th>
+      <th style="text-align:left; padding:10px 16px; width:39%; color:#7a4510;">DWRF</th>
+      <th style="text-align:left; padding:10px 16px; width:39%; color:#0969da;">Nimble</th>
+    </tr>
+  </thead>
+  <tbody>
+    <!-- Layer 1 -->
+    <tr style="border-bottom:1px solid #d0d7de; vertical-align:top;">
+      <td style="padding:12px 16px; font-weight:bold; color:#24292f;">Encoding<br/>Algorithms</td>
+      <td style="padding:12px 16px; background:#fef6ee;">
+        <strong style="color:#7a4510;">4 kinds</strong> — DIRECT, DICTIONARY, V2 variants<br/>
+        <strong style="color:#7a4510;">Flat structure</strong> — sub-encodings hardcoded
+      </td>
+      <td style="padding:12px 16px; background:#f0f6ff;">
+        <strong style="color:#0969da;">12 types</strong> — Constant, Trivial, FixedBitWidth, MainlyConst, SparseBool, Dictionary, RLE, Varint, Delta, Prefix, Nullable, Sentinel<br/>
+        <strong style="color:#0969da;">Cascading structure</strong> — each node picks its own best sub-encoding<br/>
+        <span style="color:#2563a0;">→ Compounding savings at each tree level</span>
+      </td>
+    </tr>
+    <!-- Layer 2 -->
+    <tr style="border-bottom:1px solid #d0d7de; vertical-align:top;">
+      <td style="padding:12px 16px; font-weight:bold; color:#24292f;">Encoding<br/>Selection</td>
+      <td style="padding:12px 16px; background:#fef6ee;">
+        <strong style="color:#7a4510;">Threshold-based</strong> — binary cardinality check<br/>
+        <span style="color:#9a6700;">Only 2 choices: DIRECT or DICTIONARY</span>
+      </td>
+      <td style="padding:12px 16px; background:#f0f6ff;">
+        <strong style="color:#0969da;">Cost-based</strong> — estimates size for all 12 candidates, picks smallest<br/>
+        <span style="color:#2563a0;">→ Optimal encoding per data shape</span>
+      </td>
+    </tr>
+    <!-- Layer 3 -->
+    <tr style="vertical-align:top;">
+      <td style="padding:12px 16px; font-weight:bold; color:#24292f;">Encoding<br/>Granularity</td>
+      <td style="padding:12px 16px; background:#fef6ee;">
+        <strong style="color:#7a4510;">Per-file</strong> — locked after first stripe<br/>
+        <span style="color:#9a6700;">All subsequent stripes use the same encoding</span>
+      </td>
+      <td style="padding:12px 16px; background:#f0f6ff;">
+        <strong style="color:#0969da;">Per-stripe-group</strong> — re-evaluated as data changes<br/>
+        <span style="color:#2563a0;">→ Adapts as data patterns shift</span>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+
+
+
+</div>
+
+<!-- PART 3: Filter Pushdown -->
+<style>
+
+  .main { max-width: 100%; margin: 0; }
+
+  .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .card-title { font-size: 28px; font-weight: 700; color: #333; margin-bottom: 16px; }
+
+  /* File layout blocks */
+  .file-col { display: flex; flex-direction: column; gap: 3px; }
+  .fblock { border-radius: 6px; padding: 12px 18px; font-size: 18px; font-weight: 600; display: flex; align-items: center; }
+  .fblock .desc { font-weight: 400; font-size: 16px; color: inherit; opacity: 0.7; }
+  .fblock .right { margin-left: auto; display: flex; align-items: center; gap: 6px; text-align: right; }
+  .fb-data   { background: #7aacc8; color: #fff; }
+  .fb-stats  { background: #9cbdd6; color: #1e4a66; }
+  .fb-meta   { background: #dde9f2; color: #3b6d8f; border: 1px solid #c4d9e8; }
+  .fb-footer { background: #dde9f2; color: #3b6d8f; border: 1px solid #c4d9e8; }
+  .fb-ps     { background: #dde9f2; color: #3b6d8f; border: 1px solid #c4d9e8; }
+  .fb-new    { background: #d4a85a; color: #fff; }
+  .dots { text-align: center; color: #b8d0e2; font-size: 18px; letter-spacing: 4px; padding: 4px 0; }
+
+  /* Stripe interior */
+  .stripe-interior { background: #f7f9fb; border: 1px solid #dde9f2; border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .stripe-interior-title { font-size: 18px; font-weight: 600; color: #3b6d8f; margin-bottom: 12px; }
+
+  .chunk-row { display: flex; gap: 4px; margin-bottom: 4px; }
+  .chunk { flex: 1; border-radius: 6px; padding: 10px 6px; text-align: center; font-size: 16px; line-height: 1.4; }
+  .chunk-data { background: #dde9f2; border: 1px solid #b8d0e2; color: #3b6d8f; }
+  .chunk-skip { background: #f0f4f8; border: 1px dashed #c8d8e4; color: #99b5ca; }
+  .chunk-read { background: #7aacc8; border: 2px solid #5a8daa; color: #fff; }
+  .chunk-label { font-size: 9px; color: #999; margin-top: 2px; }
+  .chunk-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+
+  .legend { display: flex; gap: 20px; margin-bottom: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #777; }
+  .legend-box { width: 16px; height: 16px; border-radius: 3px; flex-shrink: 0; }
+
+  /* Flow */
+  .flow-step { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 6px; }
+  .flow-num { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; background: #dde9f2; color: #3b6d8f; border: 1px solid #b8d0e2; }
+  .flow-content { flex: 1; }
+  .flow-title { font-size: 13px; font-weight: 600; color: #333; }
+  .flow-desc { font-size: 11px; color: #777; margin-top: 2px; }
+  .flow-code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 10.5px; color: #3b6d8f; background: #e8f0f6; padding: 2px 8px; border-radius: 3px; display: inline-block; margin-top: 4px; }
+  .flow-arrow { text-align: center; color: #c8d8e4; font-size: 16px; margin: 2px 0 2px 7px; }
+
+  /* Decision box */
+  .decision { background: #f7f9fb; border-radius: 8px; padding: 14px 16px; border: 1px solid #dde9f2; margin-top: 12px; }
+  .decision-title { font-size: 13px; font-weight: 600; color: #3b6d8f; margin-bottom: 8px; }
+  .decision-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px; color: #555; }
+  .icon-yes { color: #5a9a60; font-weight: 700; }
+  .icon-no { color: #c0755a; font-weight: 700; }
+
+  .query-box { background: #fff; border: 1px solid #dde9f2; border-radius: 8px; padding: 12px 18px; margin-bottom: 28px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #555; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  .query-box .kw { color: #3b6d8f; font-weight: 600; }
+  .query-box .str { color: #5a9a60; }
+
+  .section-label { font-size: 11px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 1px; margin: 20px 0 10px 0; }
+
+  .highlight { background: #dde9f2; color: #2a5570; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+  .highlight-warm { background: #f0e4d2; color: #8b5e34; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+
+  .callout { background: #f7f9fb; border-left: 3px solid #7aacc8; border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 12px 0; font-size: 18px; color: #555; }
+  .callout strong { color: #3b6d8f; }
+  .callout-warm { background: #fdf8f2; border-left: 3px solid #d4a85a; border-radius: 0 6px 6px 0; padding: 14px 18px; margin: 12px 0; font-size: 18px; color: #555; }
+  .callout-warm strong { color: #8b5e34; }
+
+  .two-col { display: flex; gap: 24px; }
+  .two-col > div { flex: 1; }
+
+  code { font-family: 'JetBrains Mono', monospace; font-size: 16px; background: #e8f0f6; padding: 2px 6px; border-radius: 2px; }
+
+  .col-header { font-size: 11px; font-weight: 700; padding: 6px 8px; border-radius: 4px; margin-bottom: 4px; text-align: center; }
+  .col-filter { background: #d4a85a; color: #fff; }
+  .col-projected { background: #7aacc8; color: #fff; }
+  .chunk-filter { background: #d4a85a; border: 2px solid #b8894e; color: #fff; }
+  .row-cell { width: 18px; height: 18px; border-radius: 2px; display: flex; align-items: center; justify-content: center; font-size: 7px; font-family: monospace; }
+  .row-pass { background: #7aacc8; color: #fff; }
+  .row-fail { background: #f0f4f8; color: #c8d8e4; }
+  .row-read { background: #5b8faa; color: #fff; }
+  .row-skip { background: #f0f4f8; color: #c8d8e4; border: 1px dashed #dde9f2; }
+  .stage-label { font-size: 18px; font-weight: 600; color: #3b6d8f; margin: 16px 0 8px 0; }
+  .arrow-down { text-align: center; color: #c8d8e4; font-size: 18px; margin: 4px 0; }
+
+  /* FBS schema */
+  .fbs { background: #f7f9fb; border: 1px solid #dde9f2; border-radius: 8px; padding: 14px 16px; margin: 12px 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; color: #444; white-space: pre; overflow-x: auto; }
+  .fbs .kw { color: #3b6d8f; font-weight: 600; }
+  .fbs .cm { color: #999; font-style: italic; }
+  .fbs .tp { color: #8b5e34; }
+
+  /* tag */
+  .tag { display: inline-block; font-size: 14px; font-weight: 600; padding: 3px 10px; border-radius: 10px; margin-left: 6px; vertical-align: middle; }
+  .tag-new { background: #d4a85a; color: #fff; }
+  .tag-review { background: #5b8faa; color: #fff; }
+  .tag-merged { background: #7a9a60; color: #fff; }
+  .tag-rolled-out { background: #5a9a60; color: #fff; }
+  .tag-existing { background: #9cbdd6; color: #fff; }
+</style>
+
+
+<div class="slide">
+<div class="main">
+
+<!-- ===================== 0. CONTEXT ===================== -->
+<div class="card">
+  <div class="card-title">Look Ahead — Nimble for Interactive</div>
+  <div class="callout">
+    <strong>Where we started</strong><br>
+    Nimble was initially focused on <strong>ML workload rollout</strong> &mdash; optimized for storage saving with sequential, full-scan reads.
+  </div>
+  <div class="callout-warm">
+    <strong>Next focus</strong><br>
+    To support <strong>interactive workloads</strong>, Nimble needs the missing selectivity features &mdash; stats, index, and better encoding.
+  </div>
+</div>
+
+<!-- ===================== 1. FILE LAYOUT ===================== -->
+<div class="card">
+  <div class="card-title">1. Stats and Index</div>
+  <div style="font-size:16px; color:#777; margin-bottom:16px;">
+    Interactive queries are highly selective &mdash; they touch a small fraction of data.
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="file-col">
+        <div class="fblock fb-data">Stripe 0 &mdash; Data Streams <span class="right"><span class="desc">Encoded column chunks</span></span></div>
+        <div class="dots">&hellip;</div>
+        <div class="fblock fb-data">Stripe N &mdash; Data Streams</div>
+        <div class="fblock fb-meta">Stripe Group Metadata <span class="right"><span class="desc">Stream offsets/sizes</span></span></div>
+        <div class="fblock fb-new">Stride Stats <span class="right"><span class="tag tag-new">NEW</span> <span class="desc">Per-stride min/max/nullCount</span></span></div>
+        <div class="fblock fb-new">Chunk Index <span class="right"><span class="tag tag-new">NEW</span> <span class="desc">Per-chunk stream positions</span></span></div>
+        <div class="fblock fb-new">Cluster Index <span class="right"><span class="tag tag-new">NEW</span> <span class="desc">Sorted-column key lookup</span></span></div>
+        <div class="fblock fb-new">VectorizedFileStats <span class="right"><span class="tag tag-new">NEW</span> <span class="desc">File-level min/max/size per column</span></span></div>
+        <div class="fblock fb-footer">Footer <span class="right"><span class="desc">Schema, stripe locations</span></span></div>
+        <div class="fblock fb-ps">PostScript (20 bytes) <span class="right"><span class="desc">Footer size, checksum</span></span></div>
+      </div>
+    </div>
+    <div>
+      <div class="callout-warm">
+        <strong>Stride Stats</strong> <span class="tag tag-review">UNDER REVIEW</span><br>
+        Per-stride min/max/nullCount for each stream.
+      </div>
+      <div class="callout-warm">
+        <strong>Chunk Index</strong> <span class="tag tag-merged">MERGED</span><br>
+        O(1) seeking to chunk offsets within a stream.
+      </div>
+      <div class="callout-warm">
+        <strong>Cluster Index</strong> <span class="tag tag-merged">MERGED</span><br>
+        Binary search on sorted key columns to narrow row range.
+      </div>
+      <div class="callout-warm">
+        <strong>VectorizedFileStats</strong> <span class="tag tag-rolled-out">ROLLED OUT</span><br>
+        File-level min/max/nullCount per column.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 2. END-TO-END VISUAL ===================== -->
+<div class="card">
+  <div class="card-title">Levels of Pruning</div>
+
+  <div style="font-size:16px; color:#777; margin-bottom:16px;">
+    Filter: <code>user_id BETWEEN 1000 AND 2000</code>
+  </div>
+
+  <!-- File level -->
+  <div class="stripe-interior" style="margin-top:0; border-left: 3px solid #d4a85a;">
+    <div class="stripe-interior-title" style="color:#8b5e34;">Level 1: File-Level Stats (VectorizedFileStats) <span class="tag tag-new">NEW</span></div>
+    <div class="chunk-row">
+      <div class="chunk chunk-skip" style="flex:3;">
+        File A &mdash; user_id min=5000, max=9999<br>
+        <span style="font-size:13px;">No overlap &rarr; <span style="color:#c0755a;">&#x2717; skip entire file</span></span>
+      </div>
+      <div class="chunk chunk-read" style="flex:3;">
+        File B &mdash; user_id min=0, max=4999<br>
+        <span style="font-size:13px;">Overlaps &rarr; &#x2713; open file</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stride level -->
+  <div class="stripe-interior" style="border-left: 3px solid #7aacc8;">
+    <div class="stripe-interior-title">Level 2: Stride-Level Stats (Stride Stats) <span class="tag tag-new">NEW</span></div>
+    <div style="background:#e8f0f6; border:1px solid #b8d0e2; border-radius:6px; padding:10px 12px;">
+      <div style="font-size:14px; font-weight:600; color:#3b6d8f; margin-bottom:8px;">File B</div>
+      <div style="display:flex; gap:12px;">
+        <div style="flex:1; background:#fff; border:1px solid #c8d8e4; border-radius:6px; padding:8px 10px;">
+          <div style="font-size:14px; font-weight:600; color:#777; margin-bottom:6px;">Stripe 0</div>
+          <div class="chunk-row">
+            <div class="chunk chunk-skip" style="padding:6px 2px;">S0<br><span class="chunk-val" style="font-size:14px;">0–499</span><br><span style="font-size:14px;color:#c0755a;">skip</span></div>
+            <div class="chunk chunk-skip" style="padding:6px 2px;">S1<br><span class="chunk-val" style="font-size:14px;">500–999</span><br><span style="font-size:14px;color:#c0755a;">skip</span></div>
+            <div class="chunk chunk-read" style="padding:6px 2px;">S2<br><span class="chunk-val" style="font-size:14px;">1000–1499</span><br><span style="font-size:14px;">read</span></div>
+          </div>
+          <div style="text-align:center; margin-top:6px; font-size:13px; color:#3b6d8f;">2 of 3 skipped</div>
+        </div>
+        <div style="flex:1; background:#fff; border:1px solid #c8d8e4; border-radius:6px; padding:8px 10px;">
+          <div style="font-size:14px; font-weight:600; color:#777; margin-bottom:6px;">Stripe 1</div>
+          <div class="chunk-row">
+            <div class="chunk chunk-skip" style="padding:6px 2px;">S0<br><span class="chunk-val" style="font-size:14px;">2500–2999</span><br><span style="font-size:14px;color:#c0755a;">skip</span></div>
+            <div class="chunk chunk-skip" style="padding:6px 2px;">S1<br><span class="chunk-val" style="font-size:14px;">3000–3499</span><br><span style="font-size:14px;color:#c0755a;">skip</span></div>
+            <div class="chunk chunk-skip" style="padding:6px 2px;">S2<br><span class="chunk-val" style="font-size:14px;">3500–3999</span><br><span style="font-size:14px;color:#c0755a;">skip</span></div>
+          </div>
+          <div style="text-align:center; margin-top:6px; font-size:13px; color:#c0755a;">All skipped &mdash; never decompressed</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row level -->
+  <div class="stripe-interior" style="border-left: 3px solid #5a9a60;">
+    <div class="stripe-interior-title" style="color:#5a9a60;">Level 3: Residual Predicate (Row-Level) &mdash; Zooming into Stride 2</div>
+    <div style="font-size:14px; color:#777; margin-bottom:8px;">Each decoded row tested against <code>BETWEEN 1000 AND 2000</code>. Only matching rows kept.</div>
+    <table style="width:100%; border-collapse:separate; border-spacing:1px; margin-bottom:4px;">
+      <tr>
+        <td style="width:70px; font-size:13px; color:#777; text-align:right; padding-right:6px;">user_id</td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#5a9a60; border:1px solid #4a8a50; color:#fff;">1000<br><span style="font-size:8px;">&#x2713;</span></td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#5a9a60; border:1px solid #4a8a50; color:#fff;">1001<br><span style="font-size:8px;">&#x2713;</span></td>
+        <td style="padding:4px 0; text-align:center; font-size:11px; color:#c8d8e4;">&hellip;</td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#5a9a60; border:1px solid #4a8a50; color:#fff;">1200<br><span style="font-size:8px;">&#x2713;</span></td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#f0f4f8; border:1px dashed #c8d8e4; color:#c0755a;">1201<br><span style="font-size:8px;">&#x2717;</span></td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#f0f4f8; border:1px dashed #c8d8e4; color:#c0755a;">1202<br><span style="font-size:8px;">&#x2717;</span></td>
+        <td style="padding:4px 0; text-align:center; font-size:11px; color:#c8d8e4;">&hellip;</td>
+        <td style="padding:4px 2px; border-radius:3px; text-align:center; font-size:10px; background:#f0f4f8; border:1px dashed #c8d8e4; color:#c0755a;">1499<br><span style="font-size:8px;">&#x2717;</span></td>
+      </tr>
+    </table>
+    <div style="font-size:13px; color:#5a9a60; text-align:center;">201 of 500 rows pass &rarr; 60% filtered out at row level</div>
+  </div>
+
+  <div class="callout">
+    <strong>Result:</strong> 1 of 2 files skipped at file level. Within File B, 2 of 3 strides skipped. Remaining rows filtered by residual predicate.
+  </div>
+
+  <!-- Cross-Column -->
+  <div class="stripe-interior" style="border-left: 3px solid #d4a85a;">
+    <div class="stripe-interior-title" style="color:#8b5e34;">Cross-Column: Skip decisions propagate to all projected columns</div>
+
+    <table style="width:100%; border-collapse:separate; border-spacing:2px; margin-bottom:4px;">
+      <tr>
+        <td style="width:90px;"></td>
+        <td colspan="2" style="text-align:center; font-size:14px; color:#999;">S0</td>
+        <td colspan="2" style="text-align:center; font-size:14px; color:#999;">S1</td>
+        <td colspan="2" style="text-align:center; font-size:14px; color:#999;">S2</td>
+      </tr>
+      <tr>
+        <td style="font-size:16px; font-weight:600; color:#8b5e34; text-align:right; padding-right:8px;">user_id <span style="font-weight:400; font-size:14px;">(filter)</span></td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">0–499</td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">500–999</td>
+        <td colspan="2" class="chunk chunk-filter" style="text-align:center; padding:6px 4px;">1000–1499</td>
+      </tr>
+      <tr>
+        <td style="font-size:16px; font-weight:600; color:#999; text-align:right; padding-right:8px;">name <span style="font-weight:400; font-size:14px;">(proj)</span></td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">skip</td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">skip</td>
+        <td colspan="2" style="text-align:center; padding:6px 4px; border-radius:6px; background:#e0e0e0; border:1px solid #ccc; color:#777; font-size:16px;">inherit</td>
+      </tr>
+      <tr>
+        <td style="font-size:16px; font-weight:600; color:#999; text-align:right; padding-right:8px;">amount <span style="font-weight:400; font-size:14px;">(proj)</span></td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">skip</td>
+        <td colspan="2" class="chunk chunk-skip" style="text-align:center; padding:6px 4px;">skip</td>
+        <td colspan="2" style="text-align:center; padding:6px 4px; border-radius:6px; background:#e0e0e0; border:1px solid #ccc; color:#777; font-size:16px;">inherit</td>
+      </tr>
+    </table>
+    <div style="font-size:14px; color:#777; text-align:center;">
+      <span style="color:#d4a85a; font-weight:600;">Gold</span> = filter evaluated &emsp; <span style="color:#999; font-weight:600;">Grey</span> = inherited &emsp; <span style="color:#c8d8e4; font-weight:600;">Dashed</span> = skipped
+    </div>
+  </div>
+
+  <div class="callout-warm" style="margin-top:8px;">
+    <strong>Multiplier effect:</strong> A 20-column query filtering on 1 column gets 20x leverage from each skip decision. Projected columns never evaluate stats or predicates &mdash; they just follow the filter column's bitmap.
+  </div>
+</div>
+
+<!-- ===================== CHUNK INDEX ===================== -->
+<div class="card">
+  <div class="card-title">ChunkIndex: Making Skips Cheap <span class="tag tag-new">NEW</span></div>
+  <div style="font-size:16px; color:#777; margin-bottom:14px;">
+    When columns skip strides, they need to jump past skipped data. Without ChunkIndex, they must sequentially decompress every chunk in between. With ChunkIndex: O(1) seek.
+  </div>
+
+  <div style="display:flex; gap:24px;">
+    <div style="flex:1;">
+      <div style="font-size:16px; font-weight:600; color:#c0755a; margin-bottom:8px;">Without ChunkIndex</div>
+      <div style="background:#fff5f5; border:1px solid #e8c8c8; border-radius:8px; padding:14px;">
+        <div style="display:flex; gap:4px; margin-bottom:8px;">
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c0755a;">
+            Chunk 0<br>decompress<br>&amp; discard
+          </div>
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c0755a;">
+            Chunk 1<br>decompress<br>&amp; discard
+          </div>
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c0755a;">
+            Chunk 2<br>decompress<br>&amp; discard
+          </div>
+          <div style="flex:1; background:#7aacc8; border:2px solid #5a8daa; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#fff;">
+            Chunk 3<br>target
+          </div>
+        </div>
+        <div style="font-size:14px; color:#c0755a; text-align:center;">Must decompress 3 chunks to reach target</div>
+      </div>
+    </div>
+    <div style="flex:1;">
+      <div style="font-size:16px; font-weight:600; color:#5a9a60; margin-bottom:8px;">With ChunkIndex</div>
+      <div style="background:#f2f8f2; border:1px solid #c8e0c8; border-radius:8px; padding:14px;">
+        <div style="display:flex; gap:4px; margin-bottom:8px;">
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c8d8e4;">
+            Chunk 0<br><br>skipped
+          </div>
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c8d8e4;">
+            Chunk 1<br><br>skipped
+          </div>
+          <div style="flex:1; background:#f0f4f8; border:1px dashed #c8d8e4; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#c8d8e4;">
+            Chunk 2<br><br>skipped
+          </div>
+          <div style="flex:1; background:#7aacc8; border:2px solid #5a8daa; border-radius:4px; padding:8px 4px; text-align:center; font-size:12px; color:#fff;">
+            Chunk 3<br>O(1) seek
+          </div>
+        </div>
+        <div style="font-size:14px; color:#5a9a60; text-align:center;">lookupChunk(row) &rarr; direct file seek, zero decompression</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /main --></div><!-- /slide -->
+
+<!-- PART 2b: Better Encoding -->
+<style>
+  .chart { position: relative; }
+  .chart-row { display: flex; align-items: center; margin-bottom: 4px; }
+  .chart-label { min-width: 80px; font-size: 10px; text-align: right; padding-right: 8px; color: #555; line-height: 1.3; }
+  .chart-label strong { font-weight: 700; }
+  .chart-label .range { font-size: 9px; color: #999; }
+  .chart-track { flex: 1; height: 24px; position: relative; }
+  .chart-bar { height: 100%; border-radius: 3px; display: flex; align-items: center; padding-left: 8px; font-size: 10px; font-weight: 700; color: #fff; position: relative; z-index: 1; }
+  .chart-val { position: absolute; right: -40px; top: 50%; transform: translateY(-50%); font-size: 10px; font-weight: 600; color: #555; white-space: nowrap; }
+  .waste-area { position: absolute; top: 0; height: 100%; background: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(197, 34, 31, 0.06) 3px, rgba(197, 34, 31, 0.06) 6px); border-radius: 0 3px 3px 0; z-index: 0; }
+  .bar-green  { background: #5a9a60; }
+  .bar-yellow { background: #b8942c; }
+  .bar-blue   { background: #7aacc8; }
+  .bar-orange { background: #c07030; }
+  .bar-red    { background: #c5221f; }
+  .bar-purple { background: #9a7db8; }
+  .bench-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  .bench-table th { text-align: center; padding: 4px 8px; font-weight: 600; color: #3b6d8f; border-bottom: 2px solid #dde9f2; font-size: 10px; }
+  .bench-table th:first-child { text-align: left; }
+  .bench-table td { padding: 3px 8px; text-align: center; border-bottom: 1px solid #f0f4f8; font-variant-numeric: tabular-nums; }
+  .bench-table td:first-child { text-align: left; font-weight: 600; color: #555; }
+  .time { color: #888; font-size: 10px; }
+  .ratio-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-weight: 600; font-size: 10px; min-width: 38px; }
+  .ratio-green  { background: #e6f4ea; color: #137333; }
+  .ratio-yellow { background: #fef9e7; color: #856404; }
+  .summary-row td { border-top: 2px solid #dde9f2; border-bottom: none; font-weight: 600; padding-top: 8px; }
+  .col-label { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+</style>
+
+<div class="slide">
+<!-- ==================== ChunkedBitPacking ==================== -->
+<div class="card">
+  <div class="card-title">2. Better Encoding — ChunkedBitPacking <span class="tag tag-new">PROTOTYPE</span></div>
+
+  <div class="callout-warm" style="margin-top:0;">
+    <strong>Learning from Impulse</strong> — The old <code>FixedBitWidthEncoding</code> uses one global min/max → one bit-width for every value. A few outliers force the entire column to use wide bits. ChunkedBitPacking splits into 1024-row chunks — each chunk only pays for its own local range.
+    <br><br><strong>Wins:</strong> Storage and CPU saving
+  </div>
+
+  <div class="two-col" style="margin-top:14px;">
+    <div>
+      <div class="col-label" style="color:#c5221f;">Before: FixedBitWidth (global)</div>
+      <div style="font-size:10px; color:#999; margin-bottom:8px;">One global min/max → same bit-width for all:</div>
+      <div class="chart" style="padding-right:44px;">
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 0</strong><br><span class="range">100 – 105</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 1</strong><br><span class="range">5K – 5.2K</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 2</strong><br><span class="range">42 – 42</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 3</strong><br><span class="range">0 – 100K</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 4</strong><br><span class="range">0 – 10</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+      </div>
+      <div style="font-size:10px; color:#c5221f; margin-top:6px; text-align:center;">global range 0–100K forces 17b everywhere</div>
+    </div>
+    <div>
+      <div class="col-label" style="color:#137333;">After: ChunkedBitPacking (per-chunk)</div>
+      <div style="font-size:10px; color:#999; margin-bottom:8px;">Each 1024-row chunk uses its own local range:</div>
+      <div class="chart" style="padding-right:44px;">
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 0</strong><br><span class="range">100 – 105</span></div><div class="chart-track"><div class="chart-bar bar-green" style="width:17.6%;">3b</div><div class="chart-val">3 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 1</strong><br><span class="range">5K – 5.2K</span></div><div class="chart-track"><div class="chart-bar bar-yellow" style="width:47%;">8b</div><div class="chart-val">8 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 2</strong><br><span class="range">42 – 42</span></div><div class="chart-track"><div class="chart-bar bar-blue" style="width:0%; min-width:2px;"></div><div class="chart-val" style="color:#3b6d8f;">0 bits !</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 3</strong><br><span class="range">0 – 100K</span></div><div class="chart-track"><div class="chart-bar bar-orange" style="width:100%;">17b</div><div class="chart-val">17 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 4</strong><br><span class="range">0 – 10</span></div><div class="chart-track"><div class="chart-bar bar-green" style="width:23.5%;">4b</div><div class="chart-val">4 bits</div></div></div>
+      </div>
+      <div style="font-size:10px; color:#137333; margin-top:6px; text-align:center;">only chunk 3 pays 17b — rest use 0–8b</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== ChunkedALP ==================== -->
+<div class="card">
+  <div class="card-title">2. Better Encoding — ChunkedALP <span class="tag tag-new">PROTOTYPE</span></div>
+
+  <div class="callout-warm" style="margin-top:0;">
+    <strong>Float / double columns.</strong> Same chunking as CBP, but first converts floats to integers (× 10<sup>e</sup>, round, verify lossless), then bit-packs. Each chunk picks its own best exponent.
+    <br><br><strong>Wins:</strong> Storage and CPU saving
+  </div>
+
+  <div class="two-col" style="margin-top:14px;">
+    <div>
+      <div class="col-label" style="color:#c5221f;">Before: Trivial (raw float)</div>
+      <div class="chart" style="padding-right:44px; margin-top:6px;">
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 0</strong><br><span class="range">prices</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">64b</div><div class="chart-val">64 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 1</strong><br><span class="range">whole #s</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">64b</div><div class="chart-val">64 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 2</strong><br><span class="range">all 0.0</span></div><div class="chart-track"><div class="chart-bar bar-red" style="width:100%;">64b</div><div class="chart-val">64 bits</div></div></div>
+      </div>
+      <div style="font-size:10px; color:#c5221f; margin-top:6px; text-align:center;">every float = 64 bits, no compression</div>
+    </div>
+    <div>
+      <div class="col-label" style="color:#137333;">After: ChunkedALP (per-chunk)</div>
+      <div class="chart" style="padding-right:50px; margin-top:6px;">
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 0</strong><br><span class="range">e=2 (×100)</span></div><div class="chart-track"><div class="chart-bar bar-green" style="width:12.5%;">8b</div><div class="chart-val">8 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 1</strong><br><span class="range">e=0 (×1)</span></div><div class="chart-track"><div class="chart-bar bar-yellow" style="width:20.3%;">13b</div><div class="chart-val">13 bits</div></div></div>
+        <div class="chart-row"><div class="chart-label"><strong>Chunk 2</strong><br><span class="range">constant</span></div><div class="chart-track"><div class="chart-bar bar-blue" style="width:0%; min-width:2px;"></div><div class="chart-val" style="color:#3b6d8f;">0 bits !</div></div></div>
+      </div>
+      <div style="font-size:10px; color:#137333; margin-top:6px; text-align:center;">64-bit floats → 0–13 bit integers, lossless</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TPCH Benchmark ==================== -->
+<div class="card">
+  <div class="card-title">2. Better Encoding — TPCH Benchmark</div>
+  <div style="font-size:12px; color:#777; margin-bottom:12px;">CPU time before and after ALP+CBP encodings</div>
+
+  <table class="bench-table">
+    <tr><th>Query</th><th>Before</th><th>After (ALP+CBP)</th><th>Speedup</th></tr>
+    <tr><td>q1</td><td class="time">15.58m</td><td class="time">8.13m</td><td><span class="ratio-pill ratio-green">1.9x</span></td></tr>
+    <tr><td>q5</td><td class="time">11.02m</td><td class="time">4.09m</td><td><span class="ratio-pill ratio-green">2.7x</span></td></tr>
+    <tr><td>q6</td><td class="time">3.62m</td><td class="time">2.24m</td><td><span class="ratio-pill ratio-green">1.6x</span></td></tr>
+    <tr><td>q7</td><td class="time">9.42m</td><td class="time">6.49m</td><td><span class="ratio-pill ratio-green">1.5x</span></td></tr>
+    <tr><td>q8</td><td class="time">2.95h</td><td class="time">2.75h</td><td><span class="ratio-pill ratio-yellow">1.1x</span></td></tr>
+    <tr><td>q9</td><td class="time">36.12m</td><td class="time">35.20m</td><td><span class="ratio-pill ratio-yellow">1.0x</span></td></tr>
+    <tr><td>q10</td><td class="time">14.95m</td><td class="time">8.78m</td><td><span class="ratio-pill ratio-green">1.7x</span></td></tr>
+    <tr><td>q11</td><td class="time">1.40m</td><td class="time">31.45s</td><td><span class="ratio-pill ratio-green">2.7x</span></td></tr>
+    <tr><td>q12</td><td class="time">14.47m</td><td class="time">10.54m</td><td><span class="ratio-pill ratio-green">1.4x</span></td></tr>
+    <tr><td>q13</td><td class="time">17.79m</td><td class="time">12.32m</td><td><span class="ratio-pill ratio-green">1.4x</span></td></tr>
+    <tr><td>q14</td><td class="time">5.84m</td><td class="time">3.12m</td><td><span class="ratio-pill ratio-green">1.9x</span></td></tr>
+    <tr><td>q15</td><td class="time">13.41m</td><td class="time">6.42m</td><td><span class="ratio-pill ratio-green">2.1x</span></td></tr>
+    <tr><td>q16</td><td class="time">6.00m</td><td class="time">5.69m</td><td><span class="ratio-pill ratio-yellow">1.1x</span></td></tr>
+    <tr><td>q18</td><td class="time">32.45m</td><td class="time">31.28m</td><td><span class="ratio-pill ratio-yellow">1.0x</span></td></tr>
+    <tr><td>q19</td><td class="time">7.89m</td><td class="time">3.66m</td><td><span class="ratio-pill ratio-green">2.2x</span></td></tr>
+    <tr class="summary-row"><td>Median</td><td></td><td></td><td><span class="ratio-pill ratio-green">1.6x</span></td></tr>
+  </table>
+  <div style="margin-top: 8px; font-size: 10px; color: #888; display:flex; gap: 16px;">
+    <span><span class="ratio-pill ratio-green" style="font-size:9px;">≥1.4x</span> significant speedup</span>
+    <span><span class="ratio-pill ratio-yellow" style="font-size:9px;">~1.0x</span> minimal change</span>
+    <span style="margin-left:6px;">11 of 15 queries improved by ≥1.4x</span>
+  </div>
+</div>
+</div>
+
+
+
+
+<div style="text-align:center; margin-top: 24px; font-size: 12px; color: #aaa;">
+  Stride stats write: D103095055 &bull; Stride stats read: D103095054<br>
+  StrideIndex FBS: dwio/nimble/tablet/StrideIndex.fbs &bull; Writer: dwio/nimble/tablet/StrideIndexWriter.cpp<br>
+  Reader: dwio/nimble/velox/selective/NimbleData.cpp &bull; Skip logic: SelectiveNimbleReader.cpp<br>
+  VectorizedFileStats: dwio/nimble/velox/stats/VectorizedStatistics.h
+</div>
+
+
+
+</body>
+</html>
