@@ -106,6 +106,12 @@ class NimbleData : public velox::dwio::common::FormatData {
     return nimblePreserveDictionaryEncoding_;
   }
 
+  /// Loads the deferred lazy clone of this column's streams. Called from the
+  /// shared column-loader read path, so it fires for every loader type and the
+  /// streams are always resident before decode. No-op unless this column was
+  /// given lazy I/O.
+  void loadLazyInputStreams() override;
+
  private:
   std::unique_ptr<ChunkedDecoder> makeDecoder(
       const StreamDescriptor& descriptor,
@@ -205,11 +211,6 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   /// Returns true if the top-level column 'name' should use lazy I/O.
   bool lazyIoColumn(const std::string& name) const {
     return lazyIoColumns_ != nullptr && lazyIoColumns_->count(name) > 0;
-  }
-
-  /// Returns the lazy I/O columns set.
-  const folly::F14FastSet<std::string>* lazyIoColumnsSet() const {
-    return lazyIoColumns_;
   }
 
   RowSizeTracker* rowSizeTracker() const {

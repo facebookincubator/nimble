@@ -66,7 +66,6 @@ StructColumnReader::StructColumnReader(
   const auto& fileRowType = fileType_->type()->asRow();
   if (params.hasLazyIoColumns()) {
     lazyInput_ = params.streams().createLazyInput();
-    lazyIoColumns_ = params.lazyIoColumnsSet();
   }
   for (auto* childSpec : scanSpec.stableChildren()) {
     if (childSpec->isConstant() || isChildMissing(*childSpec)) {
