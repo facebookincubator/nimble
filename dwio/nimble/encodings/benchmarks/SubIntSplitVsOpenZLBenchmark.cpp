@@ -74,6 +74,15 @@ DEFINE_bool(
     false,
     "Print the SubIntSplit section layout (bit ranges + chosen encoding) "
     "for each pattern instead of running microbenchmarks.");
+DEFINE_bool(
+    verify,
+    false,
+    "Encode->decode every pattern with each SubIntSplit variant and assert the "
+    "round-trip is bit-exact (exercises the exception path). Non-benchmark.");
+DEFINE_bool(
+    no_exceptions,
+    false,
+    "Disable the SubIntSplit ALP-style exception path (for A/B measurement).");
 
 namespace {
 
@@ -234,6 +243,32 @@ Vector<T> genMostlyZero(uint32_t n, uint64_t seed) {
   return d;
 }
 
+// `perMille` out of every 1000 rows are full-width random outliers; the rest
+// are zero. Sweeps outlier rarity to probe the ALP-style exception path.
+Vector<T> genSparseZero(uint32_t perMille, uint32_t n, uint64_t seed) {
+  std::mt19937_64 rng{seed};
+  Vector<T> d{benchmarkPool().get()};
+  d.resize(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    d[i] = (rng() % 1000 < perMille) ? rng() : T{0};
+  }
+  return d;
+}
+
+// `perMille` rows are full-width random outliers; the rest fit in `lowBits`
+// (a narrow common structure with rare wide outliers).
+Vector<T>
+genSparseNarrow(uint32_t perMille, int lowBits, uint32_t n, uint64_t seed) {
+  std::mt19937_64 rng{seed};
+  Vector<T> d{benchmarkPool().get()};
+  d.resize(n);
+  const T lowMask = (T{1} << lowBits) - 1;
+  for (uint32_t i = 0; i < n; ++i) {
+    d[i] = (rng() % 1000 < perMille) ? rng() : (rng() & lowMask);
+  }
+  return d;
+}
+
 // Skewed (Zipfian-ish) over `cardinality` values: frequent values get small
 // codes. Approximates a power-law by exponentiating a uniform.
 Vector<T> genZipfian(uint32_t cardinality, uint32_t n, uint64_t seed) {
@@ -305,6 +340,16 @@ std::vector<Pattern> patterns() {
        [](uint32_t n, uint64_t s) { return genZipfian(4096, n, s); }},
       {"MultiField",
        [](uint32_t n, uint64_t s) { return genMultiField(n, s); }},
+      {"SparseZero1",
+       [](uint32_t n, uint64_t s) { return genSparseZero(1, n, s); }},
+      {"SparseZero3",
+       [](uint32_t n, uint64_t s) { return genSparseZero(3, n, s); }},
+      {"SparseZero10",
+       [](uint32_t n, uint64_t s) { return genSparseZero(10, n, s); }},
+      {"SparseNarrow1",
+       [](uint32_t n, uint64_t s) { return genSparseNarrow(1, 16, n, s); }},
+      {"SparseNarrow3",
+       [](uint32_t n, uint64_t s) { return genSparseNarrow(3, 16, n, s); }},
   };
 }
 
@@ -613,6 +658,45 @@ void emitCsv(int trials, int64_t onlySize) {
   }
 }
 
+// Encode -> decode every pattern with each SubIntSplit variant and assert the
+// round-trip is bit-exact. MostlyZero / MainlyConstant exercise the exception
+// path; other patterns exercise the plain path. Returns the number of failures.
+int verifyRoundTrip() {
+  auto& pool = benchmarkPool();
+  int failures = 0;
+  const struct {
+    const char* name;
+    CompressionType ct;
+  } variants[] = {
+      {"raw", CompressionType::Uncompressed},
+      {"zstd", CompressionType::Zstd},
+      {"openzl", CompressionType::OpenZL},
+  };
+  for (const auto& pat : patterns()) {
+    const Vector<T> data = pat.gen(200000u, 0xC0FFEEu);
+    for (const auto& variant : variants) {
+      const Encoded encoded =
+          encodeSubIntSplitWith(data, tunedReadFactors(), variant.ct);
+      SubIntSplitEncoding<T> decoder{*pool, encoded.bytes, nullFactory()};
+      std::vector<T> out(data.size());
+      decoder.materialize(data.size(), out.data());
+      for (uint32_t i = 0; i < data.size(); ++i) {
+        if (out[i] != data[i]) {
+          std::cout << "MISMATCH " << pat.name << "/" << variant.name
+                    << " @ row " << i << " expected " << data[i] << " got "
+                    << out[i] << "\n";
+          ++failures;
+          break;
+        }
+      }
+    }
+  }
+  std::cout << (failures == 0 ? "VERIFY OK (all patterns bit-exact)"
+                              : "VERIFY FAILED")
+            << "\n";
+  return failures;
+}
+
 // Print, for each pattern, the section layout the tuned SubIntSplit encoder
 // chose: the bit range of each section and the encoding selected for it (via
 // the encoding's own debugString, which recurses into each section).
@@ -687,6 +771,14 @@ void registerBenchmarks() {
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv);
   facebook::velox::memory::MemoryManager::initialize({});
+
+  if (FLAGS_no_exceptions) {
+    detail::subIntSplitExceptionsEnabled() = false;
+  }
+
+  if (FLAGS_verify) {
+    return verifyRoundTrip() == 0 ? 0 : 1;
+  }
 
   if (FLAGS_layout) {
     emitLayout();
