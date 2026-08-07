@@ -174,5 +174,8 @@ target_link_libraries(
 
 add_subdirectory(index)
 add_subdirectory(selective)
+# Must follow selective: nimble_velox_reader_factory links
+# nimble_velox_selective.
+add_subdirectory(reader)
 add_subdirectory(stats)
 add_subdirectory(tests)
