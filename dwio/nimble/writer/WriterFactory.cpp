@@ -20,7 +20,7 @@
 #include <folly/Random.h>
 
 #include "dwio/nimble/velox/NimbleConfig.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "dwio/nimble/writer/fb/NimbleWriterOptionBuilder.h"
 #include "dwio/utils/BufferedWriteFile.h"
 #include "velox/common/base/Exceptions.h"
@@ -123,26 +123,26 @@ std::unique_ptr<dwio::common::Writer> WriterFactory::createWriter(
         std::move(bufferedFileLeaf), writeFileBufferBytes, std::move(file));
   };
 
-  auto veloxWriterOptions = builder.build();
+  auto writerOptions = builder.build();
 
   // TODO: Pass the sink directly to writer.
   if (auto* writeFileSinkWrapper =
           dynamic_cast<dwio::common::WriteFileSink*>(sink.get())) {
-    veloxWriterOptions.ioStatistics = writeFileSinkWrapper->getIoStatistics();
-    return std::make_unique<facebook::nimble::VeloxWriter>(
+    writerOptions.ioStatistics = writeFileSinkWrapper->getIoStatistics();
+    return std::make_unique<facebook::nimble::Writer>(
         options->schema,
         maybeBuffer(writeFileSinkWrapper->toWriteFile()),
         *options->memoryPool,
-        std::move(veloxWriterOptions));
+        std::move(writerOptions));
   } else if (
       auto* localFileSinkWrapper =
           dynamic_cast<dwio::common::LocalFileSink*>(sink.get())) {
-    veloxWriterOptions.ioStatistics = localFileSinkWrapper->getIoStatistics();
-    return std::make_unique<facebook::nimble::VeloxWriter>(
+    writerOptions.ioStatistics = localFileSinkWrapper->getIoStatistics();
+    return std::make_unique<facebook::nimble::Writer>(
         options->schema,
         maybeBuffer(localFileSinkWrapper->toWriteFile()),
         *options->memoryPool,
-        std::move(veloxWriterOptions));
+        std::move(writerOptions));
   } else {
     NIMBLE_FAIL("Expected WriteFileSink, got {}", typeid(*sink).name());
   }

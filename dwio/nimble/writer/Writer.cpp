@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 
 #include <algorithm>
 #include <memory>
@@ -67,9 +67,7 @@ namespace detail {
 
 class WriterContext : public FieldWriterContext {
  public:
-  WriterContext(
-      velox::memory::MemoryPool& memoryPool,
-      VeloxWriterOptions options)
+  WriterContext(velox::memory::MemoryPool& memoryPool, WriterOptions options)
       : FieldWriterContext{memoryPool, options.reclaimerFactory(), options.vectorDecoderVisitor},
         options_{std::move(options)},
         logger_{
@@ -90,7 +88,7 @@ class WriterContext : public FieldWriterContext {
     }
   }
 
-  const VeloxWriterOptions& options() const {
+  const WriterOptions& options() const {
     return options_;
   }
 
@@ -217,7 +215,7 @@ class WriterContext : public FieldWriterContext {
   }
 
  private:
-  const VeloxWriterOptions options_;
+  const WriterOptions options_;
   velox::CpuWallTiming encodingTiming_;
   velox::CpuWallTiming writeTiming_;
   velox::CpuWallTiming ingestionTiming_;
@@ -248,7 +246,7 @@ std::string_view asView(const flatbuffers::FlatBufferBuilder& builder) {
 }
 
 const index::ClusterIndexConfig& clusterIndexConfig(
-    const VeloxWriterOptions& options) {
+    const WriterOptions& options) {
   NIMBLE_USER_CHECK_NOT_NULL(
       options.clusterIndexConfig,
       "Cluster index key column storage can only be omitted when cluster index is enabled");
@@ -256,7 +254,7 @@ const index::ClusterIndexConfig& clusterIndexConfig(
       *options.clusterIndexConfig);
 }
 
-bool omitClusterIndexKeyColumnStorage(const VeloxWriterOptions& options) {
+bool omitClusterIndexKeyColumnStorage(const WriterOptions& options) {
   if (!options.experimentalOmitClusterIndexKeyColumnStorage) {
     return false;
   }
@@ -268,7 +266,7 @@ bool omitClusterIndexKeyColumnStorage(const VeloxWriterOptions& options) {
 
 std::vector<velox::column_index_t> storedInputColumnIndices(
     const velox::TypePtr& type,
-    const VeloxWriterOptions& options) {
+    const WriterOptions& options) {
   NIMBLE_USER_CHECK(
       omitClusterIndexKeyColumnStorage(options),
       "storedInputColumnIndices is only used when cluster index key column storage is omitted");
@@ -299,7 +297,7 @@ std::vector<velox::column_index_t> storedInputColumnIndices(
 
 velox::RowTypePtr storedDataType(
     const velox::TypePtr& type,
-    const VeloxWriterOptions& options) {
+    const WriterOptions& options) {
   if (!omitClusterIndexKeyColumnStorage(options)) {
     return velox::asRowType(type);
   }
@@ -394,11 +392,11 @@ EncodingLayoutTree remapEncodingLayoutTree(
       std::move(children)};
 }
 
-VeloxWriterOptions storedWriterOptions(
+WriterOptions storedWriterOptions(
     const velox::TypePtr& inputType,
     const velox::TypePtr& storedType,
     const std::vector<velox::column_index_t>& storedInputColumnIndices,
-    VeloxWriterOptions options) {
+    WriterOptions options) {
   if (!omitClusterIndexKeyColumnStorage(options)) {
     return options;
   }
@@ -626,7 +624,7 @@ std::string_view encode(
   encodingOptions.bufferPool = encodingScratchBufferPool;
   encodingOptions.encodingBufferPool = encodingBufferPool;
   velox::common::testutil::TestValue::adjust(
-      "facebook::nimble::VeloxWriter::encode", &encodingOptions);
+      "facebook::nimble::Writer::encode", &encodingOptions);
 
   if (streamData.hasNulls()) {
     std::span<const bool> notNulls = streamData.nonNulls();
@@ -1064,8 +1062,8 @@ void initializeEncodingLayouts(
 }
 } // namespace
 
-std::unique_ptr<index::IndexWriter> VeloxWriter::createClusterIndexWriter(
-    const VeloxWriterOptions& options,
+std::unique_ptr<index::IndexWriter> Writer::createClusterIndexWriter(
+    const WriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
   if (options.clusterIndexConfig == nullptr) {
@@ -1084,8 +1082,8 @@ std::unique_ptr<index::IndexWriter> VeloxWriter::createClusterIndexWriter(
   return writer;
 }
 
-std::vector<VeloxWriter::DenseIndexWriter> VeloxWriter::createDenseIndexWriters(
-    const VeloxWriterOptions& options,
+std::vector<Writer::DenseIndexWriter> Writer::createDenseIndexWriters(
+    const WriterOptions& options,
     const velox::TypePtr& type,
     velox::memory::MemoryPool* pool) {
   struct ConfigGroup {
@@ -1128,11 +1126,11 @@ std::vector<VeloxWriter::DenseIndexWriter> VeloxWriter::createDenseIndexWriters(
   return writers;
 }
 
-VeloxWriter::VeloxWriter(
+Writer::Writer(
     const velox::TypePtr& type,
     std::unique_ptr<velox::WriteFile> file,
     velox::memory::MemoryPool& pool,
-    VeloxWriterOptions options)
+    WriterOptions options)
     : storedDataType_{storedDataType(type, options)},
       storedInputColumnIndices_{
           omitClusterIndexKeyColumnStorage(options)
@@ -1271,9 +1269,9 @@ VeloxWriter::VeloxWriter(
   setState(State::kRunning);
 }
 
-VeloxWriter::~VeloxWriter() {}
+Writer::~Writer() {}
 
-void VeloxWriter::write(const velox::VectorPtr& input) {
+void Writer::write(const velox::VectorPtr& input) {
   checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
@@ -1309,7 +1307,7 @@ void VeloxWriter::write(const velox::VectorPtr& input) {
   }
 }
 
-bool VeloxWriter::flushInputBuffers(bool finalize) {
+bool Writer::flushInputBuffers(bool finalize) {
   if (finalize) {
     bufferPolicy_->finalize();
   }
@@ -1332,7 +1330,7 @@ bool VeloxWriter::flushInputBuffers(bool finalize) {
   return anyStripeFlushed;
 }
 
-void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
+void Writer::writeBatch(const velox::VectorPtr& input) {
   const auto numRows = input->size();
   const auto storedData = storedDataInput(input);
   // When enableStatsConsistencyCheck is true, compute raw size using
@@ -1374,8 +1372,7 @@ void VeloxWriter::writeBatch(const velox::VectorPtr& input) {
   context_->setBytesWritten(file_->size());
 }
 
-velox::VectorPtr VeloxWriter::storedDataInput(
-    const velox::VectorPtr& input) const {
+velox::VectorPtr Writer::storedDataInput(const velox::VectorPtr& input) const {
   if (!omitClusterIndexKeyColumnStorage(context_->options())) {
     return input;
   }
@@ -1396,7 +1393,7 @@ velox::VectorPtr VeloxWriter::storedDataInput(
       std::move(children));
 }
 
-void VeloxWriter::writeMetadata() {
+void Writer::writeMetadata() {
   if (context_->options().metadata.empty()) {
     return;
   }
@@ -1421,7 +1418,7 @@ void VeloxWriter::writeMetadata() {
        builder.GetSize()});
 }
 
-void VeloxWriter::writeColumnStats() {
+void Writer::writeColumnStats() {
   // When enableStatsConsistencyCheck is true, verify that fileRawSize
   // (accumulated via RawSizeUtils) matches the root column statistics.
   if (context_->options().enableStatsConsistencyCheck) {
@@ -1448,14 +1445,14 @@ void VeloxWriter::writeColumnStats() {
   }
 }
 
-void VeloxWriter::writeSchema() {
+void Writer::writeSchema() {
   SchemaSerializer serializer;
   tabletWriter_->writeOptionalSection(
       std::string(kSchemaSection),
       serializer.serialize(context_->schemaBuilder()));
 }
 
-void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
+void Writer::addIndexKey(const velox::VectorPtr& input) {
   if (clusterIndexWriter_ != nullptr) {
     clusterIndexWriter_->write(input);
   }
@@ -1464,7 +1461,7 @@ void VeloxWriter::addIndexKey(const velox::VectorPtr& input) {
   }
 }
 
-void VeloxWriter::writeFeatures(const WriteOptionalSectionFn& writeMetadataFn) {
+void Writer::writeFeatures(const WriteOptionalSectionFn& writeMetadataFn) {
   const bool compactRowCountEncoding =
       context_->options().experimentalCompactRowCountEncoding;
   bool clusterIndexKeyColumnStorageOmitted{false};
@@ -1488,7 +1485,7 @@ void VeloxWriter::writeFeatures(const WriteOptionalSectionFn& writeMetadataFn) {
   writeMetadataFn(std::string(kFeaturesSection), serialized);
 }
 
-void VeloxWriter::writeIndexes(
+void Writer::writeIndexes(
     const WriteDataFn& writeDataFn,
     const CreateMetadataSectionFn& createMetadataFn,
     const WriteOptionalSectionFn& writeMetadataFn) {
@@ -1529,7 +1526,7 @@ void VeloxWriter::writeIndexes(
   writeIndexSection(descriptors, writeMetadataFn);
 }
 
-bool VeloxWriter::shouldFlush(FlushPolicy* policy) const {
+bool Writer::shouldFlush(FlushPolicy* policy) const {
   return policy->shouldFlush(
       StripeProgress{
           .stripeRawSize = context_->memoryUsed(),
@@ -1537,7 +1534,7 @@ bool VeloxWriter::shouldFlush(FlushPolicy* policy) const {
           .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
 }
 
-bool VeloxWriter::shouldChunk(FlushPolicy* policy) const {
+bool Writer::shouldChunk(FlushPolicy* policy) const {
   return policy->shouldChunk(
       StripeProgress{
           .stripeRawSize = context_->memoryUsed(),
@@ -1545,7 +1542,7 @@ bool VeloxWriter::shouldChunk(FlushPolicy* policy) const {
           .stripeEncodedLogicalSize = context_->stripeEncodedLogicalSize()});
 }
 
-std::unique_ptr<velox::dwio::common::FileMetadata> VeloxWriter::close() {
+std::unique_ptr<velox::dwio::common::FileMetadata> Writer::close() {
   checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
@@ -1608,17 +1605,17 @@ std::unique_ptr<velox::dwio::common::FileMetadata> VeloxWriter::close() {
   }
 }
 
-bool VeloxWriter::finish() {
+bool Writer::finish() {
   checkRunning();
   return true;
 }
 
-void VeloxWriter::abort() {
+void Writer::abort() {
   checkRunning();
   setState(State::kAborted);
 }
 
-void VeloxWriter::flush() {
+void Writer::flush() {
   checkRunning();
   if (lastException_) {
     std::rethrow_exception(lastException_);
@@ -1640,7 +1637,7 @@ void VeloxWriter::flush() {
   }
 }
 
-bool VeloxWriter::reclaimableBytes(
+bool Writer::reclaimableBytes(
     const velox::memory::MemoryPool& pool,
     uint64_t& reclaimableBytes) const {
   reclaimableBytes = 0;
@@ -1656,7 +1653,7 @@ bool VeloxWriter::reclaimableBytes(
   return true;
 }
 
-uint64_t VeloxWriter::reclaimBytes(
+uint64_t Writer::reclaimBytes(
     velox::memory::MemoryPool* pool,
     velox::memory::MemoryReclaimer::Stats& stats) {
   VELOX_CHECK(canReclaim());
@@ -1696,7 +1693,7 @@ uint64_t VeloxWriter::reclaimBytes(
       stats);
 }
 
-bool VeloxWriter::canReclaim() const {
+bool Writer::canReclaim() const {
   return context_->options().spillConfig != nullptr;
 }
 
@@ -1736,7 +1733,7 @@ NimbleFileMetadata::ColumnStats toColumnStatsSnapshot(
 
 } // namespace
 
-std::unique_ptr<NimbleFileMetadata> VeloxWriter::buildFileMetadata() const {
+std::unique_ptr<NimbleFileMetadata> Writer::buildFileMetadata() const {
   const auto& columnStats = stats().columnStats;
   if (columnStats.empty()) {
     return nullptr;
@@ -1757,7 +1754,7 @@ std::unique_ptr<NimbleFileMetadata> VeloxWriter::buildFileMetadata() const {
       rowType_, numRows, std::move(snapshots));
 }
 
-void VeloxWriter::reportRuntimeStats() const {
+void Writer::reportRuntimeStats() const {
   const auto stats = this->stats();
   const auto reportTiming = [](std::string_view prefix,
                                uint64_t cpuTimeNs,
@@ -1786,7 +1783,7 @@ void VeloxWriter::reportRuntimeStats() const {
       "nimble.chunkSizeBytes", stats.chunkSizeBytes);
 }
 
-void VeloxWriter::updateIoStatistics() {
+void Writer::updateIoStatistics() {
   const auto stats = this->stats();
   if (auto* ioStatistics = context_->options().ioStatistics;
       ioStatistics != nullptr) {
@@ -1801,13 +1798,13 @@ void VeloxWriter::updateIoStatistics() {
   reportedBytesWritten_ = stats.writtenBytes;
 }
 
-void VeloxWriter::ensureEncodingBuffer() {
+void Writer::ensureEncodingBuffer() {
   if (encodingBuffer_ == nullptr) {
     encodingBuffer_ = std::make_unique<Buffer>(*encodingMemoryPool_);
   }
 }
 
-std::unique_ptr<velox::BufferPool> VeloxWriter::makeEncodingScratchBufferPool()
+std::unique_ptr<velox::BufferPool> Writer::makeEncodingScratchBufferPool()
     const {
   const auto maxCachedBuffers =
       context_->options().maxCachedEncodingScratchBuffers;
@@ -1815,8 +1812,7 @@ std::unique_ptr<velox::BufferPool> VeloxWriter::makeEncodingScratchBufferPool()
   return std::make_unique<velox::BufferPool>(maxCachedBuffers);
 }
 
-std::unique_ptr<EncodingBufferPool> VeloxWriter::makeEncodingBufferPool()
-    const {
+std::unique_ptr<EncodingBufferPool> Writer::makeEncodingBufferPool() const {
   const auto maxCachedBuffers =
       context_->options().maxCachedNestedEncodingBuffers;
   NIMBLE_CHECK_GT(maxCachedBuffers, 0);
@@ -1824,7 +1820,7 @@ std::unique_ptr<EncodingBufferPool> VeloxWriter::makeEncodingBufferPool()
       encodingMemoryPool_.get(), maxCachedBuffers);
 }
 
-uint32_t VeloxWriter::encodingConcurrency(uint32_t taskCount) const {
+uint32_t Writer::encodingConcurrency(uint32_t taskCount) const {
   if (taskCount == 0) {
     return 0;
   }
@@ -1835,7 +1831,7 @@ uint32_t VeloxWriter::encodingConcurrency(uint32_t taskCount) const {
   return std::min(taskCount, options.maxEncodeParallelism);
 }
 
-void VeloxWriter::ensureEncodingScratchBufferPools(uint32_t poolCount) {
+void Writer::ensureEncodingScratchBufferPools(uint32_t poolCount) {
   if (context_->options().maxCachedEncodingScratchBuffers == 0) {
     NIMBLE_CHECK(
         encodingScratchBufferPools_.empty(),
@@ -1847,7 +1843,7 @@ void VeloxWriter::ensureEncodingScratchBufferPools(uint32_t poolCount) {
   }
 }
 
-void VeloxWriter::ensureEncodingBufferPools(uint32_t poolCount) {
+void Writer::ensureEncodingBufferPools(uint32_t poolCount) {
   if (context_->options().maxCachedNestedEncodingBuffers == 0) {
     NIMBLE_CHECK(
         encodingBufferPools_.empty(),
@@ -1859,7 +1855,7 @@ void VeloxWriter::ensureEncodingBufferPools(uint32_t poolCount) {
   }
 }
 
-velox::BufferPool* VeloxWriter::encodingScratchBufferPool(uint32_t index) {
+velox::BufferPool* Writer::encodingScratchBufferPool(uint32_t index) {
   if (context_->options().maxCachedEncodingScratchBuffers == 0) {
     return nullptr;
   }
@@ -1868,7 +1864,7 @@ velox::BufferPool* VeloxWriter::encodingScratchBufferPool(uint32_t index) {
   return encodingScratchBufferPools_[index].get();
 }
 
-EncodingBufferPool* VeloxWriter::encodingBufferPool(uint32_t index) {
+EncodingBufferPool* Writer::encodingBufferPool(uint32_t index) {
   if (context_->options().maxCachedNestedEncodingBuffers == 0) {
     return nullptr;
   }
@@ -1877,7 +1873,7 @@ EncodingBufferPool* VeloxWriter::encodingBufferPool(uint32_t index) {
   return encodingBufferPools_[index].get();
 }
 
-void VeloxWriter::clearEncodingBuffer() {
+void Writer::clearEncodingBuffer() {
   if (encodingBuffer_ == nullptr) {
     return;
   }
@@ -1892,17 +1888,17 @@ void VeloxWriter::clearEncodingBuffer() {
   }
 }
 
-void VeloxWriter::ensureWriteStreams() {
+void Writer::ensureWriteStreams() {
   ensureEncodingBuffer();
   const auto schemaNodeCount = context_->schemaBuilder().nodeCount();
   encodedStreams_.resize(schemaNodeCount);
 }
 
-void VeloxWriter::resetFieldWriter() {
+void Writer::resetFieldWriter() {
   rootWriter_->reset();
 }
 
-void VeloxWriter::writeStreams() {
+void Writer::writeStreams() {
   std::atomic_uint64_t chunkSize{0};
   std::atomic_uint64_t encodingCpuNanos{0};
   uint64_t encodingWallNanos{0};
@@ -1987,7 +1983,7 @@ void VeloxWriter::writeStreams() {
           << ", chunk size: " << velox::succinctBytes(chunkSize);
 }
 
-void VeloxWriter::encodeStream(
+void Writer::encodeStream(
     StreamData& streamData,
     velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
@@ -2008,7 +2004,7 @@ void VeloxWriter::encodeStream(
   streamData.reset();
 }
 
-void VeloxWriter::processStream(
+void Writer::processStream(
     StreamData& streamData,
     velox::BufferPool* encodingScratchBufferPool,
     EncodingBufferPool* encodingBufferPool,
@@ -2061,7 +2057,7 @@ void VeloxWriter::processStream(
   }
 }
 
-bool VeloxWriter::encodeStreamChunk(
+bool Writer::encodeStreamChunk(
     StreamData& streamData,
     uint64_t minChunkSize,
     uint64_t maxChunkSize,
@@ -2097,7 +2093,7 @@ bool VeloxWriter::encodeStreamChunk(
   return writtenChunk;
 }
 
-uint32_t VeloxWriter::encodeChunk(
+uint32_t Writer::encodeChunk(
     const StreamData& chunkView,
     Chunk& chunk,
     velox::BufferPool* encodingScratchBufferPool,
@@ -2125,7 +2121,7 @@ uint32_t VeloxWriter::encodeChunk(
   return chunkBytes;
 }
 
-bool VeloxWriter::writeChunks(
+bool Writer::writeChunks(
     std::span<const uint32_t> streamIndices,
     bool ensureFullChunks,
     bool lastChunk) {
@@ -2251,7 +2247,7 @@ bool VeloxWriter::writeChunks(
   return writtenChunk;
 }
 
-bool VeloxWriter::flushChunks(
+bool Writer::flushChunks(
     const std::vector<uint32_t>& indices,
     bool ensureFullChunks,
     FlushPolicy* flushPolicy) {
@@ -2271,7 +2267,7 @@ bool VeloxWriter::flushChunks(
   return true;
 }
 
-bool VeloxWriter::writeStripe() {
+bool Writer::writeStripe() {
   if (context_->rowsInStripe() == 0) {
     return false;
   }
@@ -2333,7 +2329,7 @@ bool VeloxWriter::writeStripe() {
   return true;
 }
 
-bool VeloxWriter::evaluateFlushPolicy() {
+bool Writer::evaluateFlushPolicy() {
   // NOTE that flush policy factory is stateful, so we need to get a new
   // policy every time we check.
   auto flushPolicy = context_->options().flushPolicyFactory();
@@ -2385,7 +2381,7 @@ bool VeloxWriter::evaluateFlushPolicy() {
   return writeStripe();
 }
 
-VeloxWriter::Stats VeloxWriter::stats() const {
+Writer::Stats Writer::stats() const {
   return Stats{
       .writtenBytes = context_->bytesWritten(),
       .stripeCount = folly::to<uint32_t>(context_->getStripeIndex()),

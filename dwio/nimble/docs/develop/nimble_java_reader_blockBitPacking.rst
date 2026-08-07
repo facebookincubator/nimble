@@ -6,7 +6,7 @@ Using BlockBitPacking (EncodingType=15) as a concrete example
 1 Write Path
 ------------
 
-There is no pure Java Nimble writer . Spark writes Nimble files via JNI, delegating to the C++ VeloxWriter for encoding and file layout.
+There is no pure Java Nimble writer . Spark writes Nimble files via JNI, delegating to the C++ Writer for encoding and file layout.
 
 Java AlphaPageWriter.writePage(Page)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -20,7 +20,7 @@ JNI JniAlphaWriter.writePageJni(writerId, buffer)
 xldb/alpha_jni/cpp/AlphaWriterJNI.cpp
 
 
-C++ VeloxWriter::write(RowVector)
+C++ Writer::write(RowVector)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Encoding selection → BlockBitPacking / Dictionary / RLE / ... → flush to disk
@@ -44,8 +44,8 @@ Implication:
      - AlphaWriterJNI.cpp
      - xldb/alpha_jni/cpp/AlphaWriterJNI.cpp
    * - C++
-     - VeloxWriter
-     - dwio/nimble/writer/VeloxWriter.h
+     - Writer
+     - dwio/nimble/writer/Writer.h
 
 2 Read Path
 -----------

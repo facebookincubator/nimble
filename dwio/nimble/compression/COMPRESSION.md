@@ -8,12 +8,12 @@ Nimble's compression system has three layers:
 
 1. **Codec layer** — individual compressor implementations (`ICompressor`) that perform the actual compress/decompress work.
 2. **Policy layer** — `CompressionPolicy` decides *which* codec to use, with what parameters, and whether to accept the result.
-3. **Configuration layer** — `CompressionOptions` (exposed via `VeloxWriterOptions`) lets users tune compression behavior.
+3. **Configuration layer** — `CompressionOptions` (exposed via `WriterOptions`) lets users tune compression behavior.
 
 Compression is applied at **leaf encoding nodes** in the encoding tree (e.g. `Trivial`, `FixedBitWidth`). The `CompressionEncoder` template class in `Compression.h` handles the common pattern of trying compression and falling back to uncompressed if the policy rejects the result.
 
 ```
-VeloxWriterOptions::compressionOptions
+WriterOptions::compressionOptions
   → ManualEncodingSelectionPolicy (encoding selection)
     → ConfiguredCompressionPolicy (created per-stream at leaf level)
       → Compression::compress() (static dispatch)
@@ -33,14 +33,14 @@ The default codec is **MetaInternal** internally and **Zstd** in OSS builds (con
 
 ## Adjusting Compression Settings
 
-### Option 1: Direct `VeloxWriterOptions` (programmatic)
+### Option 1: Direct `WriterOptions` (programmatic)
 
-Set fields on `VeloxWriterOptions::compressionOptions` before constructing a `VeloxWriter`:
+Set fields on `WriterOptions::compressionOptions` before constructing a `Writer`:
 
 ```cpp
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 
-VeloxWriterOptions options;
+WriterOptions options;
 
 // Switch to Zstd with higher compression level
 options.compressionOptions.compressionType = CompressionType::Zstd;
@@ -52,7 +52,7 @@ options.compressionOptions.compressionAcceptRatio = 0.95f;
 // Increase minimum stream size before attempting compression
 options.compressionOptions.zstdMinCompressionSize = 64;
 
-VeloxWriter writer(type, std::move(file), pool, std::move(options));
+Writer writer(type, std::move(file), pool, std::move(options));
 ```
 
 ### Option 2: Serde Parameters (Hive table properties)
@@ -79,7 +79,7 @@ The `WriterOptionOverrides` lambda lets you override options that were already p
 #include "dwio/api/FileWriter.h"
 
 WriterOptionOverrides overrides;
-overrides.nimbleOverrides = [](nimble::VeloxWriterOptions& opts) {
+overrides.nimbleOverrides = [](nimble::WriterOptions& opts) {
   opts.compressionOptions.compressionType = CompressionType::Lz4;
   opts.compressionOptions.lz4AccelerationLevel = 2;
 };
@@ -116,7 +116,7 @@ struct CompressionOptions {
 
 ### Metadata Compression
 
-Separate from per-stream data compression, metadata sections (stripe groups, optional sections) in the file footer are compressed with Zstd when they exceed `metadataCompressionThreshold` (default: 64 KB). Configure via `VeloxWriterOptions::metadataCompressionThreshold`.
+Separate from per-stream data compression, metadata sections (stripe groups, optional sections) in the file footer are compressed with Zstd when they exceed `metadataCompressionThreshold` (default: 64 KB). Configure via `WriterOptions::metadataCompressionThreshold`.
 
 ## How Compression Selection Works
 
@@ -343,7 +343,7 @@ Add compression round-trip tests in `dwio/nimble/encodings/tests/` or `dwio/nimb
 | `compression/fb/MetaInternalCompressor.{h,cpp}` | Zstrong/Managed Compression (internal only) |
 | `compression/BUCK` | Build target for all compression code |
 | `encodings/selection/EncodingSelectionPolicy.h` | Encoding selection policy |
-| `velox/VeloxWriterOptions.h` | `VeloxWriterOptions::compressionOptions` |
+| `velox/WriterOptions.h` | `WriterOptions::compressionOptions` |
 | `tablet/Footer.fbs` | FlatBuffers schema (stores `CompressionType` per metadata section) |
 | `dwio/api/NimbleConfig.{h,cpp}` | Serde parameter definitions |
 | `dwio/api/NimbleWriterOptionBuilder.cpp` | Populates `CompressionOptions` from serde params |

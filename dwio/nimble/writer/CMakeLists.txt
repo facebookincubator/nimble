@@ -15,18 +15,18 @@
 # ChunkedStreamWriter still lives next to its reader-side counterparts in
 # dwio/nimble/velox, so it is picked up by path rather than moved here.
 add_library(
-  nimble_velox_writer
+  nimble_writer
   ${CMAKE_CURRENT_SOURCE_DIR}/../velox/ChunkedStreamWriter.cpp
   BufferPolicy.h
   EncodingLayoutTree.cpp
   FlushPolicy.cpp
   StreamChunker.cpp
-  VeloxWriter.cpp
-  VeloxWriterDefaultMetadataOSS.cpp
-  VeloxWriterMemoryReclaimerOSS.cpp
+  Writer.cpp
+  WriterDefaultMetadataOSS.cpp
+  WriterMemoryReclaimerOSS.cpp
 )
 target_link_libraries(
-  nimble_velox_writer
+  nimble_writer
   nimble_column_stats
   nimble_column_stats_utils
   nimble_common

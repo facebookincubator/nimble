@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 
 namespace facebook::nimble {
 
@@ -23,8 +23,7 @@ namespace facebook::nimble {
 // VELOX_BUILD_MINIMAL_WITH_DWIO, which is what Nimble's open source build
 // configures, so no reclaimer is installed here and the writer does not
 // participate in memory arbitration.
-std::unique_ptr<velox::memory::MemoryReclaimer>
-VeloxWriter::makeMemoryReclaimer() {
+std::unique_ptr<velox::memory::MemoryReclaimer> Writer::makeMemoryReclaimer() {
   return nullptr;
 }
 

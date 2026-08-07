@@ -27,7 +27,7 @@
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileHandle.h"
 #include "velox/common/caching/FileIds.h"
@@ -77,14 +77,14 @@ class HashIndexTestBase {
       const std::string& filePath,
       const velox::RowTypePtr& schema,
       const std::vector<velox::VectorPtr>& batches,
-      VeloxWriterOptions options) {
+      WriterOptions options) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto file = fs->openFileForWrite(
         filePath,
         {.shouldCreateParentDirectories = true,
          .shouldThrowOnFileAlreadyExists = false});
 
-    VeloxWriter writer(schema, std::move(file), *pool_, std::move(options));
+    Writer writer(schema, std::move(file), *pool_, std::move(options));
     for (const auto& batch : batches) {
       writer.write(batch);
     }
@@ -97,7 +97,7 @@ class HashIndexTestBase {
       const std::vector<velox::VectorPtr>& batches,
       std::shared_ptr<const IndexConfig> indexConfig,
       std::optional<uint64_t> flushSize = std::nullopt) {
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.denseIndexConfigs.push_back(std::move(indexConfig));
     if (flushSize.has_value()) {
       options.flushPolicyFactory = [size = flushSize.value()]() {
@@ -490,7 +490,7 @@ TEST_F(HashIndexTest, multipleIndices) {
 
   const auto filePath = tempFilePath("multi_indices");
   {
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.denseIndexConfigs.push_back(
         HashIndexConfigBuilder{}.withKeyColumns({"col_a"}).build());
     options.denseIndexConfigs.push_back(
@@ -531,7 +531,7 @@ TEST_F(HashIndexTest, noHashIndexConfig) {
       std::vector<velox::VectorPtr>{col});
 
   const auto filePath = tempFilePath("no_index");
-  writeFile(filePath, noIndexType, {batch}, VeloxWriterOptions{});
+  writeFile(filePath, noIndexType, {batch}, WriterOptions{});
 
   {
     auto tablet = openTablet(filePath);

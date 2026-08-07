@@ -43,8 +43,8 @@ std::unordered_map<std::string, std::string> defaultMetadata();
 /// Options used by Velox writer that affect the output file format.
 /// NOTE: The object could be large when encodingOverrides are supplied. It's
 /// strongly advised to move instead of copying it.
-struct VeloxWriterOptions {
-  /// Builds Encoding::Options from VeloxWriterOptions fields.
+struct WriterOptions {
+  /// Builds Encoding::Options from WriterOptions fields.
   Encoding::Options buildEncodingOptions() const {
     return {
         .useVarintRowCount = experimentalCompactRowCountEncoding,
@@ -286,7 +286,7 @@ struct VeloxWriterOptions {
     return std::make_unique<StripeRawSizeFlushPolicy>(256 << 20);
   };
 
-  /// Optional content-driven cutting policy. When set, VeloxWriter routes
+  /// Optional content-driven cutting policy. When set, Writer routes
   // every write() through the BufferPolicy (bufferInput → drain writeBuffer)
   // and emits one stripe per emitted BufferRange, bypassing shouldFlush.
   // When unset (the default), the writer takes the legacy path: write the

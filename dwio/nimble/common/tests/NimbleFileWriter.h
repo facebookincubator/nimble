@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::nimble::test {
@@ -23,13 +23,13 @@ namespace facebook::nimble::test {
 std::string createNimbleFile(
     velox::memory::MemoryPool& memoryPool,
     const std::vector<velox::VectorPtr>& vectors,
-    nimble::VeloxWriterOptions writerOptions = {},
+    nimble::WriterOptions writerOptions = {},
     bool flushAfterWrite = true);
 
 std::string createNimbleFile(
     velox::memory::MemoryPool& memoryPool,
     const velox::VectorPtr& vector,
-    nimble::VeloxWriterOptions writerOptions = {},
+    nimble::WriterOptions writerOptions = {},
     bool flushAfterWrite = true);
 
 } // namespace facebook::nimble::test

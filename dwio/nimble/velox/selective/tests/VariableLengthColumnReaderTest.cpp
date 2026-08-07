@@ -561,7 +561,7 @@ TEST_F(VariableLengthColumnReaderTest, deduplicatedMapReadNullsOnly) {
          makeNullableMapVector<int64_t, int64_t>(batchMaps)}));
   }
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.deduplicatedMapColumns = {"c1"};
@@ -632,7 +632,7 @@ TEST_F(VariableLengthColumnReaderTest, deduplicatedMapAllNonNullWithIsNull) {
       [](auto j) { return j % 4; },
       [](auto j) { return j % 4; });
   auto input = makeRowVector({c0});
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.deduplicatedMapColumns = {"c0"};
   auto file = test::createNimbleFile(*rootPool(), input, std::move(options));
   auto scanSpec = std::make_shared<common::ScanSpec>("root");

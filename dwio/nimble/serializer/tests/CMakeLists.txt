@@ -39,7 +39,7 @@ target_link_libraries(
   nimble_common
   nimble_velox_common
   nimble_velox_schema_builder
-  nimble_velox_writer
+  nimble_writer
   velox_type
   velox_vector
   velox_vector_fuzzer

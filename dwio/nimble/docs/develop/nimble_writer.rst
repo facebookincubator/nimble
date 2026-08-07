@@ -13,12 +13,12 @@ Phase 3: Stripe Flush
 Nimble Writer Internals
 =======================
 
-Standalone core logic — append-only columnar file writer ( facebook::nimble::VeloxWriter )
+Standalone core logic — append-only columnar file writer ( facebook::nimble::Writer )
 
 Architecture Overview
 ---------------------
 
-VeloxWriter
+Writer
 
 (orchestrator)
 
@@ -188,7 +188,7 @@ Write
     TableWriter feeds RowVectors
     ─────────────────────────────
 
-    RowVector 1 ── VeloxWriter::write()
+    RowVector 1 ── Writer::write()
     RowVector 2 ──     │
     RowVector 3 ──     ├─ RowFieldWriter::write()
        ...      ──     │       │

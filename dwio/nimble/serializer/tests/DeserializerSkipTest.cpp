@@ -34,7 +34,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/writer/EncodingLayoutTree.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/container/F14Set.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/BufferedInput.h"

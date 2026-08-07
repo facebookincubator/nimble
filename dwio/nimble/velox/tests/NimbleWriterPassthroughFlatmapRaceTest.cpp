@@ -39,8 +39,8 @@
 #include <gtest/gtest.h>
 
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/Writer.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 #include "velox/common/file/File.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
@@ -92,8 +92,8 @@ class NimbleWriterPassthroughFlatmapRaceTest
     return makeRowVector(columns);
   }
 
-  nimble::VeloxWriterOptions makeOptions() {
-    nimble::VeloxWriterOptions options;
+  nimble::WriterOptions makeOptions() {
+    nimble::WriterOptions options;
     for (int column = 0; column < kNumColumns; ++column) {
       options.flatMapColumns["c" + folly::to<std::string>(column)];
     }
@@ -115,7 +115,7 @@ TEST_F(NimbleWriterPassthroughFlatmapRaceTest, ConcurrentPassthroughNewKeys) {
     std::string file;
     uint64_t expectedRows = 0;
     {
-      nimble::VeloxWriter writer(
+      nimble::Writer writer(
           schema,
           std::make_unique<velox::InMemoryWriteFile>(&file),
           *writerRoot,
