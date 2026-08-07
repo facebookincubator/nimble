@@ -38,6 +38,7 @@ class NimbleData : public velox::dwio::common::FormatData {
       const EncodingFactory& encodingFactory,
       bool stringDecoderZeroCopy,
       bool nimblePreserveDictionaryEncoding = false,
+      bool nimbleCompactDictionaryAcrossChunks = false,
       bool lazyColumnIo = false,
       velox::dwio::common::DecodingStats* decodingStats = nullptr);
 
@@ -106,6 +107,10 @@ class NimbleData : public velox::dwio::common::FormatData {
     return nimblePreserveDictionaryEncoding_;
   }
 
+  bool nimbleCompactDictionaryAcrossChunks() const {
+    return nimbleCompactDictionaryAcrossChunks_;
+  }
+
  private:
   std::unique_ptr<ChunkedDecoder> makeDecoder(
       const StreamDescriptor& descriptor,
@@ -119,6 +124,7 @@ class NimbleData : public velox::dwio::common::FormatData {
   velox::BufferPtr inMap_;
   const EncodingFactory* const encodingFactory_;
   bool nimblePreserveDictionaryEncoding_{false};
+  bool nimbleCompactDictionaryAcrossChunks_{false};
   bool lazyColumnIo_{false};
   // Per-column decoding statistics. May be nullptr if column stats collection
   // is disabled.
@@ -137,6 +143,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
       bool stringDecoderZeroCopy = false,
       bool preserveFlatMapsInMemory = false,
       bool nimblePreserveDictionaryEncoding = false,
+      bool nimbleCompactDictionaryAcrossChunks = false,
       const folly::F14FastSet<std::string>* lazyIoColumns = nullptr,
       bool lazyColumnIo = false)
       : FormatParams(pool, stats),
@@ -148,7 +155,9 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         encodingFactory_(&encodingFactory),
         lazyColumnIo_(lazyColumnIo),
         stringDecoderZeroCopy_{stringDecoderZeroCopy},
-        nimblePreserveDictionaryEncoding_{nimblePreserveDictionaryEncoding} {}
+        nimblePreserveDictionaryEncoding_{nimblePreserveDictionaryEncoding},
+        nimbleCompactDictionaryAcrossChunks_{
+            nimbleCompactDictionaryAcrossChunks} {}
 
   std::unique_ptr<velox::dwio::common::FormatData> toFormatData(
       const std::shared_ptr<const velox::dwio::common::TypeWithId>& /*type*/,
@@ -165,6 +174,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
         stringDecoderZeroCopy_,
         preserveFlatMapsInMemory_,
         nimblePreserveDictionaryEncoding_,
+        nimbleCompactDictionaryAcrossChunks_,
         /*lazyIoColumns=*/nullptr,
         lazyColumnIo_);
   }
@@ -234,6 +244,7 @@ class NimbleParams : public velox::dwio::common::FormatParams {
   ChunkedDecoder* inMapDecoder_{nullptr};
   bool stringDecoderZeroCopy_{false};
   bool nimblePreserveDictionaryEncoding_{false};
+  bool nimbleCompactDictionaryAcrossChunks_{false};
 };
 
 } // namespace facebook::nimble
