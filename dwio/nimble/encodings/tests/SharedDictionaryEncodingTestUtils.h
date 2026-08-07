@@ -30,70 +30,27 @@
 
 namespace facebook::nimble::test {
 
-class TestSharedDictionaryAlphabet final : public SharedDictionaryAlphabet {
- public:
-  struct Chunk {
-    uint32_t begin{};
-    uint32_t count{};
-    const void* entries{};
-    std::shared_ptr<const void> owner;
+/// Encodes values and returns an alphabet reading them back. The returned
+/// alphabet owns the buffer holding its encoded bytes, so callers do not have
+/// to keep one alive themselves.
+template <typename T>
+std::shared_ptr<const SharedDictionaryAlphabet> createSharedDictionaryAlphabet(
+    std::span<const T> values,
+    std::span<const EncodingType> candidateEncodings,
+    velox::memory::MemoryPool* pool) {
+  struct OwnedAlphabet {
+    Buffer buffer;
+    std::optional<SharedDictionaryAlphabet> alphabet;
+
+    explicit OwnedAlphabet(velox::memory::MemoryPool* pool) : buffer{*pool} {}
   };
 
-  TestSharedDictionaryAlphabet(DataType dataType, std::vector<Chunk> chunks);
-
- private:
-  static uint32_t validateChunks(const std::vector<Chunk>& chunks);
-
-  template <typename T>
-  void getPhysicalValueTyped(uint32_t index, void* output) const {
-    const auto& chunk = chunkForIndex(index);
-    *static_cast<typename TypeTraits<T>::physicalType*>(output) =
-        static_cast<const typename TypeTraits<T>::physicalType*>(
-            chunk.entries)[index - chunk.begin];
-  }
-
-  template <typename T>
-  void materializeTyped(
-      std::span<const uint32_t> indices,
-      typename TypeTraits<T>::physicalType* output) const {
-    if (chunks_.size() == 1) {
-      const auto* entries =
-          static_cast<const typename TypeTraits<T>::physicalType*>(
-              chunks_[0].entries);
-      for (size_t i = 0; i < indices.size(); ++i) {
-        NIMBLE_CHECK_LT(
-            indices[i],
-            entryCount(),
-            "Shared dictionary index exceeds alphabet size.");
-        output[i] = entries[indices[i]];
-      }
-      return;
-    }
-    for (size_t i = 0; i < indices.size(); ++i) {
-      const auto& chunk = chunkForIndex(indices[i]);
-      output[i] = static_cast<const typename TypeTraits<T>::physicalType*>(
-          chunk.entries)[indices[i] - chunk.begin];
-    }
-  }
-
-  void physicalValueAtImpl(uint32_t index, void* output) const final;
-
-  void materializeImpl(std::span<const uint32_t> indices, void* output)
-      const final;
-
-  std::optional<EncodingType> encodingTypeImpl() const final {
-    return std::nullopt;
-  }
-
-  const Chunk& chunkForIndex(uint32_t index) const;
-
-  const std::vector<Chunk> chunks_;
-};
-
-std::shared_ptr<const SharedDictionaryAlphabet>
-createTestSharedDictionaryAlphabet(
-    DataType dataType,
-    std::vector<TestSharedDictionaryAlphabet::Chunk> chunks);
+  auto owned = std::make_shared<OwnedAlphabet>(pool);
+  const auto encoded = SharedDictionaryAlphabet::encode<T>(
+      values, candidateEncodings, owned->buffer);
+  owned->alphabet.emplace(encoded, Encoding::Options{}, pool);
+  return {owned, &owned->alphabet.value()};
+}
 
 class TestSharedDictionarySelectionPolicy final
     : public EncodingSelectionPolicy<int32_t> {

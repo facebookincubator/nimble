@@ -83,62 +83,9 @@ struct SharedDictionaryEncodingInput {
   std::span<const uint32_t> indices;
 };
 
-/// Provides indexed access to one immutable shared dictionary alphabet.
-class SharedDictionaryAlphabet {
- public:
-  virtual ~SharedDictionaryAlphabet() = default;
-
-  DataType dataType() const;
-
-  uint32_t entryCount() const;
-
-  /// Returns the original Nimble encoding type for the alphabet when known.
-  std::optional<EncodingType> encodingType() const;
-
-  template <typename T>
-  typename TypeTraits<T>::physicalType physicalValueAt(uint32_t index) const {
-    static_assert(
-        !std::is_same_v<T, std::string>,
-        "Use std::string_view for shared dictionary string alphabets.");
-    NIMBLE_CHECK_EQ(
-        dataType(),
-        TypeTraits<T>::dataType,
-        "Shared dictionary has unexpected type.");
-    typename TypeTraits<T>::physicalType output;
-    physicalValueAtImpl(index, &output);
-    return output;
-  }
-
-  template <typename T>
-  void materialize(
-      std::span<const uint32_t> indices,
-      typename TypeTraits<T>::physicalType* output) const {
-    static_assert(
-        !std::is_same_v<T, std::string>,
-        "Use std::string_view for shared dictionary string alphabets.");
-    NIMBLE_CHECK_EQ(
-        dataType(),
-        TypeTraits<T>::dataType,
-        "Shared dictionary has unexpected type.");
-    materializeImpl(indices, output);
-  }
-
- protected:
-  explicit SharedDictionaryAlphabet(DataType dataType);
-
-  void setEntryCount(uint32_t entryCount);
-
- private:
-  virtual void physicalValueAtImpl(uint32_t index, void* output) const = 0;
-
-  virtual void materializeImpl(std::span<const uint32_t> indices, void* output)
-      const = 0;
-
-  virtual std::optional<EncodingType> encodingTypeImpl() const = 0;
-
-  const DataType dataType_;
-  uint32_t entryCount_{0};
-};
+/// Concrete alphabet backed by a Nimble encoded stream. Defined in
+/// SharedDictionaryEncoding.h, which owns the encoding machinery it needs.
+class SharedDictionaryAlphabet;
 
 /// Resolves a dictionary ID within the current reader or writer context.
 ///

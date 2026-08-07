@@ -77,6 +77,9 @@ struct EncodingSelectionResult {
   /// Encoding-specific configuration passed from the selection policy.
   /// Currently this config is manually set, not dynamically determined.
   EncodingLayout::Config encodingConfig;
+  /// Estimated serialized size for encodingType, when the policy computed one
+  /// while selecting the encoding.
+  std::optional<uint64_t> estimatedSize;
   /// SharedDictionary-specific encoding data supplied by the writer-side
   /// selection policy.
   std::optional<SharedDictionaryEncodingInput> sharedDictionaryInput;

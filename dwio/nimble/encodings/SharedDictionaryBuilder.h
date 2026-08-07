@@ -43,6 +43,21 @@ template <typename T>
 using DictionaryIndexType = absl::flat_hash_map<T, uint32_t>;
 
 template <typename T>
+DictionaryIndexType<T> buildDictionaryIndex(std::span<const T> alphabet) {
+  NIMBLE_USER_CHECK_LE(
+      alphabet.size(),
+      kMaxDictionaryEntryCount,
+      "Shared dictionary size exceeds maximum.");
+  DictionaryIndexType<T> dictionaryIndex;
+  dictionaryIndex.reserve(alphabet.size());
+  for (uint32_t i = 0; i < alphabet.size(); ++i) {
+    const auto [_, inserted] = dictionaryIndex.emplace(alphabet[i], i);
+    NIMBLE_USER_CHECK(inserted, "Shared dictionary has duplicate values.");
+  }
+  return dictionaryIndex;
+}
+
+template <typename T>
 class StreamingSharedDictionaryBuilder;
 
 template <typename T>
@@ -81,9 +96,11 @@ class SharedDictionaryBuilder {
       return indices_;
     }
 
-    /// Returns distinct values inserted by lookup() for streaming builders.
-    std::span<const T> newEntries() const {
-      return newEntries_;
+    /// Returns how many distinct values lookup() inserted into a streaming
+    /// dictionary. Streaming builders append them, so they are the last
+    /// entries of alphabet(); fixed and external builders never insert.
+    uint32_t newEntryCount() const {
+      return newEntryCount_;
     }
 
    private:
@@ -93,8 +110,9 @@ class SharedDictionaryBuilder {
 
     // One dictionary index per input value.
     Vector<uint32_t> indices_;
-    // Distinct values inserted into a streaming dictionary by lookup().
-    std::vector<T> newEntries_;
+    // Number of distinct values inserted into a streaming dictionary by
+    // lookup(), tracked as a count so the values are not copied twice.
+    uint32_t newEntryCount_{0};
   };
 
   virtual Kind kind() const = 0;
@@ -123,9 +141,9 @@ class SharedDictionaryBuilder {
   }
 
   /// Maps values to dictionary indices. Streaming builders insert missing
-  /// values immediately; fixed/external builders return nullopt when a value
-  /// is not present.
-  std::optional<Mapping> lookup(std::span<const T> values) {
+  /// values immediately; fixed and external builders throw because their
+  /// alphabet is prebuilt and cannot grow.
+  Mapping lookup(std::span<const T> values) {
     return lookupImpl(values);
   }
 
@@ -152,7 +170,7 @@ class SharedDictionaryBuilder {
     return pool_;
   }
 
-  virtual std::optional<Mapping> lookupImpl(std::span<const T> values) = 0;
+  virtual Mapping lookupImpl(std::span<const T> values) = 0;
 
   virtual void resetImpl() = 0;
 
@@ -190,10 +208,9 @@ class StreamingSharedDictionaryBuilder final
   }
 
  protected:
-  std::optional<Mapping> lookupImpl(std::span<const T> values) final {
+  Mapping lookupImpl(std::span<const T> values) final {
     Mapping mapping{this->pool()};
     mapping.indices_.reserve(values.size());
-    mapping.newEntries_.reserve(values.size());
 
     for (const auto& value : values) {
       const auto it = alphabetMapping_.find(value);
@@ -212,7 +229,7 @@ class StreamingSharedDictionaryBuilder final
           alphabetMapping_.emplace(value, dictionaryIndex);
       NIMBLE_CHECK(inserted, "Shared dictionary mapping insertion failed.");
       alphabet_.push_back(value);
-      mapping.newEntries_.push_back(value);
+      ++mapping.newEntryCount_;
       mapping.indices_.push_back(dictionaryIndex);
     }
     return mapping;
@@ -239,12 +256,13 @@ class FixedSharedDictionaryBuilder final : public SharedDictionaryBuilder<T> {
 
   FixedSharedDictionaryBuilder(
       std::span<const T> alphabet,
+      DictionaryIndexType<T> dictionaryIndex,
       SharedDictionaryScope scope,
       uint32_t dictionaryId,
       velox::memory::MemoryPool* pool)
       : SharedDictionaryBuilder<T>{scope, dictionaryId, pool},
         alphabet_{alphabet},
-        dictionaryIndex_{buildDictionaryIndex(alphabet)} {
+        dictionaryIndex_{std::move(dictionaryIndex)} {
     NIMBLE_CHECK_NE(
         scope,
         SharedDictionaryScope::External,
@@ -260,15 +278,18 @@ class FixedSharedDictionaryBuilder final : public SharedDictionaryBuilder<T> {
   }
 
  protected:
-  std::optional<Mapping> lookupImpl(std::span<const T> values) final {
+  Mapping lookupImpl(std::span<const T> values) final {
     Mapping mapping{this->pool()};
     mapping.indices_.reserve(values.size());
 
     for (const auto& value : values) {
       const auto it = dictionaryIndex_.find(value);
-      if (it == dictionaryIndex_.end()) {
-        return std::nullopt;
-      }
+      NIMBLE_USER_CHECK(
+          it != dictionaryIndex_.end(),
+          "{} shared dictionary {} does not contain value {}.",
+          this->scope(),
+          this->dictionaryId(),
+          value);
       mapping.indices_.push_back(it->second);
     }
     return mapping;
@@ -281,22 +302,6 @@ class FixedSharedDictionaryBuilder final : public SharedDictionaryBuilder<T> {
   }
 
  private:
-  static DictionaryIndexType<T> buildDictionaryIndex(
-      std::span<const T> alphabet) {
-    NIMBLE_USER_CHECK_LE(
-        alphabet.size(),
-        kMaxDictionaryEntryCount,
-        "Fixed shared dictionary size exceeds maximum.");
-    DictionaryIndexType<T> dictionaryIndex;
-    dictionaryIndex.reserve(alphabet.size());
-    for (uint32_t i = 0; i < alphabet.size(); ++i) {
-      const auto [_, inserted] = dictionaryIndex.emplace(alphabet[i], i);
-      NIMBLE_USER_CHECK(
-          inserted, "Fixed shared dictionary has duplicate values.");
-    }
-    return dictionaryIndex;
-  }
-
   const std::span<const T> alphabet_;
   const DictionaryIndexType<T> dictionaryIndex_;
 };
@@ -330,15 +335,18 @@ class ExternalSharedDictionaryBuilder final
   }
 
  protected:
-  std::optional<Mapping> lookupImpl(std::span<const T> values) final {
+  Mapping lookupImpl(std::span<const T> values) final {
     Mapping mapping{this->pool()};
     mapping.indices_.reserve(values.size());
 
     for (const auto& value : values) {
       const auto it = dictionaryIndex_.find(value);
-      if (it == dictionaryIndex_.end()) {
-        return std::nullopt;
-      }
+      NIMBLE_USER_CHECK(
+          it != dictionaryIndex_.end(),
+          "{} shared dictionary {} does not contain value {}.",
+          this->scope(),
+          this->dictionaryId(),
+          value);
       mapping.indices_.push_back(it->second);
     }
     return mapping;

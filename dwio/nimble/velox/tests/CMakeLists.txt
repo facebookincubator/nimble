@@ -48,6 +48,7 @@ add_executable(
   RowRangeTest.cpp
   SchemaTest.cpp
   SchemaUtilsTest.cpp
+  SharedDictionaryWriterTest.cpp
   StreamChunkerTest.cpp
   StreamDataTest.cpp
   StreamLabelsTest.cpp

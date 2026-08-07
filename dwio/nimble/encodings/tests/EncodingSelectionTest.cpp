@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 #include <limits>
+#include <optional>
 #include "dwio/nimble/common/Buffer.h"
 #include "dwio/nimble/encodings/common/EncodingFactory.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
@@ -145,6 +146,53 @@ void verifySizeEstimate(
       nimble::Statistics<T>::create(values),
       options);
   EXPECT_EQ(estimatedSize, expectedEstimatedSize);
+}
+
+template <typename T>
+void verifySelectedEstimate(
+    std::optional<facebook::nimble::CompressionOptions> compressionOptions) {
+  const std::vector<T> values{1, 2, 3, 4, 5, 6};
+  const auto valueSpan = std::span<const T>{values.data(), values.size()};
+  const auto options = exactBitWidthOptions();
+  const auto statistics = nimble::Statistics<T>::create(valueSpan);
+  nimble::ManualEncodingSelectionPolicy<T> policy{
+      {
+          {nimble::EncodingType::FixedBitWidth, 1.0},
+          {nimble::EncodingType::Trivial, 100.0},
+      },
+      std::move(compressionOptions),
+      std::nullopt};
+
+  const auto selection = policy.select(valueSpan, statistics, options);
+
+  EXPECT_EQ(selection.encodingType, nimble::EncodingType::FixedBitWidth);
+  const auto expectedEstimate =
+      nimble::detail::EncodingSizeEstimation<T>::estimateSize(
+          selection.encodingType, valueSpan, statistics, options);
+  ASSERT_TRUE(expectedEstimate.has_value());
+  EXPECT_EQ(selection.estimatedSize, expectedEstimate);
+}
+
+TEST(EncodingSelectionTest, manualSelectionReturnsSelectedEstimate) {
+  verifySelectedEstimate<uint32_t>(std::nullopt);
+  verifySelectedEstimate<uint32_t>(nimble::CompressionOptions{
+      .compressionAcceptRatio = 0.0,
+  });
+}
+
+TEST(EncodingSelectionTest, manualSelectionCanReturnFallbackWithoutEstimate) {
+  const std::vector<uint32_t> values{1, 2, 3};
+  const auto valueSpan =
+      std::span<const uint32_t>{values.data(), values.size()};
+  const auto statistics = nimble::Statistics<uint32_t>::create(valueSpan);
+  nimble::ManualEncodingSelectionPolicy<uint32_t> policy{
+      {{nimble::EncodingType::ALP, 1.0}}, std::nullopt, std::nullopt};
+
+  const auto selection = policy.select(
+      valueSpan, statistics, /*options=*/nimble::Encoding::Options{});
+
+  EXPECT_EQ(selection.encodingType, nimble::EncodingType::Trivial);
+  EXPECT_FALSE(selection.estimatedSize.has_value());
 }
 
 template <typename T>

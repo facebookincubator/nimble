@@ -15,6 +15,9 @@
  */
 #include "dwio/nimble/encodings/views/EncodingViewFactory.h"
 
+#include <algorithm>
+#include <array>
+
 #include "dwio/nimble/encodings/views/ALPEncodingView.h"
 #include "dwio/nimble/encodings/views/BlockBitPackingEncodingView.h"
 #include "dwio/nimble/encodings/views/ConstantEncodingView.h"
@@ -154,6 +157,29 @@ INSTANTIATE_CREATE_TYPED_ENCODING_VIEW(std::string_view);
 #undef INSTANTIATE_CREATE_TYPED_ENCODING_VIEW
 
 } // namespace detail
+
+bool supportsEncodingView(EncodingType encodingType) {
+  // Keep in sync with the encoding dispatch in createTypedEncodingView().
+  static constexpr std::array kViewableEncodings{
+      EncodingType::Constant,
+      EncodingType::Trivial,
+      EncodingType::MainlyConstant,
+      EncodingType::ALP,
+      EncodingType::FixedBitWidth,
+      EncodingType::Dictionary,
+      EncodingType::SparseBool,
+      EncodingType::RLE,
+      EncodingType::FOR,
+      EncodingType::DeltaBlock,
+      EncodingType::Huffman,
+      EncodingType::PFOR,
+      EncodingType::SimdForBitpack,
+      EncodingType::BlockBitPacking};
+  return std::find(
+             kViewableEncodings.begin(),
+             kViewableEncodings.end(),
+             encodingType) != kViewableEncodings.end();
+}
 
 std::unique_ptr<EncodingView> createEncodingView(
     std::string_view data,

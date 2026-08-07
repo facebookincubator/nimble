@@ -211,9 +211,13 @@ class Int32SharedDictionaryResolver final : public SharedDictionaryResolver {
  public:
   Int32SharedDictionaryResolver(
       uint32_t dictionaryId,
-      std::vector<int32_t> values)
+      std::span<const int32_t> values,
+      velox::memory::MemoryPool* pool)
       : dictionaryId_{dictionaryId},
-        alphabet_{makeAlphabet(std::move(values))} {}
+        alphabet_{test::createSharedDictionaryAlphabet<int32_t>(
+            values,
+            /*candidateEncodings=*/{},
+            pool)} {}
 
   std::shared_ptr<const SharedDictionaryAlphabet> resolve(
       SharedDictionaryScope scope,
@@ -227,18 +231,6 @@ class Int32SharedDictionaryResolver final : public SharedDictionaryResolver {
   }
 
  private:
-  static std::shared_ptr<const SharedDictionaryAlphabet> makeAlphabet(
-      std::vector<int32_t> values) {
-    auto owner = std::make_shared<std::vector<int32_t>>(std::move(values));
-    return test::createTestSharedDictionaryAlphabet(
-        DataType::Int32,
-        {test::TestSharedDictionaryAlphabet::Chunk{
-            .begin = 0,
-            .count = static_cast<uint32_t>(owner->size()),
-            .entries = owner->data(),
-            .owner = owner}});
-  }
-
   const uint32_t dictionaryId_;
   const std::shared_ptr<const SharedDictionaryAlphabet> alphabet_;
 };
@@ -2073,7 +2065,7 @@ TEST_P(ReadWithVisitorTest, encodingLevelSharedDictionaryAlwaysTrueDense) {
   Encoding::Options options;
   options.sharedDictionaryResolver =
       std::make_shared<Int32SharedDictionaryResolver>(
-          /*dictionaryId=*/7, alphabet);
+          /*dictionaryId=*/7, alphabet, pool());
   SharedDictionaryEncoding<int32_t> encoding{
       *pool(), encoded, [](uint32_t) { return nullptr; }, options};
 
