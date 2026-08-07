@@ -136,9 +136,11 @@ class Config : public velox::config::ConfigBase {
   static Entry<const std::vector<std::string>> INDEX_COLUMNS;
 
   /// Sort orders for each index column (one per column).
-  /// Format: "ASC_NULLS_FIRST,DESC_NULLS_LAST,..."
-  /// Valid values: ASC_NULLS_FIRST, ASC_NULLS_LAST, DESC_NULLS_FIRST,
-  /// DESC_NULLS_LAST. If empty, defaults to ASC_NULLS_FIRST for all columns.
+  /// Format: "ASC,DESC,..."
+  /// Valid values: ASC, DESC. If empty, defaults to ascending for all columns.
+  /// nimble::SortOrder carries only an 'ascending' flag -- null placement is
+  /// not configurable -- so the NULLS_FIRST/NULLS_LAST spellings are rejected
+  /// by the parser in NimbleWriterOptionBuilder.
   static Entry<const std::vector<std::string>> INDEX_SORT_ORDERS;
 
   /// Whether to enforce that encoded keys are in strictly ascending order.
