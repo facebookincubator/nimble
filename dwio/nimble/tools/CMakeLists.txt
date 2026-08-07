@@ -30,7 +30,7 @@ target_link_libraries(
   nimble_tablet_common
   nimble_tablet_reader
   nimble_velox_reader
-  nimble_velox_writer
+  nimble_writer
   nimble_velox_stats_fb
   velox_file
   Folly::folly

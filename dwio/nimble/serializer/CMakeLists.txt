@@ -19,7 +19,7 @@ target_link_libraries(
   nimble_serializer_options
   nimble_common
   nimble_encodings
-  nimble_velox_writer
+  nimble_writer
   Folly::folly
 )
 

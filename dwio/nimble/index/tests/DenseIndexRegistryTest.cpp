@@ -27,7 +27,7 @@
 
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/io/IoStatistics.h"
 #include "velox/common/io/Options.h"
@@ -81,14 +81,14 @@ class DenseIndexRegistryTest : public ::testing::Test {
       const std::string& filePath,
       const velox::RowTypePtr& schema,
       const std::vector<velox::VectorPtr>& batches,
-      VeloxWriterOptions options) {
+      WriterOptions options) {
     auto fs = velox::filesystems::getFileSystem(filePath, {});
     auto file = fs->openFileForWrite(
         filePath,
         {.shouldCreateParentDirectories = true,
          .shouldThrowOnFileAlreadyExists = false});
 
-    VeloxWriter writer(schema, std::move(file), *pool_, std::move(options));
+    Writer writer(schema, std::move(file), *pool_, std::move(options));
     for (const auto& batch : batches) {
       writer.write(batch);
     }
@@ -138,7 +138,7 @@ TEST_F(DenseIndexRegistryTest, hashOnlyRegistry) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("hash_only");
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.denseIndexConfigs.push_back(
       HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   writeFile(filePath, rowType(), batches, std::move(options));
@@ -160,7 +160,7 @@ TEST_F(DenseIndexRegistryTest, sortedOnlyRegistry) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("sorted_only");
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.denseIndexConfigs.push_back(
       SortedIndexConfigBuilder{}.withKeyColumns({"value"}).build());
   writeFile(filePath, rowType(), batches, std::move(options));
@@ -182,7 +182,7 @@ TEST_F(DenseIndexRegistryTest, hashAndSortedLookup) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("hash_and_sorted");
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.denseIndexConfigs.push_back(
       HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   options.denseIndexConfigs.push_back(
@@ -210,7 +210,7 @@ TEST_F(DenseIndexRegistryTest, indexCacheRetention) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("cache_retention");
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.denseIndexConfigs.push_back(
       HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   writeFile(filePath, rowType(), batches, std::move(options));
@@ -235,7 +235,7 @@ TEST_F(DenseIndexRegistryTest, firstIndexWinsForDuplicateColumns) {
   batches.push_back(makeBatch(0, 50));
 
   const auto filePath = tempFilePath("cross_type_duplicate");
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.denseIndexConfigs.push_back(
       HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   options.denseIndexConfigs.push_back(

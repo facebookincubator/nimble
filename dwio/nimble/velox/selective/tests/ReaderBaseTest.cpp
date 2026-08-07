@@ -21,7 +21,7 @@
 #include "dwio/nimble/tablet/FileLayout.h"
 #include "dwio/nimble/tablet/TabletReaderCache.h"
 #include "dwio/nimble/writer/FlushPolicy.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "velox/common/file/File.h"
 #include "velox/common/file/tests/TestUtils.h"
@@ -69,8 +69,8 @@ class ReaderBaseTest : public ::testing::TestWithParam<CreationMode> {
            return velox::StringView::makeInline("val" + std::to_string(i));
          })});
 
-    VeloxWriterOptions writerOptions;
-    auto writer = std::make_unique<VeloxWriter>(
+    WriterOptions writerOptions;
+    auto writer = std::make_unique<Writer>(
         kSchema,
         std::make_unique<velox::InMemoryWriteFile>(&file),
         *pool_,
@@ -240,14 +240,14 @@ class StripeStreamsMultiStripeTest
     std::string file;
     velox::test::VectorMaker vectorMaker(pool_.get());
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.experimentalStripeGroupEncodingLayout = GetParam();
     writerOptions.flushPolicyFactory = []() {
       return std::make_unique<LambdaFlushPolicy>(
           [](const StripeProgress&) { return true; });
     };
 
-    auto writer = std::make_unique<VeloxWriter>(
+    auto writer = std::make_unique<Writer>(
         kSchema,
         std::make_unique<velox::InMemoryWriteFile>(&file),
         *pool_,

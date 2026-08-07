@@ -2121,7 +2121,7 @@ class FlatMapFieldWriter : public FieldWriter {
       currentPassthroughFields_;
   uint64_t nonNullCount_{0};
 
-  // This map store all FlatMapValue fields encountered by the VeloxWriter
+  // This map store all FlatMapValue fields encountered by the Writer
   // across the whole file.
   folly::F14FastMap<KeyType, std::unique_ptr<FlatMapValueFieldWriter>>
       allValueFields_;

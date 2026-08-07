@@ -70,7 +70,7 @@ TEST_F(NimbleDumpLibTest, EmitStats_VectorizedStats) {
       100,
       std::vector<velox::VectorPtr>{intVector, bigintVector});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableStatsCollection = true;
   writerOptions.enableVectorizedStats = true;
 
@@ -140,7 +140,7 @@ TEST_F(NimbleDumpLibTest, EmitStats_LegacyStats) {
       10,
       std::vector<velox::VectorPtr>{intVector});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableStatsCollection = true;
   writerOptions.enableVectorizedStats = false;
 
@@ -175,7 +175,7 @@ TEST_F(NimbleDumpLibTest, EmitStats_NoStats) {
       10,
       std::vector<velox::VectorPtr>{intVector});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableStatsCollection = false;
 
   auto fileContent =
@@ -210,7 +210,7 @@ TEST_F(NimbleDumpLibTest, EmitSchema_PrintsColumnAttributes) {
   // Stamp Iceberg field-ids onto the top-level columns (as the write path does)
   // and confirm the dumped schema round-trips and surfaces them. Node ids are
   // pre-order: id=1, name=2 (root row = 0).
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.schemaAttributes = {
       {1, {{"iceberg.id", "1"}}}, {2, {{"iceberg.id", "2"}}}};
 

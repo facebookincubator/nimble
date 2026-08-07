@@ -45,7 +45,7 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/tablet/tests/TabletTestUtils.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/FileUtil.h"
 #include "folly/Random.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
@@ -4172,14 +4172,14 @@ TEST_P(TabletWithIndexTest, loadDenseIndexes) {
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriterOptions writerOptions;
+  nimble::WriterOptions writerOptions;
   writerOptions.denseIndexConfigs.push_back(
       nimble::index::HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
   writerOptions.denseIndexConfigs.push_back(
       nimble::index::SortedIndexConfigBuilder{}
           .withKeyColumns({"value"})
           .build());
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
   writer.close();
@@ -4230,7 +4230,7 @@ TEST_P(TabletTest, features) {
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriterOptions writerOptions;
+  nimble::WriterOptions writerOptions;
   writerOptions.experimentalCompactRowCountEncoding = true;
   writerOptions.clusterIndexConfig =
       nimble::index::ClusterIndexConfigBuilder{}
@@ -4239,7 +4239,7 @@ TEST_P(TabletTest, features) {
           .withEnforceKeyOrder(true)
           .build();
   writerOptions.experimentalOmitClusterIndexKeyColumnStorage = true;
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
   writer.close();
@@ -4265,10 +4265,10 @@ TEST_P(TabletWithIndexTest, loadDenseIndexesMissingIoStats) {
 
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-  nimble::VeloxWriterOptions writerOptions;
+  nimble::WriterOptions writerOptions;
   writerOptions.denseIndexConfigs.push_back(
       nimble::index::HashIndexConfigBuilder{}.withKeyColumns({"id"}).build());
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       type, std::move(writeFile), *pool_, std::move(writerOptions));
   writer.write(batch);
   writer.close();

@@ -87,10 +87,10 @@ auto kType = ROW({"c0", "c1"}, {INTEGER(), INTEGER()});
 
 /// Builds writer options that force a single encoding type with the given
 /// compression. Pass std::nullopt for comprOpts to disable compression.
-VeloxWriterOptions makeWriterOptions(
+WriterOptions makeWriterOptions(
     EncodingType encoding,
     std::optional<CompressionOptions> comprOpts) {
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingSelectionPolicyCreator =
       [encodingFactory =
            ManualEncodingSelectionPolicyFactory{{{encoding, 1.0}}, comprOpts}](

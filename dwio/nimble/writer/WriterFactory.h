@@ -25,7 +25,7 @@
 namespace facebook::velox::nimble {
 
 // Serde-parameter key controlling the BufferedWriteFile capacity (bytes)
-// wrapped around the WriteFile passed to the underlying nimble::VeloxWriter.
+// wrapped around the WriteFile passed to the underlying nimble::Writer.
 // Default behavior (key absent or value 0): no buffering wrapper, raw
 // WriteFile passed directly to the writer. Setting to a positive value
 // (e.g. "4194304" for 4MB) coalesces many small Nimble stream-chunk appends
@@ -47,7 +47,7 @@ struct NimbleWriterOptions : public dwio::common::WriterOptions {
   folly::Executor::KeepAlive<> encodingExecutor;
 
   /// Per-type attributes routed through to
-  /// `facebook::nimble::VeloxWriterOptions::schemaAttributes` when this
+  /// `facebook::nimble::WriterOptions::schemaAttributes` when this
   /// dwio::common::WriterOptions instance is used to spawn a NIMBLE writer.
   /// Keyed by pre-order schema node id (matching `TypeWithId::id()`). Empty by
   /// default (no-op for legacy callers that never populate it; resulting files

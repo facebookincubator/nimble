@@ -826,7 +826,7 @@ TEST_P(SelectiveNimbleReaderTest, allNulls) {
           BaseVector::createNullConstant(INTEGER(), 103, pool()),
           BaseVector::createNullConstant(INTEGER(), 103, pool())),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c4", {}}};
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
 
@@ -870,7 +870,7 @@ TEST_P(SelectiveNimbleReaderTest, multiChunkNulls) {
       {EncodingType::Constant, 1.0},
   };
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
@@ -919,7 +919,7 @@ TEST_P(SelectiveNimbleReaderTest, multiChunkInt16RowSetOverBoundary) {
   });
   std::vector<std::pair<EncodingType, float>> readFactors;
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
@@ -1198,7 +1198,7 @@ TEST_P(SelectiveNimbleReaderTest, smallDictionaryValue) {
       {EncodingType::Dictionary, 1.0},
   };
   ManualEncodingSelectionPolicyFactory encodingFactory(readFactors);
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.encodingSelectionPolicyCreator = [&](DataType dataType) {
     return encodingFactory.createPolicy(dataType);
   };
@@ -1348,7 +1348,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSize) {
   });
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
   scanSpec->addAllChildFields(*input->type());
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c2", {}}};
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto readers =
@@ -1596,7 +1596,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeNoStats) {
   });
 
   // Write file without vectorized stats by using an older writer config.
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
 
@@ -1624,7 +1624,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyColumn) {
           [](auto i) { return i * 100; }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c1", {}}};
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
@@ -1668,7 +1668,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeMapKeyFilterOnly) {
           [](auto i) { return i * 20; }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}, {"c1", {}}};
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
@@ -1714,7 +1714,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyStringColumn) {
           }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c1", {}}};
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
@@ -1754,7 +1754,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeAllLazy) {
           [](auto i) { return i * 10; }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
@@ -1796,7 +1796,7 @@ TEST_P(SelectiveNimbleReaderTest, estimatedRowSizeLazyStringWithStats) {
 
   for (bool enableStats : {false, true}) {
     SCOPED_TRACE(fmt::format("enableVectorizedStats={}", enableStats));
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.flatMapColumns = {{"c1", {}}};
     writerOptions.enableVectorizedStats = enableStats;
     auto fileContent =
@@ -2109,7 +2109,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsReuseNullResult) {
               {std::optional(4)},
           })),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.dictionaryArrayColumns = {"c0"};
   auto fileContent = test::createNimbleFile(*rootPool(), vector, writerOptions);
@@ -2164,7 +2164,7 @@ TEST_P(SelectiveNimbleReaderTest, arrayWithOffsetsLastRowSetLifeCycle) {
           [](auto i) { return i == 0; }),
       makeNullableArrayVector<int64_t>(c2),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.dictionaryArrayColumns = {"c1"};
   auto fileContent = test::createNimbleFile(*rootPool(), vector, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -2507,7 +2507,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
   auto testRoundtrip = [&](const FlatMapVectorPtr& inputFlatMap) {
     auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.flatMapColumns = {{"c0", {}}};
     auto fileContent =
         test::createNimbleFile(*rootPool(), input, writerOptions);
@@ -2633,7 +2633,7 @@ TEST_P(SelectiveNimbleReaderTest, nativeFlatMap) {
     });
     auto input = makeRowVector({inputFlatMap, inputFlatMap->toMapVector()});
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.flatMapColumns = {{"c0", {}}};
     auto fileContent =
         test::createNimbleFile(*rootPool(), input, writerOptions, true);
@@ -2763,7 +2763,7 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   comprOpts.compressionAcceptRatioOverrides = {};
   nimble::ManualEncodingSelectionPolicyFactory encodingFactory(
       {{{nimble::EncodingType::Trivial, 1.0}}}, comprOpts);
-  nimble::VeloxWriterOptions writerOptions;
+  nimble::WriterOptions writerOptions;
   writerOptions.encodingSelectionPolicyCreator = [&](nimble::DataType dt) {
     return encodingFactory.createPolicy(dt);
   };
@@ -3576,7 +3576,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsInteger) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>(kSize, [](auto i) { return i * 3; }),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3606,7 +3606,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsDouble) {
   auto input = makeRowVector({
       makeFlatVector<double>(kSize, [](auto i) { return i * 1.5; }),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3632,7 +3632,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsString) {
   auto input = makeRowVector({
       makeFlatVector<std::string>({"apple", "banana", "cherry"}),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3660,7 +3660,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsOutOfRange) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>(kSize, folly::identity),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3683,7 +3683,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsNoStats) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>(kSize, folly::identity),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = false;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3701,7 +3701,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsWithNulls) {
   auto input = makeRowVector({
       makeFlatVector<int64_t>(kSize, folly::identity, nullEvery(5)),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");
@@ -3723,7 +3723,7 @@ TEST_P(SelectiveNimbleReaderTest, columnStatisticsAllNull) {
       makeFlatVector<int64_t>(
           kSize, folly::identity, [](auto) { return true; }),
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableVectorizedStats = true;
   auto fileContent = test::createNimbleFile(*rootPool(), input, writerOptions);
   auto scanSpec = std::make_shared<common::ScanSpec>("root");

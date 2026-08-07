@@ -15,7 +15,7 @@ add_library(nimble_index_test_utils ClusterIndexTestUtils.cpp)
 target_link_libraries(
   nimble_index_test_utils
   nimble_index
-  nimble_velox_writer
+  nimble_writer
   nimble_common
   velox_memory
   velox_vector_fuzzer
@@ -27,7 +27,7 @@ add_library(nimble_index_test_base ClusterIndexTestBase.cpp)
 target_link_libraries(
   nimble_index_test_base
   nimble_index
-  nimble_velox_writer
+  nimble_writer
   velox_core
   velox_vector
   velox_memory
@@ -57,7 +57,7 @@ target_link_libraries(
   nimble_tablet_reader
   nimble_tablet_writer
   nimble_velox_reader
-  nimble_velox_writer
+  nimble_writer
   velox_core
   velox_file
   velox_vector

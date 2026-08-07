@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 #include "velox/type/Type.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
@@ -336,7 +336,7 @@ TEST_F(TypeTests, FlatMapFeatureSelection) {
     }
   }
 
-  nimble::VeloxWriterOptions options{
+  nimble::WriterOptions options{
       .flatMapColumns = {{"map", {}}},
   };
   auto file =

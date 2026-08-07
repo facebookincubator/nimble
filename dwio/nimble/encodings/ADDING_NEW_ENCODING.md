@@ -411,7 +411,7 @@ When an `EncodingLayoutTree` is set, the writer uses the specified encodings dir
 
 ### Custom Encoding Selection Policy
 
-For full control, implement a custom `EncodingSelectionPolicy<T>` and wire it through `VeloxWriterOptions::encodingSelectionPolicyCreator`:
+For full control, implement a custom `EncodingSelectionPolicy<T>` and wire it through `WriterOptions::encodingSelectionPolicyCreator`:
 
 ```cpp
 writerOptions.encodingSelectionPolicyCreator =

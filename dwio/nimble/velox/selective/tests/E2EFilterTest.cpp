@@ -27,7 +27,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
 #include "dwio/nimble/writer/EncodingLayoutTree.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/ScanTracker.h"
@@ -82,7 +82,7 @@ struct E2EFilterTestParam {
 // per stream within a stripe, exercising the cross-chunk reader resume paths.
 // Note: chunks are emitted at write() boundaries, so a single write() still
 // yields one chunk — callers that write a single batch must split it.
-void applyMultiChunkOptions(VeloxWriterOptions& options) {
+void applyMultiChunkOptions(WriterOptions& options) {
   options.enableChunking = true;
   options.minStreamChunkRawSize = 0;
   options.flushPolicyFactory = [] {
@@ -95,7 +95,7 @@ void applyMultiChunkOptions(VeloxWriterOptions& options) {
 // Writes `batch` as `numChunks` row-slices so the multi-chunk options above
 // emit a separate chunk per slice (a single write() would yield one chunk).
 void writeInChunks(
-    VeloxWriter& writer,
+    Writer& writer,
     const RowVectorPtr& batch,
     int numChunks = 3) {
   const vector_size_t total = batch->size();
@@ -315,7 +315,7 @@ class E2EFilterTest
     }
     rowType_ = asRowType(type);
     writeSchema_ = rowType_;
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.skipConstantFlatMapInMapStreams = skipConstantFlatMapInMapStreams();
     options.enableChunking = true;
     options.enableChunkIndex = param().enableChunkIndex;
@@ -400,7 +400,7 @@ class E2EFilterTest
       options.fsstCompressionTargetRatio = 10.0;
       options.encodingLayoutTree.emplace(buildForcedFsstEncodingLayoutTree());
     }
-    VeloxWriter writer(
+    Writer writer(
         writeSchema_, std::move(writeFile), *rootPool_, std::move(options));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -617,10 +617,10 @@ class E2EFilterTest
 
     {
       auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-      VeloxWriterOptions writerOptions;
+      WriterOptions writerOptions;
       writerOptions.encodingLayoutTree.emplace(std::move(layoutTree));
       applyMultiChunkOptions(writerOptions);
-      VeloxWriter writer(
+      Writer writer(
           type, std::move(writeFile), *rootPool_, std::move(writerOptions));
       writeInChunks(writer, batch);
       writer.close();
@@ -2222,10 +2222,10 @@ class PrefixEncodingE2ETest : public E2EFilterTest {
         Kind::Row, {}, "", std::move(children)};
 
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
     applyMultiChunkOptions(options);
-    VeloxWriter writer(
+    Writer writer(
         rowType_, std::move(writeFile), *rootPool_, std::move(options));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -2514,10 +2514,10 @@ TEST_P(E2EFilterTest, nestedMainlyConstantWithDictionary) {
 
   // Write the data with the forced encoding layout.
   auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(std::move(encodingLayoutTree));
   applyMultiChunkOptions(writerOptions);
-  VeloxWriter writer(type, std::move(writeFile), *rootPool_, writerOptions);
+  Writer writer(type, std::move(writeFile), *rootPool_, writerOptions);
   writeInChunks(writer, batch);
   writer.close();
 
@@ -2718,11 +2718,11 @@ TEST_P(E2EFilterTest, fuzzMainlyConstantDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedMainlyConstantDictionaryEncodingLayoutTree());
     applyMultiChunkOptions(writerOptions);
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writeInChunks(writer, batch);
     writer.close();
@@ -2834,11 +2834,11 @@ TEST_P(E2EFilterTest, fuzzRleDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedRleDictionaryEncodingLayoutTree());
     applyMultiChunkOptions(writerOptions);
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writeInChunks(writer, batch);
     writer.close();
@@ -2916,10 +2916,9 @@ TEST_P(E2EFilterTest, constantStringDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions options;
+    WriterOptions options;
     applyMultiChunkOptions(options);
-    VeloxWriter writer(
-        type, std::move(writeFile), *rootPool_, std::move(options));
+    Writer writer(type, std::move(writeFile), *rootPool_, std::move(options));
     writeInChunks(writer, batch);
     writer.close();
   }
@@ -2986,10 +2985,9 @@ TEST_P(E2EFilterTest, constantStringWithNullsDictionaryVector) {
   sinkData_.clear();
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions options;
+    WriterOptions options;
     applyMultiChunkOptions(options);
-    VeloxWriter writer(
-        type, std::move(writeFile), *rootPool_, std::move(options));
+    Writer writer(type, std::move(writeFile), *rootPool_, std::move(options));
     writeInChunks(writer, batch);
     writer.close();
   }
@@ -3203,10 +3201,10 @@ class NimbleExtractionTest : public E2EFilterTest {
       std::function<void(common::ScanSpec*)> configureColSpec) {
     // Write.
     rowType_ = asRowType(data->type());
-    VeloxWriterOptions options;
+    WriterOptions options;
     applyMultiChunkOptions(options);
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriter writer(
+    Writer writer(
         rowType_, std::move(writeFile), *rootPool_, std::move(options));
     writeInChunks(writer, data);
     writer.close();
@@ -3466,7 +3464,7 @@ TEST_P(E2EFilterTest, multiChunkDictionaryWithDifferentAlphabets) {
   // dictionary-encoded chunks within a single stripe.
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -3476,7 +3474,7 @@ TEST_P(E2EFilterTest, multiChunkDictionaryWithDifferentAlphabets) {
     };
     writerOptions.encodingLayoutTree.emplace(
         buildForcedDictionaryEncodingLayoutTree());
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -3589,14 +3587,14 @@ TEST_P(E2EFilterTest, reactiveEncodingFallbackOutputRowsBias) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.flushPolicyFactory = [] {
       return std::make_unique<LambdaFlushPolicy>(
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -3729,7 +3727,7 @@ TEST_P(E2EFilterTest, multiChunkDictionaryWithFilter) {
   // Single stripe, each batch = one chunk, forced dictionary encoding.
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.flushPolicyFactory = [] {
       return std::make_unique<LambdaFlushPolicy>(
@@ -3738,7 +3736,7 @@ TEST_P(E2EFilterTest, multiChunkDictionaryWithFilter) {
     };
     writerOptions.encodingLayoutTree.emplace(
         buildForcedDictionaryEncodingLayoutTree());
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -3836,10 +3834,10 @@ TEST_P(E2EFilterTest, filterOnlyDictionaryStringColumn) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedDictionaryEncodingLayoutTree());
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batch);
     writer.close();
@@ -3964,7 +3962,7 @@ TEST_P(E2EFilterTest, dictionaryStringInSparseNullableStruct) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     auto layoutTree = EncodingLayoutTree{
         Kind::Row,
         {},
@@ -3984,7 +3982,7 @@ TEST_P(E2EFilterTest, dictionaryStringInSparseNullableStruct) {
                        {std::nullopt, std::nullopt}}}},
                  "report_id"}}}}};
     writerOptions.encodingLayoutTree.emplace(std::move(layoutTree));
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batch);
     writer.close();
@@ -4118,7 +4116,7 @@ TEST_P(E2EFilterTest, dictionaryStringInSparseNullableStructMultiChild) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     auto layoutTree = EncodingLayoutTree{
         Kind::Row,
         {},
@@ -4166,7 +4164,7 @@ TEST_P(E2EFilterTest, dictionaryStringInSparseNullableStructMultiChild) {
                   "report_uid"}}}}};
     writerOptions.encodingLayoutTree.emplace(std::move(layoutTree));
     applyMultiChunkOptions(writerOptions);
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writeInChunks(writer, batch, 4);
     writer.close();
@@ -4270,7 +4268,7 @@ TEST_P(E2EFilterTest, filterOnlyDictAbandonDropsFilter) {
   // Write with chunking: each write = one chunk.
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4278,7 +4276,7 @@ TEST_P(E2EFilterTest, filterOnlyDictAbandonDropsFilter) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(chunk1);
     writer.write(chunk2);
@@ -4400,8 +4398,8 @@ TEST_P(E2EFilterTest, dictionaryChunkExhaustedAllNullTail) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
-    VeloxWriter writer(
+    WriterOptions writerOptions;
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batch);
     writer.close();
@@ -4554,7 +4552,7 @@ TEST_P(E2EFilterTest, dictionaryChunkGapBetweenChunks) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4562,7 +4560,7 @@ TEST_P(E2EFilterTest, dictionaryChunkGapBetweenChunks) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batchA);
     writer.write(batchB);
@@ -4683,7 +4681,7 @@ TEST_P(E2EFilterTest, dictionaryChunkGapWithAbandon) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4691,7 +4689,7 @@ TEST_P(E2EFilterTest, dictionaryChunkGapWithAbandon) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batchA);
     writer.write(batchB);
@@ -4828,14 +4826,14 @@ TEST_P(E2EFilterTest, crossChunkEncodingChangeWithFilter) {
   // Write with per-batch chunking, single stripe.
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.flushPolicyFactory = [] {
       return std::make_unique<LambdaFlushPolicy>(
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     for (auto& batch : batches) {
       writer.write(batch);
@@ -4962,7 +4960,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonWithNullsAndFilter) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4970,7 +4968,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonWithNullsAndFilter) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(chunk1);
     writer.write(chunk2);
@@ -5072,7 +5070,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonProjectedDictFilter) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -5080,7 +5078,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonProjectedDictFilter) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(chunk1);
     writer.write(chunk2);
@@ -5192,7 +5190,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonProjectedNullableDictFilter) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -5200,7 +5198,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonProjectedNullableDictFilter) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(chunk1);
     writer.write(chunk2);
@@ -5313,7 +5311,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonSparseDictFilter) {
 
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -5321,7 +5319,7 @@ TEST_P(E2EFilterTest, crossChunkAbandonSparseDictFilter) {
           /*flushLambda=*/[](const StripeProgress&) { return false; },
           /*chunkLambda=*/[](const StripeProgress&) { return true; });
     };
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(chunk1);
     writer.write(chunk2);
@@ -5428,11 +5426,11 @@ TEST_P(E2EFilterTest, isNullFilterWithNullableDictionary) {
   // Nullable → Dictionary.
   {
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.encodingLayoutTree.emplace(
         buildForcedDictionaryEncodingLayoutTree());
-    VeloxWriter writer(
+    Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(batch);
     writer.close();

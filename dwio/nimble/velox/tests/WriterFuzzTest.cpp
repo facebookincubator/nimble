@@ -20,9 +20,9 @@
 #include <random>
 
 #include "dwio/nimble/velox/VeloxReader.h"
-#include "dwio/nimble/velox/tests/VeloxWriterTestUtils.h"
+#include "dwio/nimble/velox/tests/WriterTestUtils.h"
 #include "dwio/nimble/writer/FlushPolicy.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/Random.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/SharedArbitrator.h"
@@ -34,7 +34,7 @@ DEFINE_uint32(
     "If provided, this seed will be used when executing tests. "
     "Otherwise, a random seed will be used.");
 
-class VeloxWriterTest : public ::testing::Test {
+class WriterTest : public ::testing::Test {
  protected:
   static void SetUpTestCase() {
     velox::memory::SharedArbitrator::registerFactory();
@@ -52,7 +52,7 @@ class VeloxWriterTest : public ::testing::Test {
   std::shared_ptr<velox::memory::MemoryPool> leafPool_;
 };
 
-TEST_F(VeloxWriterTest, fuzzComplex) {
+TEST_F(WriterTest, fuzzComplex) {
   auto type = velox::ROW(
       {{"array", velox::ARRAY(velox::VARCHAR())},
        {"dict_array", velox::ARRAY(velox::REAL())},
@@ -91,7 +91,7 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
     LOG(INFO) << "disableSharedStringBuffers: " << disableSharedStringBuffers;
     for (auto parallelismFactor : {0U, 1U, folly::available_concurrency()}) {
       std::shared_ptr<folly::CPUThreadPoolExecutor> executor;
-      nimble::VeloxWriterOptions writerOptions;
+      nimble::WriterOptions writerOptions;
       writerOptions.enableChunking = true;
       writerOptions.disableSharedStringBuffers = disableSharedStringBuffers;
       writerOptions.flushPolicyFactory =
@@ -134,7 +134,7 @@ TEST_F(VeloxWriterTest, fuzzComplex) {
 
         std::string file;
         auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-        nimble::VeloxWriter writer(
+        nimble::Writer writer(
             type, std::move(writeFile), *leafPool_.get(), writerOptions);
         const auto batches = generateBatches(
             type,

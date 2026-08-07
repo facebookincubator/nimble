@@ -261,12 +261,12 @@ EncodingLayout makeAlpEncodingLayout(EncodingType encodedValuesEncodingType) {
       {encodedValuesLayout}};
 }
 
-VeloxWriterOptions makeSingleColumnWriterOptions(
+WriterOptions makeSingleColumnWriterOptions(
     const EncodingLayout& encodingLayout) {
   using StreamLayouts =
       std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>;
 
-  VeloxWriterOptions options;
+  WriterOptions options;
   std::vector<EncodingLayoutTree> children;
   children.emplace_back(
       Kind::Scalar,
@@ -319,7 +319,7 @@ class ReadWithVisitorTest : public ::testing::TestWithParam<bool>,
   // reading.  Returns a heap-allocated context to avoid copy/move issues.
   std::unique_ptr<FileContext> makeFileContext(
       const RowVectorPtr& input,
-      VeloxWriterOptions writerOptions = {}) {
+      WriterOptions writerOptions = {}) {
     auto ctx = std::make_unique<FileContext>();
     ctx->fileData =
         test::createNimbleFile(*rootPool_, input, std::move(writerOptions));

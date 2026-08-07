@@ -21,9 +21,9 @@ target_link_libraries(
   gtest_main
 )
 
-add_library(nimble_velox_writer_test_utils VeloxWriterTestUtils.cpp)
+add_library(nimble_writer_test_utils WriterTestUtils.cpp)
 target_link_libraries(
-  nimble_velox_writer_test_utils
+  nimble_writer_test_utils
   nimble_velox_reader
   nimble_velox_schema_reader
   nimble_common
@@ -54,7 +54,7 @@ add_executable(
   StreamLabelsTest.cpp
   TypeTest.cpp
   VeloxReaderTest.cpp
-  VeloxWriterTest.cpp
+  WriterTest.cpp
   FieldWriterStatsTest.cpp
 )
 add_test(nimble_velox_tests nimble_velox_tests)
@@ -63,9 +63,9 @@ target_link_libraries(
   nimble_velox_tests
   nimble_velox_common
   nimble_velox_schema_utils
-  nimble_velox_writer_test_utils
+  nimble_writer_test_utils
   nimble_velox_reader
-  nimble_velox_writer
+  nimble_writer
   nimble_velox_layout_planner
   nimble_velox_stats_fb
   nimble_common_file_writer
@@ -86,14 +86,14 @@ target_link_libraries(
   nimble_column_stats_utils
 )
 
-add_executable(nimble_velox_writer_fuzz_tests VeloxWriterFuzzTest.cpp)
-add_test(nimble_velox_writer_fuzz_tests nimble_velox_writer_fuzz_tests)
+add_executable(nimble_writer_fuzz_tests WriterFuzzTest.cpp)
+add_test(nimble_writer_fuzz_tests nimble_writer_fuzz_tests)
 
 target_link_libraries(
-  nimble_velox_writer_fuzz_tests
-  nimble_velox_writer_test_utils
+  nimble_writer_fuzz_tests
+  nimble_writer_test_utils
   nimble_velox_reader
-  nimble_velox_writer
+  nimble_writer
   nimble_velox_schema_reader
   nimble_common
   nimble_encodings_tests_utils

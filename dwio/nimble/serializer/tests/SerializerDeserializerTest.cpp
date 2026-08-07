@@ -34,7 +34,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/writer/EncodingLayoutTree.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/container/F14Set.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/BufferedInput.h"
@@ -1089,9 +1089,9 @@ SerializationTest::SerializeResult SerializationTest::serializeTablet(
   std::string fileData;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&fileData);
-    nimble::VeloxWriterOptions options;
+    nimble::WriterOptions options;
     options.enableChunking = enableChunking;
-    nimble::VeloxWriter writer(
+    nimble::Writer writer(
         type, std::move(writeFile), *rootPool_, std::move(options));
     for (const auto& input : inputs) {
       writer.write(input);
@@ -4923,12 +4923,12 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxHighParallelism) {
   std::string fileData;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&fileData);
-    nimble::VeloxWriterOptions writerOptions;
+    nimble::WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.compressionOptions.compressionType =
         nimble::CompressionType::Zstd;
     writerOptions.compressionOptions.zstdMinCompressionSize = 0;
-    nimble::VeloxWriter writer(
+    nimble::Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(input);
     writer.close();
@@ -5036,12 +5036,12 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxConcurrentDeserializers) {
     std::string fileData;
     {
       auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&fileData);
-      nimble::VeloxWriterOptions writerOptions;
+      nimble::WriterOptions writerOptions;
       writerOptions.enableChunking = true;
       writerOptions.compressionOptions.compressionType =
           nimble::CompressionType::Zstd;
       writerOptions.compressionOptions.zstdMinCompressionSize = 0;
-      nimble::VeloxWriter writer(
+      nimble::Writer writer(
           rowType, std::move(writeFile), *rootPool_, std::move(writerOptions));
       writer.write(inputs[t]);
       writer.close();
@@ -5194,13 +5194,13 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxFlatMapWithParallelDecode) {
   std::string fileData;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&fileData);
-    nimble::VeloxWriterOptions writerOptions;
+    nimble::WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.compressionOptions.compressionType =
         nimble::CompressionType::Zstd;
     writerOptions.compressionOptions.zstdMinCompressionSize = 0;
     writerOptions.flatMapColumns = {{"features", {}}};
-    nimble::VeloxWriter writer(
+    nimble::Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(writerOptions));
     writer.write(input);
     writer.close();
@@ -5303,12 +5303,12 @@ TEST_F(SerializationTest, zstdThreadLocalDCtxRepeatedBatches) {
   std::string fileData;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&fileData);
-    nimble::VeloxWriterOptions writerOptions;
+    nimble::WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.compressionOptions.compressionType =
         nimble::CompressionType::Zstd;
     writerOptions.compressionOptions.zstdMinCompressionSize = 0;
-    nimble::VeloxWriter writer(
+    nimble::Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(writerOptions));
     for (const auto& input : inputs) {
       writer.write(input);

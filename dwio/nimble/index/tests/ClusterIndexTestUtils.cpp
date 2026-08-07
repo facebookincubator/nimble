@@ -25,7 +25,7 @@
 #include "dwio/nimble/tablet/IndexGenerated.h"
 #include "dwio/nimble/tablet/MetadataBuffer.h"
 #include "dwio/nimble/velox/ChunkedStreamWriter.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/String.h"
 #include "folly/json/json.h"
 #include "velox/common/file/FileSystems.h"
@@ -73,7 +73,7 @@ void writeFile(
     std::function<std::unique_ptr<FlushPolicy>()> flushPolicyFactory) {
   NIMBLE_CHECK(!data.empty(), "Data must not be empty");
 
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.enableChunking = true;
   options.clusterIndexConfig = std::move(clusterIndexConfig);
   if (flushPolicyFactory) {
@@ -87,7 +87,7 @@ void writeFile(
        .shouldThrowOnFileAlreadyExists = false});
 
   auto rowType = velox::asRowType(data[0]->type());
-  VeloxWriter writer(rowType, std::move(writeFile), pool, std::move(options));
+  Writer writer(rowType, std::move(writeFile), pool, std::move(options));
   for (const auto& vector : data) {
     writer.write(vector);
   }
