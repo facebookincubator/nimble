@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +103,165 @@ struct SelectorResult {
   double totalCost{0.0};
 };
 
+// One cell of the cost grid: the cheapest encoding for a candidate section and
+// its estimated full-stream cost in bits. Only lower-triangular (r >= l) cells
+// within the active range are populated.
+struct SegmentChoice {
+  double cost{std::numeric_limits<double>::infinity()};
+  EncodingType encoding{EncodingType::Trivial};
+};
+
+// A constant bit-plane run stored as a single Constant section (costs
+// ~nothing).
+inline SegmentPlan makeConstantSegment(int bitStart, int bitEnd) {
+  return {
+      .bitStart = bitStart,
+      .bitEnd = bitEnd,
+      .encoding = EncodingType::Constant,
+      .cost = 0.0};
+}
+
+// The contiguous range of bit positions that actually vary across the sample.
+// `allConstant()` means every sampled value is identical (no varying bits).
+struct ActiveBitRange {
+  int lo{0};
+  int hi{-1};
+
+  bool allConstant() const noexcept {
+    return hi < lo;
+  }
+
+  int width() const noexcept {
+    return hi - lo + 1;
+  }
+};
+
+// Bit-plane pre-pass: find the lowest and highest bit that is not identical
+// across every sample. Bits outside [lo, hi] -- a constant high prefix and/or
+// low suffix, the common case for narrow, low-cardinality and bit-structured
+// data -- carry no information and become free Constant sections, so the
+// O(width^2) DP only has to run over the active range.
+inline ActiveBitRange findActiveBitRange(
+    const std::vector<uint64_t>& samples,
+    int kBits) {
+  uint64_t orAll = 0;
+  uint64_t andAll = ~uint64_t{0};
+  for (const uint64_t s : samples) {
+    orAll |= s;
+    andAll &= s;
+  }
+  const uint64_t bitsMask =
+      (kBits >= 64) ? ~uint64_t{0} : ((uint64_t{1} << kBits) - 1);
+  const uint64_t varying = (orAll & ~andAll) & bitsMask;
+  if (varying == 0) {
+    return {}; // allConstant()
+  }
+  return {
+      .lo = std::countr_zero(varying), .hi = 63 - std::countl_zero(varying)};
+}
+
+// Score every candidate section [l, r] within the active range with the
+// cheapest applicable encoding, scaling per-sample costs up to the full stream.
+// Returns a flat sz-by-sz grid indexed grid[l * sz + r]; only active cells are
+// written.
+inline std::vector<SegmentChoice> buildActiveCostGrid(
+    const std::vector<uint64_t>& samples,
+    int sz,
+    const ActiveBitRange& active,
+    size_t fullCount) {
+  const MetricFlags requiredFlags = allCostModelRequiredFlags();
+  MetricCollector collector;
+  BitRangeExtractor extractor(samples);
+  const size_t numSamples = samples.size();
+
+  std::vector<SegmentChoice> grid(static_cast<size_t>(sz) * sz);
+  for (int l = active.lo; l <= active.hi; ++l) {
+    extractor.reset(l);
+    for (int r = l; r <= active.hi; ++r) {
+      extractor.extend(r);
+      const SegmentMetrics metrics =
+          collector.compute(extractor.values(), requiredFlags);
+
+      EncodingType bestEnc = EncodingType::Trivial;
+      const double perSampleCost =
+          bestCostBits(metrics, numSamples, r - l + 1, bestEnc);
+      const double fullCost = perSampleCost * static_cast<double>(fullCount) /
+          static_cast<double>(numSamples);
+
+      grid[l * sz + r] = {fullCost, bestEnc};
+    }
+  }
+  return grid;
+}
+
+// Dynamic program over the active range using the precomputed cost grid, then
+// backtrack into the chosen segments (absolute bit ranges). `dp[p]` is the min
+// cost to cover active bits [active.lo, active.lo + p); a step (j..i) maps to
+// absolute bits [active.lo + j, active.lo + i - 1]. Sets `totalCost`; on a
+// degenerate (non-finite) cover, falls back to one Trivial segment spanning the
+// whole active range.
+inline std::vector<SegmentPlan> solveActiveDp(
+    const std::vector<SegmentChoice>& grid,
+    int sz,
+    const ActiveBitRange& active,
+    const SelectorConfig& cfg,
+    double& totalCost) {
+  const int activeWidth = active.width();
+  std::vector<double> dp(
+      activeWidth + 1, std::numeric_limits<double>::infinity());
+  std::vector<int> prev(activeWidth + 1, -1);
+  std::vector<EncodingType> chosen(activeWidth + 1, EncodingType::Trivial);
+  dp[0] = 0.0;
+
+  for (int i = 1; i <= activeWidth; ++i) {
+    for (int j = 0; j < i; ++j) {
+      if (i - j < cfg.minSegmentWidth) {
+        continue;
+      }
+      const auto& choice = grid[(active.lo + j) * sz + (active.lo + i - 1)];
+      if (!std::isfinite(choice.cost)) {
+        continue;
+      }
+      const double splitCost = (j == 0) ? 0.0 : cfg.splitPenalty;
+      const double candidate = dp[j] + choice.cost + splitCost;
+      if (candidate < dp[i]) {
+        dp[i] = candidate;
+        prev[i] = j;
+        chosen[i] = choice.encoding;
+      }
+    }
+  }
+
+  totalCost = dp[activeWidth];
+  if (!std::isfinite(totalCost)) {
+    const double cost = grid[active.lo * sz + active.hi].cost;
+    totalCost = cost;
+    return {
+        {.bitStart = active.lo,
+         .bitEnd = active.hi,
+         .encoding = EncodingType::Trivial,
+         .cost = cost}};
+  }
+
+  std::vector<SegmentPlan> segments;
+  for (int idx = activeWidth; idx > 0;) {
+    const int start = prev[idx];
+    if (start < 0) {
+      break;
+    }
+    const int bl = active.lo + start;
+    const int br = active.lo + idx - 1;
+    segments.push_back(
+        {.bitStart = bl,
+         .bitEnd = br,
+         .encoding = chosen[idx],
+         .cost = grid[bl * sz + br].cost});
+    idx = start;
+  }
+  std::reverse(segments.begin(), segments.end());
+  return segments;
+}
+
 // Run the DP split selector on `samples` (uint64_t values drawn from a
 // physical-type stream of `kBits` width).
 //
@@ -116,105 +276,34 @@ inline SelectorResult selectSplits(
   if (samples.empty() || kBits <= 0) {
     return {};
   }
-  kBits = std::min(kBits, 64);
+  const int sz = std::min(kBits, 64);
 
-  const MetricFlags requiredFlags = allCostModelRequiredFlags();
-  MetricCollector collector;
-
-  // bestCost[l][r] = {min cost in bits for full stream, best EncodingType}
-  // Only lower-triangular (r >= l) entries are valid.
-  struct SegmentChoice {
-    double cost{std::numeric_limits<double>::infinity()};
-    EncodingType encoding{EncodingType::Trivial};
-  };
-
-  // Use flat vector for cache friendliness (kBits can be 32 or 64)
-  const int sz = kBits;
-  std::vector<SegmentChoice> bestCost(sz * sz);
-
-  BitRangeExtractor extractor(samples);
-  const size_t numSamples = samples.size();
-
-  for (int l = 0; l < sz; ++l) {
-    extractor.reset(l);
-    for (int r = l; r < sz; ++r) {
-      extractor.extend(r);
-      const std::vector<uint64_t>& segValues = extractor.values();
-      const SegmentMetrics metrics =
-          collector.compute(segValues, requiredFlags);
-      const int bitWidth = r - l + 1;
-
-      EncodingType bestEnc = EncodingType::Trivial;
-      const double perSampleCost =
-          bestCostBits(metrics, numSamples, bitWidth, bestEnc);
-
-      // Scale to full stream
-      const double fullCost = perSampleCost * static_cast<double>(fullCount) /
-          static_cast<double>(numSamples);
-
-      bestCost[l * sz + r] = {fullCost, bestEnc};
-    }
-  }
-
-  // DP over bit positions [0..kBits].
-  // dp[i] = minimum cost to cover bits [0..i).
-  std::vector<double> dp(sz + 1, std::numeric_limits<double>::infinity());
-  std::vector<int> prev(sz + 1, -1);
-  std::vector<EncodingType> chosen(sz + 1, EncodingType::Trivial);
-  dp[0] = 0.0;
-
-  for (int i = 1; i <= sz; ++i) {
-    for (int j = 0; j < i; ++j) {
-      const int width = i - j;
-      if (width < cfg.minSegmentWidth) {
-        continue;
-      }
-      const auto& choice = bestCost[j * sz + (i - 1)];
-      if (!std::isfinite(choice.cost)) {
-        continue;
-      }
-      const double splitCost = (j == 0) ? 0.0 : cfg.splitPenalty;
-      const double candidate = dp[j] + choice.cost + splitCost;
-      if (candidate < dp[i]) {
-        dp[i] = candidate;
-        prev[i] = j;
-        chosen[i] = choice.encoding;
-      }
-    }
-  }
-
-  SelectorResult result;
-  result.totalCost = dp[sz];
-
-  if (!std::isfinite(result.totalCost)) {
-    // Fallback: single segment covering all bits, Trivial encoding
-    SegmentPlan fallback;
-    fallback.bitStart = 0;
-    fallback.bitEnd = sz - 1;
-    fallback.encoding = EncodingType::Trivial;
-    fallback.cost = bestCost[0 * sz + (sz - 1)].cost;
-    result.segments.push_back(fallback);
-    result.totalCost = fallback.cost;
+  const ActiveBitRange active = findActiveBitRange(samples, sz);
+  if (active.allConstant()) {
+    // Every sampled value is identical: one Constant section covers everything.
+    SelectorResult result;
+    result.segments.push_back(makeConstantSegment(0, sz - 1));
     return result;
   }
 
-  // Backtrack to reconstruct segment plan
-  int idx = sz;
-  while (idx > 0) {
-    const int start = prev[idx];
-    if (start < 0) {
-      break;
-    }
-    SegmentPlan plan;
-    plan.bitStart = start;
-    plan.bitEnd = idx - 1;
-    plan.encoding = chosen[idx];
-    plan.cost = bestCost[start * sz + (idx - 1)].cost;
-    result.segments.push_back(plan);
-    idx = start;
-  }
+  const std::vector<SegmentChoice> grid =
+      buildActiveCostGrid(samples, sz, active, fullCount);
 
-  std::reverse(result.segments.begin(), result.segments.end());
+  SelectorResult result;
+  std::vector<SegmentPlan> activeSegments =
+      solveActiveDp(grid, sz, active, cfg, result.totalCost);
+
+  // Stitch the layout together in ascending bit order: constant low bits, the
+  // active segments, then constant high bits.
+  if (active.lo > 0) {
+    result.segments.push_back(makeConstantSegment(0, active.lo - 1));
+  }
+  for (const auto& seg : activeSegments) {
+    result.segments.push_back(seg);
+  }
+  if (active.hi < sz - 1) {
+    result.segments.push_back(makeConstantSegment(active.hi + 1, sz - 1));
+  }
   return result;
 }
 
