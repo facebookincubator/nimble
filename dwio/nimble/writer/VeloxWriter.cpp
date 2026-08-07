@@ -22,6 +22,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
+
 #include "dwio/nimble/common/Exceptions.h"
 #include "dwio/nimble/common/Types.h"
 #include "dwio/nimble/encodings/selection/EncodingSelectionPolicy.h"
@@ -835,11 +838,20 @@ WriterStreamContext& streamContext(const StreamDescriptorBuilder& descriptor) {
 std::unique_ptr<FieldWriter> createRootFieldWriter(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     detail::WriterContext& context) {
+  folly::F14FastMap<uint32_t, uint32_t> flatMapKeyIdByMapId;
+  folly::F14FastSet<uint32_t> flatMapValueNodeIds;
   if (!context.options().flatMapColumns.empty()) {
     context.reserveFlatMapNodes(context.options().flatMapColumns.size());
+    flatMapKeyIdByMapId.reserve(context.options().flatMapColumns.size());
     for (const auto& [columnName, keys] : context.options().flatMapColumns) {
-      auto nodeId = type->childByName(columnName)->id();
-      context.addFlatMapNodeId(nodeId, keys);
+      const auto& flatMapType = type->childByName(columnName);
+      const auto mapNodeId = flatMapType->id();
+      context.addFlatMapNodeId(mapNodeId, keys);
+      flatMapKeyIdByMapId.emplace(mapNodeId, flatMapType->childAt(0)->id());
+      findNodeIds(
+          *flatMapType->childAt(1), flatMapValueNodeIds, [](const TypeWithId&) {
+            return true;
+          });
     }
   }
 
@@ -878,17 +890,53 @@ std::unique_ptr<FieldWriter> createRootFieldWriter(
   // receives, so the lookup is a direct O(1) hit as each TypeBuilder is
   // constructed. Ids with no matching node are simply never looked up.
   return FieldWriter::create(
-      context, type, [&context](TypeBuilder& type, uint32_t nodeId) {
+      context,
+      type,
+      [&context,
+       flatMapKeyIdByMapId = std::move(flatMapKeyIdByMapId),
+       flatMapValueNodeIds = std::move(flatMapValueNodeIds),
+       stampedFlatMapValueNodeIds = folly::F14FastSet<uint32_t>{}](
+          TypeBuilder& type, uint32_t nodeId) mutable {
         if (type.kind() == Kind::Row) {
           streamContext(type.asRow().nullsDescriptor()).setIsNullStream(true);
         } else if (type.kind() == Kind::FlatMap) {
           streamContext(type.asFlatMap().nullsDescriptor())
               .setIsNullStream(true);
         }
+
         const auto& schemaAttributes = context.options().schemaAttributes;
-        auto it = schemaAttributes.find(nodeId);
-        if (it != schemaAttributes.end()) {
-          type.setAttributes(it->second);
+        if (type.kind() == Kind::FlatMap) {
+          std::vector<std::pair<std::string, std::string>> attributes;
+          if (const auto mapAttributes = schemaAttributes.find(nodeId);
+              mapAttributes != schemaAttributes.end()) {
+            attributes = mapAttributes->second;
+          }
+          if (const auto keyNode = flatMapKeyIdByMapId.find(nodeId);
+              keyNode != flatMapKeyIdByMapId.end()) {
+            if (const auto keyAttributes =
+                    schemaAttributes.find(keyNode->second);
+                keyAttributes != schemaAttributes.end()) {
+              for (const auto& [key, value] : keyAttributes->second) {
+                if (key == "iceberg.id") {
+                  attributes.emplace_back("iceberg.key.id", value);
+                  break;
+                }
+              }
+            }
+          }
+          if (!attributes.empty()) {
+            type.setAttributes(std::move(attributes));
+          }
+          return;
+        }
+
+        if (flatMapValueNodeIds.contains(nodeId) &&
+            !stampedFlatMapValueNodeIds.insert(nodeId).second) {
+          return;
+        }
+        if (const auto attributes = schemaAttributes.find(nodeId);
+            attributes != schemaAttributes.end()) {
+          type.setAttributes(attributes->second);
         }
       });
 }
