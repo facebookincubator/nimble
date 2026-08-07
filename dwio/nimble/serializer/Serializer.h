@@ -19,6 +19,7 @@
 #include "dwio/nimble/serializer/Options.h"
 #include "dwio/nimble/serializer/StreamDataWriter.h"
 #include "dwio/nimble/velox/FieldWriter.h"
+#include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "folly/container/F14Set.h"
 #include "velox/dwio/common/TypeWithId.h"
 #include "velox/vector/BaseVector.h"
@@ -50,30 +51,28 @@ class Serializer {
       const OrderedRanges& ranges,
       T& buffer) const;
 
+  /// Returns the cached encoding layout. Present after a successful
+  /// serialize() call with options.cacheEncodingLayout set, or if a
+  /// caller-provided replayed layout was supplied via
+  /// options.encodingLayoutTree. nullopt otherwise.
+  const std::optional<EncodingLayoutTree>& getCachedEncodingLayout() const {
+    return encodingLayoutTree_;
+  }
+
   const SchemaBuilder& schemaBuilder() const {
     return context_.schemaBuilder();
   }
 
  private:
-  // Build stream encoding layouts map from the encoding layout tree.
-  // Also sets up event handler for dynamically discovered FlatMap keys.
-  // Called when encodingLayoutTree is specified.
-  void buildStreamEncodingLayouts();
+  // Traverses the EncodingLayoutTree and stamps each stream descriptor's
+  // context with the corresponding EncodingLayout for replay at encode time.
+  void initializeEncodingLayouts(
+      const TypeBuilder& typeBuilder,
+      const EncodingLayoutTree& tree);
 
-  // Helper to traverse the EncodingLayoutTree and populate
-  // streamEncodingLayouts_.
-  void initEncodingLayouts(
-      const EncodingLayoutTree& tree,
-      const TypeBuilder& typeBuilder);
-
-  // Returns pointer to streamEncodingLayouts_ if encoding is enabled and we
-  // have captured encodings to replay. Otherwise returns nullptr.
-  const std::unordered_map<uint32_t, const EncodingLayout*>*
-  getStreamEncodingLayouts() const {
-    return (options_.enableEncoding() && !streamEncodingLayouts_.empty())
-        ? &streamEncodingLayouts_
-        : nullptr;
-  }
+  // Assembles the cached encoding layout tree by walking the schema and
+  // reading each stream descriptor's EncodingLayoutStreamContext slot.
+  void assembleEncodingLayoutTree() const;
 
   // Validates input shapes that the serializer can write but the dense
   // deserializer cannot reconstruct.
@@ -89,11 +88,8 @@ class Serializer {
   std::shared_ptr<const velox::dwio::common::TypeWithId> typeWithId_;
   std::unique_ptr<FieldWriter> writer_;
   mutable Vector<char> buffer_;
-  // Map from stream offset to encoding layout for replaying captured encodings.
-  // Only populated when options_.encodingLayoutTree is set.
-  // Mutable because FlatMap keys can be added during const serialize().
-  mutable std::unordered_map<uint32_t, const EncodingLayout*>
-      streamEncodingLayouts_;
+  // Selected encoding layout assembled at the end of each call to serialize.
+  mutable std::optional<EncodingLayoutTree> encodingLayoutTree_;
   // In-map stream offsets for skipping constant FlatMap key-presence streams.
   // Mutable because FlatMap keys can be added during const serialize().
   mutable folly::F14FastSet<uint32_t> inMapStreamOffsets_;
@@ -111,8 +107,7 @@ void Serializer::serialize(
       options_,
       buffer,
       static_cast<uint32_t>(ranges.size()),
-      context_.bufferMemoryPool().get(),
-      getStreamEncodingLayouts()};
+      context_.bufferMemoryPool().get()};
   for (auto& [_, streamData] : context_.streams()) {
     if (streamData->isNullStream()) {
       // Omit any null stream that carries no actual nulls, even when a
@@ -138,6 +133,9 @@ void Serializer::serialize(
   }
   // Pass nodeCount for kLegacy to fill trailing zeros.
   streamWriter.close(context_.schemaBuilder().nodeCount());
+  if (options_.cacheEncodingLayout || options_.encodingLayoutTree.has_value()) {
+    assembleEncodingLayoutTree();
+  }
 
   writer_->reset();
   context_.resetStringBuffer();

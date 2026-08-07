@@ -17,6 +17,9 @@
 
 #include <glog/logging.h>
 
+#include "dwio/nimble/encodings/common/EncodingLayout.h"
+#include "dwio/nimble/writer/EncodingLayoutStreamContext.h"
+
 namespace facebook::nimble {
 
 namespace {
@@ -113,7 +116,7 @@ Serializer::Serializer(
             if (ctx != nullptr) {
               auto it = ctx->keyEncodings_.find(fieldKey);
               if (it != ctx->keyEncodings_.end()) {
-                initEncodingLayouts(*it->second, fieldType);
+                initializeEncodingLayouts(fieldType, *it->second);
               }
             }
           }
@@ -126,7 +129,11 @@ Serializer::Serializer(
   // in all field writers (their null statisticsCollector_ guards handle this).
   writer_ = FieldWriter::create(context_, typeWithId);
 
-  buildStreamEncodingLayouts();
+  if (options_.encodingLayoutTree.has_value()) {
+    const auto& rootType = context_.schemaBuilder().root();
+    NIMBLE_CHECK_NOT_NULL(rootType, "SchemaBuilder root must be set");
+    initializeEncodingLayouts(*rootType, options_.encodingLayoutTree.value());
+  }
 }
 
 std::string_view Serializer::serialize(
@@ -155,43 +162,26 @@ void Serializer::validateSupportedInput(
       "Top-level row nulls are not supported when serializing FlatMap columns.");
 }
 
-void Serializer::buildStreamEncodingLayouts() {
-  if (!options_.encodingLayoutTree.has_value()) {
-    return;
-  }
+void Serializer::initializeEncodingLayouts(
+    const TypeBuilder& typeBuilder,
+    const EncodingLayoutTree& tree) {
+  const auto stampLayout =
+      [&tree](
+          const StreamDescriptorBuilder& descriptor,
+          EncodingLayoutTree::StreamIdentifier identifier) {
+        if (const auto* layout = tree.encodingLayout(identifier)) {
+          encodingLayoutContext(descriptor).setEncoding(*layout);
+        }
+      };
 
-  // NOTE: The event handler for dynamically discovered FlatMap keys is
-  // registered in the constructor, so keyed encoding layouts can be applied
-  // as keys appear.
-
-  // Traverse the encoding layout tree to build the stream encoding layouts map.
-  const auto& rootType = context_.schemaBuilder().root();
-  NIMBLE_CHECK_NOT_NULL(rootType, "SchemaBuilder root must be set");
-  initEncodingLayouts(options_.encodingLayoutTree.value(), *rootType);
-}
-
-void Serializer::initEncodingLayouts(
-    const EncodingLayoutTree& tree,
-    const TypeBuilder& typeBuilder) {
-  // Helper to add encoding layout to the map for a given stream identifier.
-  const auto addLayout = [this, &tree](
-                             uint32_t streamOffset,
-                             EncodingLayoutTree::StreamIdentifier identifier) {
-    if (const auto* layout = tree.encodingLayout(identifier)) {
-      streamEncodingLayouts_[streamOffset] = layout;
-    }
-  };
-
-  // Match the encoding layout tree schema kind with the type builder.
-  // For each stream, add the encoding layout to the map if it exists.
   switch (typeBuilder.kind()) {
     case Kind::Scalar: {
       NIMBLE_CHECK_EQ(
           tree.schemaKind(),
           Kind::Scalar,
           "Incompatible encoding layout node. Expecting scalar node.");
-      addLayout(
-          typeBuilder.asScalar().scalarDescriptor().offset(),
+      stampLayout(
+          typeBuilder.asScalar().scalarDescriptor(),
           EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream);
       break;
     }
@@ -200,16 +190,14 @@ void Serializer::initEncodingLayouts(
           tree.schemaKind(),
           Kind::Row,
           "Incompatible encoding layout node. Expecting row node.");
-      addLayout(
-          typeBuilder.asRow().nullsDescriptor().offset(),
-          EncodingLayoutTree::StreamIdentifiers::Row::NullsStream);
-
-      // Initialize encoding layouts for children.
       const auto& rowBuilder = typeBuilder.asRow();
+      stampLayout(
+          rowBuilder.nullsDescriptor(),
+          EncodingLayoutTree::StreamIdentifiers::Row::NullsStream);
       for (uint32_t i = 0;
            i < rowBuilder.childrenCount() && i < tree.childrenCount();
            ++i) {
-        initEncodingLayouts(tree.child(i), rowBuilder.childAt(i));
+        initializeEncodingLayouts(rowBuilder.childAt(i), tree.child(i));
       }
       break;
     }
@@ -218,13 +206,12 @@ void Serializer::initEncodingLayouts(
           tree.schemaKind(),
           Kind::Array,
           "Incompatible encoding layout node. Expecting array node.");
-      addLayout(
-          typeBuilder.asArray().lengthsDescriptor().offset(),
+      const auto& arrayBuilder = typeBuilder.asArray();
+      stampLayout(
+          arrayBuilder.lengthsDescriptor(),
           EncodingLayoutTree::StreamIdentifiers::Array::LengthsStream);
-
-      // Initialize encoding layouts for element child.
       if (tree.childrenCount() > 0) {
-        initEncodingLayouts(tree.child(0), typeBuilder.asArray().elements());
+        initializeEncodingLayouts(arrayBuilder.elements(), tree.child(0));
       }
       break;
     }
@@ -233,17 +220,15 @@ void Serializer::initEncodingLayouts(
           tree.schemaKind(),
           Kind::Map,
           "Incompatible encoding layout node. Expecting map node.");
-      addLayout(
-          typeBuilder.asMap().lengthsDescriptor().offset(),
-          EncodingLayoutTree::StreamIdentifiers::Map::LengthsStream);
-
-      // Initialize encoding layouts for key and value children.
       const auto& mapBuilder = typeBuilder.asMap();
+      stampLayout(
+          mapBuilder.lengthsDescriptor(),
+          EncodingLayoutTree::StreamIdentifiers::Map::LengthsStream);
       if (tree.childrenCount() > 0) {
-        initEncodingLayouts(tree.child(0), mapBuilder.keys());
+        initializeEncodingLayouts(mapBuilder.keys(), tree.child(0));
       }
       if (tree.childrenCount() > 1) {
-        initEncodingLayouts(tree.child(1), mapBuilder.values());
+        initializeEncodingLayouts(mapBuilder.values(), tree.child(1));
       }
       break;
     }
@@ -252,14 +237,14 @@ void Serializer::initEncodingLayouts(
           tree.schemaKind(),
           Kind::FlatMap,
           "Incompatible encoding layout node. Expecting flatmap node.");
-
       auto& flatMapBuilder = typeBuilder.asFlatMap();
-      addLayout(
-          flatMapBuilder.nullsDescriptor().offset(),
+      stampLayout(
+          flatMapBuilder.nullsDescriptor(),
           EncodingLayoutTree::StreamIdentifiers::FlatMap::NullsStream);
 
-      // For FlatMap, children are keyed by name, not position.
-      // Build a map from key name to encoding layout tree child.
+      // For FlatMap, children are keyed by name, not position. Register a
+      // context on the FlatMap builder so the dynamic-key handler can resolve
+      // per-key layouts as new keys are discovered during writing.
       folly::F14FastMap<std::string_view, const EncodingLayoutTree*>
           keyEncodings;
       keyEncodings.reserve(tree.childrenCount());
@@ -267,18 +252,97 @@ void Serializer::initEncodingLayouts(
         const auto& child = tree.child(i);
         keyEncodings.emplace(child.name(), &child);
       }
-
-      // Store context for dynamic key discovery during writing.
-      // FlatMap keys are discovered dynamically via
-      // FlatmapFieldAddedEventHandler.
       flatMapBuilder.setContext(
           std::make_unique<FlatmapEncodingLayoutContext>(keyEncodings));
       break;
     }
     default:
-      // Other types (ArrayWithOffsets, SlidingWindowMap, etc.) - skip for now.
       break;
   }
+}
+
+namespace {
+
+using LayoutMap =
+    std::unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>;
+
+EncodingLayoutTree captureLayoutForType(
+    const TypeBuilder& typeBuilder,
+    const std::string& name = "") {
+  using StreamIds = EncodingLayoutTree::StreamIdentifiers;
+  LayoutMap layouts;
+
+  const auto captureStreamLayout =
+      [&](const StreamDescriptorBuilder& descriptor,
+          EncodingLayoutTree::StreamIdentifier id) {
+        if (const auto* ctx =
+                descriptor.context<EncodingLayoutStreamContext>()) {
+          if (const auto* layout = ctx->encoding()) {
+            layouts.emplace(id, *layout);
+          }
+        }
+      };
+
+  std::vector<EncodingLayoutTree> children;
+  switch (typeBuilder.kind()) {
+    case Kind::Scalar:
+      captureStreamLayout(
+          typeBuilder.asScalar().scalarDescriptor(),
+          StreamIds::Scalar::ScalarStream);
+      break;
+    case Kind::Row: {
+      const auto& row = typeBuilder.asRow();
+      captureStreamLayout(row.nullsDescriptor(), StreamIds::Row::NullsStream);
+      children.reserve(row.childrenCount());
+      for (uint32_t i = 0; i < row.childrenCount(); ++i) {
+        children.push_back(captureLayoutForType(row.childAt(i)));
+      }
+      break;
+    }
+    case Kind::Array: {
+      const auto& array = typeBuilder.asArray();
+      captureStreamLayout(
+          array.lengthsDescriptor(), StreamIds::Array::LengthsStream);
+      children.push_back(captureLayoutForType(array.elements()));
+      break;
+    }
+    case Kind::Map: {
+      const auto& map = typeBuilder.asMap();
+      captureStreamLayout(
+          map.lengthsDescriptor(), StreamIds::Map::LengthsStream);
+      children.reserve(2);
+      children.push_back(captureLayoutForType(map.keys()));
+      children.push_back(captureLayoutForType(map.values()));
+      break;
+    }
+    case Kind::FlatMap: {
+      const auto& flatMap = typeBuilder.asFlatMap();
+      captureStreamLayout(
+          flatMap.nullsDescriptor(), StreamIds::FlatMap::NullsStream);
+      children.reserve(flatMap.childrenCount());
+      for (uint32_t i = 0; i < flatMap.childrenCount(); ++i) {
+        children.push_back(captureLayoutForType(
+            flatMap.childAt(i), std::string{flatMap.nameAt(i)}));
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return EncodingLayoutTree{
+      typeBuilder.kind(), std::move(layouts), name, std::move(children)};
+}
+
+} // namespace
+
+void Serializer::assembleEncodingLayoutTree() const {
+  const auto rootType = context_.schemaBuilder().root();
+  if (rootType == nullptr) {
+    encodingLayoutTree_.reset();
+    return;
+  }
+  encodingLayoutTree_.emplace(captureLayoutForType(*rootType));
 }
 
 } // namespace facebook::nimble

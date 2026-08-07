@@ -7020,3 +7020,87 @@ INSTANTIATE_TEST_SUITE_P(
             .streamSizesEncodingType = EncodingType::Varint,
             .bufferPoolCapacity = 0}),
     formatName);
+
+namespace facebook::nimble {
+
+class GetCachedEncodingLayoutTest : public ::testing::Test {
+ protected:
+  static void SetUpTestCase() {
+    velox::memory::MemoryManager::testingSetInstance(
+        velox::memory::MemoryManager::Options{});
+  }
+
+  void SetUp() override {
+    pool_ = velox::memory::memoryManager()->addLeafPool("layout_tree_test");
+    vm_ = std::make_shared<velox::test::VectorMaker>(pool_.get());
+  }
+
+  std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::shared_ptr<velox::test::VectorMaker> vm_;
+};
+
+TEST_F(GetCachedEncodingLayoutTest, replayProducesIdenticalBytes) {
+  std::vector<std::string> stringData;
+  for (int i = 0; i < 200; ++i) {
+    stringData.push_back("value_" + std::to_string(i));
+  }
+
+  struct Case {
+    std::string label;
+    velox::TypePtr type;
+    velox::VectorPtr data;
+  };
+
+  const std::vector<Case> cases{
+      {"bigint",
+       velox::ROW({{"a", velox::BIGINT()}}),
+       vm_->rowVector(
+           {"a"},
+           {vm_->flatVector<int64_t>(
+               1000, [](velox::vector_size_t i) { return i % 8; })})},
+      {"varchar",
+       velox::ROW({{"a", velox::VARCHAR()}}),
+       vm_->rowVector(
+           {"a"},
+           {vm_->flatVector<velox::StringView>(
+               1000,
+               [&](velox::vector_size_t i) {
+                 return velox::StringView{stringData[i % stringData.size()]};
+               })})},
+  };
+
+  for (const auto& c : cases) {
+    SCOPED_TRACE(c.label);
+
+    const SerializerOptions opts{
+        .version = SerializationVersion::kSerialization,
+        .cacheEncodingLayout = true,
+        .compressionOptions = CompressionOptions{},
+    };
+    Serializer serializer{opts, c.type, pool_.get()};
+    const auto blob =
+        serializer.serialize(c.data, OrderedRanges::of(0, c.data->size()));
+
+    const auto& tree = serializer.getCachedEncodingLayout();
+    ASSERT_TRUE(tree.has_value());
+    ASSERT_EQ(tree.value().schemaKind(), Kind::Row);
+    ASSERT_EQ(tree.value().childrenCount(), 1u);
+    ASSERT_NE(
+        tree.value().child(0).encodingLayout(
+            EncodingLayoutTree::StreamIdentifiers::Scalar::ScalarStream),
+        nullptr);
+
+    const SerializerOptions replayOpts{
+        .version = SerializationVersion::kSerialization,
+        .encodingLayoutTree = tree.value(),
+        .compressionOptions = CompressionOptions{},
+    };
+    Serializer replaySerializer{replayOpts, c.type, pool_.get()};
+    const auto replayBlob = replaySerializer.serialize(
+        c.data, OrderedRanges::of(0, c.data->size()));
+
+    EXPECT_EQ(blob, replayBlob);
+  }
+}
+
+} // namespace facebook::nimble
