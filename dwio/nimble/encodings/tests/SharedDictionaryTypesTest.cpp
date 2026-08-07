@@ -34,74 +34,12 @@
 namespace facebook::nimble {
 namespace {
 
-class BasicSharedDictionaryAlphabet final : public SharedDictionaryAlphabet {
- public:
-  BasicSharedDictionaryAlphabet(
-      std::vector<int32_t> values,
-      std::optional<EncodingType> encodingType)
-      : SharedDictionaryAlphabet{DataType::Int32},
-        values_{std::move(values)},
-        encodingType_{encodingType} {
-    setEntryCount(static_cast<uint32_t>(values_.size()));
-  }
-
- private:
-  void physicalValueAtImpl(uint32_t index, void* output) const final {
-    NIMBLE_CHECK_LT(
-        index,
-        values_.size(),
-        "Shared dictionary index exceeds alphabet size.");
-    *static_cast<TypeTraits<int32_t>::physicalType*>(output) =
-        static_cast<TypeTraits<int32_t>::physicalType>(values_[index]);
-  }
-
-  void materializeImpl(std::span<const uint32_t> indices, void* output)
-      const final {
-    auto* values = static_cast<TypeTraits<int32_t>::physicalType*>(output);
-    for (size_t i{0}; i < indices.size(); ++i) {
-      NIMBLE_CHECK_LT(
-          indices[i],
-          values_.size(),
-          "Shared dictionary index exceeds alphabet size.");
-      values[i] =
-          static_cast<TypeTraits<int32_t>::physicalType>(values_[indices[i]]);
-    }
-  }
-
-  std::optional<EncodingType> encodingTypeImpl() const final {
-    return encodingType_;
-  }
-
-  const std::vector<int32_t> values_;
-  const std::optional<EncodingType> encodingType_;
-};
-
 std::string encodeSharedDictionaryIdForTest(uint32_t dictionaryId) {
   std::string encoded(varint::varintSize(dictionaryId), '\0');
   char* pos = encoded.data();
   varint::writeVarint(dictionaryId, &pos);
   encoded.resize(static_cast<size_t>(pos - encoded.data()));
   return encoded;
-}
-
-TEST(SharedDictionaryAlphabetTest, publicApi) {
-  const BasicSharedDictionaryAlphabet alphabet{
-      {10, 20, 30}, EncodingType::FixedBitWidth};
-
-  EXPECT_EQ(alphabet.dataType(), DataType::Int32);
-  EXPECT_EQ(alphabet.entryCount(), 3);
-  const auto encodingType = alphabet.encodingType();
-  ASSERT_TRUE(encodingType.has_value());
-  EXPECT_EQ(*encodingType, EncodingType::FixedBitWidth);
-  EXPECT_EQ(alphabet.physicalValueAt<int32_t>(1), 20);
-
-  const std::vector<uint32_t> indices{2, 0, 1};
-  std::vector<TypeTraits<int32_t>::physicalType> values(indices.size());
-  alphabet.materialize<int32_t>(
-      std::span<const uint32_t>{indices.data(), indices.size()}, values.data());
-
-  const std::vector<TypeTraits<int32_t>::physicalType> expected{30, 10, 20};
-  EXPECT_EQ(values, expected);
 }
 
 TEST(SharedDictionaryScopeTest, scopeName) {

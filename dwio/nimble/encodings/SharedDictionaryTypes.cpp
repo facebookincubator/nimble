@@ -74,23 +74,4 @@ uint32_t readSharedDictionaryId(std::string_view data, const char*& pos) {
   NIMBLE_UNSUPPORTED("Shared dictionary ID varint is too long.");
 }
 
-SharedDictionaryAlphabet::SharedDictionaryAlphabet(DataType dataType)
-    : dataType_{dataType} {}
-
-DataType SharedDictionaryAlphabet::dataType() const {
-  return dataType_;
-}
-
-uint32_t SharedDictionaryAlphabet::entryCount() const {
-  return entryCount_;
-}
-
-std::optional<EncodingType> SharedDictionaryAlphabet::encodingType() const {
-  return encodingTypeImpl();
-}
-
-void SharedDictionaryAlphabet::setEntryCount(uint32_t entryCount) {
-  entryCount_ = entryCount;
-}
-
 } // namespace facebook::nimble

@@ -122,6 +122,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
     float minCost = std::numeric_limits<float>::max();
     EncodingType selectedEncoding = EncodingType::Trivial;
+    std::optional<uint64_t> selectedEstimatedSize;
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
     for (const auto& entry : candidateEncodingReadFactors_) {
@@ -140,6 +141,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       if (cost < minCost) {
         minCost = cost;
         selectedEncoding = encodingType;
+        selectedEstimatedSize = size;
       }
     }
 
@@ -207,10 +209,13 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
     };
 
     if (!compressionOptions_.has_value()) {
-      return {.encodingType = selectedEncoding};
+      return {
+          .encodingType = selectedEncoding,
+          .estimatedSize = selectedEstimatedSize};
     }
     return {
         .encodingType = selectedEncoding,
+        .estimatedSize = selectedEstimatedSize,
         .compressionPolicyFactory = [compressionOptions =
                                          compressionOptions_.value(),
                                      selectedEncoding]() {

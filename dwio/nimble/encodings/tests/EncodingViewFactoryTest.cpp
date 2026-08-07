@@ -18,6 +18,9 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+#include <vector>
+
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/encodings/FixedBitWidthEncoding.h"
 #include "dwio/nimble/encodings/TrivialEncoding.h"
@@ -28,6 +31,43 @@
 using namespace facebook;
 
 using EncodingViewTest = nimble::test::EncodingViewTest;
+
+TEST_F(EncodingViewTest, supportsEncodingViewMatchesViewableEncodingSet) {
+  const std::vector<nimble::EncodingType> supportedEncodings{
+      nimble::EncodingType::Constant,
+      nimble::EncodingType::Trivial,
+      nimble::EncodingType::MainlyConstant,
+      nimble::EncodingType::ALP,
+      nimble::EncodingType::FixedBitWidth,
+      nimble::EncodingType::Dictionary,
+      nimble::EncodingType::SparseBool,
+      nimble::EncodingType::RLE,
+      nimble::EncodingType::FOR,
+      nimble::EncodingType::DeltaBlock,
+      nimble::EncodingType::Huffman,
+      nimble::EncodingType::PFOR,
+      nimble::EncodingType::SimdForBitpack,
+      nimble::EncodingType::BlockBitPacking};
+  for (const auto encodingType : supportedEncodings) {
+    SCOPED_TRACE(fmt::format("encodingType={}", encodingType));
+    EXPECT_TRUE(nimble::supportsEncodingView(encodingType));
+  }
+
+  const std::vector<nimble::EncodingType> unsupportedEncodings{
+      nimble::EncodingType::Sentinel,
+      nimble::EncodingType::Nullable,
+      nimble::EncodingType::Varint,
+      nimble::EncodingType::Delta,
+      nimble::EncodingType::Prefix,
+      nimble::EncodingType::SubIntSplit,
+      nimble::EncodingType::FrequencyPartition,
+      nimble::EncodingType::Fsst,
+      nimble::EncodingType::SharedDictionary};
+  for (const auto encodingType : unsupportedEncodings) {
+    SCOPED_TRACE(fmt::format("encodingType={}", encodingType));
+    EXPECT_FALSE(nimble::supportsEncodingView(encodingType));
+  }
+}
 
 TEST_F(EncodingViewTest, rejectsCompressedTrivialEncoding) {
   const nimble::Encoding::Options options;

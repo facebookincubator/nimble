@@ -55,16 +55,6 @@ uint32_t indexForValue(std::vector<T>& alphabet, const T& value) {
 }
 
 template <typename T>
-DictionaryIndexType<T> buildDictionaryIndex(std::span<const T> alphabet) {
-  DictionaryIndexType<T> dictionaryIndex;
-  dictionaryIndex.reserve(alphabet.size());
-  for (uint32_t i = 0; i < alphabet.size(); ++i) {
-    dictionaryIndex.emplace(alphabet[i], i);
-  }
-  return dictionaryIndex;
-}
-
-template <typename T>
 struct ExpectedDictionary {
   std::vector<T> alphabet;
   std::vector<uint32_t> indices;
@@ -146,10 +136,9 @@ void verifyFuzzedDictionary(velox::memory::MemoryPool* pool, const char* type) {
         expectedChunkIndices.end());
 
     auto mapping = streamingBuilder.lookup(chunk);
-    ASSERT_TRUE(mapping.has_value());
-    EXPECT_EQ(toIndexVector(mapping->indices()), expectedChunkIndices);
+    EXPECT_EQ(toIndexVector(mapping.indices()), expectedChunkIndices);
     EXPECT_EQ(
-        mapping->newEntries().size(),
+        mapping.newEntryCount(),
         expectedAlphabet.size() - alphabetBeforeLookup.size());
     EXPECT_EQ(toVector(streamingBuilder.alphabet()), expectedAlphabet);
 
@@ -161,13 +150,13 @@ void verifyFuzzedDictionary(velox::memory::MemoryPool* pool, const char* type) {
       expectedAlphabet.data(), expectedAlphabet.size()};
   FixedSharedDictionaryBuilder<T> prebuiltBuilder{
       expectedAlphabetSpan,
+      buildDictionaryIndex(expectedAlphabetSpan),
       SharedDictionaryScope::File,
       /*dictionaryId=*/7,
       pool};
   auto prebuiltMapping = prebuiltBuilder.lookup(values);
-  ASSERT_TRUE(prebuiltMapping.has_value());
-  EXPECT_EQ(toIndexVector(prebuiltMapping->indices()), expectedIndices);
-  EXPECT_TRUE(prebuiltMapping->newEntries().empty());
+  EXPECT_EQ(toIndexVector(prebuiltMapping.indices()), expectedIndices);
+  EXPECT_EQ(prebuiltMapping.newEntryCount(), 0);
   EXPECT_EQ(toVector(prebuiltBuilder.alphabet()), expectedAlphabet);
 
   ExternalSharedDictionaryBuilder<T> externalBuilder{
@@ -176,9 +165,8 @@ void verifyFuzzedDictionary(velox::memory::MemoryPool* pool, const char* type) {
       /*dictionaryId=*/7,
       pool};
   auto externalMapping = externalBuilder.lookup(values);
-  ASSERT_TRUE(externalMapping.has_value());
-  EXPECT_EQ(toIndexVector(externalMapping->indices()), expectedIndices);
-  EXPECT_TRUE(externalMapping->newEntries().empty());
+  EXPECT_EQ(toIndexVector(externalMapping.indices()), expectedIndices);
+  EXPECT_EQ(externalMapping.newEntryCount(), 0);
   NIMBLE_ASSERT_THROW(
       externalBuilder.alphabet(), "does not expose an alphabet");
 }
@@ -211,6 +199,28 @@ TEST_F(SharedDictionaryBuilderTest, builderKindStringFormats) {
   EXPECT_EQ(Builder::kindString(static_cast<Builder::Kind>(42)), "Unknown: 42");
 }
 
+TEST_F(SharedDictionaryBuilderTest, buildDictionaryIndexMapsAlphabetValues) {
+  const std::array<int32_t, 3> alphabet{7, 11, 13};
+  const std::span<const int32_t> alphabetSpan{alphabet};
+
+  const auto dictionaryIndex = buildDictionaryIndex(alphabetSpan);
+
+  EXPECT_EQ(dictionaryIndex.size(), alphabet.size());
+  for (uint32_t i = 0; i < alphabet.size(); ++i) {
+    const auto it = dictionaryIndex.find(alphabet[i]);
+    ASSERT_NE(it, dictionaryIndex.end());
+    EXPECT_EQ(it->second, i);
+  }
+}
+
+TEST_F(SharedDictionaryBuilderTest, buildDictionaryIndexRejectsDuplicates) {
+  const std::array<int32_t, 3> alphabet{7, 11, 7};
+
+  NIMBLE_ASSERT_USER_THROW(
+      buildDictionaryIndex(std::span<const int32_t>{alphabet}),
+      "Shared dictionary has duplicate values.");
+}
+
 TEST_F(SharedDictionaryBuilderTest, alphabet) {
   StreamingSharedDictionaryBuilder<int32_t> streamingBuilder{
       SharedDictionaryScope::Stripe, /*dictionaryId=*/7, pool_.get()};
@@ -218,7 +228,6 @@ TEST_F(SharedDictionaryBuilderTest, alphabet) {
 
   const std::array<int32_t, 4> streamingValues{4, 8, 4, 12};
   auto streamingMapping = streamingBuilder.lookup(streamingValues);
-  ASSERT_TRUE(streamingMapping.has_value());
   EXPECT_EQ(
       toVector(streamingBuilder.alphabet()), (std::vector<int32_t>{4, 8, 12}));
 
@@ -226,6 +235,7 @@ TEST_F(SharedDictionaryBuilderTest, alphabet) {
   const std::span<const int32_t> fixedAlphabetSpan{fixedAlphabet};
   FixedSharedDictionaryBuilder<int32_t> fixedBuilder{
       fixedAlphabetSpan,
+      buildDictionaryIndex(fixedAlphabetSpan),
       SharedDictionaryScope::File,
       /*dictionaryId=*/7,
       pool_.get()};
@@ -262,22 +272,24 @@ TEST_F(SharedDictionaryBuilderTest, lookupWithFixedDictionary) {
     const std::span<const int32_t> alphabetSpan{alphabet};
     FixedSharedDictionaryBuilder<int32_t> builder{
         alphabetSpan,
+        buildDictionaryIndex(alphabetSpan),
         SharedDictionaryScope::File,
         /*dictionaryId=*/7,
         pool_.get()};
 
-    auto mapping = builder.lookup(scenario.values);
     if (!scenario.expectedIndices.has_value()) {
-      EXPECT_FALSE(mapping.has_value());
+      NIMBLE_ASSERT_USER_THROW(
+          builder.lookup(scenario.values),
+          "File shared dictionary 7 does not contain value 99.");
       EXPECT_EQ(
           toVector(builder.alphabet()), (std::vector<int32_t>{7, 11, 13, 17}));
       continue;
     }
 
-    ASSERT_TRUE(mapping.has_value());
+    const auto mapping = builder.lookup(scenario.values);
     EXPECT_EQ(
-        toIndexVector(mapping->indices()), scenario.expectedIndices.value());
-    EXPECT_TRUE(mapping->newEntries().empty());
+        toIndexVector(mapping.indices()), scenario.expectedIndices.value());
+    EXPECT_EQ(mapping.newEntryCount(), 0);
     EXPECT_EQ(
         toVector(builder.alphabet()), (std::vector<int32_t>{7, 11, 13, 17}));
   }
@@ -305,17 +317,18 @@ TEST_F(SharedDictionaryBuilderTest, lookupWithExternalDictionary) {
         /*dictionaryId=*/7,
         pool_.get()};
 
-    auto mapping = builder.lookup(scenario.values);
     if (!scenario.expectedIndices.has_value()) {
-      EXPECT_FALSE(mapping.has_value());
+      NIMBLE_ASSERT_USER_THROW(
+          builder.lookup(scenario.values),
+          "External shared dictionary 7 does not contain value 99.");
       NIMBLE_ASSERT_THROW(builder.alphabet(), "does not expose an alphabet");
       continue;
     }
 
-    ASSERT_TRUE(mapping.has_value());
+    const auto mapping = builder.lookup(scenario.values);
     EXPECT_EQ(
-        toIndexVector(mapping->indices()), scenario.expectedIndices.value());
-    EXPECT_TRUE(mapping->newEntries().empty());
+        toIndexVector(mapping.indices()), scenario.expectedIndices.value());
+    EXPECT_EQ(mapping.newEntryCount(), 0);
     NIMBLE_ASSERT_THROW(builder.alphabet(), "does not expose an alphabet");
   }
 }
@@ -328,9 +341,8 @@ TYPED_TEST(SharedDictionaryBuilderTypedTest, lookupWithStreamingDictionary) {
       SharedDictionaryScope::Stripe, /*dictionaryId=*/7, this->pool_.get()};
 
   auto mapping = builder.lookup(values);
-  ASSERT_TRUE(mapping.has_value());
-  EXPECT_EQ(toIndexVector(mapping->indices()), expected.indices);
-  EXPECT_EQ(mapping->newEntries().size(), expected.alphabet.size());
+  EXPECT_EQ(toIndexVector(mapping.indices()), expected.indices);
+  EXPECT_EQ(mapping.newEntryCount(), expected.alphabet.size());
   EXPECT_EQ(toVector(builder.alphabet()), expected.alphabet);
 }
 
@@ -342,14 +354,14 @@ TYPED_TEST(SharedDictionaryBuilderTypedTest, lookupWithFixedDictionary) {
       expected.alphabet.data(), expected.alphabet.size()};
   FixedSharedDictionaryBuilder<T> builder{
       alphabet,
+      buildDictionaryIndex(alphabet),
       SharedDictionaryScope::File,
       /*dictionaryId=*/7,
       this->pool_.get()};
 
   auto mapping = builder.lookup(values);
-  ASSERT_TRUE(mapping.has_value());
-  EXPECT_EQ(toIndexVector(mapping->indices()), expected.indices);
-  EXPECT_TRUE(mapping->newEntries().empty());
+  EXPECT_EQ(toIndexVector(mapping.indices()), expected.indices);
+  EXPECT_EQ(mapping.newEntryCount(), 0);
   EXPECT_EQ(toVector(builder.alphabet()), expected.alphabet);
 }
 
@@ -365,9 +377,8 @@ TYPED_TEST(SharedDictionaryBuilderTypedTest, lookupWithExternalDictionary) {
       this->pool_.get()};
 
   auto mapping = builder.lookup(values);
-  ASSERT_TRUE(mapping.has_value());
-  EXPECT_EQ(toIndexVector(mapping->indices()), expected.indices);
-  EXPECT_TRUE(mapping->newEntries().empty());
+  EXPECT_EQ(toIndexVector(mapping.indices()), expected.indices);
+  EXPECT_EQ(mapping.newEntryCount(), 0);
   NIMBLE_ASSERT_THROW(builder.alphabet(), "does not expose an alphabet");
 }
 
@@ -445,12 +456,11 @@ TEST_F(SharedDictionaryBuilderTest, lookupAndReset) {
       const auto& step = scenario[j];
       SCOPED_TRACE(fmt::format("scenario={}, step={}", i, j));
       auto mapping = builder.lookup(step.values);
-      ASSERT_TRUE(mapping.has_value());
       EXPECT_EQ(
           std::vector<uint32_t>(
-              mapping->indices().begin(), mapping->indices().end()),
+              mapping.indices().begin(), mapping.indices().end()),
           step.expectedIndices);
-      EXPECT_EQ(mapping->newEntries().size(), step.expectedNewEntryCount);
+      EXPECT_EQ(mapping.newEntryCount(), step.expectedNewEntryCount);
       EXPECT_EQ(
           std::vector<int32_t>(
               builder.alphabet().begin(), builder.alphabet().end()),
@@ -477,7 +487,6 @@ TEST_F(SharedDictionaryBuilderTest, lookupMutatesStreamingAlphabet) {
 
   const std::array<int32_t, 1> values{10};
   auto mapping = builder.lookup(values);
-  ASSERT_TRUE(mapping.has_value());
   EXPECT_EQ(
       std::vector<int32_t>(
           builder.alphabet().begin(), builder.alphabet().end()),
@@ -485,7 +494,6 @@ TEST_F(SharedDictionaryBuilderTest, lookupMutatesStreamingAlphabet) {
 
   const std::array<int32_t, 1> otherValues{20};
   auto otherMapping = builder.lookup(otherValues);
-  ASSERT_TRUE(otherMapping.has_value());
   EXPECT_EQ(
       std::vector<int32_t>(
           builder.alphabet().begin(), builder.alphabet().end()),
@@ -497,14 +505,12 @@ TEST_F(SharedDictionaryBuilderTest, reset) {
       SharedDictionaryScope::Stripe, /*dictionaryId=*/7, pool_.get()};
   const std::array<int16_t, 2> values{4, 8};
   auto mapping = builder.lookup(values);
-  ASSERT_TRUE(mapping.has_value());
   EXPECT_FALSE(builder.alphabet().empty());
 
   builder.reset();
   EXPECT_TRUE(builder.alphabet().empty());
 
   auto resetMapping = builder.lookup(values);
-  ASSERT_TRUE(resetMapping.has_value());
   EXPECT_FALSE(builder.alphabet().empty());
 
   builder.reset();
@@ -512,11 +518,10 @@ TEST_F(SharedDictionaryBuilderTest, reset) {
 
   const std::array<int16_t, 2> afterResetValues{8, 4};
   auto afterResetMapping = builder.lookup(afterResetValues);
-  ASSERT_TRUE(afterResetMapping.has_value());
   EXPECT_EQ(
       std::vector<uint32_t>(
-          afterResetMapping->indices().begin(),
-          afterResetMapping->indices().end()),
+          afterResetMapping.indices().begin(),
+          afterResetMapping.indices().end()),
       (std::vector<uint32_t>{0, 1}));
   EXPECT_EQ(
       std::vector<int16_t>(
@@ -529,6 +534,7 @@ TEST_F(SharedDictionaryBuilderTest, fixedBuilderRejectsMissingValue) {
   const std::span<const int32_t> alphabetSpan{alphabet};
   FixedSharedDictionaryBuilder<int32_t> prebuiltBuilder{
       alphabetSpan,
+      buildDictionaryIndex(alphabetSpan),
       SharedDictionaryScope::File,
       /*dictionaryId=*/7,
       pool_.get()};
@@ -557,12 +563,12 @@ TEST_F(SharedDictionaryBuilderTest, fixedBuilderRejectsMissingValue) {
     SCOPED_TRACE(builderCase.name);
     EXPECT_EQ(builderCase.builder->kind(), builderCase.kind);
     auto mapping = builderCase.builder->lookup(covered);
-    ASSERT_TRUE(mapping.has_value());
     EXPECT_EQ(
         std::vector<uint32_t>(
-            mapping->indices().begin(), mapping->indices().end()),
+            mapping.indices().begin(), mapping.indices().end()),
         (std::vector<uint32_t>{2, 0, 1}));
-    EXPECT_FALSE(builderCase.builder->lookup(missing).has_value());
+    NIMBLE_ASSERT_USER_THROW(
+        builderCase.builder->lookup(missing), "does not contain value 17.");
   }
 
   EXPECT_EQ(
@@ -570,7 +576,6 @@ TEST_F(SharedDictionaryBuilderTest, fixedBuilderRejectsMissingValue) {
           prebuiltBuilder.alphabet().begin(), prebuiltBuilder.alphabet().end()),
       (std::vector<int32_t>{7, 11, 13}));
   auto prebuiltResetMapping = prebuiltBuilder.lookup(covered);
-  ASSERT_TRUE(prebuiltResetMapping.has_value());
   NIMBLE_ASSERT_THROW(prebuiltBuilder.reset(), "does not support reset()");
   NIMBLE_ASSERT_THROW(
       externalBuilder.alphabet(), "does not expose an alphabet");
@@ -581,6 +586,7 @@ TEST_F(SharedDictionaryBuilderTest, fixedAndExternalLookupDoesNotGrowAlphabet) {
   const std::span<const int32_t> alphabetSpan{alphabet};
   FixedSharedDictionaryBuilder<int32_t> fixedBuilder{
       alphabetSpan,
+      buildDictionaryIndex(alphabetSpan),
       SharedDictionaryScope::File,
       /*dictionaryId=*/7,
       pool_.get()};
@@ -590,16 +596,14 @@ TEST_F(SharedDictionaryBuilderTest, fixedAndExternalLookupDoesNotGrowAlphabet) {
 
   const std::array<int32_t, 3> covered{13, 7, 11};
   auto fixedMapping = fixedBuilder.lookup(covered);
-  ASSERT_TRUE(fixedMapping.has_value());
-  EXPECT_TRUE(fixedMapping->newEntries().empty());
+  EXPECT_EQ(fixedMapping.newEntryCount(), 0);
   EXPECT_EQ(
       std::vector<int32_t>(
           fixedBuilder.alphabet().begin(), fixedBuilder.alphabet().end()),
       (std::vector<int32_t>{7, 11, 13}));
 
   auto externalMapping = externalBuilder.lookup(covered);
-  ASSERT_TRUE(externalMapping.has_value());
-  EXPECT_TRUE(externalMapping->newEntries().empty());
+  EXPECT_EQ(externalMapping.newEntryCount(), 0);
 }
 
 } // namespace

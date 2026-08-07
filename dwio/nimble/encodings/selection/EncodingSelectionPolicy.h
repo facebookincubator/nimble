@@ -155,6 +155,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
 
     float minCost = std::numeric_limits<float>::max();
     EncodingType selectedEncoding = EncodingType::Trivial;
+    std::optional<uint64_t> selectedEstimatedSize;
     // Iterate on all candidate encodings, and pick the encoding with the
     // minimal cost.
     for (const auto& entry : candidateEncodingReadFactors) {
@@ -178,6 +179,7 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
       if (cost < minCost) {
         minCost = cost;
         selectedEncoding = encodingType;
+        selectedEstimatedSize = estimatedSize;
       }
     }
 
@@ -199,12 +201,15 @@ class ManualEncodingSelectionPolicy : public EncodingSelectionPolicy<T> {
                 ? "..."
                 : ""));
     if (!compressionOptions_.has_value()) {
-      return {.encodingType = selectedEncoding};
+      return {
+          .encodingType = selectedEncoding,
+          .estimatedSize = selectedEstimatedSize};
     }
     // Encoding selection optimizes the in-memory layout. Compression is still
     // attempted for leaf data streams to reduce persistent storage size.
     return {
         .encodingType = selectedEncoding,
+        .estimatedSize = selectedEstimatedSize,
         .compressionPolicyFactory = [compressionOptions =
                                          compressionOptions_.value(),
                                      selectedEncoding]() {
