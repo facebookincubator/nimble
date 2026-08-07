@@ -238,11 +238,8 @@ std::unique_ptr<ChunkedDecoder> NimbleData::makeDecoder(
 std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
     const std::shared_ptr<const velox::dwio::common::TypeWithId>& type,
     const velox::common::ScanSpec& /*scanSpec*/) {
-  velox::dwio::common::DecodingStats* decodingStats = nullptr;
-  if (runtimeStatistics().decodingStatsSet.has_value()) {
-    decodingStats = runtimeStatistics().decodingStatsSet->getOrCreate(
-        type->id(), type->type()->kind());
-  }
+  velox::dwio::common::DecodingStats* const decodingStats =
+      splitStats().decodingStats(type->id());
   return std::make_unique<NimbleData>(
       nimbleType_,
       *streams_,

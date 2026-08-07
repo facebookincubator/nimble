@@ -2800,11 +2800,25 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   }
   EXPECT_EQ(totalRows, numRows) << "should read all rows";
 
-  dwio::common::RuntimeStatistics stats;
+  dwio::common::RuntimeStats stats;
   rowReader->updateRuntimeStats(stats);
-  ASSERT_TRUE(stats.columnReaderStats.decodingStatsSet.has_value());
 
-  auto* col1 = stats.columnReaderStats.decodingStatsSet->getOrCreate(1);
+  const auto columnDecodingStats =
+      [&](uint32_t nodeId) -> const dwio::common::DecodingStats* {
+    const auto nodeIt = stats.columnStats.find(nodeId);
+    if (nodeIt == stats.columnStats.end()) {
+      return nullptr;
+    }
+    const auto formatIt = nodeIt->second.find(dwio::common::FileFormat::NIMBLE);
+    if (formatIt == nodeIt->second.end() ||
+        !formatIt->second.decodingStats.has_value()) {
+      return nullptr;
+    }
+    return &formatIt->second.decodingStats.value();
+  };
+
+  const auto* col1 = columnDecodingStats(1);
+  ASSERT_NE(col1, nullptr);
   EXPECT_GT(col1->decodeCPUTimeNanos.count(), 0)
       << "column 1 decode count should be > 0";
   EXPECT_GT(col1->decompressCPUTimeNanos.count(), 0)
@@ -2813,7 +2827,8 @@ TEST_P(SelectiveNimbleReaderTest, columnDecodeMetrics) {
   // (withDecompressStats / NanosecondCPUTimer), so the comparison is safe.
   EXPECT_LE(col1->decompressCPUTimeNanos.sum(), col1->decodeCPUTimeNanos.sum())
       << "decompress time should be <= decode time (it is a subset)";
-  auto* col2 = stats.columnReaderStats.decodingStatsSet->getOrCreate(2);
+  const auto* col2 = columnDecodingStats(2);
+  ASSERT_NE(col2, nullptr);
   EXPECT_GT(col2->decodeCPUTimeNanos.count(), 0)
       << "column 2 decode count should be > 0";
   EXPECT_GT(col2->decompressCPUTimeNanos.count(), 0)
