@@ -210,6 +210,13 @@ class StripeStreams {
     readerBase_->input().load(velox::dwio::common::LogType::STREAM_BUNDLE);
   }
 
+  /// Loads the lazy input clone, if one exists. Idempotent.
+  void loadLazyInput() {
+    if (lazyInput_) {
+      lazyInput_->load();
+    }
+  }
+
   /// Create a lazy input clone for lazy column I/O. Ownership is held
   /// by StripeStreams; the clone is valid until the next setStripe() call.
   LazyInput* createLazyInput();
