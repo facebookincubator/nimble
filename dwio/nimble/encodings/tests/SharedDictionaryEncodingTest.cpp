@@ -149,7 +149,7 @@ template <typename T>
 EncodingType selectEncoding(
     EncodingSelectionPolicy<T>& policy,
     std::span<const T> values) {
-  using PhysicalType = TypeTraits<T>::physicalType;
+  using PhysicalType = typename TypeTraits<T>::physicalType;
   static_assert(sizeof(T) == sizeof(PhysicalType));
   const auto physicalValues = std::span<const PhysicalType>{
       reinterpret_cast<const PhysicalType*>(values.data()), values.size()};
