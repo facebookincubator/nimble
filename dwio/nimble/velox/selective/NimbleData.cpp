@@ -31,6 +31,7 @@ NimbleData::NimbleData(
     const EncodingFactory& encodingFactory,
     bool stringDecoderZeroCopy,
     bool nimblePreserveDictionaryEncoding,
+    bool nimbleCompactDictionaryAcrossChunks,
     bool lazyColumnIo,
     velox::dwio::common::DecodingStats* decodingStats)
     : nimbleType_(nimbleType),
@@ -90,6 +91,7 @@ NimbleData::NimbleData(
   }
   stringDecoderZeroCopy_ = stringDecoderZeroCopy;
   nimblePreserveDictionaryEncoding_ = nimblePreserveDictionaryEncoding;
+  nimbleCompactDictionaryAcrossChunks_ = nimbleCompactDictionaryAcrossChunks;
 }
 
 void NimbleData::readNulls(
@@ -251,6 +253,7 @@ std::unique_ptr<velox::dwio::common::FormatData> NimbleParams::toFormatData(
       *encodingFactory_,
       stringDecoderZeroCopy_,
       nimblePreserveDictionaryEncoding_,
+      nimbleCompactDictionaryAcrossChunks_,
       lazyColumnIo_,
       decodingStats);
 }

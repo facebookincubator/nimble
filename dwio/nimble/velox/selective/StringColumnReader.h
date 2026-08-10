@@ -18,6 +18,7 @@
 
 #include <vector>
 #include "dwio/nimble/velox/selective/ChunkedDecoder.h"
+#include "folly/container/F14Map.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 
 namespace facebook::nimble {
@@ -64,11 +65,15 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
   // boundary (via the skip callback) to invalidate stale state.
   struct DictionaryState {
     std::vector<std::string_view> alphabet;
+    // Maps alphabet entries to their index in alphabet for deduplication
+    // when compacting dictionaries across chunks.
+    folly::F14FastMap<std::string_view, int32_t> alphabetIndex;
     velox::VectorPtr alphabetVector;
     velox::raw_vector<uint8_t> filterCache;
 
     void clear() {
       alphabet.clear();
+      alphabetIndex.clear();
       alphabetVector.reset();
       filterCache.clear();
     }
@@ -86,31 +91,63 @@ class StringColumnReader : public velox::dwio::common::SelectiveColumnReader {
     dictionaryState_.clear();
   }
 
+  // Whether cross-chunk dictionary alphabets should be deduplicated
+  // (compacted), per the nimbleCompactDictionaryAcrossChunks read option.
+  bool compactDictionaryAcrossChunks() const {
+    return static_cast<const NimbleData&>(formatData())
+        .nimbleCompactDictionaryAcrossChunks();
+  }
+
+  // Back-fills alphabetIndex from the merged alphabet for any entries not yet
+  // indexed (the first chunk's alphabet, built by ensureDictionaryState).
+  // Called lazily on the first chunk boundary so single-chunk reads never
+  // build the dedup map. Idempotent: a no-op once the map is in sync.
+  void ensureAlphabetIndex();
+
+  // Shifts the dictionary indices in rawValues_ at [valueOffset, numValues_) by
+  // alphabetOffset, the compaction-off remap: each chunk is appended
+  // contiguously, so a local index maps to alphabetOffset + localIndex. A
+  // vectorizable scalar add applied to every position (null slots included,
+  // harmless since their indices are never read downstream). alphabetOffset ==
+  // 0 is the identity, i.e. the first chunk.
+  void updateDictionaryIndices(
+      int32_t alphabetOffset,
+      velox::vector_size_t valueOffset);
+
+  // Translates the dictionary indices in rawValues_ at [valueOffset,
+  // numValues_) through remap, the compaction-on remap: deduplication makes the
+  // mapping non-uniform, so each local index is looked up in the table. An
+  // empty remap is the identity (the first chunk, whose local indices already
+  // reference the merged alphabet's leading entries). Null positions hold
+  // uninitialized indices; the lookup is guarded against out-of-range garbage.
+  void updateCompactedDictionaryIndices(
+      const std::vector<int32_t>& remap,
+      velox::vector_size_t valueOffset);
+
   // Attempts to extend the merged dictionary alphabet when a chunk boundary
-  // is crossed during multi-chunk dictionary index reading. Offsets the
-  // indices written since valueOffset by alphabetOffset (to reference the
-  // merged alphabet), then checks whether the new chunk is
-  // dictionary-convertible.
+  // is crossed during multi-chunk dictionary index reading. First remaps the
+  // indices written since valueOffset (to reference the merged alphabet), then
+  // checks whether the new chunk is dictionary-convertible.
   //
   // Returns true if the new chunk's alphabet was appended and reading
   // should continue. Returns false if the new chunk is not
   // dictionary-convertible, signaling the caller to fall back to flat
   // decoding for the remaining rows.
   //
-  // @param alphabetOffset Running offset into the merged alphabet. Updated
-  //   to the new alphabet size when a chunk is appended. Tracked to produce
-  //   the correct indices in the merged alphabets.
+  // Carries the previous chunk's remap in whichever of the two forms the
+  // compaction mode uses (see updateDictionaryIndices /
+  // updateCompactedDictionaryIndices), and rebuilds it for the newly appended
+  // chunk.
+  //
+  // @param alphabetOffset Running merged-alphabet offset for the compaction-off
+  //   path. Updated to the pre-append merged size for the new chunk.
+  // @param pendingRemap Local->merged table for the compaction-on path. Rebuilt
+  //   (deduplicated) for the new chunk.
   // @param valueOffset Index into rawValues_ marking where the current
-  //   chunk's indices start. Updated to numValues_ after offsetting.
-  // Offsets dictionary indices in rawValues_ by alphabetSize, starting
-  // from position 'valueOffset' up to numValues_. Used to remap per-chunk
-  // indices into the merged alphabet's index space.
-  void updateDictionaryIndices(
-      velox::vector_size_t alphabetSize,
-      velox::vector_size_t valueOffset);
-
+  //   chunk's indices start. Updated to numValues_ after remapping.
   bool tryExtendDictionaryAtChunkBoundary(
       int32_t& alphabetOffset,
+      std::vector<int32_t>& pendingRemap,
       velox::vector_size_t& valueOffset);
 
   // Grows dictionaryState_.filterCache to one byte per merged-alphabet entry,
