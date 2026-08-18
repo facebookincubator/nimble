@@ -7815,6 +7815,158 @@ TEST_P(VeloxReaderTest, attributesByColumnRoundTripCollections) {
   EXPECT_EQ(kValueAttrs, mapType.values()->attributes());
 }
 
+TEST_P(VeloxReaderTest, flatMapIcebergAttributesUseRepresentativeValue) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+  auto type =
+      velox::ROW({"scores"}, {velox::MAP(velox::INTEGER(), velox::DOUBLE())});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns["scores"];
+  // Pre-order node ids: scores=1, key=2, value=3.
+  writerOptions.schemaAttributes[1] = {{"iceberg.id", "20"}};
+  writerOptions.schemaAttributes[2] = {{"iceberg.id", "21"}};
+  writerOptions.schemaAttributes[3] = {{"iceberg.id", "22"}};
+
+  auto scores = vectorMaker.mapVector(
+      {0},
+      vectorMaker.flatVector<int32_t>({7, 9}),
+      vectorMaker.flatVector<double>({1.5, 2.5}));
+  auto vector = vectorMaker.rowVector({"scores"}, {scores});
+  auto file = nimble::test::createNimbleFile(
+      *rootPool_, vector, std::move(writerOptions));
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(2, flatMap.childrenCount());
+  const std::vector<std::pair<std::string, std::string>> kFlatMapAttrs = {
+      {"iceberg.id", "20"},
+      {"iceberg.key.id", "21"},
+  };
+  EXPECT_EQ(kFlatMapAttrs, flatMap.attributes());
+  const std::vector<std::pair<std::string, std::string>> kValueAttrs = {
+      {"iceberg.id", "22"},
+  };
+  EXPECT_EQ(kValueAttrs, flatMap.childAt(0)->attributes());
+  EXPECT_TRUE(flatMap.childAt(1)->attributes().empty());
+}
+
+TEST_P(VeloxReaderTest, emptyFlatMapIcebergAttributesUseDummyValue) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+  auto type =
+      velox::ROW({"scores"}, {velox::MAP(velox::INTEGER(), velox::DOUBLE())});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns["scores"];
+  writerOptions.schemaAttributes[1] = {{"iceberg.id", "20"}};
+  writerOptions.schemaAttributes[2] = {{"iceberg.id", "21"}};
+  writerOptions.schemaAttributes[3] = {{"iceberg.id", "22"}};
+
+  auto scores = vectorMaker.mapVector(
+      {0},
+      vectorMaker.flatVector<int32_t>({}),
+      vectorMaker.flatVector<double>({}));
+  auto vector = vectorMaker.rowVector({"scores"}, {scores});
+  auto file = nimble::test::createNimbleFile(
+      *rootPool_, vector, std::move(writerOptions));
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(1, flatMap.childrenCount());
+  const std::vector<std::pair<std::string, std::string>> kFlatMapAttrs = {
+      {"iceberg.id", "20"},
+      {"iceberg.key.id", "21"},
+  };
+  EXPECT_EQ(kFlatMapAttrs, flatMap.attributes());
+  const std::vector<std::pair<std::string, std::string>> kValueAttrs = {
+      {"iceberg.id", "22"},
+  };
+  EXPECT_EQ(kValueAttrs, flatMap.childAt(0)->attributes());
+}
+
+TEST_P(VeloxReaderTest, flatMapNestedIcebergAttributesUseRepresentativeValue) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+  auto valueType =
+      velox::ROW({"name", "age"}, {velox::VARCHAR(), velox::INTEGER()});
+  auto type =
+      velox::ROW({"profiles"}, {velox::MAP(velox::INTEGER(), valueType)});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns["profiles"];
+  // Pre-order node ids: profiles=1, key=2, value=3, name=4, age=5.
+  writerOptions.schemaAttributes[1] = {{"iceberg.id", "30"}};
+  writerOptions.schemaAttributes[2] = {{"iceberg.id", "31"}};
+  writerOptions.schemaAttributes[3] = {{"iceberg.id", "32"}};
+  writerOptions.schemaAttributes[4] = {{"iceberg.id", "33"}};
+  writerOptions.schemaAttributes[5] = {{"iceberg.id", "34"}};
+
+  auto values = vectorMaker.rowVector(
+      {"name", "age"},
+      {vectorMaker.flatVector<velox::StringView>({"alice", "bob"}),
+       vectorMaker.flatVector<int32_t>({30, 40})});
+  auto profiles = vectorMaker.mapVector(
+      {0}, vectorMaker.flatVector<int32_t>({7, 9}), values);
+  auto vector = vectorMaker.rowVector({"profiles"}, {profiles});
+  auto file = nimble::test::createNimbleFile(
+      *rootPool_, vector, std::move(writerOptions));
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(2, flatMap.childrenCount());
+  const auto& representativeValue = flatMap.childAt(0)->asRow();
+  const std::vector<std::pair<std::string, std::string>> kValueAttrs = {
+      {"iceberg.id", "32"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kNameAttrs = {
+      {"iceberg.id", "33"},
+  };
+  const std::vector<std::pair<std::string, std::string>> kAgeAttrs = {
+      {"iceberg.id", "34"},
+  };
+  EXPECT_EQ(kValueAttrs, representativeValue.attributes());
+  EXPECT_EQ(kNameAttrs, representativeValue.childAt(0)->attributes());
+  EXPECT_EQ(kAgeAttrs, representativeValue.childAt(1)->attributes());
+
+  const auto& duplicateValue = flatMap.childAt(1)->asRow();
+  EXPECT_TRUE(duplicateValue.attributes().empty());
+  EXPECT_TRUE(duplicateValue.childAt(0)->attributes().empty());
+  EXPECT_TRUE(duplicateValue.childAt(1)->attributes().empty());
+}
+
+TEST_P(VeloxReaderTest, flatMapAttributesEmptyByDefault) {
+  facebook::velox::test::VectorMaker vectorMaker(leafPool_.get());
+  auto type =
+      velox::ROW({"scores"}, {velox::MAP(velox::INTEGER(), velox::DOUBLE())});
+
+  facebook::nimble::VeloxWriterOptions writerOptions;
+  writerOptions.flatMapColumns["scores"];
+  auto scores = vectorMaker.mapVector(
+      {0},
+      vectorMaker.flatVector<int32_t>({7, 9}),
+      vectorMaker.flatVector<double>({1.5, 2.5}));
+  auto vector = vectorMaker.rowVector({"scores"}, {scores});
+  auto file = nimble::test::createNimbleFile(
+      *rootPool_, vector, std::move(writerOptions));
+
+  velox::InMemoryReadFile readFile(file);
+  auto selector = std::make_shared<velox::dwio::common::ColumnSelector>(type);
+  nimble::VeloxReader reader(
+      &readFile, *leafPool_, std::move(selector), createReadParams());
+  const auto& flatMap = reader.schema()->asRow().childAt(0)->asFlatMap();
+  ASSERT_EQ(2, flatMap.childrenCount());
+  EXPECT_TRUE(flatMap.attributes().empty());
+  EXPECT_TRUE(flatMap.childAt(0)->attributes().empty());
+  EXPECT_TRUE(flatMap.childAt(1)->attributes().empty());
+}
+
 // Backward-compat: a writer that does NOT set schemaAttributes must
 // produce a NIMBLE file whose deserialized Type tree exposes empty
 // attributes on every node. Pins the no-op upgrade path for every

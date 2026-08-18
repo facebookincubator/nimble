@@ -148,6 +148,12 @@ struct VeloxWriterOptions {
   /// so callers may submit a superset and let schema evolution drop entries
   /// that no longer apply.
   ///
+  /// Flat-map producers still provide the logical MAP node ids (map, key, then
+  /// value subtree). Because a NIMBLE flat map has no physical key node and
+  /// duplicates its value subtree once per key, the writer folds the key's
+  /// `iceberg.id` into `iceberg.key.id` on the flat-map node and stamps
+  /// ordinary value-subtree attributes only on the first physical value copy.
+  ///
   /// Empty map (default) is a no-op: every existing NIMBLE writer produces
   /// byte-identical files.
   folly::F14FastMap<uint32_t, std::vector<std::pair<std::string, std::string>>>
