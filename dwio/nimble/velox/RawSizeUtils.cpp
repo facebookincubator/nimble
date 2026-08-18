@@ -654,35 +654,57 @@ uint64_t getRawSizeFromPassthroughFlatMap(
   const auto nonNullCount = childRanges.size();
 
   if (nonNullCount > 0) {
-    // ROW children represent the "values" in the passthrough flatmap
-    // Each field in the ROW is a key-value pair
+    // ROW children represent the "values" in the passthrough flatmap.
+    // T271900360: an entry is only written if the per-feature value is
+    // non-null; the writer encodes NULL values as inMap=0 (key absent).
+    // Charge raw-size bytes per present entry only, mirroring the
+    // exact per-key accounting in FieldWriter.cpp
+    // collectPassthroughStringKeyStatistics.
     const auto childrenSize = rowVector->childrenSize();
-
-    // For passthrough flatmaps, keys are counted for ALL non-null flatmap rows,
-    // regardless of whether the individual value is null or not.
-    // This matches DWRF behavior where key sizes are counted per key per row.
-    // Key count = numKeys * numNonNullFlatmapRows
-    if (keyTypeSize.has_value()) {
-      rawSize += *keyTypeSize * childrenSize * nonNullCount;
-    } else {
-      NIMBLE_CHECK_GT(
-          stringKeySize,
-          0,
-          "Encountered non-supported variable flatmap key type.");
-      rawSize += stringKeySize * nonNullCount;
-    }
+    const auto& passthroughRowType = rowVector->type()->asRow();
+    uint64_t totalPresentEntries = 0;
+    uint64_t totalKeyStringSize = 0;
 
     for (size_t i = 0; i < childrenSize; ++i) {
       const auto& child = rowVector->childAt(i);
 
-      // Compute value sizes using schema's value type
+      velox::common::Ranges presentRanges;
+      if (child->mayHaveNulls()) {
+        for (auto offset : childRanges) {
+          const auto idx = static_cast<velox::vector_size_t>(offset);
+          if (!child->isNullAt(idx)) {
+            presentRanges.add(offset, offset + 1);
+          }
+        }
+      }
+      const auto& valueRanges =
+          child->mayHaveNulls() ? presentRanges : childRanges;
+      const auto presentCount = valueRanges.size();
+      totalPresentEntries += presentCount;
+
       uint64_t childRawSize = getRawSizeFromVectorInternal(
-          child, childRanges, context, schemaValueType.get(), {});
+          child, valueRanges, context, schemaValueType.get(), {});
       rawSize += childRawSize;
 
       if (topLevel) {
         context.appendSize(childRawSize);
       }
+
+      if (!keyTypeSize.has_value()) {
+        // Exact per-key string contribution; matches writer accounting.
+        totalKeyStringSize +=
+            passthroughRowType.nameOf(i).size() * presentCount;
+      }
+    }
+
+    if (keyTypeSize.has_value()) {
+      rawSize += *keyTypeSize * totalPresentEntries;
+    } else {
+      NIMBLE_CHECK_GT(
+          stringKeySize,
+          0,
+          "Encountered non-supported variable flatmap key type.");
+      rawSize += totalKeyStringSize;
     }
   } else if (topLevel) {
     // No non-null rows, but we still need to record sizes for each child
