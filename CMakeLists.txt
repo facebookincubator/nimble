@@ -232,3 +232,7 @@ add_subdirectory(dwio/nimble/tablet)
 add_subdirectory(dwio/nimble/velox)
 add_subdirectory(dwio/nimble/writer)
 add_subdirectory(dwio/nimble/serializer)
+
+if(NIMBLE_ENABLE_EXPERIMENTAL_ENCODINGS)
+  add_subdirectory(dwio/nimble/ML_ID_Compression)
+endif()
