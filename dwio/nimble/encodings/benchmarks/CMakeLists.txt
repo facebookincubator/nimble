@@ -99,3 +99,50 @@ target_link_libraries(
   velox_common_base
   velox_memory
 )
+
+# A/B benchmark: count-based vs size-based (exponent, factor) selection
+# for ALP encoding. Not a folly-benchmark; runs once and prints a comparison
+# table. Feeds NIMBLE_ALP_增强方案.md §8.4.
+add_executable(nimble_alp_selection_ab_benchmark ALPSelectionABBenchmark.cpp)
+
+target_link_libraries(
+  nimble_alp_selection_ab_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  velox_memory
+  Folly::folly
+)
+
+# End-to-end write/read benchmark: encodes each dataset with count-based and
+# size-based (exponent, factor) selection, round-trips through materialize(),
+# reports encoded bytes / compression ratio / wall / CPU / RSS delta /
+# correctness. Baseline for subsequent ALP phases (Phase 1 estimator
+# unification, Phase 2 xsimd fast paths).
+add_executable(nimble_alp_e2e_benchmark ALPWriteReadE2EBenchmark.cpp)
+
+target_link_libraries(
+  nimble_alp_e2e_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  velox_memory
+  Folly::folly
+)
+
+# Mini-benchmark for Dictionary+ALP / RLE+ALP nested selection paths.
+# Drives the real EncodingFactory with allowNestedAlpSelection={off,on} over
+# dict-friendly and RLE-friendly float/double columns and reports encoded
+# bytes, encode/decode wall/cpu, RSS delta, and correctness. Evidence for
+# NIMBLE_ALP_增强方案.md §8.9 that Phase 2 already covers the nested paths.
+add_executable(nimble_alp_nested_benchmark ALPNestedBenchmark.cpp)
+
+target_link_libraries(
+  nimble_alp_nested_benchmark
+  nimble_encodings_tests_utils
+  nimble_encodings
+  nimble_common
+  nimble_tools_common
+  velox_memory
+  Folly::folly
+)
