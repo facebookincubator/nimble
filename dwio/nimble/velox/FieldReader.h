@@ -55,6 +55,22 @@ struct FieldReaderParams {
   std::function<void(velox::dwio::common::flatmap::FlatMapKeySelectionStats)>
       keySelectionCallback{nullptr};
 
+  /// Per-flat-map record of the features the reader actually projected (in the
+  /// caller-specified order). Reported alongside keySelectionCallback when a
+  /// flat map column is materialized. Intended for offline analyses that
+  /// inform write-time feature reordering (e.g. VeloxWriterOptions::
+  /// featureReordering / FeatureReorderingLayoutPlanner).
+  struct FlatMapFeatureProjection {
+    std::string columnName;
+    std::vector<std::string> selectedFeatureNames;
+  };
+
+  /// Callback invoked once per flat map column during reader factory creation.
+  /// Receives the column name and the names of the features that were
+  /// selected, in the order chosen by the reader. nullptr disables logging.
+  std::function<void(FlatMapFeatureProjection)>
+      flatMapFeatureProjectionCallback{nullptr};
+
   bool optimizeStringBufferHandling{false};
 
   /// Executor for parallel decoding of child fields.
