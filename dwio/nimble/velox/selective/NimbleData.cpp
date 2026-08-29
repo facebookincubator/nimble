@@ -23,6 +23,12 @@ namespace facebook::nimble {
 
 using namespace facebook::velox;
 
+void NimbleData::loadLazyInputStreams() {
+  if (lazyColumnIo_) {
+    streams_->loadLazyInput();
+  }
+}
+
 NimbleData::NimbleData(
     const std::shared_ptr<const Type>& nimbleType,
     StripeStreams& streams,
