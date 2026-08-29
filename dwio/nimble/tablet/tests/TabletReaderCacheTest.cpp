@@ -25,7 +25,7 @@
 #include "dwio/nimble/common/tests/GTestUtils.h"
 #include "dwio/nimble/velox/SchemaBuilder.h"
 #include "dwio/nimble/velox/SchemaSerialization.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "folly/executors/CPUThreadPoolExecutor.h"
 #include "folly/synchronization/Latch.h"
 #include "velox/common/file/File.h"
@@ -77,8 +77,8 @@ class TabletReaderCacheTest : public ::testing::Test {
         {"col0"},
         {vectorMaker.flatVector<int64_t>(numRows, [](auto i) { return i; })});
 
-    VeloxWriterOptions writerOptions;
-    auto writer = std::make_unique<VeloxWriter>(
+    WriterOptions writerOptions;
+    auto writer = std::make_unique<Writer>(
         kVeloxSchema,
         std::make_unique<velox::InMemoryWriteFile>(&file),
         *pool_,

@@ -48,7 +48,7 @@ class FlushPolicy {
  public:
   virtual ~FlushPolicy() = default;
 
-  /// Post-write flush query consulted at the end of every VeloxWriter::write()
+  /// Post-write flush query consulted at the end of every Writer::write()
   /// call (via evaluateFlushPolicy). Returning true causes the writer
   /// to immediately cut the currently open stripe. This is the size-driven
   /// cut mechanism for policies that decide based on how much data has
@@ -58,13 +58,13 @@ class FlushPolicy {
   ///
   /// Contract: the answer must be a pure function of stripeProgress at call
   /// time. Policies that need cross-call state (e.g. hysteresis) must own it
-  /// in a factory-captured struct — VeloxWriter recreates the policy at every
+  /// in a factory-captured struct — Writer recreates the policy at every
   /// consultation.
   virtual bool shouldFlush(const StripeProgress& stripeProgress) = 0;
 
   /// Post-write chunk query consulted alongside shouldFlush (via
   /// evaluateFlushPolicy) — but only when
-  /// VeloxWriterOptions::enableChunking is true. Returning true causes the
+  /// WriterOptions::enableChunking is true. Returning true causes the
   /// writer to soft-chunk stream data currently buffered above the
   /// per-stream chunk threshold, relieving memory pressure without cutting
   /// the stripe. Same purity + state-ownership contract as shouldFlush.
@@ -179,9 +179,9 @@ class TestFlushPolicy final : public FlushPolicy {
   friend class TestFlushPolicyFactory;
 
   /// Shared rng state, owned by TestFlushPolicyFactory and outliving the
-  /// per-write() policy instances the writer recreates. VeloxWriter rebuilds
+  /// per-write() policy instances the writer recreates. Writer rebuilds
   /// the flush policy from its factory on every write() (see
-  /// VeloxWriter::evaluateFlushPolicy), so an rng owned by the policy
+  /// Writer::evaluateFlushPolicy), so an rng owned by the policy
   /// itself would reseed identically each call and make the same decision every
   /// write(). Holding it here instead lets decisions vary across writes while
   /// staying reproducible from the seed.

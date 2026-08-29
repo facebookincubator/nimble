@@ -286,7 +286,7 @@ TEST_F(NimbleDslTest, ExecShowStatsNoStats) {
       maker.rowVector({"col"}, {maker.flatVector<int32_t>({1, 2, 3})});
 
   // Explicitly disable vectorized stats to test the no-stats path.
-  nimble::VeloxWriterOptions options;
+  nimble::WriterOptions options;
   options.enableVectorizedStats = false;
   auto fileData = nimble::test::createNimbleFile(*rootPool_, vector, options);
 
@@ -304,7 +304,7 @@ TEST_F(NimbleDslTest, ExecShowStatsWithStats) {
   auto vector =
       maker.rowVector({"num"}, {maker.flatVector<int32_t>({10, 20, 30})});
 
-  nimble::VeloxWriterOptions options;
+  nimble::WriterOptions options;
   options.enableVectorizedStats = true;
   auto fileData = nimble::test::createNimbleFile(*rootPool_, vector, options);
 

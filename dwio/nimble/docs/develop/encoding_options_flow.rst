@@ -39,14 +39,14 @@ Encoding
 
 Write Path
 
-VeloxWriter → file writing
+Writer → file writing
 
-VeloxWriterOptions fields
+WriterOptions fields
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 (from serde params)
 
-VeloxWriter encode overview
+Writer encode overview
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 buildEncodingOptions()
@@ -194,11 +194,11 @@ NimbleWriterOptionBuilder::withSerdeParams()
 
 map < string,string >
 
-VeloxWriterOptions
+WriterOptions
 
 2b
 
-VeloxWriterOptions in constructor
+WriterOptions in constructor
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Encoding
@@ -247,15 +247,15 @@ enableStatsCollection, enableStreamDedup, metadata
 
 2c
 
-VeloxWriterOptions
+WriterOptions
 ^^^^^^^^^^^^^^^^^^
 
-VeloxWriter constructor
+Writer constructor
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 distributes options to context, creates TabletWriter, invokes factories
 
-VeloxWriter
+Writer
 
 enableChunking, chunk sizes stats collection schema columns encoding layout metadata
 
@@ -285,11 +285,11 @@ ClusterIndexWriter
 
 index columns sort orders key constraints encoding layout
 
-dwio/nimble/writer/VeloxWriter.cpp · VeloxWriterOptions.h · FieldWriter.h · TabletWriter.h
+dwio/nimble/writer/Writer.cpp · WriterOptions.h · FieldWriter.h · TabletWriter.h
 
 2d
 
-VeloxWriter encode implementation
+Writer encode implementation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 buildEncodingOptions()

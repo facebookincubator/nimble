@@ -23,7 +23,7 @@
 #include "dwio/nimble/encodings/PrefixEncoding.h"
 #include "dwio/nimble/index/ClusterIndexConfig.h"
 #include "dwio/nimble/velox/selective/SelectiveNimbleReader.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/common/base/RandomUtil.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/caching/AsyncDataCache.h"
@@ -293,7 +293,7 @@ class E2EIndexTestBase : public ::testing::Test {
     sinkData_.clear();
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
 
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.enableChunking = true;
     options.enableChunkIndex = enableChunkIndex;
     auto clusterIndexConfig =
@@ -325,7 +325,7 @@ class E2EIndexTestBase : public ::testing::Test {
     options.minStreamChunkRawSize = kSmallChunkSize;
 
     auto rowType = asRowType(batches[0]->type());
-    VeloxWriter writer(
+    Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(options));
     for (const auto& batch : batches) {
       writer.write(batch);
@@ -3631,8 +3631,8 @@ TEST_F(E2EIndexTestBase, CreateIndexReaderWithoutClusterIndex) {
     SCOPED_TRACE(fmt::format("writeRows={}", writeRows));
     sinkData_.clear();
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-    VeloxWriterOptions options;
-    VeloxWriter writer(
+    WriterOptions options;
+    Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(options));
     if (writeRows) {
       writer.write(batch);
@@ -3660,7 +3660,7 @@ TEST_F(E2EIndexTestBase, createIndexReaderRejectsHiddenKeyReadAccess) {
 
   sinkData_.clear();
   auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
-  VeloxWriterOptions options;
+  WriterOptions options;
   options.clusterIndexConfig =
       ClusterIndexConfigBuilder{}
           .withKeyColumns({"key"})
@@ -3669,8 +3669,7 @@ TEST_F(E2EIndexTestBase, createIndexReaderRejectsHiddenKeyReadAccess) {
           .build();
   options.experimentalOmitClusterIndexKeyColumnStorage = true;
 
-  VeloxWriter writer(
-      rowType, std::move(writeFile), *rootPool_, std::move(options));
+  Writer writer(rowType, std::move(writeFile), *rootPool_, std::move(options));
   writer.write(batch);
   writer.close();
 

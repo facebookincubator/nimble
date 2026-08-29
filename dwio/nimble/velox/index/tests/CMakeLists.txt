@@ -23,7 +23,7 @@ target_link_libraries(
   nimble_serializer
   nimble_stream_data_writer
   nimble_velox_common
-  nimble_velox_writer
+  nimble_writer
   nimble_velox_selective
   nimble_velox_schema_utils
   velox_dwio_common

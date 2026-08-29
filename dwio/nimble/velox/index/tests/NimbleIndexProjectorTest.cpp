@@ -33,7 +33,7 @@
 #include "dwio/nimble/velox/SchemaUtils.h"
 #include "dwio/nimble/velox/VeloxReader.h"
 #include "dwio/nimble/velox/tests/SchemaUtils.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 
 #include "folly/Random.h"
 #include "velox/common/caching/FileIds.h"
@@ -209,7 +209,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
     sinkData_.clear();
     auto writeFile = std::make_unique<InMemoryWriteFile>(&sinkData_);
 
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.enableChunking = true;
     options.flatMapColumns = flatMapColumns;
     options.enableStreamDeduplication = enableStreamDeduplication;
@@ -231,7 +231,7 @@ class NimbleIndexProjectorTest : public ::testing::TestWithParam<TestParam> {
           });
     };
     auto rowType = asRowType(batches[0]->type());
-    VeloxWriter writer(
+    Writer writer(
         rowType, std::move(writeFile), *rootPool_, std::move(options));
     for (const auto& batch : batches) {
       writer.write(batch);
@@ -3081,7 +3081,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     sinkData_.clear();
     auto file = std::make_unique<InMemoryWriteFile>(&sinkData_);
 
-    VeloxWriterOptions options;
+    WriterOptions options;
     options.enableChunking = true;
     options.flatMapColumns = {{"features", {}}};
     options.experimentalStripeGroupEncodingLayout = metadataFormat;
@@ -3102,7 +3102,7 @@ TEST_P(NimbleIndexProjectorTest, featureReorderingStorageReads) {
     }
 
     auto batch = makeBatch();
-    VeloxWriter writer(
+    Writer writer(
         batch->type(), std::move(file), *rootPool_, std::move(options));
     writer.write(batch);
     writer.close();

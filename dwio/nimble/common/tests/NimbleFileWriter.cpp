@@ -15,15 +15,15 @@
  */
 #include "dwio/nimble/common/tests/NimbleFileWriter.h"
 #include "dwio/nimble/common/Exceptions.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/Writer.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 
 namespace facebook::nimble::test {
 
 std::string createNimbleFile(
     velox::memory::MemoryPool& memoryPool,
     const velox::VectorPtr& vector,
-    nimble::VeloxWriterOptions writerOptions,
+    nimble::WriterOptions writerOptions,
     bool flushAfterWrite) {
   return createNimbleFile(
       memoryPool,
@@ -35,7 +35,7 @@ std::string createNimbleFile(
 std::string createNimbleFile(
     velox::memory::MemoryPool& memoryPool,
     const std::vector<facebook::velox::VectorPtr>& vectors,
-    nimble::VeloxWriterOptions writerOptions,
+    nimble::WriterOptions writerOptions,
     bool flushAfterWrite) {
   std::string file;
   auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
@@ -49,7 +49,7 @@ std::string createNimbleFile(
         "All vectors should have the same schema.");
   }
 
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       type, std::move(writeFile), memoryPool, std::move(writerOptions));
   for (const auto& vector : vectors) {
     writer.write(vector);

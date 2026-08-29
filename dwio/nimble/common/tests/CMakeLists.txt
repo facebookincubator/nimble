@@ -16,7 +16,7 @@ add_library(nimble_common_file_writer NimbleFileWriter.cpp)
 target_link_libraries(
   nimble_common_file_writer
   nimble_common
-  nimble_velox_writer
+  nimble_writer
   velox_vector
 )
 

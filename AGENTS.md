@@ -11,7 +11,7 @@ Nimble has a layered architecture (bottom-up):
 
 1. **Encodings** (`encodings/`) — Low-level encode/decode of typed value streams. 12 encoding types (Trivial, RLE, Dictionary, FixedBitWidth, Sentinel, Nullable, SparseBool, Varint, Delta, Constant, MainlyConstant, Prefix). Encodings are recursive/cascading and decoupled from the physical layout.
 2. **Tablet** (`tablet/`) — Physical file layout. Manages stripes, footer/postscript (FlatBuffers), checksums (XXH3_64), and stream I/O. File structure: `[Stripe Data...][Metadata Groups][Footer][Postscript]`.
-3. **Velox Integration** (`velox/`) — Maps between Velox vectors (`VectorPtr`) and Nimble's encoded streams. Provides `VeloxReader`/`VeloxWriter` and per-field type-specific `FieldReader`/`FieldWriter`.
+3. **Velox Integration** (`velox/`) — Maps between Velox vectors (`VectorPtr`) and Nimble's encoded streams. Provides `VeloxReader`/`Writer` and per-field type-specific `FieldReader`/`FieldWriter`.
 4. **Selective Reader** (`velox/selective/`) —  Supports predicate pushdown and lazy column loading.
 5. **Index** (`index/`) — Cluster index for stripe/chunk-level data skipping and point lookups.
 

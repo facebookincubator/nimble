@@ -576,7 +576,7 @@ TEST_F(FlushPolicyFactoryFactoryTest, invalidConfigThrows) {
 }
 
 // The factory hands every policy the same shared state, so recreating the
-// policy on each call (as VeloxWriter does via flushPolicyFactory() per
+// policy on each call (as Writer does via flushPolicyFactory() per
 // write()) keeps advancing one rng rather than restarting it. A
 // recreate-per-call decision stream must therefore match a single persistent
 // policy from an equivalent factory -- i.e. the factory neutralizes the

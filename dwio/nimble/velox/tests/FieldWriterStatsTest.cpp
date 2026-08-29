@@ -17,7 +17,7 @@
 
 #include "dwio/nimble/velox/RawSizeUtils.h"
 #include "dwio/nimble/velox/stats/ColumnStatsUtils.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 using namespace facebook;
@@ -71,7 +71,7 @@ class FieldWriterStatsTests : public ::testing::TestWithParam<bool> {
   void verifyReturnedColumnStats(
       const velox::VectorPtr& input,
       const std::vector<ColumnStats>& expectedStats,
-      nimble::VeloxWriterOptions options = {},
+      nimble::WriterOptions options = {},
       std::shared_ptr<const velox::Type> rowType = nullptr) {
     // Write Nimble file.
     std::string file;
@@ -85,8 +85,7 @@ class FieldWriterStatsTests : public ::testing::TestWithParam<bool> {
     }
     options.enableChunking = true;
     options.disableSharedStringBuffers = GetParam();
-    nimble::VeloxWriter writer(
-        rowType, std::move(writeFile), *rootPool_, options);
+    nimble::Writer writer(rowType, std::move(writeFile), *rootPool_, options);
     writer.write(input);
     writer.close();
 
@@ -1487,7 +1486,7 @@ TEST_P(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
   auto vector = vectorMaker_->rowVector({outerMap});
 
   // Write with flatmap + dictionaryArray configuration
-  nimble::VeloxWriterOptions options;
+  nimble::WriterOptions options;
   options.flatMapColumns["c0"];
   options.dictionaryArrayColumns.insert("c0");
 
@@ -1498,7 +1497,7 @@ TEST_P(FieldWriterStatsTests, flatmapWithDeduplicatedValuesStats) {
 
   // This should work without crashing - we're testing the stats collection
   // for flatmap with deduplicated array values
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       vector->type(), std::move(writeFile), *rootPool_, options);
   writer.write(vector);
   writer.close();
@@ -1575,7 +1574,7 @@ TEST_P(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
   auto vector = vectorMaker_->rowVector({outerMap});
 
   // Write with flatmap + deduplicatedMap configuration
-  nimble::VeloxWriterOptions options;
+  nimble::WriterOptions options;
   options.flatMapColumns["c0"];
   options.deduplicatedMapColumns.insert("c0");
 
@@ -1586,7 +1585,7 @@ TEST_P(FieldWriterStatsTests, flatmapWithSlidingWindowMapStats) {
 
   // This should work without crashing - we're testing the stats collection
   // for flatmap with sliding window map values
-  nimble::VeloxWriter writer(
+  nimble::Writer writer(
       vector->type(), std::move(writeFile), *rootPool_, options);
   writer.write(vector);
   writer.close();

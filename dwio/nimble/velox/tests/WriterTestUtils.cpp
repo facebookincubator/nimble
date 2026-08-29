@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "dwio/nimble/velox/tests/VeloxWriterTestUtils.h"
+#include "dwio/nimble/velox/tests/WriterTestUtils.h"
 
 #include <gtest/gtest.h>
 #include <limits>

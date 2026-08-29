@@ -31,8 +31,8 @@ namespace {
 
 using namespace facebook::velox;
 
-VeloxWriterOptions makeForcedEncodingWriterOptions(EncodingType encodingType) {
-  VeloxWriterOptions writerOptions;
+WriterOptions makeForcedEncodingWriterOptions(EncodingType encodingType) {
+  WriterOptions writerOptions;
   writerOptions.encodingSelectionPolicyCreator =
       [encodingType](DataType dataType) {
         ManualEncodingSelectionPolicyFactory factory{

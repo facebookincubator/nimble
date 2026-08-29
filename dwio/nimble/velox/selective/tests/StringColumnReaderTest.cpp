@@ -27,7 +27,7 @@
 #include "dwio/nimble/velox/SchemaSerialization.h"
 #include "dwio/nimble/writer/EncodingLayoutTree.h"
 #include "dwio/nimble/writer/FlushPolicy.h"
-#include "dwio/nimble/writer/VeloxWriter.h"
+#include "dwio/nimble/writer/Writer.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/File.h"
 #include "velox/common/io/IoStatistics.h"
@@ -486,7 +486,7 @@ TEST_P(StringColumnReaderTest, fsstWithSiblingFilter) {
   });
   auto input = makeRowVector({filterCol, dataCol});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.fsstCompressionTargetRatio = 10.0;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
@@ -716,7 +716,7 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundary) {
     return std::vector<std::string>{"xxx", "yyy"}[i % 2];
   })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.flushPolicyFactory = [] {
     return std::make_unique<LambdaFlushPolicy>(
@@ -766,7 +766,7 @@ TEST_P(StringColumnReaderTest, flatFallbackClearsDictionaryState) {
     return std::vector<std::string>{"xxx", "yyy"}[i % 2];
   })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.flushPolicyFactory = [] {
     return std::make_unique<LambdaFlushPolicy>(
@@ -825,7 +825,7 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryMidFile) {
           [](auto i) { return std::vector<std::string>{"xxx", "yyy"}[i % 2]; }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -951,7 +951,7 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryDictRecovery) {
             }),
     });
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -1023,7 +1023,7 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryDictRecovery) {
             }),
     });
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -1113,7 +1113,7 @@ TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkip) {
           [](auto i) { return fmt::format("unique_string_value_{}", i); }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -1211,7 +1211,7 @@ TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkipWithNulls) {
       makeNullableFlatVector<std::string>(chunk2Data),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -1278,7 +1278,7 @@ TEST_P(StringColumnReaderTest, abandonDictionaryNoSkipWithNulls) {
       makeNullableFlatVector<std::string>(data),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   auto file = test::createNimbleFile(*rootPool(), chunk, writerOptions);
@@ -1345,7 +1345,7 @@ TEST_P(StringColumnReaderTest, abandonDictionaryAfterSkipFlatMap) {
   auto chunk2 = makeChunk(kChunkRows, kChunkRows);
   auto combined = makeChunk(0, 2 * kChunkRows);
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flatMapColumns = {{"c1", {}}};
@@ -1451,7 +1451,7 @@ TEST_P(StringColumnReaderTest, skipAcrossChunkBoundaryRleDictionaryPreserved) {
           [&](auto i) { return chunk2Values[(i / kRunLength) % 3]; }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       makeSecondChildRleDictionaryLayoutTree());
   writerOptions.enableChunking = true;
@@ -1584,7 +1584,7 @@ TEST_P(
     chunkVectors.push_back(rowVector);
   }
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -1777,7 +1777,7 @@ TEST_P(StringColumnReaderTest, readAcrossChunkBoundary) {
     return std::vector<std::string>{"xxx", "yyy"}[i % 2];
   })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -1833,7 +1833,7 @@ TEST_P(StringColumnReaderTest, readAcrossStripeBoundary) {
   std::erase_if(readFactors, [](const auto& pair) {
     return pair.first == EncodingType::MainlyConstant;
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.encodingSelectionPolicyCreator =
       [readFactors](DataType dataType) {
@@ -1908,7 +1908,7 @@ TEST_P(StringColumnReaderTest, flatMapStringDictionaryPath) {
       keysFv,
       valsFv)});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}};
   auto file = test::createNimbleFile(*rootPool(), input, writerOptions);
 
@@ -2045,7 +2045,7 @@ TEST_P(
   std::erase_if(readFactors, [](const auto& pair) {
     return pair.first == EncodingType::MainlyConstant;
   });
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.flatMapColumns = {{"c0", {}}};
   writerOptions.encodingSelectionPolicyCreator =
       [readFactors](DataType dataType) {
@@ -2175,7 +2175,7 @@ TEST_P(StringColumnReaderTest, flatMapStringDictionaryPathMultiChunk) {
   auto chunk1 = buildMapVector(0, kRowsPerChunk);
   auto chunk2 = buildMapVector(kRowsPerChunk, kRowsPerChunk);
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flatMapColumns = {{"c0", {}}};
@@ -2263,7 +2263,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryMultiChunk) {
           }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   // Chunk every other write: 1000 rows per chunk.
   auto writeCount = std::make_shared<int>(0);
@@ -2281,7 +2281,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryMultiChunk) {
   std::string file;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    VeloxWriter writer(
+    Writer writer(
         input->type(),
         std::move(writeFile),
         *rootPool(),
@@ -2325,7 +2325,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryMultiChunkWithNulls) {
           nullEvery(7)),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   auto writeCount = std::make_shared<int>(0);
   writerOptions.flushPolicyFactory = [writeCount] {
@@ -2339,7 +2339,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryMultiChunkWithNulls) {
   std::string file;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    VeloxWriter writer(
+    Writer writer(
         input->type(),
         std::move(writeFile),
         *rootPool(),
@@ -2465,7 +2465,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAcrossStripes) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::move(dictLayout)}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
@@ -2543,7 +2543,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantAllNullReadRange) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::move(dictLayout)}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
       std::
@@ -2585,7 +2585,7 @@ TEST_P(StringColumnReaderTest, dictionaryIsNullFilterProjected) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::nullopt}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
       std::
@@ -2642,7 +2642,7 @@ TEST_P(StringColumnReaderTest, dictionaryFilterSparseNoNullsAfterNullBatch) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::nullopt}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
       std::
@@ -2715,7 +2715,7 @@ TEST_P(StringColumnReaderTest, dictionaryIsNullFilterSparseRows) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::nullopt}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
       std::
@@ -2773,7 +2773,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunks) {
           }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   auto writeCount = std::make_shared<int>(0);
@@ -2788,7 +2788,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunks) {
   std::string file;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    VeloxWriter writer(
+    Writer writer(
         input->type(),
         std::move(writeFile),
         *rootPool(),
@@ -2837,7 +2837,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunksWithNulls) {
           nullEvery(7)),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   auto writeCount = std::make_shared<int>(0);
@@ -2852,7 +2852,7 @@ TEST_P(StringColumnReaderTest, mainlyConstantDictionaryAlignedChunksWithNulls) {
   std::string file;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    VeloxWriter writer(
+    Writer writer(
         input->type(),
         std::move(writeFile),
         *rootPool(),
@@ -2907,7 +2907,7 @@ TEST_P(StringColumnReaderTest, rleDictionaryVector) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::move(dictLayout)}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(
       Kind::Row,
       std::
@@ -2972,7 +2972,7 @@ TEST_P(StringColumnReaderTest, rleDictionaryMidRunBatchResume) {
   auto data = makeRowVector({makeFlatVector<std::string>(
       kRows, [&](auto i) { return values[(i / kRunLength) % 3]; })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
   auto file = test::createNimbleFile(
       *rootPool(), std::vector<VectorPtr>{data}, writerOptions);
@@ -3003,7 +3003,7 @@ TEST_P(StringColumnReaderTest, rleDictionaryMidRunBatchResumeWithNulls) {
   }
   auto data = makeRowVector({makeNullableFlatVector<std::string>(raw)});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
   auto file = test::createNimbleFile(
       *rootPool(), std::vector<VectorPtr>{data}, writerOptions);
@@ -3032,7 +3032,7 @@ TEST_P(StringColumnReaderTest, rleDictionaryMidRunResumeAcrossChunk) {
   auto chunk2 = makeRowVector({makeFlatVector<std::string>(
       kChunkRows, [&](auto i) { return chunk2Values[(i / kRunLength) % 3]; })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.encodingLayoutTree.emplace(makeRleDictionaryLayoutTree());
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
@@ -3155,7 +3155,7 @@ TEST_P(StringColumnReaderTest, filterOnlyMultiChunkNumValuesSync) {
   // chunk 2 (mixed) cannot, so the writer falls back to a bulkScan encoding.
   EncodingLayout constantLayout{
       EncodingType::Constant, {}, CompressionType::Uncompressed};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   // Force one chunk per write() so the two vectors land in separate chunks
@@ -3229,7 +3229,7 @@ DEBUG_ONLY_TEST_P(
         return std::vector<std::string>{"pp", "qq", "rr", "ss", "tt"}[i % 5];
       })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3240,7 +3240,7 @@ DEBUG_ONLY_TEST_P(
   std::string file;
   {
     auto writeFile = std::make_unique<velox::InMemoryWriteFile>(&file);
-    VeloxWriter writer(
+    Writer writer(
         chunk1->type(),
         std::move(writeFile),
         *rootPool(),
@@ -3358,7 +3358,7 @@ TEST_P(StringColumnReaderTest, flatEncodingFallback) {
     return fmt::format("unique_value_row_{}_padding_to_avoid_inline", i);
   })});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3411,7 +3411,7 @@ TEST_P(StringColumnReaderTest, flatEncodingFallbackWithNulls) {
       },
       velox::test::VectorMaker::nullEvery(11))});
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3469,7 +3469,7 @@ TEST_P(StringColumnReaderTest, variableReadRangeTransitions) {
           })}));
     }
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -3510,7 +3510,7 @@ TEST_P(StringColumnReaderTest, variableReadRangeTransitions) {
       return i % 20 == 0 ? otherValues[i % 3] : commonValue;
     })});
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -3555,7 +3555,7 @@ TEST_P(StringColumnReaderTest, variableReadRangeTransitions) {
       return i % 20 == 0 ? otherValues[i % 3] : commonValue;
     })});
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -3615,7 +3615,7 @@ TEST_P(StringColumnReaderTest, variableReadRangeTransitions) {
       return i % 20 == 0 ? otherValues[i % 3] : commonValue3;
     })});
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -3688,7 +3688,7 @@ TEST_P(StringColumnReaderTest, sparseRowsAcrossChunkAbandonPreservesNulls) {
           }),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3767,7 +3767,7 @@ TEST_P(StringColumnReaderTest, sparseRowsAcrossChunkAbandonNullsBothPortions) {
           nullEvery(5)),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3854,7 +3854,7 @@ TEST_P(
           nullEvery(5)),
   });
 
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
@@ -3989,7 +3989,7 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkDictionary) {
                    : nullptr)}));
     }
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4072,7 +4072,7 @@ TEST_P(StringColumnReaderTest, fuzzMultiChunkReadCorrectness) {
                    : nullptr)}));
     }
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.enableChunking = true;
     writerOptions.minStreamChunkRawSize = 0;
     writerOptions.flushPolicyFactory = [] {
@@ -4131,7 +4131,7 @@ TEST_P(StringColumnReaderTest, multiChunkLateNullPreparationDictPath) {
       {},
       CompressionType::Uncompressed,
       {std::nullopt, std::nullopt}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.encodingLayoutTree.emplace(
@@ -4214,7 +4214,7 @@ TEST_P(StringColumnReaderTest, multiChunkLateNullPreparationFlatPath) {
   // the nullable chunk.
   EncodingLayout c1TrivialLayout{
       EncodingType::Trivial, {}, CompressionType::Uncompressed, {std::nullopt}};
-  VeloxWriterOptions writerOptions;
+  WriterOptions writerOptions;
   writerOptions.enableChunking = true;
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.encodingLayoutTree.emplace(

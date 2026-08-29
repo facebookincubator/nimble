@@ -18,7 +18,7 @@ target_link_libraries(
   nimble_serializer
   nimble_deserializer
   nimble_encodings
-  nimble_velox_writer
+  nimble_writer
   nimble_velox_schema_reader
   Folly::follybenchmark
   Folly::folly

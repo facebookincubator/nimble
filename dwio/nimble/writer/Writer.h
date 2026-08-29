@@ -21,7 +21,7 @@
 #include "dwio/nimble/velox/FieldWriter.h"
 #include "dwio/nimble/writer/BufferPolicy.h"
 #include "dwio/nimble/writer/NimbleFileMetadata.h"
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 #include "velox/buffer/BufferPool.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/file/File.h"
@@ -31,7 +31,7 @@
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/DecodedVector.h"
 
-/// The VeloxWriter takes a velox VectorPtr and writes it to an Nimble file
+/// The Writer takes a velox VectorPtr and writes it to an Nimble file
 /// format.
 
 namespace facebook::nimble {
@@ -45,18 +45,18 @@ class WriterContext;
 // Drives the writer's reclaim path during memory arbitration. Defined once per
 // build flavour, since the internal one derives from
 // velox::exec::MemoryReclaimer and velox/exec is not part of the OSS build.
-class VeloxWriterMemoryReclaimer;
+class WriterMemoryReclaimer;
 
 /// Writer that takes velox vector as input and produces nimble file.
-class VeloxWriter : public velox::dwio::common::Writer {
+class Writer : public velox::dwio::common::Writer {
  public:
-  VeloxWriter(
+  Writer(
       const velox::TypePtr& type,
       std::unique_ptr<velox::WriteFile> file,
       velox::memory::MemoryPool& pool,
-      VeloxWriterOptions options);
+      WriterOptions options);
 
-  ~VeloxWriter() override;
+  ~Writer() override;
 
   void write(const velox::VectorPtr& input) override;
 
@@ -118,7 +118,7 @@ class VeloxWriter : public velox::dwio::common::Writer {
  private:
   // Reaches reclaimableBytes()/reclaimBytes() below, so that memory
   // arbitration does not require widening the writer's public API.
-  friend class VeloxWriterMemoryReclaimer;
+  friend class WriterMemoryReclaimer;
 
   // Reports the bytes the writer could release by flushing its buffered
   // stripe, or false when a flush would free too little to be worth the
@@ -159,12 +159,12 @@ class VeloxWriter : public velox::dwio::common::Writer {
   void reportRuntimeStats() const;
 
   static std::unique_ptr<index::IndexWriter> createClusterIndexWriter(
-      const VeloxWriterOptions& options,
+      const WriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
 
   static std::vector<DenseIndexWriter> createDenseIndexWriters(
-      const VeloxWriterOptions& options,
+      const WriterOptions& options,
       const velox::TypePtr& type,
       velox::memory::MemoryPool* pool);
 

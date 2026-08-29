@@ -385,7 +385,7 @@ Feeds adaptive prefetch decisions, not exported as metrics
 3 Writer Stats
 --------------
 
-VeloxWriter
+Writer
 
 (Nimble)
 
@@ -398,7 +398,7 @@ Owns stats as member; populated during write/flush/close
 
 incremented during write(), flush(), close()
 
-dwio/nimble/writer/VeloxWriter.h:61 (Nimble)
+dwio/nimble/writer/Writer.h:61 (Nimble)
 
 Timing:
 

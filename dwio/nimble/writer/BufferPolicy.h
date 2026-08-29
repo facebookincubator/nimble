@@ -41,7 +41,7 @@ struct BufferRange {
   }
 };
 
-/// Content-driven cutting hook for VeloxWriter. Replaces the earlier
+/// Content-driven cutting hook for Writer. Replaces the earlier
 /// per-batch pre-write cut model with a buffering model: the policy
 /// accumulates incoming row vectors across successive `write()` calls and
 /// emits stripe-ready `BufferRange`s when its internal invariant (group
@@ -49,19 +49,19 @@ struct BufferRange {
 ///
 /// Lifecycle, from the writer's perspective:
 ///   1. `bufferInput(input)` — called once per incoming batch in
-///      `VeloxWriter::write()`. Policy retains a reference to `input` (via
+///      `Writer::write()`. Policy retains a reference to `input` (via
 ///      VectorPtr's shared ownership) until the corresponding rows are
 ///      emitted by `flushInput()` or dropped.
 ///   2. `flushInput()` — called repeatedly by the writer immediately after
 ///      every `bufferInput()`, draining the policy of any completed
 ///      BufferRanges. Returns empty when the policy has nothing ready.
-///   3. `finalize()` — called once by `VeloxWriter::close()` to signal
+///   3. `finalize()` — called once by `Writer::close()` to signal
 ///      end-of-input. On subsequent `flushInput()` calls the policy must
 ///      emit any residual open range (e.g. the last user's rows) rather
 ///      than continuing to accumulate.
 ///
 /// The writer only invokes BufferPolicy when
-/// `VeloxWriterOptions::bufferPolicyFactory` is set. When unset, the writer
+/// `WriterOptions::bufferPolicyFactory` is set. When unset, the writer
 /// falls back to the legacy FlushPolicy path (`shouldFlush` post-write).
 /// FlushPolicy and BufferPolicy address different concerns: FlushPolicy
 /// cuts on size accumulated in the writer's stream buffers; BufferPolicy
@@ -71,7 +71,7 @@ struct BufferRange {
 /// Memory: BufferPolicy retains vector references for as long as it holds
 /// unemitted rows from them. The policy is responsible for its own
 /// bookkeeping and for bounding memory use (e.g. by emitting periodically
-/// or capping accumulated rows). VeloxWriter imposes no upper bound.
+/// or capping accumulated rows). Writer imposes no upper bound.
 class BufferPolicy {
  public:
   virtual ~BufferPolicy() = default;
@@ -82,12 +82,12 @@ class BufferPolicy {
   /// dynamic_cast internally and reject wrapped/mismatched inputs.
   /// Implementations should also reject empty (0-row) inputs if their
   /// bookkeeping (e.g. indexing at `numRows - 1`) is undefined on them.
-  /// VeloxWriter never passes an empty batch in normal usage, so this only
+  /// Writer never passes an empty batch in normal usage, so this only
   /// matters when the policy is driven directly (e.g. tests).
   virtual void bufferInput(velox::VectorPtr input) = 0;
 
   /// Return the next ready-to-write BufferRange, or an empty BufferRange
-  /// if the policy is still accumulating. VeloxWriter drains this method
+  /// if the policy is still accumulating. Writer drains this method
   /// after every `bufferInput()` (and after `finalize()` at close time)
   /// until it returns empty.
   virtual BufferRange flushInput() = 0;

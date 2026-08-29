@@ -30,7 +30,7 @@
 #include "dwio/nimble/tablet/TabletReader.h"
 #include "dwio/nimble/tablet/TabletWriter.h"
 #include "dwio/nimble/velox/ChunkedStream.h"
-#include "dwio/nimble/writer/VeloxWriterOptions.h"
+#include "dwio/nimble/writer/WriterOptions.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"

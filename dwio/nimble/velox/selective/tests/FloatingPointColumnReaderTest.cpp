@@ -237,11 +237,11 @@ class FloatingPointColumnReaderTest : public ::testing::Test,
             EncodingType::FixedBitWidth, {}, CompressionType::Uncompressed}}};
   }
 
-  static VeloxWriterOptions makeSingleScalarColumnWriterOptions() {
+  static WriterOptions makeSingleScalarColumnWriterOptions() {
     using StreamLayouts = std::
         unordered_map<EncodingLayoutTree::StreamIdentifier, EncodingLayout>;
 
-    VeloxWriterOptions writerOptions;
+    WriterOptions writerOptions;
     writerOptions.encodingLayoutTree.emplace(
         Kind::Row,
         StreamLayouts{},
