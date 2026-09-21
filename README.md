@@ -6,6 +6,23 @@
 
 </div>
 
+> [!IMPORTANT]
+>
+> ## Nimble has moved into Velox
+>
+> Nimble development now happens in the
+> [Velox](https://github.com/facebookincubator/velox) repository, under
+> [`velox/dwio/nimble`](https://github.com/facebookincubator/velox/tree/main/velox/dwio/nimble).
+>
+> **Please open pull requests and issues against
+> [facebookincubator/velox](https://github.com/facebookincubator/velox)**, not
+> this repository. Pull requests opened here will not be merged. See Velox's
+> [CONTRIBUTING.md](https://github.com/facebookincubator/velox/blob/main/CONTRIBUTING.md)
+> for how to submit a change.
+>
+> This repository is kept for reference. The content below describes Nimble as
+> it stood before the move.
+
 Nimble (formerly known as _”Alpha”_) is a new columnar file format for large
 datasets created by Meta. Nimble is meant to be a replacement for file formats
 such as Apache Parquet and ORC.

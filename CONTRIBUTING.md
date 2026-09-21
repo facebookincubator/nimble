@@ -1,5 +1,15 @@
 # Contributing
 
+> [!IMPORTANT]
+>
+> **Nimble has moved into
+> [Velox](https://github.com/facebookincubator/velox).** Contribute at
+> [`velox/dwio/nimble`](https://github.com/facebookincubator/velox/tree/main/velox/dwio/nimble)
+> and follow Velox's
+> [CONTRIBUTING.md](https://github.com/facebookincubator/velox/blob/main/CONTRIBUTING.md).
+> Pull requests and issues opened against this repository will not be picked
+> up. The guidelines below are kept for reference.
+
 Welcome! Thank you for your interest in the Nimble project. Before starting to
 contribute, please take a moment to review the guidelines outlined below.
 
